@@ -1380,12 +1380,6 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         task_key = task_dir.name
         outcome = load_json(task_dir / "outcome.json")
         attempts = load_jsonl(task_dir / "attempts.jsonl")
-        missing_terminal_attempt_count = sum(
-            1
-            for row in attempts
-            if implementation_attempt_missing_terminal_evidence(session_dir, row)
-        )
-        terminal_marker_missing_attempts += missing_terminal_attempt_count
         harness_terminal_evidence_count += sum(
             1
             for row in attempts
@@ -1414,11 +1408,23 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             obsolete_note_path.is_file()
             or "marked obsolete" in str(outcome.get("revert_reason") or "").lower()
         ) and not stale_seed_note
-        api_error = "api error" in str(outcome.get("revert_reason") or "").lower()
         revert_reason = str(outcome.get("revert_reason") or "").lower()
+        blocked_note_path = task_dir / "blocked.md"
+        blocked = blocked_note_path.is_file() or "task blocked by agent" in revert_reason
+        missing_terminal_attempt_count = 0
+        if not obsolete and not blocked:
+            missing_terminal_attempt_count = sum(
+                1
+                for row in attempts
+                if implementation_attempt_missing_terminal_evidence(session_dir, row)
+            )
+        terminal_marker_missing_attempts += missing_terminal_attempt_count
+        api_error = "api error" in revert_reason
         protected_revert = "modified protected files" in revert_reason
         if obsolete:
             obsolete_count += 1
+            explained_unverified_ids.add(task_key)
+        if blocked:
             explained_unverified_ids.add(task_key)
         if api_error:
             api_error_count += 1
@@ -1443,6 +1449,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             outcome.get("status") == "reverted"
             and not touched
             and not obsolete
+            and not blocked
             and not api_error
             and not protected_revert
         )
@@ -1458,7 +1465,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             mechanical_verified += 1
         if mechanically_proven:
             strict_verified += 1
-        elif not obsolete and not api_error and not protected_revert and not scope_mismatch and (
+        elif not obsolete and not blocked and not api_error and not protected_revert and not scope_mismatch and (
             outcome.get("status") == "completed" or evals
         ):
             evaluator_unverified += 1

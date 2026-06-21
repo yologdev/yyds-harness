@@ -24,6 +24,18 @@ FILE_MENTION_RE = re.compile(
     r"[A-Za-z0-9_./+-]*[A-Za-z0-9_+-]\.[A-Za-z0-9_+-]+|"
     r"Cargo\.(?:toml|lock)|README\.md)(?!(?:[\w/-]|\.[A-Za-z0-9_+-]))"
 )
+PROTECTED_IMPLEMENTATION_SURFACES = (
+    ".github/workflows/",
+    "IDENTITY.md",
+    "PERSONALITY.md",
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/",
+    "skills/evolve/",
+    "skills/communicate/",
+    "skills/research/",
+)
 SECTION_STOP_RE = re.compile(
     r"^(?:#+\s*)?(?:title|files|issue|origin|objective|goal|why this matters|"
     r"success criteria|acceptance criteria|verification|test plan|expected evidence)\s*:?\s*",
@@ -87,6 +99,31 @@ def split_list(value: str) -> list[str]:
 
 def extract_file_mentions(text: str) -> list[str]:
     return normalize_file_list(match.group(1) for match in FILE_MENTION_RE.finditer(text or ""))
+
+
+def protected_surface_match(path: str) -> str | None:
+    normalized = normalize_file_entry(path).strip("/")
+    if not normalized:
+        return None
+    for protected in PROTECTED_IMPLEMENTATION_SURFACES:
+        surface = protected.strip("/")
+        if protected.endswith("/"):
+            if normalized == surface or normalized.startswith(f"{surface}/"):
+                return protected
+        elif normalized == surface:
+            return protected
+    return None
+
+
+def protected_task_surfaces(task: dict[str, Any]) -> list[str]:
+    matches: list[str] = []
+    surfaces = task.get("declared_files") or task.get("files") or []
+    for path in surfaces:
+        if not isinstance(path, str):
+            continue
+        if protected_surface_match(path) and path not in matches:
+            matches.append(path)
+    return matches
 
 
 def read_text(path: Path | None) -> str:
@@ -153,12 +190,14 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
     if alignment["contradicted_by_assessment"]:
         quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
-    files = normalize_file_list(split_list(fields.get("files", "")) + extract_file_mentions(text))
+    declared_files = normalize_file_list(split_list(fields.get("files", "")))
+    files = normalize_file_list(declared_files + extract_file_mentions(text))
     return {
         "task_id": f"task_{task_number:02d}",
         "task_number": task_number,
         "title": title,
         "files": files,
+        "declared_files": declared_files,
         "issue": fields.get("issue") or None,
         "origin": fields.get("origin") or "planner",
         "artifact_path": f"tasks/task_{task_number:02d}/task.md",
@@ -186,7 +225,6 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     )
     assessment_text = read_text(args.assessment_file)
     tasks = [parse_task(path, index + 1, assessment_text) for index, path in enumerate(task_paths)]
-    selected = tasks[: args.selected_limit]
     assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
     issue_text = read_text(args.issue_responses_file)
     failure_text = read_text(args.planning_failure_file)
@@ -210,6 +248,15 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             warnings.append(f"{task['task_id']}:missing_expected_evidence")
         if float(quality.get("score") or 0.0) < 0.75:
             warnings.append(f"{task['task_id']}:thin_task_spec")
+        protected = protected_task_surfaces(task)
+        if protected:
+            task["protected_files"] = protected
+            warnings.append(f"{task['task_id']}:protected_files")
+
+    selectable = [task for task in tasks if not task.get("protected_files")]
+    selected = selectable[: args.selected_limit]
+    if tasks and not selected:
+        warnings.append("no_selectable_tasks")
 
     return {
         "schema_version": 1,
@@ -217,11 +264,12 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "planner": {
             "planning_failed": planning_failed,
             "task_count": len(tasks),
-            "selected_task_count": min(len(tasks), args.selected_limit),
+            "selected_task_count": len(selected),
             "assessment_present": bool(assessment_text.strip()),
             "assessment_missing_present": bool(assessment_missing_text.strip()),
             "issue_responses_present": bool(issue_text.strip()),
             "planning_failure_present": bool(failure_text.strip()),
+            "protected_task_count": len(tasks) - len(selectable),
         },
         "tasks": tasks,
         "selected_tasks": selected,
@@ -238,17 +286,23 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
 
 def decision_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     planner = manifest.get("planner") if isinstance(manifest.get("planner"), dict) else {}
+    planning_failed = bool(planner.get("planning_failed"))
+    task_count = int(planner.get("task_count") or 0)
+    selected_task_count = int(planner.get("selected_task_count") or 0)
+    no_selectable_tasks = bool(task_count and selected_task_count == 0 and not planning_failed)
     return {
         "phase": "plan",
         "decision_type": "session_plan",
-        "decision": "planning_failed" if planner.get("planning_failed") else "tasks_selected",
-        "task_count": int(planner.get("task_count") or 0),
-        "selected_task_count": int(planner.get("selected_task_count") or 0),
+        "decision": "planning_failed" if planning_failed else "no_selectable_tasks" if no_selectable_tasks else "tasks_selected",
+        "task_count": task_count,
+        "selected_task_count": selected_task_count,
         "assessment_present": bool(planner.get("assessment_present")),
-        "planning_failed": bool(planner.get("planning_failed")),
+        "planning_failed": planning_failed,
         "reason": (
             "planning phase produced no task files"
-            if planner.get("planning_failed")
+            if planning_failed
+            else "planning phase produced only protected-file tasks; no implementation task was selected"
+            if no_selectable_tasks
             else "planning phase selected implementation tasks for this evolution session"
         ),
         "tasks": [

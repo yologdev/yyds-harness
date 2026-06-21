@@ -271,6 +271,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertNotIn('Title: Self-improvement', evolve)
         self.assertNotIn('identify the most impactful improvement', evolve)
         self.assertIn('manifest.json', evolve)
+        self.assertIn('SELECTED_TASK_IDS=$(python3 - <<PY', evolve)
+        self.assertIn('not selected by manifest validation', evolve)
         self.assertIn('attempts.jsonl', evolve)
         self.assertIn('"changed_files": changed_files', evolve)
         self.assertIn('"progress_since_base": bool', evolve)
@@ -1101,6 +1103,20 @@ class TaskLineageFeedback(unittest.TestCase):
                 "Existing tests already prove the requested behavior.\n",
                 encoding="utf-8",
             )
+            (session / "tasks/task_01/attempts.jsonl").write_text(
+                json.dumps(
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "completed_missing_terminal_evidence",
+                    },
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
 
             assessment = log_feedback.build_assessment(
                 session_dir=session,
@@ -1117,6 +1133,8 @@ class TaskLineageFeedback(unittest.TestCase):
             self.assertEqual(metrics["task_success_rate"], 0.0)
             self.assertEqual(metrics["task_obsolete_count"], 1)
             self.assertEqual(metrics["evaluator_unverified_count"], 0)
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
+            self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 0)
             self.assertIn("task_obsolete_count", log_feedback.gnome_values(metrics))
             self.assertTrue(
                 any(lesson["kind"] == "task_obsolete" for lesson in assessment["top_lessons"])

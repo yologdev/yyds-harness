@@ -343,12 +343,15 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
         attempts = load_jsonl(child / "attempts.jsonl")
         outcome = load_json(child / "outcome.json")
         obsolete_note = child / "obsolete.md"
+        blocked_note = child / "blocked.md"
         rows[task_id] = {
             "task_id": task_id,
             "task_file": f"tasks/{task_id}/task.md" if (child / "task.md").is_file() else None,
             "decision_file": f"tasks/{task_id}/decision.json" if (child / "decision.json").is_file() else None,
             "obsolete_note_path": f"tasks/{task_id}/obsolete.md" if obsolete_note.is_file() else None,
             "obsolete_note_text": read_text(obsolete_note) if obsolete_note.is_file() else "",
+            "blocked_note_path": f"tasks/{task_id}/blocked.md" if blocked_note.is_file() else None,
+            "blocked_note_text": read_text(blocked_note) if blocked_note.is_file() else "",
             "attempts": attempts,
             "evals": evals,
             "outcome": outcome,
@@ -435,11 +438,6 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         outcome_status = str(outcome.get("status") or "").strip().lower()
         revert_reason = str(outcome.get("revert_reason") or "")
         attempts = artifact.get("attempts") if isinstance(artifact.get("attempts"), list) else []
-        terminal_marker_missing_attempt_count = sum(
-            1
-            for row in attempts
-            if isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
-        )
         analysis_only_attempt_count = sum(
             1
             for row in attempts
@@ -462,13 +460,26 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         obsolete = bool(outcome.get("has_obsolete_note") or artifact.get("obsolete_note_path")) and not stale_obsolete_note
         if not obsolete and "marked obsolete" in revert_reason.lower() and not stale_obsolete_note:
             obsolete = True
+        blocked = bool(outcome.get("has_blocked_note") or artifact.get("blocked_note_path"))
+        if not blocked and "task blocked by agent" in revert_reason.lower():
+            blocked = True
+        terminal_state_note = obsolete or blocked
+        terminal_marker_missing_attempt_count = 0
+        if not terminal_state_note:
+            terminal_marker_missing_attempt_count = sum(
+                1
+                for row in attempts
+                if isinstance(row, dict) and implementation_attempt_missing_terminal_evidence(session_dir, row)
+            )
         if obsolete:
             problems.append("task_marked_obsolete")
+        if blocked:
+            problems.append("task_blocked")
         if api_error:
             problems.append("implementation_api_error")
         if protected_revert:
             problems.append("modified_protected_files")
-        if outcome_status == "reverted" and not touched and not obsolete and not api_error and not protected_revert:
+        if outcome_status == "reverted" and not touched and not obsolete and not blocked and not api_error and not protected_revert:
             problems.append("no_edit_revert")
         if source_touched and not commits:
             problems.append("source_edits_not_landed")
@@ -479,9 +490,9 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
         incomplete_terminal = bool(terminal_marker_missing_attempt_count and not mechanically_proven)
         if incomplete_terminal:
             problems.append("incomplete_terminal_evidence")
-        if analysis_only_attempt and not mechanically_proven:
+        if analysis_only_attempt and not mechanically_proven and not terminal_state_note:
             problems.append("analysis_only_attempt")
-        if not passed and not obsolete:
+        if not passed and not obsolete and not blocked:
             problems.append("no_passing_verifier")
         strict_success = mechanically_proven and not problems
         rows.append(
@@ -490,6 +501,7 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
                 "verified": passed,
                 "problems": problems,
                 "obsolete": obsolete,
+                "blocked": blocked,
                 "stale_seed_obsolete_note": stale_obsolete_note,
                 "api_error": api_error,
                 "protected_revert": protected_revert,

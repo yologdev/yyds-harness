@@ -1810,6 +1810,25 @@ if [ "$PLANNING_FAILED" = true ]; then
 fi
 PLAN_DECISION_PAYLOAD=$(python3 scripts/task_manifest.py "${TASK_MANIFEST_ARGS[@]}" 2>/dev/null || echo "{\"phase\":\"plan\",\"decision_type\":\"session_plan\",\"decision\":\"tasks_selected\",\"task_count\":$TASK_COUNT,\"selected_task_count\":$(( TASK_COUNT > 3 ? 3 : TASK_COUNT )),\"assessment_present\":$([ -n "$ASSESSMENT" ] && echo true || echo false),\"planning_failed\":$PLANNING_FAILED,\"reason\":\"planning phase selected implementation tasks for this evolution session\",\"tasks\":[]}")
 record_state_event "DecisionRecorded" "$PLAN_DECISION_PAYLOAD"
+SELECTED_TASK_IDS=$(python3 - <<PY 2>/dev/null || echo "__ALL__"
+import json
+from pathlib import Path
+
+path = Path("$SESSION_STAGING/tasks/manifest.json")
+try:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    print("__ALL__")
+    raise SystemExit(0)
+selected = manifest.get("selected_tasks")
+if not isinstance(selected, list):
+    print("__ALL__")
+    raise SystemExit(0)
+for task in selected:
+    if isinstance(task, dict) and task.get("task_id"):
+        print(str(task["task_id"]))
+PY
+)
 
 echo "  Planning complete."
 echo ""
@@ -1819,15 +1838,22 @@ echo "  Phase B: Implementation..."
 # Fixed 20 min per implementation task + up to 10x10 min build-fix + up to 9x10 min eval-fix
 # Job timeout (150 min) is the real cap; fix loops exit early on success/API error
 IMPL_TIMEOUT=1200
-TASK_NUM=0
+TASK_SELECTED_COUNT=0
 TASK_FAILURES=0
 for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     [ -f "$TASK_FILE" ] || continue
-    TASK_NUM=$((TASK_NUM + 1))
+    TASK_ID=$(basename "$TASK_FILE" .md)
+    TASK_NUM_RAW=${TASK_ID#task_}
+    TASK_NUM=$((10#$TASK_NUM_RAW))
+    if [ "$SELECTED_TASK_IDS" != "__ALL__" ] && ! printf '%s\n' "$SELECTED_TASK_IDS" | grep -qx "$TASK_ID"; then
+        echo "    Skipping Task $TASK_NUM — not selected by manifest validation."
+        continue
+    fi
+    TASK_SELECTED_COUNT=$((TASK_SELECTED_COUNT + 1))
 
     # Cap at 3 tasks per session (fix loops can consume significant time)
-    if [ "$TASK_NUM" -gt 3 ]; then
-        echo "    Skipping Task $TASK_NUM — max 3 tasks per session."
+    if [ "$TASK_SELECTED_COUNT" -gt 3 ]; then
+        echo "    Skipping Task $TASK_NUM — max 3 selected tasks per session."
         break
     fi
 
@@ -1840,7 +1866,6 @@ for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     TASK_DESC=$(cat "$TASK_FILE")
     task_title=$(grep '^Title:' "$TASK_FILE" | head -1 | sed 's/^Title:[[:space:]]*//' || true)
     task_title="${task_title:-Task $TASK_NUM}"
-    TASK_ID=$(printf 'task_%02d' "$TASK_NUM")
     TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"
     TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
     TASK_BLOCKED_NOTE="session_plan/${TASK_ID}_blocked.md"

@@ -512,6 +512,173 @@ Expected Evidence:
 
             self.assertNotIn("all_tasks_harness_seeded", manifest["warnings"])
 
+    def test_manifest_rejects_protected_file_tasks_before_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nProtected edit was proposed.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Patch live evolve script
+Files: scripts/evolve.sh
+Issue: none
+Origin: planner
+
+Objective:
+Change the running evolution script.
+
+Success Criteria:
+- Protected edit is blocked.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- The task is not selected.
+""",
+                encoding="utf-8",
+            )
+            (plan / "task_02.md").write_text(
+                """Title: Improve manifest filtering
+Files: scripts/task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+Select the safe follow-up task instead.
+
+Success Criteria:
+- Safe tasks still run.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- task_02 is selected after task_01 is rejected.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+
+            self.assertEqual(manifest["planner"]["task_count"], 2)
+            self.assertEqual(manifest["planner"]["selected_task_count"], 1)
+            self.assertEqual(manifest["planner"]["protected_task_count"], 1)
+            self.assertEqual(manifest["selected_tasks"][0]["task_id"], "task_02")
+            self.assertEqual(manifest["tasks"][0]["protected_files"], ["scripts/evolve.sh"])
+            self.assertIn("task_01:protected_files", manifest["warnings"])
+            self.assertEqual(payload["decision"], "tasks_selected")
+            self.assertEqual(payload["tasks"][0]["task_id"], "task_02")
+
+    def test_manifest_records_no_selectable_tasks_when_all_tasks_are_protected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "task_01.md").write_text(
+                """Title: Patch protected skill
+Files: skills/evolve/SKILL.md
+Issue: none
+Origin: planner
+
+Objective:
+Change protected evolution prompt files.
+
+Success Criteria:
+- The task is rejected before implementation.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- No implementation task is selected.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+
+            self.assertFalse(manifest["planner"]["planning_failed"])
+            self.assertEqual(manifest["planner"]["task_count"], 1)
+            self.assertEqual(manifest["planner"]["selected_task_count"], 0)
+            self.assertEqual(manifest["selected_tasks"], [])
+            self.assertIn("task_01:protected_files", manifest["warnings"])
+            self.assertIn("no_selectable_tasks", manifest["warnings"])
+            self.assertEqual(payload["decision"], "no_selectable_tasks")
+
+    def test_manifest_does_not_reject_safe_task_that_mentions_protected_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "task_01.md").write_text(
+                """Title: Document protected-file guard
+Files: scripts/task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+Improve validation while explaining why scripts/evolve.sh must not be edited by this task.
+
+Success Criteria:
+- The safe manifest file remains selectable.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- The task is selected despite the protected-file mention in the body.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            self.assertEqual(manifest["planner"]["selected_task_count"], 1)
+            self.assertEqual(manifest["selected_tasks"][0]["task_id"], "task_01")
+            self.assertNotIn("task_01:protected_files", manifest["warnings"])
+
     def test_write_task_decisions_creates_per_task_json(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

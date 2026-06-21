@@ -1024,7 +1024,7 @@ class StateGraphTools(unittest.TestCase):
             gnomes = state_graph_tools.corrected_latest_gnomes(session)
 
             self.assertEqual(metrics["task_analysis_only_attempt_count"], 2)
-            self.assertEqual(metrics["task_no_edit_revert_count"], 1)
+            self.assertEqual(metrics["task_no_edit_revert_count"], 0)
             self.assertEqual(metrics["task_manifest_seed_contradiction_count"], 0)
             self.assertEqual(gnomes["task_analysis_only_attempt_count"], 2)
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
@@ -1579,6 +1579,55 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(metrics["task_verification_rate"], 1.0)
             self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
             self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 1)
+
+    def test_task_artifact_blocked_note_satisfies_terminal_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "title": "Protected task",
+                            "files": ["scripts/evolve.sh"],
+                        }
+                    ]
+                },
+            )
+            task_dir = session / "tasks/task_01"
+            write_json(
+                task_dir / "outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task blocked by agent; no implementation landed",
+                    "planned_files": ["scripts/evolve.sh"],
+                },
+            )
+            (task_dir / "blocked.md").write_text(
+                "Task blocked before implementation because it targeted protected files.\n",
+                encoding="utf-8",
+            )
+            write_jsonl(
+                task_dir / "attempts.jsonl",
+                [
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "exit_code": 0,
+                        "status": "completed_missing_terminal_evidence",
+                    }
+                ],
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+
+            self.assertEqual(metrics["task_incomplete_terminal_count"], 0)
+            self.assertEqual(metrics["task_terminal_marker_missing_attempt_count"], 0)
+            self.assertEqual(metrics["task_no_edit_revert_count"], 0)
+            self.assertEqual(metrics["evaluator_unverified_raw_count"], 1)
 
     def test_corrected_latest_gnomes_converts_stale_terminal_incomplete_when_task_proven(self):
         with tempfile.TemporaryDirectory() as tmp:
