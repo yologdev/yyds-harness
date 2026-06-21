@@ -3082,7 +3082,11 @@ fn compact_lifecycle_event(event: &Value) -> String {
 fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
     let Some(target) = find_target_event(events, id) else {
         let mut err = String::new();
-        err.push_str(&format!("no state event found for '{id}'\n"));
+        if id == "last-failure" {
+            err.push_str("No completed failure sessions found.\n");
+        } else {
+            err.push_str(&format!("no state event found for '{id}'\n"));
+        }
         err.push('\n');
         err.push_str(&build_state_summary(events));
         err.push('\n');
@@ -17479,7 +17483,7 @@ mod tests {
         // Empty state: no events
         let events: Vec<Value> = vec![];
         let err = build_why_report(&events, "last-failure").unwrap_err();
-        assert!(err.contains("no state event found for 'last-failure'"));
+        assert!(err.contains("No completed failure sessions found."));
         assert!(
             err.contains("state tail --limit 5"),
             "should suggest state tail when empty, got: {err}"
@@ -17746,7 +17750,7 @@ mod tests {
         let events: Vec<Value> = vec![];
         let err = build_why_report(&events, "last-failure").unwrap_err();
         assert!(
-            err.contains("no state event found for 'last-failure'"),
+            err.contains("No completed failure sessions found."),
             "should still report no event found, got: {err}"
         );
         assert!(
