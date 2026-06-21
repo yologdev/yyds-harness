@@ -420,7 +420,7 @@ def _self_tests_show_resolution(self_tests: str, task_keys: tuple[str, ...]) -> 
     """Check if self-test results show task-domain features already working."""
     for line in self_tests.splitlines():
         lower = line.strip().lower()
-        if any(word in lower for word in ("flaky", "fail", "failed", "error", "retry")):
+        if re.search(r'\b(?:flaky|fail|failed|error|retry)\b', lower):
             continue
         if "\u2705" not in line and "pass" not in lower and "green" not in lower:
             continue
