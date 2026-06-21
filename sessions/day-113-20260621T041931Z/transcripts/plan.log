@@ -1,0 +1,622 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully:
+
+1. I'm in Phase A2 (Planning). My ONLY deliverable is task files in session_plan/.
+2. Assessment is available and comprehensive.
+3. The trajectory shows recent sessions are successful.
+4. No CI failures to fix.
+5. Key evidence:
+   - Model call lifecycle incomplete (deepseek_model_call_incomplete_count=1)
+   - Run lifecycle incomplete (state_incomplete/open_after_SessionStarted=1)
+   - State/transcript reconciliation gaps (27 state-only, 2 transcript-only) - but these may be historical artifacts, and Day 112 already surfaced per-tool breakdowns
+   - Bash tool error count=6 - partially addressed by Day 112's pipefail
+
+Priority order from policy:
+0. CI failures - none
+1. yoagent-state DeepSeek feedback - lifecycle gaps (model call + run lifecycle)
+2. Eval/replay/promotion quality
+3. Self-discovered bugs - lifecycle gaps overlap here
+4. Trusted owner issues - none that require action
+5. Agent-self issues - none
+6. Capability gaps
+7. Release check
+
+Top graph-derived pressure:
+1. Close yyds state and model lifecycle gaps (highest priority)
+2. Bound failing shell commands (partially addressed)
+3-5. Reconciliation gaps, timeouts (lower priority, partially addressed)
+
+Task allocation (3 slots):
+- At least 2 from state/trajectory evidence
+- The lifecycle gaps are clearly the top priority
+
+Let me plan the tasks:
+
+**Task 1: Fix model call lifecycle - emit ModelCallCompleted on all exit paths**
+The `deepseek_model_call_incomplete_count=1` with cause `model_incomplete/run_error_without_start` means stream errors, timeouts, or abnormal completions don't get proper ModelCallCompleted events. I need to find where model call events are emitted and ensure all exit paths emit completion.
+
+**Task 2: Fix run lifecycle - emit RunCompleted on all exit paths**
+The `state_incomplete/open_after_SessionStarted=1` means one run started but never got RunCompleted. Need to ensure RunCompleted is emitted on all exit paths including timeout and API-error exits.
+
+**Task 3: Could be about the state/transcript reconciliation or another smaller improvement.**
+
+Let me first check if session_plan/task_01.md already exists, then plan accordingly.
+
+Let me also do a quick ownership check - where are model call lifecycle events and run lifecycle events emitted? The assessment says `state.rs` handles state recorder and events. Let me check what exists.
+
+Actually, per the ARTIFACT-FIRST REQUIREMENT, I need to:
+1. mkdir -p session_plan
+2. Check if task_01.md exists
+3. If not, create it immediately
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Session_plan already has assessment.md and task_01.md. Let me read task_01.md to see if it exists and what it contains, and assessment.md for any seed task info. Per policy: "The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+Let me read task_01.md first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md ✓ (212ms)
+ ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the seed task_01.md against the assessment:
+
+The seed task says: "Improve cold-start state failure diagnostics" — making `yyds state why last-failure` useful when there are no completed failed sessions.
+
+But the assessment (line 55) says: `yyds state why last-failure`: OK — no failures recorded, notes 1 incomplete run (current session), suggests `state trace` / `state crashes`
+
+This means the seed task's premise is accurate — `state why last-failure` already notes incomplete runs and suggests `state trace` / `state crashes`. But the assessment also says it's "OK" — implying it's already functional.
+
+However, the seed task wants to make this even better: "Cold-start `why last-failure` output gives actionable next evidence to inspect" and "Output distinguishes no history from missing diagnostics and from active/incomplete runs."
+
+Let me evaluate whether this task is still valid vs. whether the lifecycle gaps (which are the #1 graph-derived pressure) deserve priority.
+
+The assessment explicitly says:
+1. The #1 graph-derived task pressure is "Close yyds state and model lifecycle gaps"
+2. The model lifecycle gap and run lifecycle gap are MEDIUM bugs
+3. The cold-start diagnostics seem to already work (assessment says "OK")
+
+Per policy: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation."
+
+The seed task says "The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions." But the actual assessment says it returns useful output: "no failures recorded, notes 1 incomplete run (current session), suggests `state trace` / `state crashes`."
+
+This IS a contradiction. The seed task claims a problem that the assessment shows is already partially addressed. The seed task itself admits it has the right behavior (noting incomplete runs and suggesting next steps).
+
+But it's not a complete contradiction — the seed task wants to further improve cold-start diagnostics. Let me think about priorities:
+
+1. Graph pressure #1: Close lifecycle gaps (model + run) — this is the top priority
+2. Graph pressure #2-5: Lower priority, partially addressed
+3. Cold-start diagnostics: Already partially working, not directly from graph pressure
+
+Per policy: "Prefer tasks that address the highest ranked pressure rows; if you choose a different task, say which graph-pressure row you are deferring and why."
+
+I should keep task_01.md (it's the seed, and it's not completely contradicted — the assessment does confirm `state why last-failure` works but the seed asks for further improvement), but I should also add the lifecycle gap tasks as task_02 and task_03 since they're the #1 graph pressure.
+
+Wait, let me re-read the policy more carefully: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says the problem is "`state why last-failure` returning only `no state event found` during fresh-state sessions." But the assessment says it returns "no failures recorded, notes 1 incomplete run (current session), suggests `state trace` / `state crashes`." This is NOT `no state event found` — it DOES provide actionable output.
+
+So there IS a contradiction. The seed task says the tool returns `no state event found` (empty/unhelpful), but the assessment shows it returns useful diagnostic output. The cold-start diagnostics were apparently already improved in Day 111.
+
+However, the seed task's objective is still valid: "Make `yyds state why last-failure` useful when there are no completed failed sessions yet by reporting nearby startup errors, incomplete runs, or missing diagnostic evidence." Even if some output exists now, further improvement is still possible.
+
+But compared to the lifecycle gaps (which are #1 graph pressure and rated MEDIUM), this is lower priority.
+
+Let me think about what to do:
+
+Option A: Keep task_01.md (refine it slightly), add task_02.md (model lifecycle) and task_03.md (run lifecycle)
+Option B: Write task_01_obsolete.md, make lifecycle gaps task_01 and task_02, keep task_03 for cold-start or skip it
+
+Per policy: "do not delete it unless you immediately write an equal-or-better evidence-backed task file"
+
+I think Option A is best: the seed task is valid even if partially addressed (the assessment shows it works but could be better). The lifecycle gaps are the #1 priority. Let me keep task_01 as the seed, add task_02 for model lifecycle, and task_03 for run lifecycle.
+
+Actually wait - I need to verify ownership. Let me check where model call lifecycle events and run lifecycle events are emitted using quick ownership checks (not reading source files).
+
+Let me do `rg` searches for where ModelCallCompleted and RunCompleted are emitted, and where model call starts and run starts happen.
+
+Also I should check what state events exist for model calls - where are they emitted?
+
+The assessment says `state.rs` handles "State recorder, events, SQLite projection, gnome metrics" and `deepseek.rs` handles "DeepSeek-native config, FIM, cache reports, schema checks". The model call lifecycle events are likely emitted in `prompt.rs` (prompt execution) or `deepseek.rs` (DeepSeek config/handling).
+
+Let me search quickly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.0s (2 ✓)
+
+Let me verify ownership of the lifecycle event sites before finalizing the plan.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallStarted' (*.rs)  ▶ search 'ModelCallCompleted' (*.rs)  ▶ search 'RunCompleted' (*.rs) ✓ (93ms)
+ ✓ (201ms)
+ ✓ (361ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the key ownership:
+
+**ModelCallStarted**: emitted in `src/prompt.rs:778`
+**ModelCallCompleted**: emitted in `src/prompt.rs:942, 1014, 1056`
+**RunCompleted**: emitted in `src/state.rs:382` (retroactive closure), also has logic around `install_panic_hook` and `exit_with_state` in `src/state.rs`
+
+The model call lifecycle events are in `src/prompt.rs`. The run lifecycle events are in `src/state.rs`.
+
+Now let me check what `prompt.rs` looks like around the ModelCallCompleted emission sites to see if there are missing exit paths. Let me search for where ModelCallStarted is emitted and what paths might miss ModelCallCompleted.
+
+Let me also search for where runs are started.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.4s (3 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' (*.rs)  ▶ $ rg -n 'ModelCallStarted' src/prompt.rs ✓ (117ms)
+ ✓ (286ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for ModelCallStarted in prompt.rs properly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallStarted' in src/prompt.rs (*.rs)  ▶ search 'ModelCallCompleted' in src/prompt.rs (*.rs) ✓ (63ms)
+ ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant sections of prompt.rs around these lines to understand the lifecycle. I need to see if there are exit paths where ModelCallStarted is emitted but ModelCallCompleted is not.
+
+Let me read prompt.rs around line 778 (ModelCallStarted) and lines 942, 1014, 1056 (ModelCallCompleted).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..810  ▶ read src/prompt.rs:935..965 ✓ (250ms)
+ ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see lines around 1000-1060 for the other ModelCallCompleted emissions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1000..1070 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the model call lifecycle:
+
+1. Line 778: `ModelCallStarted` emitted at the start of the event loop
+2. Line 942: `ModelCallCompleted` emitted on `AgentEvent::AgentEnd` (normal completion)
+3. Line 1014: `ModelCallCompleted` emitted on Ctrl+C (interrupted) - but only if `!model_call_terminal_recorded`
+4. Line 1056: `ModelCallCompleted` emitted after loop exits (channel closed without AgentEnd) - but only if `!model_call_terminal_recorded`
+
+The question is: are there exit paths where ModelCallStarted is emitted but ModelCallCompleted never fires?
+
+Looking at the code flow:
+- The `loop` starts at line 783
+- Inside the loop: `tokio::select!` between `rx.recv()` and `ctrl_c()`
+- The `rx.recv()` arm has `let Some(event) = event else { break };` — if the channel closes (returns None), it breaks out of the loop, hits the `!model_call_terminal_recorded` check at line 1054, and emits ModelCallCompleted. ✓
+- The `ctrl_c()` arm emits ModelCallCompleted if `!model_call_terminal_recorded`. ✓
+- Normal `AgentEnd` emits ModelCallCompleted. ✓
+
+Wait, but what about the `break` on line 786: `let Some(event) = event else { break };` — this breaks out of the loop, then the code at 1054 handles it. ✓
+
+What about error paths? If the `rx.recv()` returns an error? Looking at line 785: `event = rx.recv() => {` — if `recv()` returns an error (channel closed with error), it would be `None` and `break`. Then the 1054 handler fires. ✓
+
+But wait — what if the agent encounters an error during streaming that causes the event stream to close abnormally BEFORE the AgentEnd event? Let me look more carefully...
+
+The `AgentEvent::AgentEnd` handler at line 939 records ModelCallCompleted. But if the stream errors out such that:
+1. The channel closes (rx returns None)
+2. We break out of the loop
+3. We hit line 1054's `!model_call_terminal_recorded` check → ModelCallCompleted emitted ✓
+
+So it seems like ModelCallCompleted should always be emitted. But the trajectory shows `deepseek_model_call_incomplete_count=1` with cause `model_incomplete/run_error_without_start`. 
+
+Hmm, let me look at the broader function. Maybe there's a return path before the loop starts, or an early return that skips the ModelCallCompleted emission.
+
+Let me read the broader context — the function that contains this code.
+
+Actually, let me look at the `run_error_without_start` cause more carefully. This means a run error happened, but no ModelCallStarted was recorded for it. But the ModelCallStarted IS emitted at line 778. So the issue might be:
+- Something crashes between RunStarted and ModelCallStarted
+- Or the function containing ModelCallStarted never gets called in some error paths
+
+Let me also check the run lifecycle. RunStarted is emitted in `state.rs:416`. Let me read that.
+
+Actually, let me focus on what I have. The key question for the task files is: what source files need to be modified?
+
+For model lifecycle (task_02): `src/prompt.rs` — the function that contains the ModelCallStarted/ModelCallCompleted logic.
+For run lifecycle (task_03): `src/state.rs` — where RunStarted is emitted and where RunCompleted logic lives.
+
+Let me also check if there's an `exit_with_state` function in state.rs that might be relevant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in src/state.rs (*.rs)  ▶ search 'install_panic_hook' in src/state.rs (*.rs) ✓ (65ms)
+ ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the install_panic_hook function and the RunStarted initialization code to understand the run lifecycle.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:31..111 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the init_global function where RunStarted is emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:395..495 ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+**Run lifecycle**: 
+- `RunStarted` is emitted in `init_global()` at line 416
+- `RunCompleted` is emitted via `RunCompletionGuard::drop()` (line 464-472) which calls `mark_run_completed()` (line 475)
+- `mark_run_completed_with_error()` is also available at line 490
+- The `close_orphaned_run_if_needed()` function (line 410) handles orphaned runs from previous sessions
+
+The `RunCompletionGuard` is a guard that emits RunCompleted on drop. If the guard is created at the start of main() and dropped when main() returns, it should work. But what if the process exits via `std::process::exit()` which doesn't run destructors? Or what about early returns before the guard is created?
+
+**Model call lifecycle**:
+- `ModelCallStarted` at line 778
+- `ModelCallCompleted` on `AgentEnd` (942), Ctrl+C (1014), or channel close (1056)
+- The `!model_call_terminal_recorded` guard at lines 1012 and 1054 seems to handle the remaining cases
+
+The trajectory says `model_incomplete/run_error_without_start` — meaning a model call is incomplete AND there was a run error without a start. This might mean: a run error (like API error) occurred before ModelCallStarted could be emitted, but RunStarted was already emitted. In that case, the run started, then an error happened before the model call started, the RunCompleted is emitted on error, but no ModelCallStarted/ModelCallCompleted pair exists.
+
+Actually, re-reading the diagnostic: `model_incomplete/run_error_without_start=1`. I think this means the model call is incomplete BECAUSE there was a run error without start. Or it could mean there are TWO issues: one model_incomplete AND one run_error_without_start.
+
+Let me focus on what I know and plan the tasks.
+
+For the model lifecycle gap: the fix is in `src/prompt.rs`. The `ModelCallCompleted` emission at line 1054 handles the case where the event channel closes without AgentEnd. But there might be a path where the function returns before the loop even starts (line 783). Let me check if there's code between ModelCallStarted (778) and the loop (783) that could early-return.
+
+Looking at lines 778-783:
+```
+crate::state::record(ModelCallStarted, ...);
+loop { tokio::select! { ... } }
+```
+
+There's nothing between 778 and 783 that could early-return. But what about errors in the function that calls this event loop? Let me look at the broader function.
+
+Actually, I think the issue might be simpler than I'm making it. Let me just look at the function signature and understand where it's called from.
+
+For planning purposes, I have enough evidence to write good task files. Let me finalize:
+
+**Task 01** (seed, keep it): Improve cold-start state failure diagnostics - `src/commands_state.rs`, `src/state.rs`
+**Task 02**: Close model call lifecycle gap - `src/prompt.rs`
+**Task 03**: Close run lifecycle gap - `src/state.rs`
+
+Wait, I need to verify whether task_01's premise is still valid. The assessment says `state why last-failure` returns "no failures recorded, notes 1 incomplete run (current session), suggests state trace / state crashes". The seed task says it returns `no state event found`. Let me check if the assessment contradicts the seed task.
+
+Actually, the assessment says it's OK and returns useful info. But the seed task wants to make it even better — distinguishing "no history" from "missing diagnostics" from "active/incomplete runs". The assessment shows it already does some of this (it notes incomplete runs and suggests trace/crashes). But the seed task could add more detail.
+
+I'll keep task_01 but refine it slightly to acknowledge the current state and focus on what's still missing.
+
+For the lifecycle tasks, let me now also look at where RunCompletionGuard is used to understand the exit paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletionGuard' (*.rs) ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`RunCompletionGuard` is used at `src/lib.rs:1049`. Let me see the context there to understand the main() exit paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1040..1080 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `RunCompletionGuard` is created at line 1049. But if `init_global` fails at line 1044, the code calls `exit_with_state(1)` which exits BEFORE the guard is created. The RunStarted was emitted in `init_global()` (line 416 of state.rs), so we have a RunStarted without a RunCompleted. This is one path that can cause the `open_after_SessionStarted` gap.
+
+Let me also check what `exit_with_state` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn exit_with_state' (*.rs) ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:985..1045 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+**The run lifecycle gap** — `state_incomplete/open_after_SessionStarted=1`:
+
+`exit_with_state(1)` at line 1047 IS called when `init_global` fails. And `exit_with_state` does call `mark_run_completed_with_error()` (line 988). So that path IS handled.
+
+But wait — `init_global` emits `RunStarted` at line 416, and if it fails after that, the error path at lines 422-424 catches it (fail-soft). If it fails at line 416 itself (the `append` call), then the error is caught and the function returns `Err`. Then `exit_with_state(1)` is called and `RunCompleted` is emitted.
+
+But what if the process panics somewhere? `install_panic_hook` at line 1051 creates a panic hook, and the `RunCompletionGuard` at 1049 handles the drop path. But `install_panic_hook` is called AFTER the guard. What about panics before line 1049?
+
+Actually, let me re-read lines 1008-1049:
+```
+if let Err(e) = state::init_global(...) {
+    ...
+    exit_with_state(1);  // line 1047
+}
+let _run_completion = state::RunCompletionGuard::completed_on_drop();  // line 1049
+state::install_panic_hook();  // line 1051
+```
+
+There's a window between `init_global` succeeding (RunStarted emitted) and the `RunCompletionGuard` being created (line 1049). If something panics between lines 1046 and 1049, we'd have a RunStarted without RunCompleted. But there's nothing between those lines that could panic — it's just closing braces and the guard creation.
+
+Wait, I think the issue might be more nuanced. Let me check if there are other exit paths later in run_cli that might exit without the guard firing properly.
+
+Actually, I think I have enough understanding now. The `deepseek_model_call_incomplete_count=1` with cause `model_incomplete/run_error_without_start` might mean:
+1. A model call was started (ModelCallStarted)
+2. But before it completed, the run ended in error without a proper RunCompleted for that run
+
+OR it could be two separate issues counted together.
+
+For the plan, I'll create three tasks:
+
+**Task 01** (seed, keep as-is): Cold-start state failure diagnostics improvement in `src/commands_state.rs` and `src/state.rs`. The assessment confirms `state why last-failure` works but could distinguish more cases.
+
+Wait actually, re-reading the assessment line 55: `yyds state why last-failure`: OK — no failures recorded, notes 1 incomplete run (current session), suggests `state trace` / `state crashes`
+
+This suggests the cold-start diagnostics are ALREADY working. The seed task's stated problem ("returning only `no state event found`") is contradicted by the assessment. Per policy: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation."
+
+But the seed task also says "Treat it as a minimum viable task for Day 113; refine it if the planner has stronger evidence, but do not leave the session with zero task files."
+
+I think the right approach is:
+1. Keep task_01 but refine it — acknowledge that the assessment shows it already works, narrow the scope to adding more detail (e.g., distinguishing "no history" from "active/incomplete runs" with specific run IDs and session timestamps)
+2. Add task_02: Model call lifecycle gap — ensure ModelCallCompleted on all exit paths in `src/prompt.rs`
+3. Add task_03: Run lifecycle gap — ensure RunCompleted on all exit paths in `src/state.rs` and `src/lib.rs`
+
+Actually, wait. Let me reconsider. The seed task says: "Output distinguishes no history from missing diagnostics and from active/incomplete runs." The assessment shows the tool already notes "1 incomplete run (current session)" and suggests "state trace / state crashes". So it already does distinguish these cases.
+
+The seed task might be genuinely obsolete — the work it describes was already done in Day 111 ("Cold-start diagnostics (stash wired to state why last-failure)"). 
+
+But I shouldn't delete it — per policy I should write task_01_obsolete.md explaining the contradiction OR write an equal-or-better evidence-backed task file.
+
+Let me keep task_01 as a refinement (making the cold-start output even more detailed with specific run IDs and timestamps), and add task_02 and task_03 for the lifecycle gaps (the #1 graph pressure).
+
+Actually, re-reading the policy again: "Treat it as a valid seed task. You may refine it." I'll refine task_01 to focus on adding specific run ID and timestamp details to the cold-start output, acknowledging that the basic functionality already works per the assessment.
+
+Now let me write the three task files. I need to be efficient — ARTIFACT-FIRST: I should write task_02.md as my first file-producing action now.
+
+Let me plan the three tasks:
+
+**Task 01 (refined seed)**: "Add run-ID and timestamp detail to cold-start state diagnostics"
+- Files: `src/commands_state.rs`, `src/state.rs`
+- What it does: When `state why last-failure` finds no completed failed sessions, it should report the incomplete/active run ID, its start timestamp, and suggest `state trace <run_id>` for detailed inspection.
+
+**Task 02**: "Close model call lifecycle gap — emit ModelCallCompleted on all exit paths"
+- Files: `src/prompt.rs`
+- What it does: Find the exit path where ModelCallStarted is emitted but ModelCallCompleted never follows, and add the missing emission.
+
+**Task 03**: "Close run lifecycle gap — ensure RunCompleted on state init failure and early exits"
+- Files: `src/state.rs`, `src/lib.rs`
+- What it does: Find the exit path where RunStarted is emitted but RunCompleted never follows, and add the missing emission.
+
+For task_02, I know the code handles:
+- Normal AgentEnd → ModelCallCompleted ✓
+- Ctrl+C → ModelCallCompleted ✓
+- Channel close without AgentEnd → ModelCallCompleted ✓
+
+But the trajectory says there's 1 incomplete. Let me look more carefully at the function containing the event loop to see if there are other paths. Let me check the broader function structure in prompt.rs.
+
+Actually, I should also check what happens when the `rx.recv()` returns an Err (not None, but an actual error). In tokio, `Receiver::recv()` returns `Option<T>` — if the channel is closed and empty, it returns None. If there's a value, it returns Some(T). There's no error case in the recv() return type for tokio mpsc receivers.
+
+Let me also check if there's a timeout path. The `tokio::select!` has two branches: `rx.recv()` and `ctrl_c()`. If neither fires, the select blocks forever. Could there be a timeout elsewhere?
+
+Actually, I should look at the function containing this event loop to see if there's another exit path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:730..800 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `handle_prompt_events` is an `async fn` that returns `PromptResult`. Let me check for `into_result` - there's the method on PromptEventState but the function returns a PromptResult. Let me look at the end of the function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1070..1110 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The function ends at line 1076 with `state.into_result()`. The ModelCallCompleted handling at lines 1054-1069 fires if `!model_call_terminal_recorded` before the `into_result()` call. So all paths through the function should emit ModelCallCompleted.
+
+But wait — what about the `into_result()` call? It returns a `PromptResult`. If it returns `PromptResult::ContextOverflow` or `PromptResult::RetriableError` (lines 739-748), the function returns early without the model_call_terminal_recorded check... wait no, the `into_result` is called at line 1075, which is AFTER the ModelCallCompleted check at lines 1054-1069. So the ModelCallCompleted check happens BEFORE `into_result()` converts the state into a result. 
+
+So the flow is:
+1. Loop processes events
+2. Loop exits (either via `break` on channel close, or Ctrl+C with `return`)
+3. After the loop: check if ModelCallCompleted was recorded (line 1054)
+4. If not, record it (line 1055-1068)
+5. Return `state.into_result()` (line 1075)
+
+This seems complete. But the Ctrl+C handler at line 1032 returns `PromptResult::Done { ... }` — that's an early return from the function. But before returning, it emits ModelCallCompleted (line 1013-1027). ✓
+
+So all paths are covered. What could cause `deepseek_model_call_incomplete_count=1`?
+
+One possibility: the `record()` call at line 777-781 (ModelCallStarted) could fail silently (fail_soft) — if the state recorder is disabled or encounters an error, ModelCallStarted might not actually be persisted. Then the later ModelCallCompleted would also fail silently. But the dashboard diagnostic counts ModelCallStarted events and matches them to ModelCallCompleted events — if neither is recorded, there's no mismatch.
+
+Another possibility: There could be a race condition or the model call was from a previous session where the code didn't have the `!model_call_terminal_recorded` fallback at the end of the loop (this code might have been added recently).
+
+Actually, let me search for when the `!model_call_terminal_recorded` guard was added. It might be a recent fix and the incomplete count is from before it was added.
+
+Let me focus on what I can improve now. The assessment says the lifecycle gap is "a harness instrumentation gap, not a runtime defect." So the issue might be that the dashboard/log feedback counting logic has a false positive, or that the `record()` calls fail silently in some edge case.
+
+For the task files, I'll focus on making the implementation agent investigate and fix whatever path causes the lifecycle gap. The task should direct the agent to:
+1. Check if there are any code paths where ModelCallStarted is emitted but ModelCallCompleted might not reach `record()`
+2. Add tests for the lifecycle completeness
+3. Ensure the diagnostic counters are accurate
+
+OK let me stop analyzing and write the task files. I have enough evidence to create good tasks.
+
+Let me write:
+1. Refine task_01.md (cold-start diagnostics — narrower scope since basic functionality works)
+2. task_02.md (model call lifecycle)
+3. task_03.md (run lifecycle)
+4. issue_responses.md
+
+Let me write them now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I now have the full picture. Let me refine the seed task and create the lifecycle task files. The assessment shows `state why last-failure` already works (notes incomplete runs, suggests trace/crashes), so I'll narrow task_01. The #1 graph pressure is the lifecycle gaps — those become tasks 02 and 03.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (50ms)
+  ▶ todo ✓ (95ms)
+  ▶ todo ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with refining task_01.md, then create task_02.md and task_03.md.
+
+For task_01, I'll refine it to acknowledge that basic functionality already works per the assessment, and narrow the scope to add run-ID and session-start timestamp detail to the cold-start output.
+
+For task_02, I need to check the model call lifecycle gap. Let me also check if there are other callers of handle_prompt_events or if the function is only called from one place.
+
+For task_03, the run lifecycle gap is about ensuring RunCompleted on state init failure. Let me check if exit_with_state already handles it (it does, at line 988).
+
+Let me look at one more thing: where handle_prompt_events is called from.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.0s (4 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' (*.rs) ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Two call sites at lines 318 and 330. Let me check the context of those call sites to see if there are early returns or error paths around them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:295..345 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I now see the callers. `run_prompt_once` calls `agent.prompt(input).await` then `handle_prompt_events(...).await`. If `agent.prompt(input).await` returns an error (not a receiver), it would panic/propagate up. Let me check if `agent.prompt()` can fail.
+
+But for the task files, I have enough information. Let me now write them.
+
+Key findings for the lifecycle gaps:
+
+**Model call lifecycle** (`src/prompt.rs`):
+- `ModelCallStarted` at line 778
+- Three paths for `ModelCallCompleted`: AgentEnd (942), Ctrl+C (1014), channel close (1056)
+- The `!model_call_terminal_recorded` guard seems to cover all paths
+- The incomplete count might be from a race condition where `record()` fails silently (fail_soft)
+- OR the incomplete call predates the current code (the `!model_call_terminal_recorded` fallback might have been added recently)
+
+**Run lifecycle** (`src/state.rs`, `src/lib.rs`):
+- `RunStarted` at line 416 in `init_global()`
+- `RunCompletionGuard` at line 1049 handles normal exit
+- `exit_with_state()` at line 985 handles error exits
+- But: if init_global partially fails (RunStarted was emitted but the init function returned Err), `exit_with_state` is called and does emit RunCompleted. ✓
+- However: what if `init_global` emits RunStarted but then panics? `install_panic_hook` is at line 1051, AFTER the guard at 1049. The panic hook records FailureObserved but does NOT emit RunCompleted. The `RunCompletionGuard` at line 1049 would handle this IF it was created before the panic — and it IS created at line 1049, before `install_panic_hook` at 1051. So if a panic occurs at line 1051 or later, the guard will emit RunCompleted on drop. ✓
+
+Wait, but what if `init_global` succeeds (RunStarted emitted, recorder initialized), then something panics between line 1046 (end of init_global error handling) and line 1049 (RunCompletionGuard creation)? There's nothing between those lines in the code — it's just closing braces and the guard declaration. So that's safe.
+
+The `state_incomplete/open_after_SessionStarted=1` might be from:
+1. A previous version of the code that didn't have the `RunCompletionGuard`
+2. A `std::process::exit()` call that bypasses destructors
+3. A SIGKILL/force termination
+
+Let me look for `std::process::exit` in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'std::process::exit' (*.rs) ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are several `std::process::exit` calls that bypass destructors! This is the likely cause of the run lifecycle gap. If any of these are called after RunStarted but before the drop of RunCompletionGuard, RunCompleted never gets emitted.
+
+Let me check which of these can be reached after init_global (RunStarted) but before the RunCompletionGuard is dropped:
+
+- `src/dispatch_sub.rs:180` — subcommand dispatch
+- `src/cli.rs:373, 527, 898, 933, 939, 985` — CLI argument parsing/errors
+- `src/commands_eval.rs:168` — eval command
+- `src/lib.rs:992` — `exit_with_state` which DOES emit RunCompleted
+
+The key question: are any of these `std::process::exit` calls reachable AFTER `init_global` succeeds but while `RunCompletionGuard` is still alive?
+
+For `cli.rs` lines 373, 527, 898, 933, 939, 985 — these are in `parse_args()` and early CLI setup. They execute BEFORE `run_cli()` starts, so they're before `init_global`.
+
+For `dispatch_sub.rs:180` — let me check if this is called from within `run_cli()`.
+
+For `commands_eval.rs:168` — let me check if this is called while RunCompletionGuard is alive.
+
+Actually, for the task file, I don't need to be this detailed. The task should direct the implementation agent to investigate and fix. Let me write the task files now.
+
+Let me finalize my understanding:
+
+**Task 01 (refined)**: The assessment shows `state why last-failure` already returns useful output (notes incomplete runs, suggests trace/crashes). The refinement should add specific run IDs and timestamps to the output.
+
+**Task 02**: The model call lifecycle gap has `deepseek_model_call_incomplete_count=1`. The `handle_prompt_events` function in `src/prompt.rs` has `ModelCallStarted` at line 778 and three `ModelCallCompleted` emission points (942, 1014, 1056). The task is to ensure every code path that emits ModelCallStarted also emits ModelCallCompleted, and to add a test.
+
+**Task 03**: The run lifecycle gap has `state_incomplete/open_after_SessionStarted=1`. The `init_global` emits RunStarted. The `RunCompletionGuard` and `exit_with_state` handle most exits. But there may be `std::process::exit` calls that bypass these, or a narrow window between init_global success and guard creation.
+
+Let me write the files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence needed. Let me write the task files.
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me rewrite task_01.md with a refined scope, then create task_02.md and task_03.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Improve cold-start state failure diagnostics
+  + Title: Add run-ID and timestamp detail to cold-start state diagnostics
+    Files: src/commands_state.rs, src/state.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner (refined from harness seed)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions. That leaves yyds unable to explain the earliest failures that block evolution.
+  + - Assessment line 55: `state why last-failure` returns "no failures recorded, notes 1 incomplete run (current session), suggests state trace / state crashes" — basic cold-start behavior already works
+  + - The seed task's premise (returning only "no state event found") is stale; the assessment proves cold-start already distinguishes incomplete runs
+  + - BUT the output lacks specific run IDs and timestamps — a user seeing "1 incomplete run" can't immediately run `state trace <run_id>` to investigate
+  + - Graph pressure row 1 (lifecycle gaps) makes run-identification detail directly actionable: when the incomplete run is the very one with the lifecycle gap, the user needs the run ID to trace it
+    
+    Edit Surface:
+  - - src/commands_state.rs, src/state.rs
+  + - src/commands_state.rs (why last-failure handler), src/state.rs (helper to find the most recent incomplete run with its ID and timestamp)
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (45 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (45 lines) ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02.md for the model call lifecycle gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (63ms)
+  2 tools completed in 126ms (2 ✓)
+
+

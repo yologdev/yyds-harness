@@ -1,0 +1,554 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ todo ✓ (33ms)
+  ▶ todo ✓ (96ms)
+  ▶ todo ✓ (111ms)
+  ▶ todo ✓ (140ms)
+  ▶ todo ✓ (96ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the rest of the evolve skill and then start examining the source files.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 2.3s (6 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md:80..  ▶ search 'last.failure' in src/commands_state.rs ✓ (107ms)
+ ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for how "why last-failure" is handled - likely in the `handle_state_subcommand` function or similar.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'last_failure' in src/commands_state.rs  ▶ search 'why' in src/commands_state.rs ✓ (63ms)
+ ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the "why" handler and the `build_why_report` function to understand the current output.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:78..158  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (66ms)
+ ✓ (170ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `why` handler and `handle_why` function more carefully. The "why" subcommand with `last-failure` appears to go through `handle_why`, but let me check if there's a specific path for `last-failure`. Let me search for "last-failure" or "last_failure" more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'last_failure' in src/commands_state.rs ✓ (69ms)
+ ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `handle_why` function to understand the flow for `last-failure`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1100..1200 ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that the cold-start path for `last-failure` already handles the case when there are incomplete runs. The output at lines 1159-1181 already shows the run ID and "started X ago". Let me look more carefully at what the current output is:
+
+- Line 1159-1163: Shows count of incomplete runs
+- Line 1166-1177: For each incomplete run, shows run_id and "started X ago"
+- Line 1179-1181: Suggests `yyds state trace <run-id>`
+
+But wait - the task says "the output lacks specific run IDs and timestamps". But the code at line 1174 shows `{run_id} — started {} ago`. That seems to already include the run ID.
+
+Let me check the `find_incomplete_runs` function to see what it returns. Also let me check if there's another path - maybe the path where no events exist at all. Let me also check lines 1118-1131 where no events file is found.
+
+Wait, looking at lines 1118-1131 more carefully - this is the case where there's no state events file at all (cold start). The output says "No completed failed sessions exist." and then "Next evidence to inspect" - but it doesn't suggest looking at incomplete runs or show run IDs. That's because there are no events to scan.
+
+But there's also a flow at lines 1156-1181 where `build_why_report` fails (returns Err) and THEN we check for incomplete runs. The incomplete runs ARE being identified with their IDs. 
+
+Hmm, let me re-read the task more carefully:
+
+"Evidence:
+- Assessment line 55: `state why last-failure` returns "no failures recorded, notes 1 incomplete run (current session), suggests state trace / state crashes" — basic cold-start behavior already works
+- The seed task's premise (returning only "no state event found") is stale; the assessment confirms cold-start already distinguishes incomplete runs
+- BUT the output lacks specific run IDs and timestamps — a user seeing "1 incomplete run" can't immediately run `state trace <run_id>` to investigate"
+
+Wait, but the code at lines 1174-1175 does include the run_id:
+```
+"{DIM}    {run_id} — started {} ago, no RunCompleted event{RESET}"
+```
+
+So the run ID IS included. But the task says the output lacks run IDs and timestamps. Let me check more carefully - maybe the issue is in the "no events file exists" path (lines 1100-1136). In that path, the output says "No completed failed sessions exist." but doesn't include a run ID.
+
+But wait - if there are no events, there can't be a run ID to show... unless we can get the current run ID from some in-memory state.
+
+Let me re-read the task's Edit Surface:
+"src/commands_state.rs (why last-failure handler), src/state.rs (helper to find the most recent incomplete run with its ID and timestamp)"
+
+And the Objective:
+"When `yyds state why last-failure` finds no completed failures, include the incomplete/active run's ID and start timestamp in the output, so the user can immediately run `yyds state trace <run_id>` to investigate."
+
+So the issue is: when there ARE events but no completed failures, we should still show the incomplete run's ID prominently. Looking at the code flow:
+
+1. If no events file exists (line 1100-1136): shows "No completed failed sessions exist." and suggests next steps. But we don't mention any incomplete runs because there's no event file.
+2. If events exist but `build_why_report` fails (line 1156-1181): we DO show incomplete runs with their IDs and timestamps.
+
+Wait, the task says the run ID is already in the incomplete-runs output (line 1174). Let me re-read the evidence more carefully:
+
+"BUT the output lacks specific run IDs and timestamps — a user seeing '1 incomplete run' can't immediately run `state trace <run_id>` to investigate"
+
+Hmm, but the output at line 1174 does show `{run_id}`. So maybe the output has the run ID already? Let me verify by looking at it one more time...
+
+Line 1166: `for (run_id, ts_ms) in &incomplete {`
+Line 1174: `"{DIM}    {run_id} — started {} ago, no RunCompleted event{RESET}"`
+
+Yes, the run_id IS included. So the output currently looks like:
+```
+  However, 1 incomplete run detected (started but not completed):
+    run-abc123 — started 10m ago, no RunCompleted event
+  Run: yyds state trace <run-id> for details, or yyds state crashes for crash analysis.
+```
+
+This already includes the run ID! The task might be stale. But let me look more closely at the task description - it says "Fallback: If the current output already includes run IDs and timestamps, write an obsolete note and do not edit."
+
+Let me verify the current state more carefully. Let me also check what happens with the `handle_doctor` function - maybe the issue is there.
+
+Actually, let me re-read the evidence more carefully:
+
+"Assessment line 55: `state why last-failure` returns "no failures recorded, notes 1 incomplete run (current session), suggests state trace / state crashes""
+
+So the assessment confirmed that `why last-failure` already gives this output. And the task is asking me to add run IDs and timestamps. But looking at the code, the run IDs ARE already in the output.
+
+Wait - let me check the test at line 15658 and 17456 to see what behavior is already tested. Maybe the code was recently changed and the task is stale.
+
+Let me also search for `find_incomplete_runs` to understand its implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (32ms)
+  ▶ todo ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to carefully verify whether the current output already includes run IDs and timestamps. Let me look at the full flow more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me examine the existing tests and the `find_incomplete_runs` function to verify the current behavior:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs  ▶ read src/commands_state.rs:15650..15730 ✓ (32ms)
+ ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `find_incomplete_runs` function and the rest of the `handle_why` function to understand the full flow. Also, let me check the `last_failure_includes_json_output_failures` test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1216..1276  ▶ read src/commands_state.rs:17456..17536 ✓ (199ms)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test at line 17478 (`why_report_suggests_alternatives_when_no_failure_found`) already tests that the incomplete run ID and timestamp are shown (lines 17512-17529). This means the code already does what the task is asking for!
+
+Let me read the full build_why_report error path to see what `in progress` message includes:
+
+Looking at lines 17517-17529:
+```
+// Active incomplete run: RunStarted without RunCompleted
+let events = vec![
+    event("evt-start", "RunStarted", "run-1", json!({"task": "x"})),
+    event("evt-other", "DecisionRecorded", "run-1", json!({})),
+];
+let err = build_why_report(&events, "last-failure").unwrap_err();
+assert!(
+    err.contains("in progress"),
+    "should mention session is in progress, got: {err}"
+);
+assert!(
+    err.contains("run-1"),
+    "should show incomplete run ID, got: {err}"
+);
+assert!(
+    err.contains("1970-01-01"),
+    "should show run start timestamp, got: {err}"
+);
+```
+
+So the test already checks that the error message from `build_why_report` includes the run ID ("run-1") and timestamp ("1970-01-01"). 
+
+Now I need to check if the `build_why_report` function actually includes this information in the error message. Let me look at that function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3082..3202 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see clearly. Looking at lines 3139-3171, the `build_why_report` function already includes the incomplete run ID and timestamp in its error message. Specifically:
+
+- Lines 3144-3169: When `id == "last-failure"` and `run_completed_count == 0 && run_started`, it shows:
+  ```
+  "Incomplete run(s):
+    run={rid}  started={ts}"
+  ```
+
+And the test at line 17512-17529 already verifies this behavior.
+
+Now let me also check the fallback at lines 1156-1181 of `handle_why`, which is a separate path from `build_why_report`. This is the path that fires when `build_why_report` returns an Err (which is the case for `last-failure` when no failures exist). That path also already includes the run ID.
+
+So the current code ALREADY includes run IDs and timestamps. The task's premise is stale.
+
+However, let me also check the "no events file" path at lines 1100-1136, where there's no events file at all. In that path, when `id == "last-failure"` (line 1118-1131), it says "No completed failed sessions exist." and suggests next steps. This path genuinely doesn't show run IDs because there's no event file to scan.
+
+But wait - the task says the fallback is: "If the current output already includes run IDs and timestamps, write an obsolete note and do not edit. The seed task's problem statement is stale; only the run-ID detail is genuinely missing."
+
+But looking at the code, run IDs ARE already shown. So the task should be marked obsolete.
+
+Wait, let me double-check by looking at the "no events file" path more carefully. Is there a case where the events file exists, `build_why_report` succeeds (finds a failure), but the run ID isn't shown?
+
+Actually, let me re-read the task more carefully:
+
+"When `yyds state why last-failure` finds no completed failures, include the incomplete/active run's ID and start timestamp in the output"
+
+So the specific case is: "finds no completed failures". This is the error path of `build_why_report` (returns Err because no failure found). The code at lines 3139-3171 already handles this case with run IDs and timestamps.
+
+And the fallback at lines 1156-1181 also shows run IDs.
+
+So the current code already satisfies this task. Per the evolve skill rules and the task's own Fallback instruction, I should write an obsolete note and NOT edit the code.
+
+However, the evolve skill rule #6 says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+Let me write the obsolete note. But first, let me do a more thorough check to make sure I'm not missing some edge case.
+
+Let me look at the overall flow:
+
+1. `handle_why` is called with `id = "last-failure"`
+2. If no events file exists -> cold-start path (lines 1100-1136) 
+   - Shows "No completed failed sessions exist." (line 1119)
+   - Shows "Next evidence to inspect" suggestions (lines 1121-1131)
+   - No run IDs here (can't show them without events)
+3. If events exist -> `build_why_report(&events, "last-failure")` (line 1142)
+   - If return Ok(report) -> print the report (which contains the failure details including run ID)
+   - If return Err(e) -> print error, then check for incomplete runs via `find_incomplete_runs` (lines 1156-1181) which shows run IDs
+
+So:
+- Path 1 (no events file): No run ID (acceptable, no events to scan)
+- Path 2 (events exist, failure found): The Ok report already has the run ID context (it comes from the target event)
+- Path 3 (events exist, no failure found): The Err path at line 3139-3171 already includes run IDs and timestamps, and the fallback at lines 1156-1181 also includes them
+
+The code already satisfies the task. I should write an obsolete note.
+
+Actually, wait. Let me examine one more thing - could there be a case where the error message from `build_why_report` (line 3139-3171) shows run IDs but the fallback at lines 1156-1181 is ALSO triggered (double output)? Let me check the control flow more carefully.
+
+Line 1142-1151: `match build_why_report(&events, id) { Ok(report) => ... Err(e) => { eprintln!(...) } }`
+
+And then line 1156: `if id == "last-failure" { ... }`
+
+So yes, when `build_why_report` returns Err, both the error message (which includes incomplete runs at lines 3160-3169) AND the fallback incomplete runs (lines 1157-1181) are shown. This means incomplete runs are printed TWICE - once by `build_why_report`'s error message and once by the fallback in `handle_why`.
+
+But this is a separate issue. The task is asking to add run IDs, and they already exist. So the task is obsolete.
+
+Let me also verify the test `why_report_suggests_alternatives_when_no_failure_found` at line 17478 to confirm the assertions about run IDs and timestamps are present.
+
+From lines 17512-17529:
+```
+// Active incomplete run: RunStarted without RunCompleted
+let events = vec![...];
+let err = build_why_report(&events, "last-failure").unwrap_err();
+assert!(err.contains("in progress"));
+assert!(err.contains("run-1"));  // run ID
+assert!(err.contains("1970-01-01"));  // timestamp
+```
+
+Yes, these assertions confirm the run ID and timestamp are already in the output.
+
+So the task is obsolete. Let me write `session_plan/task_01_obsolete.md`.
+
+Wait, but the evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+Let me think about whether there's a meaningful way to strengthen the test or docs. The existing test at line 17478 is quite thorough. But maybe I could add a test that specifically verifies the full `handle_why` flow for `last-failure` with incomplete runs, including the fallback path at lines 1156-1181.
+
+Actually, looking at the existing test structure, these are unit tests for `build_why_report` specifically. Testing the full `handle_why` flow would require more infrastructure (capturing stderr output etc.).
+
+Let me check if there's already an integration test for `state why last-failure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'cold.start' in src/commands_state.rs  ▶ search 'incomplete run' in src/commands_state.rs ✓ (65ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me do a complete audit of the code to make sure the task is truly obsolete. Let me check:
+
+1. The `build_why_report` function - when `id == "last-failure"` and no failure is found - does it show run IDs?
+2. The `handle_why` fallback - when `build_why_report` returns Err for `last-failure` - does it show run IDs?
+
+Both are confirmed by reading the code. The task is obsolete.
+
+But before writing the obsolete note, let me also check if there are any edge cases where run IDs aren't shown. Specifically:
+
+1. When the events file exists but `build_why_report` succeeds (finds a failure) - the run ID is part of the target event, so it's shown in the report naturally.
+2. When the events file is empty/cold-start - the path at lines 1100-1136 fires, which doesn't show run IDs (but can't, since no events exist). However, the task says "no state events at all" case is unchanged per Success Criteria.
+3. When events exist but no failures - both the `build_why_report` error and the `handle_why` fallback show run IDs.
+
+Everything checks out. The task is obsolete.
+
+Let me also run the existing tests to confirm they pass before writing the obsolete note.
+
+Actually, let me first look at what the event_timestamp function returns for the test case, to understand the "1970-01-01" assertion:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_timestamp' in src/commands_state.rs ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `event` helper function used in the tests to understand what timestamp it produces.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14296..14326  ▶ search 'fn event\(' in src/commands_state.rs ✓ (69ms)
+ ✓ (176ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `event_timestamp` function (the one used in `find_incomplete_runs`) checks `timestamp_ms` or `ts_ms` and returns `unwrap_or(0)`. So if no timestamp is set, it returns 0, which corresponds to epoch (1970-01-01). The test at line 17528 asserts `err.contains("1970-01-01")` which is because the test events don't have timestamps.
+
+Now, let me look at the `event` function used in tests - it might be a different signature.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event\(' in src/commands_state.rs ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test helper `event` function differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event(' src/commands_state.rs | head -5 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test helper function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14394..14424 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test helper `event` sets `timestamp_ms: 10` (line 14399). So epoch 1970-01-01 + 10ms.
+
+Now I have a complete picture. The code already includes run IDs and timestamps in both:
+1. `build_why_report` error message (lines 3160-3169)
+2. `handle_why` fallback (lines 1157-1181)
+
+And the existing tests verify this behavior.
+
+Per the task's Fallback: "If the current output already includes run IDs and timestamps, write an obsolete note and do not edit."
+
+And per the evolve skill: I should either:
+- Add a focused regression test, or
+- Write an obsolete note
+
+Since the existing tests already cover this behavior thoroughly (`why_report_suggests_alternatives_when_no_failure_found` at line 17478), I'll write an obsolete note. But I could also consider writing an integration-level test that exercises the full `handle_why` flow.
+
+Actually, let me run the existing tests first to make sure they pass, and then decide whether to add a test or just write the obsolete note.
+
+Wait - there's also the `why_report_finds_last_failure` test at line 15658 that tests the success path. And `last_failure_includes_json_output_failures` at line 17456. And `why_report_suggests_alternatives_when_no_failure_found` at line 17478 that tests the error path with incomplete runs.
+
+I'll write the obsolete note and also check if there's a way to add a stronger integration test. But actually, let me also look more carefully at the "no events file" cold-start path. Maybe there's still a gap there.
+
+Looking at lines 1100-1136: when there's no events file, the output is:
+```
+  No state events file found at <path>
+  This is a cold start: no evolution sessions have recorded state yet.
+
+  No completed failed sessions exist.
+
+  Next evidence to inspect:
+    yyds state crashes --limit 10
+    yyds state doctor
+    yyds state init
+    yyds state tail --limit 5
+```
+
+This path legitimately can't show a run ID because there's no event file. But the task says "Existing output for 'no failures recorded' and 'no state events at all' cases is unchanged". So this path is explicitly out of scope.
+
+I'm now confident the task is obsolete. Let me write the obsolete note.
+
+Actually, wait. Let me re-read the task one more time to double-check:
+
+"Evidence:
+- Assessment line 55: `state why last-failure` returns "no failures recorded, notes 1 incomplete run (current session), suggests state trace / state crashes" — basic cold-start behavior already works"
+
+So the assessment confirms the output includes "1 incomplete run" but notes it could use run IDs. 
+
+"BUT the output lacks specific run IDs and timestamps — a user seeing "1 incomplete run" can't immediately run `state trace <run_id>` to investigate"
+
+But looking at the code, run IDs ARE shown. At line 1174:
+```
+"{DIM}    {run_id} — started {} ago, no RunCompleted event{RESET}"
+```
+
+And at line 3167:
+```
+err.push_str(&format!("\n  run={rid}  started={ts}"));
+```
+
+So the assessment's claim that "the output lacks specific run IDs and timestamps" is incorrect based on the current code. The code does include them.
+
+This means the task is obsolete. Let me write the obsolete note and run the tests to confirm.
+
+Actually, let me run the tests first to make sure they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run the existing tests to verify they pass:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_suggests… ✓ (154ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me also run the other related tests to be thorough:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_finds_la… ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the tests correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test why_report_finds_la… ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that `cargo test` uses space-separated test names and doesn't accept partial names with underscores. Let me try differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "last_failure" -- -… ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me confirm my analysis by looking at the complete picture one more time. The task asks to add run IDs and timestamps to cold-start state diagnostics when `yyds state why last-failure` finds no completed failures. The existing code already does this:
+
+1. In `build_why_report` (lines 3139-3170): when `run_completed_count == 0 && run_started` and `id == "last-failure"`, it shows `"Incomplete run(s):\n  run={rid}  started={ts}"`
+2. In `handle_why` fallback (lines 1156-1181): when `build_why_report` returns Err for `last-failure`, it calls `find_incomplete_runs` and shows `"{run_id} — started {} ago, no RunCompleted event"`
+
+Both paths already include run IDs and timestamps. The existing tests at lines 17478-17529 verify this behavior.
+
+The task is obsolete. Per the evolve skill rules, I should write a clear obsolete-task note.
+────────────────────────────────────────────────────────────────────────────────
+
+All existing tests pass. Now let me verify the full evidence by looking at the exact code paths that already satisfy the task:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3139..3159 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed. The code at lines 3139-3170 already includes incomplete run IDs and timestamps. The task is obsolete. Let me write the obsolete note.
+
+Let me also check one more thing - let me look at the full `else if` block to see it all together.
+────────────────────────────────────────────────────────────────────────────────
+
+The evidence is clear: the code at lines 3139-3170 already includes run IDs (`run={rid}`) and timestamps (`started={ts}`) in `build_why_report`. The fallback at lines 1157-1181 also includes them (`{run_id} — started {} ago`). Existing tests at line 17478 verify this.
+
+Per the task's Fallback rule: *"If the current output already includes run IDs and timestamps, write an obsolete note and do not edit."*
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+  ▶ todo ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the obsolete note. I need to explain:
+1. What the task asked for
+2. Where the evidence proves it's already implemented
+3. Which code paths and tests prove this
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.1s (2 ✓)
+
+
+  + # Task 01: OBSOLETE — Add run-ID and timestamp detail to cold-start state diagnostics
+  + 
+  + **Date**: 2026-06-21 (Day 113, 04:19)
+  + **Status**: Obsolete — current code already satisfies the task
+  + 
+  + ## What the Task Asked For
+  + 
+  + Add run IDs and timestamps to `yyds state why last-failure` output when no
+  + completed failures exist, so users can immediately run `yyds state trace <run_id>`.
+  + 
+  + ## Proof the Task is Already Satisfied
+  + 
+  + Two independent code paths already include run IDs and timestamps:
+  + 
+  + ### Path 1: `build_why_report` error message (`src/commands_state.rs` lines 3139–3170)
+  + 
+  + When `run_completed_count == 0 && run_started` and `id == "last-failure"`, the
+  + error message includes:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (75 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (75 lines) ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the git status and confirm there are no source changes - only the obsolete note.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No git diff, because I haven't committed anything. The only file I wrote is `session_plan/task_01_obsolete.md`. Let me check git status to see if the file is recognized.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The session_plan directory is probably gitignored. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cat .gitignore | grep -i sessi… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `session_plan/` directory is gitignored, so the obsolete note won't be committed. The task says the terminal evidence marker is `TASK_TERMINAL_EVIDENCE: obsolete`. Let me confirm this is the right path.
+
+The evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+I've written the obsolete note. The task also says: "Before your final answer, run `git diff --name-only` and inspect the result." The diff is empty because I didn't modify source code and session_plan is gitignored.
+
+The task says: "If `git diff --name-only` is empty and you did not write session_plan/task_01_obsolete.md or session_plan/task_01_blocked.md, the task is not complete."
+
+I DID write session_plan/task_01_obsolete.md. So the task is complete as obsolete.
+
+Now let me finalize with the terminal evidence marker.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (31ms)
+
+
