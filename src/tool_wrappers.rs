@@ -1019,6 +1019,27 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      If missing, install it or use an alternative tool."
                         .to_string(),
                 )
+            } else if msg_lower.contains("no such file or directory") {
+                Some(
+                    "A file path doesn't exist. Verify with `ls <path>` or \
+                     `find . -name '<filename>'` to locate the correct file. \
+                     Check for typos in the path."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("permission denied") {
+                Some(
+                    "Permission denied. Check file permissions with `ls -la <path>`. \
+                     Try `chmod +r <file>` for reading or `chmod +x <file>` for \
+                     executing. Use `sudo` if you have the necessary privileges."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("command not found") {
+                Some(
+                    "The command was not found in PATH. Check with `which <cmd>` \
+                     or `command -v <cmd>`. Install the missing tool or use \
+                     `apt-get install` / `brew install` as appropriate."
+                        .to_string(),
+                )
             } else {
                 None
             }
@@ -1033,6 +1054,25 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                     "The regex pattern failed to parse. Retry with `regex=false` for a \
                      literal (substring) search, or escape regex metacharacters \
                      (parentheses, brackets, dots, pipes) with backslashes."
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "read_file" | "write_file" | "edit_file" | "list_files" => {
+            if msg_lower.contains("no such file or directory") {
+                Some(
+                    "The file or directory path doesn't exist. Use `list_files` to \
+                     discover the correct path, or check for typos in the path \
+                     you provided. Verify parent directories exist."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("permission denied") {
+                Some(
+                    "Permission denied for this file. Check file permissions with \
+                     `ls -la <path>`. Try a different location you have access to, \
+                     or adjust permissions with `chmod` if appropriate."
                         .to_string(),
                 )
             } else {
@@ -2876,6 +2916,75 @@ mod tests {
     }
 
     #[test]
+    fn test_targeted_recovery_hint_bash_no_such_file() {
+        let hint = targeted_recovery_hint("bash", "No such file or directory");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ls"));
+        assert!(hint.contains("find"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_permission_denied() {
+        let hint = targeted_recovery_hint("bash", "Permission denied");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ls -la"));
+        assert!(hint.contains("chmod"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_command_not_found() {
+        let hint = targeted_recovery_hint("bash", "command not found: foo");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("which"));
+        assert!(hint.contains("command -v"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_read_file_no_such_file() {
+        let hint = targeted_recovery_hint("read_file", "No such file or directory (os error 2)");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("list_files"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_read_file_permission_denied() {
+        let hint = targeted_recovery_hint("read_file", "Permission denied (os error 13)");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ls -la"));
+        assert!(hint.contains("chmod"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_write_file_no_such_file() {
+        let hint = targeted_recovery_hint("write_file", "No such file or directory");
+        assert!(hint.is_some());
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_list_files_no_such_file() {
+        let hint = targeted_recovery_hint("list_files", "No such file or directory");
+        assert!(hint.is_some());
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_file_tools_case_insensitive() {
+        assert!(targeted_recovery_hint("read_file", "NO SUCH FILE OR DIRECTORY").is_some());
+        assert!(targeted_recovery_hint("write_file", "PERMISSION DENIED").is_some());
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_non_file_tool_no_match() {
+        // Non-file, non-bash, non-search tools still get None
+        assert!(targeted_recovery_hint("rename_symbol", "No such file or directory").is_none());
+        assert!(targeted_recovery_hint("web_search", "Permission denied").is_none());
+    }
+
+    #[test]
     fn test_targeted_recovery_hint_no_match_returns_none() {
         // Non-bash, non-search tools get None
         assert!(targeted_recovery_hint("read_file", "file not found").is_none());
@@ -2916,7 +3025,7 @@ mod tests {
         let tool = with_recovery_hints(
             Box::new(ConfigurableMockTool {
                 tool_name: "bash",
-                fail_msg: Some("permission denied".to_string()),
+                fail_msg: Some("some unknown error".to_string()),
             }),
             &tracker,
         );
