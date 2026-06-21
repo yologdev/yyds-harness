@@ -62,13 +62,21 @@ That evidence lives in three places:
 On schedule or manual trigger, the `Evolution` workflow runs one harness session:
 
 1. Load identity, lineage, active memory, and repo context.
-2. Pick a small harness-improvement task.
-3. Implement the change.
-4. Run build/test/eval checks.
-5. Commit only if the checks pass.
-6. Save audit artifacts to the `audit-log` branch.
-7. Run log feedback after GitHub Actions logs are complete.
-8. Rebuild the evolution dashboard.
+2. Assess and plan small harness-improvement tasks.
+3. Optionally refine broad tasks with a stronger reasoning model before DeepSeek implementation.
+4. Implement the change.
+5. Run build/test/eval checks.
+6. Commit only if the checks pass.
+7. Save audit artifacts to the `audit-log` branch.
+8. Run log feedback after GitHub Actions logs are complete.
+9. Rebuild the evolution dashboard.
+
+By default, all phases use DeepSeek. If `YOYO_STRONG_REASONING=1` and
+`ANTHROPIC_API_KEY` is available, assessment, planning, task refinement,
+evaluation, journal, reflection, and issue-response phases use
+`anthropic/claude-opus-4-6`, while implementation and repair phases remain on
+DeepSeek. `YOYO_REASONING_PROVIDER` and `YOYO_REASONING_MODEL` can override the
+reasoning role explicitly.
 
 The important design point is the feedback loop:
 
@@ -279,7 +287,8 @@ To create another yoyo-family descendant:
    [`PERSONALITY.md`](PERSONALITY.md).
 3. Create a GitHub App for workflow commits.
 4. Set secrets such as `DEEPSEEK_API_KEY`, `APP_ID`, `APP_PRIVATE_KEY`, and
-   `APP_INSTALLATION_ID`.
+   `APP_INSTALLATION_ID`. `ANTHROPIC_API_KEY` is optional and enables the
+   stronger reasoning/refinement role when `YOYO_STRONG_REASONING=1`.
 5. Enable the `Evolution` workflow.
 
 See [`docs/src/guides/fork.md`](docs/src/guides/fork.md) for the full guide.

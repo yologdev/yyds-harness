@@ -8,6 +8,13 @@
 #   DEEPSEEK_API_KEY   — required for DeepSeek-native evolution
 #   REPO               — GitHub repo (default: yologdev/yoyo-evolve)
 #   MODEL              — LLM model (default: deepseek-v4-pro)
+#   PROVIDER           — Primary implementation provider (default: deepseek)
+#   YOYO_STRONG_REASONING — Set to "1" to use Anthropic/Opus for reasoning roles
+#                           when ANTHROPIC_API_KEY is available.
+#   YOYO_REASONING_PROVIDER / YOYO_REASONING_MODEL — Optional model for assessment,
+#                           planning, task refinement, and evaluation.
+#   YOYO_IMPLEMENTATION_PROVIDER / YOYO_IMPLEMENTATION_MODEL — Optional model for
+#                           implementation and repair roles.
 #   YOAGENT_REPO       — optional upstream yoagent repo slug for dependency PRs
 #   YOYO_DEEPSEEK_NATIVE — DeepSeek-native prompt/provider mode (default: 1)
 #   TIMEOUT            — Total planning phase time budget in seconds (default: 1200)
@@ -36,6 +43,7 @@ run_optional_with_timeout() {
     fi
 }
 
+PROVIDER="${PROVIDER:-deepseek}"
 MODEL="${MODEL:-deepseek-v4-pro}"
 YOAGENT_REPO="${YOAGENT_REPO:-}"
 export YOYO_DEEPSEEK_NATIVE="${YOYO_DEEPSEEK_NATIVE:-1}"
@@ -51,6 +59,29 @@ fi
 TIMEOUT="${TIMEOUT:-1200}"
 FALLBACK_PROVIDER="${FALLBACK_PROVIDER:-}"
 FALLBACK_MODEL="${FALLBACK_MODEL:-}"
+
+YOYO_IMPLEMENTATION_PROVIDER="${YOYO_IMPLEMENTATION_PROVIDER:-${YOYO_IMPL_PROVIDER:-$PROVIDER}}"
+YOYO_IMPLEMENTATION_MODEL="${YOYO_IMPLEMENTATION_MODEL:-${YOYO_IMPL_MODEL:-$MODEL}}"
+if [ "${YOYO_STRONG_REASONING:-0}" = "1" ] && [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    YOYO_DEFAULT_REASONING_PROVIDER="anthropic"
+    YOYO_DEFAULT_REASONING_MODEL="claude-opus-4-6"
+else
+    YOYO_DEFAULT_REASONING_PROVIDER="$YOYO_IMPLEMENTATION_PROVIDER"
+    YOYO_DEFAULT_REASONING_MODEL="$YOYO_IMPLEMENTATION_MODEL"
+fi
+YOYO_REASONING_PROVIDER="${YOYO_REASONING_PROVIDER:-$YOYO_DEFAULT_REASONING_PROVIDER}"
+YOYO_REASONING_MODEL="${YOYO_REASONING_MODEL:-$YOYO_DEFAULT_REASONING_MODEL}"
+YOYO_ASSESS_PROVIDER="${YOYO_ASSESS_PROVIDER:-$YOYO_REASONING_PROVIDER}"
+YOYO_ASSESS_MODEL="${YOYO_ASSESS_MODEL:-$YOYO_REASONING_MODEL}"
+YOYO_PLANNER_PROVIDER="${YOYO_PLANNER_PROVIDER:-$YOYO_REASONING_PROVIDER}"
+YOYO_PLANNER_MODEL="${YOYO_PLANNER_MODEL:-$YOYO_REASONING_MODEL}"
+YOYO_REFINER_PROVIDER="${YOYO_REFINER_PROVIDER:-$YOYO_REASONING_PROVIDER}"
+YOYO_REFINER_MODEL="${YOYO_REFINER_MODEL:-$YOYO_REASONING_MODEL}"
+YOYO_EVAL_PROVIDER="${YOYO_EVAL_PROVIDER:-$YOYO_REASONING_PROVIDER}"
+YOYO_EVAL_MODEL="${YOYO_EVAL_MODEL:-$YOYO_REASONING_MODEL}"
+YOYO_REFLECTION_PROVIDER="${YOYO_REFLECTION_PROVIDER:-$YOYO_REASONING_PROVIDER}"
+YOYO_REFLECTION_MODEL="${YOYO_REFLECTION_MODEL:-$YOYO_REASONING_MODEL}"
+YOYO_TASK_REFINER_ENABLED="${YOYO_TASK_REFINER_ENABLED:-auto}"
 DATE=$(date +%Y-%m-%d)
 SESSION_TIME=$(date +%H:%M)
 SESSION_DIR_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -75,7 +106,8 @@ STATE_TRACE_ID="trace-evolve-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-${
 run_optional_with_timeout 60 git pull --rebase --quiet 2>/dev/null || true
 
 echo "=== Day $DAY ($DATE $SESSION_TIME) ==="
-echo "Model: $MODEL"
+echo "Implementation model: ${YOYO_IMPLEMENTATION_PROVIDER}/${YOYO_IMPLEMENTATION_MODEL}"
+echo "Reasoning model: ${YOYO_REASONING_PROVIDER}/${YOYO_REASONING_MODEL}"
 echo "Plan timeout: ${TIMEOUT}s (assess: $((TIMEOUT/2))s + plan: $((TIMEOUT/2))s) | Impl timeout: 1200s/task"
 echo ""
 
@@ -712,18 +744,40 @@ agent_log_has_api_error() {
 }
 
 # ── Helper: run agent with automatic fallback on API error ──
+run_agent_deepseek_native_env() {
+    local provider="$1"
+    if [ "$provider" = "deepseek" ]; then
+        printf '%s' "${YOYO_DEEPSEEK_NATIVE:-1}"
+    else
+        printf '0'
+    fi
+}
+
 # Run yoyo with optional --fallback flag for provider failover.
 # Fallback switching happens inside the binary (see Issue #226).
-run_agent_with_fallback() {
+run_agent_with_model() {
     local timeout_val="$1"
     local prompt_file="$2"
     local log_file="$3"
-    local extra_flags="${4:-}"
+    local provider="$4"
+    local model="$5"
+    local extra_flags="${6:-}"
 
-    local fallback_flag=""
+    local fallback_args=()
     if [ -n "$FALLBACK_PROVIDER" ]; then
-        fallback_flag="--fallback $FALLBACK_PROVIDER"
+        fallback_args=(--fallback "$FALLBACK_PROVIDER")
     fi
+    local provider_args=()
+    if [ -n "$provider" ]; then
+        provider_args=(--provider "$provider")
+    fi
+    local extra_args=()
+    if [ -n "$extra_flags" ]; then
+        # shellcheck disable=SC2206
+        extra_args=($extra_flags)
+    fi
+    local native_mode
+    native_mode=$(run_agent_deepseek_native_env "$provider")
 
     # Optional staging: caller may set STAGE_NAME=<slug> in env to preserve
     # this transcript on the audit-log branch. Empty/unset → no-op.
@@ -738,18 +792,20 @@ run_agent_with_fallback() {
     state_before_lines="${state_before_lines:-0}"
     # shellcheck disable=SC2086
     if [ -n "$stage_path" ]; then
-        ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
-            --model "$MODEL" \
+        YOYO_DEEPSEEK_NATIVE="$native_mode" ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
+            "${provider_args[@]}" \
+            --model "$model" \
             "${YOYO_SKILL_FLAGS[@]}" \
-            $fallback_flag \
-            $extra_flags \
+            "${fallback_args[@]}" \
+            "${extra_args[@]}" \
             < "$prompt_file" 2>&1 | tee "$log_file" "$stage_path" || exit_code=$?
     else
-        ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
-            --model "$MODEL" \
+        YOYO_DEEPSEEK_NATIVE="$native_mode" ${TIMEOUT_CMD:+$TIMEOUT_CMD "$timeout_val"} "$YOYO_BIN" \
+            "${provider_args[@]}" \
+            --model "$model" \
             "${YOYO_SKILL_FLAGS[@]}" \
-            $fallback_flag \
-            $extra_flags \
+            "${fallback_args[@]}" \
+            "${extra_args[@]}" \
             < "$prompt_file" 2>&1 | tee "$log_file" || exit_code=$?
     fi
 
@@ -770,6 +826,13 @@ run_agent_with_fallback() {
     return "$exit_code"
 }
 
+run_agent_with_fallback() {
+    run_agent_with_model \
+        "$1" "$2" "$3" \
+        "$YOYO_IMPLEMENTATION_PROVIDER" "$YOYO_IMPLEMENTATION_MODEL" \
+        "${4:-}"
+}
+
 # Run an agent and stop early once a completion file contains a matching line.
 # Used for evaluator agents: once they write Verdict: PASS/FAIL, continuing the
 # model turn only burns time and can turn good evidence into a timeout artifact.
@@ -779,7 +842,9 @@ run_agent_with_completion_watch() {
     local log_file="$3"
     local completion_file="$4"
     local completion_pattern="$5"
-    local extra_flags="${6:-}"
+    local provider="$6"
+    local model="$7"
+    local extra_flags="${8:-}"
 
     local fallback_args=()
     if [ -n "$FALLBACK_PROVIDER" ]; then
@@ -790,6 +855,12 @@ run_agent_with_completion_watch() {
         # shellcheck disable=SC2206
         extra_args=($extra_flags)
     fi
+    local provider_args=()
+    if [ -n "$provider" ]; then
+        provider_args=(--provider "$provider")
+    fi
+    local native_mode
+    native_mode=$(run_agent_deepseek_native_env "$provider")
 
     local stage_path=""
     if [ -n "${STAGE_NAME:-}" ] && [ -d "${SESSION_STAGING:-}/transcripts" ]; then
@@ -802,9 +873,9 @@ run_agent_with_completion_watch() {
     rm -f "$completion_marker"
 
     local exit_code=0
-    python3 - "$timeout_val" "$prompt_file" "$log_file" "$stage_path" \
+    YOYO_DEEPSEEK_NATIVE="$native_mode" python3 - "$timeout_val" "$prompt_file" "$log_file" "$stage_path" \
         "$completion_file" "$completion_pattern" "$completion_marker" -- \
-        "$YOYO_BIN" --model "$MODEL" "${YOYO_SKILL_FLAGS[@]}" \
+        "$YOYO_BIN" "${provider_args[@]}" --model "$model" "${YOYO_SKILL_FLAGS[@]}" \
         "${fallback_args[@]}" "${extra_args[@]}" <<'PY' || exit_code=$?
 import os
 import re
@@ -1318,6 +1389,7 @@ STAGE_NAME=assess \
     run_agent_with_completion_watch \
         "$ASSESS_TIMEOUT" "$ASSESS_PROMPT" "$AGENT_LOG" \
         "session_plan/assessment.md" '^# Assessment\b' \
+        "$YOYO_ASSESS_PROVIDER" "$YOYO_ASSESS_MODEL" \
         "--no-auto-watch" || ASSESS_EXIT=$?
 
 rm -f "$ASSESS_PROMPT"
@@ -1707,7 +1779,11 @@ Your job is planning only.
 PLANEOF
 
     AGENT_LOG=$(mktemp)
-    STAGE_NAME=plan run_agent_with_fallback "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" "--no-auto-watch" || PLAN_EXIT=$?
+    STAGE_NAME=plan \
+        run_agent_with_model \
+            "$PLAN_TIMEOUT" "$PLAN_PROMPT" "$AGENT_LOG" \
+            "$YOYO_PLANNER_PROVIDER" "$YOYO_PLANNER_MODEL" \
+            "--no-auto-watch" || PLAN_EXIT=$?
 
     rm -f "$PLAN_PROMPT"
 
@@ -1751,6 +1827,117 @@ PLANFAIL
     fi
 fi
 
+REFINER_TASK_COUNT=0
+for _f in session_plan/task_[0-9][0-9].md; do [ -f "$_f" ] && REFINER_TASK_COUNT=$((REFINER_TASK_COUNT + 1)); done
+REFINER_SHOULD_RUN=false
+if [ "${PLANNING_FAILED:-false}" != true ] && [ "$REFINER_TASK_COUNT" -gt 0 ]; then
+    case "$YOYO_TASK_REFINER_ENABLED" in
+        1|true|yes|on)
+            REFINER_SHOULD_RUN=true
+            ;;
+        auto)
+            if [ "$YOYO_REFINER_PROVIDER/$YOYO_REFINER_MODEL" != "$YOYO_IMPLEMENTATION_PROVIDER/$YOYO_IMPLEMENTATION_MODEL" ]; then
+                REFINER_SHOULD_RUN=true
+            fi
+            ;;
+    esac
+fi
+if [ "$REFINER_SHOULD_RUN" = true ]; then
+    echo "  Phase A2.5: Task refinement (${YOYO_REFINER_PROVIDER}/${YOYO_REFINER_MODEL})..."
+    CURRENT_TASK_PLAN=""
+    for _task_file in session_plan/task_[0-9][0-9].md; do
+        [ -f "$_task_file" ] || continue
+        CURRENT_TASK_PLAN="${CURRENT_TASK_PLAN}
+=== ${_task_file} ===
+$(cat "$_task_file")
+"
+    done
+    REFINE_PROMPT=$(mktemp)
+    cat > "$REFINE_PROMPT" <<REFINEEOF
+$YOYO_STABLE_CONTEXT
+
+=== CURRENT SESSION ===
+You are yyds in Phase A2.5: TASK REFINEMENT.
+Day $DAY ($DATE $SESSION_TIME).
+
+$YOYO_DYNAMIC_CONTEXT
+
+=== YOUR TRAJECTORY ===
+$YOYO_TRAJECTORY
+=== END TRAJECTORY ===
+
+=== ASSESSMENT ===
+${ASSESSMENT:-no assessment captured}
+=== END ASSESSMENT ===
+
+=== CURRENT TASK PLAN ===
+$CURRENT_TASK_PLAN
+=== END CURRENT TASK PLAN ===
+
+Your job is to make the plan easier for a DeepSeek implementation agent to execute.
+Do not implement code. Do not commit. Do not run build/test/clippy. Do not read
+broad source files.
+
+Allowed actions:
+- Rewrite existing session_plan/task_XX.md files in place.
+- Split a broad task into smaller task files, keeping at most 3 selected tasks.
+- Delete or replace a task that is likely to become analysis-only.
+- Write session_plan/planning_failure.md only if no concrete, landable task remains.
+- Optionally write session_plan/task_refinement.md summarizing what changed.
+
+Refinement rules:
+- Each task must be completable by DeepSeek in 20 minutes.
+- Each task must name 1-3 concrete repo files in Files and Edit Surface.
+- Prefer one-file, test-first tasks when the evidence is diagnostic or meta-harness.
+- If a task asks for broad reconciliation, turn it into the smallest mechanically
+  verifiable slice: one function, one metric, one parser, or one regression test.
+- If the current code may already satisfy a task, write an explicit Fallback telling
+  the implementation agent exactly when to write session_plan/task_XX_obsolete.md.
+- Every task must tell the implementation agent what first edit or test to make.
+- Remove tasks that only ask the implementation agent to investigate.
+
+After refining, stop. Your output is the session_plan files.
+REFINEEOF
+    REFINE_LOG=$(mktemp)
+    REFINE_EXIT=0
+    STAGE_NAME=task_refine \
+        run_agent_with_model \
+            240 "$REFINE_PROMPT" "$REFINE_LOG" \
+            "$YOYO_REFINER_PROVIDER" "$YOYO_REFINER_MODEL" \
+            "--no-auto-watch" || REFINE_EXIT=$?
+    rm -f "$REFINE_PROMPT"
+    if agent_log_has_api_error "$REFINE_LOG"; then
+        echo "  Task refiner provider/API error — keeping original planner output."
+        cat > session_plan/task_refinement_failure.md <<REFINEFAIL
+# Task Refinement Failure — Day $DAY ($SESSION_TIME)
+
+The optional task-refinement phase hit a provider/API error. The harness kept
+the original planner task files so implementation can proceed.
+
+Guard result:
+- status: task_refinement_provider_error
+- refiner_provider: $YOYO_REFINER_PROVIDER
+- refiner_model: $YOYO_REFINER_MODEL
+- transcript: transcripts/task_refine.log
+REFINEFAIL
+    elif [ "$REFINE_EXIT" -eq 124 ]; then
+        echo "  Task refiner timed out — keeping current task files."
+        cat > session_plan/task_refinement_failure.md <<REFINEFAIL
+# Task Refinement Failure — Day $DAY ($SESSION_TIME)
+
+The optional task-refinement phase timed out. The harness kept the current task
+files so implementation can proceed.
+
+Guard result:
+- status: task_refinement_timeout
+- refiner_provider: $YOYO_REFINER_PROVIDER
+- refiner_model: $YOYO_REFINER_MODEL
+- transcript: transcripts/task_refine.log
+REFINEFAIL
+    fi
+    rm -f "$REFINE_LOG"
+fi
+
 # Check if planning agent produced tasks
 TASK_COUNT=0
 for _f in session_plan/task_[0-9][0-9].md; do [ -f "$_f" ] && TASK_COUNT=$((TASK_COUNT + 1)); done
@@ -1784,6 +1971,8 @@ mkdir -p "$SESSION_STAGING/tasks"
 [ -f session_plan/assessment.md ] && cp session_plan/assessment.md "$SESSION_STAGING/tasks/assessment.md" 2>/dev/null || true
 [ -f session_plan/assessment_missing.md ] && cp session_plan/assessment_missing.md "$SESSION_STAGING/tasks/assessment_missing.md" 2>/dev/null || true
 [ -f session_plan/issue_responses.md ] && cp session_plan/issue_responses.md "$SESSION_STAGING/tasks/issue_responses.md" 2>/dev/null || true
+[ -f session_plan/task_refinement.md ] && cp session_plan/task_refinement.md "$SESSION_STAGING/tasks/task_refinement.md" 2>/dev/null || true
+[ -f session_plan/task_refinement_failure.md ] && cp session_plan/task_refinement_failure.md "$SESSION_STAGING/tasks/task_refinement_failure.md" 2>/dev/null || true
 [ -f session_plan/planning_failure.md ] && cp session_plan/planning_failure.md "$SESSION_STAGING/tasks/planning_failure.md" 2>/dev/null || true
 for _obsolete_note in session_plan/task_[0-9][0-9]_obsolete.md; do
     [ -f "$_obsolete_note" ] || continue
@@ -2586,6 +2775,7 @@ EVALEOF
             run_agent_with_completion_watch \
                 "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" \
                 "session_plan/eval_task_${TASK_NUM}.md" '^Verdict:\s*(PASS|FAIL)\b' \
+                "$YOYO_EVAL_PROVIDER" "$YOYO_EVAL_MODEL" \
                 "--no-auto-watch" || EVAL_EXIT=$?
         rm -f "$EVAL_PROMPT"
 
@@ -3075,8 +3265,10 @@ Be specific and honest. Then commit:
 JEOF
 
         JOURNAL_LOG=$(mktemp)
-        STAGE_NAME=journal run_agent_with_fallback \
-            120 "$JOURNAL_PROMPT" "$JOURNAL_LOG" "--no-auto-watch" || true
+        STAGE_NAME=journal run_agent_with_model \
+            120 "$JOURNAL_PROMPT" "$JOURNAL_LOG" \
+            "$YOYO_REFLECTION_PROVIDER" "$YOYO_REFLECTION_MODEL" \
+            "--no-auto-watch" || true
         rm -f "$JOURNAL_PROMPT"
         rm -f "$JOURNAL_LOG"
     fi
@@ -3153,8 +3345,10 @@ If nothing non-obvious came up, do nothing. Not every session produces a lesson.
 REOF
 
     REFLECT_LOG=$(mktemp)
-    STAGE_NAME=reflect run_agent_with_fallback \
-        120 "$REFLECT_PROMPT" "$REFLECT_LOG" "--no-auto-watch" || true
+    STAGE_NAME=reflect run_agent_with_model \
+        120 "$REFLECT_PROMPT" "$REFLECT_LOG" \
+        "$YOYO_REFLECTION_PROVIDER" "$YOYO_REFLECTION_MODEL" \
+        "--no-auto-watch" || true
     rm -f "$REFLECT_PROMPT"
     rm -f "$REFLECT_LOG"
 fi
@@ -3262,8 +3456,10 @@ ${ALREADY_RESPONDED:+- SKIP these issues (already responded today):${ALREADY_RES
 RESPONDEOF
 
     RESPOND_EXIT=0
-    STAGE_NAME=respond run_agent_with_fallback \
-        180 "$RESPOND_PROMPT" "$RESPOND_LOG" "--no-auto-watch" || RESPOND_EXIT=$?
+    STAGE_NAME=respond run_agent_with_model \
+        180 "$RESPOND_PROMPT" "$RESPOND_LOG" \
+        "$YOYO_REFLECTION_PROVIDER" "$YOYO_REFLECTION_MODEL" \
+        "--no-auto-watch" || RESPOND_EXIT=$?
     rm -f "$RESPOND_PROMPT"
 
     # Check for API errors in the agent output
