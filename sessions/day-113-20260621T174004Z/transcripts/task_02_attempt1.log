@@ -1,0 +1,744 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the evolve skill requirements. I need to reconcile state and transcript tool-failure tracking. Let me first read the evolve skill, then examine the relevant source files.
+
+Let me plan my approach:
+1. Read skills/evolve/SKILL.md
+2. Examine src/tool_wrappers.rs - RecoveryHintTool and ToolFailureTracker
+3. Examine src/prompt.rs - handle_tool_execution_end and FailureObserved recording
+4. Examine src/state.rs - EventType::FailureObserved definition
+5. Determine the gap and implement fix
+6. Write tests
+7. Verify with cargo build && cargo test
+
+Let me start by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'RecoveryHintTool' in src/tool_wrappers.rs  ▶ search 'FailureObserved' in src/state.rs ✓ (214ms)
+ ✓ (276ms)
+ ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the key sections of these files in more detail. I need to:
+
+1. Read RecoveryHintTool in tool_wrappers.rs
+2. Read ToolFailureTracker and its record_failure method
+3. Read handle_tool_execution_end in prompt.rs
+4. Understand how state events are recorded (the `record` function in state.rs)
+
+Let me start with the RecoveryHintTool section.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:949..1149  ▶ search 'ToolFailureTracker' in src/tool_wrappers.rs  ▶ search 'FailureObserved' in src/prompt.rs ✓ (155ms)
+ ✓ (307ms)
+ ✓ (284ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see the key areas:
+
+1. `RecoveryHintTool.execute()` at lines 1077-1106 - this is where tool failures are detected and enriched. At line 1088-1097, it catches `ToolError::Failed(msg)` and records the failure via `self.tracker.record_failure()` (line 1089). At line 1099-1104, it catches other errors and also records failure. But it does NOT emit a `FailureObserved` state event.
+
+2. In prompt.rs, `FailureObserved` is recorded at lines ~901 and ~960. Let me read those sections.
+
+3. `ToolFailureTracker.record_failure()` at lines 969-974 - currently only increments count, no state event.
+
+Let me read the prompt.rs sections and also understand the state::record function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:870..990  ▶ read src/prompt.rs:940..1000  ▶ read src/prompt.rs:500..580 ✓ (408ms)
+ ✓ (252ms)
+ ✓ (542ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture:
+
+1. **RecoveryHintTool.execute()** (tool_wrappers.rs lines 1077-1106): When a tool fails, it calls `self.tracker.record_failure(&tool_name)` and enriches the error message. But it does NOT record a `FailureObserved` state event.
+
+2. **ToolFailureTracker.record_failure()** (tool_wrappers.rs lines 969-974): Only increments a counter, no state event.
+
+3. **prompt.rs lines 899-910**: When `is_error` is true (ToolExecutionEnd), it records a `FailureObserved` with source "tool". This appears to be the event handler that processes tool results after RecoveryHintTool has already processed them (since RecoveryHintTool wraps the inner tool and returns the enriched error).
+
+Wait, let me think about the flow more carefully:
+
+- RecoveryHintTool wraps the innermost tool
+- When the inner tool fails, RecoveryHintTool catches the error, records failure, decorates the message, and returns the error
+- The agent framework then emits a ToolExecutionEnd event with is_error=true
+- prompt.rs receives this event and at line 899-910 records FailureObserved
+
+So the question is: do both paths record FailureObserved? And if so, is there double-counting?
+
+Actually wait - let me re-read. The task says:
+- "RecoveryHintTool detects tool failures, enriches error messages (which appear in transcripts), but doesn't record FailureObserved"
+- "Conversely, prompt.rs may record FailureObserved for errors that RecoveryHintTool never sees (API errors, timeout errors), creating transcript-only failures"
+
+So the concern is that RecoveryHintTool enriches errors (making them visible in transcripts) but doesn't record FailureObserved, while prompt.rs records FailureObserved for some failures but maybe not all of them.
+
+Wait, looking at lines 899-910 in prompt.rs: this is in the ToolExecutionEnd handler, and it records FailureObserved when `is_error` is true. ToolExecutionEnd events are emitted by the agent framework whenever a tool returns an error. Since RecoveryHintTool wraps the inner tool, when the inner tool fails, RecoveryHintTool catches it and returns a decorated error, which the framework then emits as ToolExecutionEnd with is_error=true. So prompt.rs should see the error and record FailureObserved.
+
+So maybe the gap is different from what I initially thought. Let me think about this more carefully...
+
+Actually, let me look at this from a different angle. The task says "state_only_failed_tools=27" and "transcript_only_failed_tools=2". This means there are 27 failures captured in state but not in transcripts, and 2 captured in transcripts but not in state.
+
+The RecoveryHintTool enriches error messages that appear in transcripts (the decorated error message). But if the agent doesn't use RecoveryHintTool for some tools, those failures would still be caught by prompt.rs but not by RecoveryHintTool. That would create "state-only" failures.
+
+Wait, that's backwards. If prompt.rs records FailureObserved but RecoveryHintTool doesn't enrich the message (because the tool isn't wrapped), then the failure IS in state but NOT enriched in the transcript. That's state-only (27). Conversely, if RecoveryHintTool catches and enriches a failure that prompt.rs doesn't see as is_error (unlikely but possible for some edge case), that's transcript-only (2).
+
+Hmm, but actually the task says the gap is:
+- RecoveryHintTool detects failures, enriches messages, but doesn't record FailureObserved → leads to 2 transcript-only failures
+- prompt.rs records FailureObserved for some failures RecoveryHintTool doesn't see → leads to 27 state-only failures
+
+Wait, that doesn't make sense either. Let me re-read the task:
+
+"RecoveryHintTool detects tool failures, enriches error messages (which appear in transcripts), but doesn't record FailureObserved."
+→ This means RecoveryHintTool catches failures but doesn't emit FailureObserved → these would be transcript-only (failure visible in transcript via enriched message but not in state) → 2 transcript-only failures
+
+"Conversely, prompt.rs may record FailureObserved for errors that RecoveryHintTool never sees (API errors, timeout errors), creating transcript-only failures."
+→ Wait, this says prompt.rs records FailureObserved for errors that don't go through RecoveryHintTool → but the label "transcript-only" is confusing here. If prompt.rs records FailureObserved but RecoveryHintTool doesn't see it, that would be state-only (in state but not in RecoveryHintTool's enrichments). Unless "transcript" here means something different from RecoveryHintTool's enrichment.
+
+Actually, I think the task description might be slightly confused itself. Let me focus on what I can actually fix:
+
+The core issue is: **RecoveryHintTool's `execute` method detects tool failures but does not call `state::record(EventType::FailureObserved, ...)`**. This means any tool that goes through RecoveryHintTool will have its failure enriched in the error message (transcript) but will NOT have a FailureObserved state event recorded. The FailureObserved recorded in prompt.rs at lines 899-910 only fires for tool-level is_error events, but those come from the agent framework AFTER RecoveryHintTool has already processed the result.
+
+Wait, actually, let me trace the flow more carefully:
+
+1. Agent calls tool → goes through RecoveryHintTool wrapper → inner tool fails → RecoveryHintTool catches error, decorates it, returns `Err(ToolError::Failed(decorated))`
+2. The agent framework sees the error, emits `AgentEvent::ToolExecutionEnd { ..., is_error: true, result: ... }`
+3. prompt.rs handles this event at line 899-910: `if is_error { state::record(FailureObserved, ...) }`
+
+So the FailureObserved IS recorded by prompt.rs! The RecoveryHintTool-enriched error message IS in the result. So both paths should work...
+
+Unless the issue is that for some tool calls, RecoveryHintTool catches non-Failed errors (like NotFound, InvalidArgs, Cancelled) at line 1099-1104, calls `record_failure` but then propagates the error, which the framework might NOT treat as `is_error=true` in ToolExecutionEnd. Let me check what the framework does...
+
+Actually, I think the real issue might be more subtle. Let me look at what `with_recovery_hints` is used for - which tools are actually wrapped?
+
+Let me search for where with_recovery_hints is called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 16.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'with_recovery_hints' in src  ▶ search 'last_tool_error' in src/prompt.rs  ▶ search 'handle_tool_execution_end' in src/prompt.rs ✓ (107ms)
+ ✓ (134ms)
+ ✓ (337ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where tools are built with `with_recovery_hints` in tools.rs to understand which tools are wrapped:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.2s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1310..1390 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So all the main tools (bash, read_file, write_file, edit_file, list_files, search, rename_symbol) are wrapped with `with_recovery_hints`. The ask_user, todo, and web_search tools are NOT wrapped with recovery hints.
+
+Now let me think about the actual flow:
+
+1. bash tool fails → RecoveryHintTool catches it, decorates the error, calls `tracker.record_failure("bash")` → returns `Err(ToolError::Failed(decorated))`
+2. Framework emits `ToolExecutionEnd` with `is_error=true`
+3. prompt.rs line 899-910: `if is_error { state::record(FailureObserved, ...) }` 
+
+So FailureObserved IS recorded for tools that go through RecoveryHintTool because the framework still emits ToolExecutionEnd with is_error=true.
+
+But what about tools that DON'T go through RecoveryHintTool? ask_user, todo, web_search - if they fail, they'd also emit ToolExecutionEnd with is_error=true and prompt.rs would still record FailureObserved. So the state would have those failures too.
+
+Hmm, so maybe the gap is different. Let me look at this from the other angle.
+
+What if the issue is about `last_tool_error` being set in transcript but not leading to FailureObserved? Let me trace:
+
+- In `handle_tool_execution_end`, line 535-541: sets `last_tool_error` (transcript-visible)
+- In prompt.rs line 899-910: records FailureObserved (state event)
+- Both happen in the same handler, both triggered by `is_error`
+
+These seem to be in sync for ToolExecutionEnd.
+
+But what about other places where `last_tool_error` is set? Let me check lines 1217, 1470, 1675, etc. These seem to be in retry logic paths.
+
+Let me also check if there are any failure paths where `last_tool_error` is set but FailureObserved is NOT recorded:
+
+Lines 1217-1248: This seems to be in a retry path, sets `last_tool_error` but does it record FailureObserved?
+
+Let me look at those areas more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1200..1280  ▶ read src/prompt.rs:1450..1530  ▶ read src/prompt.rs:1660..1760 ✓ (301ms)
+ ✓ (252ms)
+ ✓ (676ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see there are several paths for handling tool errors. The key insight is:
+
+1. **In prompt.rs ~860-910**: This is the main tool execution handler in the REPL/prompt loop. It records `FailureObserved` when `is_error` is true.
+
+2. **In prompt.rs ~1668-1754** (`handle_stream_json_events`): This is a separate handler for streaming JSON mode. At line 1713-1723, when `is_error` is true, it sets `last_tool_error` but does NOT record `FailureObserved`. This could account for some of the "transcript-only" gap.
+
+3. **RecoveryHintTool.execute()** in tool_wrappers.rs: Detects failures, calls `tracker.record_failure()`, but does NOT record `FailureObserved`.
+
+Now let me also look at where `run_prompt_once` is and whether it records FailureObserved:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.4s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_prompt_once' in src/prompt.rs  ▶ search 'fn run_prompt_once' in src/prompt.rs ✓ (116ms)
+ ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `run_prompt_once` to see what it does with tool errors:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:311..411 ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me read `handle_prompt_events` to see the full event loop with FailureObserved recording:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_prompt_events' in src/prompt.rs ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:762..1012 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me trace all the paths:
+
+**Path 1: `handle_prompt_events` (lines 762-1011)**
+- This is the main REPL prompt event handler
+- At lines 899-910, when `is_error` is true in `ToolExecutionEnd`, it records `FailureObserved` state event
+- At line 911, calls `state.handle_tool_execution_end(...)` which sets `last_tool_error` (line 537 in the `handle_tool_execution_end` method)
+
+**Path 2: `handle_stream_json_events` (lines 1668-1754)**
+- This is a separate handler for streaming JSON mode
+- At lines 1713-1723, when `is_error` is true, it sets `last_tool_error` but does NOT record `FailureObserved`
+- This creates a gap: tool failures in streaming JSON mode produce transcript error status but no state event
+
+**Path 3: `RecoveryHintTool.execute()` (tool_wrappers.rs lines 1077-1106)**
+- When the inner tool fails, it calls `tracker.record_failure()` and decorates the error message
+- It does NOT record `FailureObserved`
+- However, the decorated error still propagates to the framework, which emits `ToolExecutionEnd` with `is_error=true`
+- So `handle_prompt_events` still sees it and records `FailureObserved` at lines 899-910
+
+Wait, but what about the `other` error path at line 1099-1104 in RecoveryHintTool? When the error is NOT `ToolError::Failed` (e.g., `NotFound`, `InvalidArgs`, `Cancelled`), RecoveryHintTool records the failure but propagates the error. The framework may or may not treat these as `is_error=true` in ToolExecutionEnd. Let me check what the yoagent framework does...
+
+Actually, I can't directly check yoagent source right now, but the key insight from the evidence is:
+
+- **state_only_failed_tools=27**: 27 tool failures in state that transcripts didn't capture. This could mean `handle_prompt_events` records FailureObserved for some failures, but the transcript (which I assume is derived from `last_tool_error` or the error message display) doesn't capture them.
+- **transcript_only_failed_tools=2**: 2 tool failures in transcripts that state didn't capture. This could be from `handle_stream_json_events` which sets `last_tool_error` but doesn't record FailureObserved.
+
+Actually wait, let me re-read the task description more carefully:
+
+"The state event system and transcript log disagree on which tools failed."
+
+So the two tracking mechanisms disagree. The state has 27 failures the transcript doesn't have, and the transcript has 2 failures the state doesn't have.
+
+Let me think about what "transcript" means here. The transcript is the tool error status line. In `handle_tool_execution_end` (lines 526-541), when `is_error` is true:
+- `batch_failed` is incremented
+- `✗` is printed 
+- `last_tool_error` is set with the error preview
+
+So the transcript captures failures through `last_tool_error`. The state captures them through `FailureObserved` events.
+
+Now the fix:
+1. **In `RecoveryHintTool.execute()`**: Add a `state::record(EventType::FailureObserved, ...)` call when a tool failure is detected. This ensures RecoveryHintTool-detected failures produce state events.
+
+2. **In `handle_stream_json_events`**: Add a `state::record(EventType::FailureObserved, ...)` call when `is_error` is true. This ensures streaming JSON mode failures produce state events.
+
+But wait - the task says "No double-counting: a single tool failure produces exactly one FailureObserved event". If I add FailureObserved recording in RecoveryHintTool, AND handle_prompt_events already records it, there would be double-counting for tools that go through RecoveryHintTool.
+
+Hmm, actually `handle_prompt_events` records it at line 899-910. And RecoveryHintTool's execute runs BEFORE the event reaches handle_prompt_events. Let me think about this flow:
+
+1. Agent calls tool → RecoveryHintTool.execute() runs → returns Err(ToolError::Failed(decorated)) or Ok(result)
+2. Framework emits ToolExecutionEnd with is_error based on whether execute() returned Err
+3. handle_prompt_events receives the event and records FailureObserved
+
+If I add FailureObserved recording in RecoveryHintTool, it would be recorded during step 1, and then handle_prompt_events would record it again during step 3. That's double-counting.
+
+So the approach should be different. Let me think about what the actual gap is:
+
+The 2 transcript-only failures are likely from `handle_stream_json_events` which doesn't record FailureObserved.
+The 27 state-only failures are harder to explain. Maybe some failures are recorded by handle_prompt_events but the transcript (last_tool_error) doesn't capture them properly.
+
+Actually, let me reconsider. The task says:
+- "RecoveryHintTool detects tool failures, enriches error messages (which appear in transcripts), but doesn't record FailureObserved"
+- "prompt.rs may record FailureObserved for errors that RecoveryHintTool never sees (API errors, timeout errors), creating transcript-only failures"
+
+Wait, the second point says "creating transcript-only failures." API errors and timeout errors would be recorded as FailureObserved by prompt.rs but RecoveryHintTool wouldn't see them (they're not tool execution failures). So these would be state-only failures? No, prompt.rs records FailureObserved for API errors (InputRejected at line 958-966). RecoveryHintTool doesn't see these. So the state has them recorded. But the transcript? If API errors don't produce transcript-visible error messages (they produce retriable errors instead of tool errors), then these would be "state-only" failures - they appear in state but not in the transcript tool-error tracking.
+
+OK, I think the actual situation is:
+
+**27 state-only failures**: These could be:
+- API errors (InputRejected) recorded as FailureObserved but not reflected in transcript tool-error tracking
+- Tool failures that were recorded as FailureObserved at lines 899-910, but the transcript tracking (last_tool_error) didn't capture them for some reason
+
+**2 transcript-only failures**: These could be:
+- Tool failures in `handle_stream_json_events` which set last_tool_error but don't record FailureObserved
+
+So the fix should be:
+1. Add `FailureObserved` recording in `handle_stream_json_events` for tool failures (fixes transcript-only)
+2. Add `FailureObserved` recording in `RecoveryHintTool` for tool failures
+
+But wait, for point 2, I need to avoid double-counting with handle_prompt_events. The approach could be:
+- Option A: Record FailureObserved in RecoveryHintTool and remove it from handle_prompt_events
+- Option B: Don't add it to RecoveryHintTool (since handle_prompt_events already covers it) and only fix handle_stream_json_events
+
+Actually, looking more carefully at the task:
+
+"Every tool failure that RecoveryHintTool detects and enriches also produces a FailureObserved state event (or conversely, prompt.rs's FailureObserved recording covers RecoveryHintTool-detected failures)."
+
+The "or conversely" suggests either path works. Since handle_prompt_events already records FailureObserved for RecoveryHintTool-detected failures (because RecoveryHintTool propagates the error which the framework sees as is_error), the first condition is already satisfied by the "conversely" clause.
+
+The real gap is in `handle_stream_json_events` which doesn't record FailureObserved. And the RecoveryHintTool itself is missing its own FailureObserved recording, even though the downstream handler catches it.
+
+But wait, there's another subtlety. What about non-Failed errors in RecoveryHintTool (line 1099-1104)? These are `NotFound`, `InvalidArgs`, `Cancelled` errors. RecoveryHintTool records the failure but then propagates the error. If the framework treats these as `is_error=true` in ToolExecutionEnd, then handle_prompt_events would record FailureObserved. But if the framework treats some of these differently (e.g., Cancelled might not be is_error), then there's a gap.
+
+Let me focus on what I can practically fix:
+
+1. **`handle_stream_json_events`**: Add `FailureObserved` recording for tool failures (fixes transcript-only gap of 2)
+2. **`RecoveryHintTool.execute()`**: Add `FailureObserved` recording for all failure paths. But to avoid double-counting with `handle_prompt_events`, I should make handle_prompt_events NOT record FailureObserved for tool failures that already went through RecoveryHintTool... but that's complex.
+
+Actually, a simpler approach: Add FailureObserved recording in RecoveryHintTool and REMOVE it from handle_prompt_events's ToolExecutionEnd handler for tool failures. The RecoveryHintTool wraps all major tools, so it should catch all tool failures. For tools NOT wrapped by RecoveryHintTool (ask_user, todo, web_search), they would miss FailureObserved. But those tools rarely fail, and if they do, the framework still emits ToolExecutionEnd.
+
+Hmm, this is getting complicated. Let me take a simpler approach:
+
+**Approach**: Add FailureObserved recording in RecoveryHintTool.execute() for all failure paths. Keep the existing FailureObserved recording in handle_prompt_events. To avoid double-counting, make handle_prompt_events's FailureObserved recording conditional - only record if the tool is NOT wrapped by RecoveryHintTool.
+
+But that's fragile. A simpler approach: just make RecoveryHintTool record FailureObserved, and remove the duplicate from handle_prompt_events for tool failures. Since ALL the main tools (bash, read_file, write_file, edit_file, list_files, search, rename_symbol) are wrapped with RecoveryHintTool, they'll all get FailureObserved from RecoveryHintTool. The unwrapped tools (ask_user, todo, web_search) are less critical but we should still track their failures.
+
+Actually wait, let me re-read the task more carefully:
+
+"The RecoveryHintTool already has a ToolFailureTracker that calls record_failure(tool_name) to track retry counts. The agent should add a state::record(EventType::FailureObserved, ...) call in the same path."
+
+So the task explicitly asks me to add state::record in RecoveryHintTool. And then:
+
+"In src/prompt.rs, the agent should verify that the FailureObserved recording at lines ~901/960 fires for the same failure conditions that RecoveryHintTool detects."
+
+So the task wants me to:
+1. Add FailureObserved recording in RecoveryHintTool
+2. Verify that prompt.rs's FailureObserved recording covers the same conditions
+3. Not double-count
+
+The cleanest approach is:
+1. Add FailureObserved recording in RecoveryHintTool.execute() for both Failed and other errors
+2. Remove the FailureObserved recording from handle_prompt_events for tool failures (lines 899-910), since RecoveryHintTool now covers it
+3. Add FailureObserved recording in handle_stream_json_events for tool failures
+
+But wait, what about tools not wrapped by RecoveryHintTool? ask_user, todo, web_search. If I remove FailureObserved from handle_prompt_events, those tools won't get FailureObserved recorded.
+
+Let me check if those tools are also wrapped... Looking at tools.rs lines 1382-1392:
+```rust
+tools.push(maybe_hook(Box::new(AskUserTool), &hooks));
+tools.push(maybe_hook(Box::new(TodoTool), &hooks));
+// WebSearchTool 
+```
+
+These are NOT wrapped with `with_recovery_hints`. So if I remove FailureObserved from handle_prompt_events, ask_user, todo, and web_search failures won't be recorded.
+
+OK so the cleanest approach:
+1. Add FailureObserved recording in RecoveryHintTool.execute()
+2. Keep handle_prompt_events's FailureObserved recording BUT condition it on whether the tool was already covered by RecoveryHintTool
+   - Actually this is too complex
+
+Simpler: Just add FailureObserved in RecoveryHintTool AND keep it in handle_prompt_events. The "double-counting" concern can be addressed by making the event payload unique enough to deduplicate. But that's also fragile.
+
+Actually, the simplest approach that satisfies the task: Add FailureObserved recording in RecoveryHintTool.execute(). The task says "No double-counting: a single tool failure produces exactly one FailureObserved event." The way to achieve this: have RecoveryHintTool record FailureObserved, and have handle_prompt_events NOT record FailureObserved for tool errors. Since all major tools are wrapped with RecoveryHintTool, this covers the main case. The unwrapped tools (ask_user, todo, web_search) are less likely to produce failures and their failures are less diagnostic.
+
+But that's still a gap for the unwrapped tools. A better approach:
+
+Actually, let me re-read the flow. RecoveryHintTool wraps the inner tool. When the inner tool fails:
+1. RecoveryHintTool catches the error, records failure, enriches message, returns Err
+2. The framework sees the Err and emits ToolExecutionEnd with is_error=true
+3. handle_prompt_events sees is_error=true and records FailureObserved
+
+So there's double-recording. But the task says "No double-counting." So I need to prevent double-recording.
+
+**Best approach**: Record FailureObserved in RecoveryHintTool, and then in handle_prompt_events, skip recording FailureObserved for tool failures. The key insight: RecoveryHintTool wraps almost all tools, so handle_prompt_events only needs to record FailureObserved for unwrapped tools.
+
+But how does handle_prompt_events know if a tool was wrapped? One way: add a flag to the ToolExecutionEnd event... but we can't modify the framework.
+
+Another way: check if the error message already contains a recovery hint (like "💡 Recovery hint:"), which would indicate it went through RecoveryHintTool. But that's hacky.
+
+Simplest approach: just keep both recordings and accept minor double-counting. The task's "No double-counting" is aspirational but not always achievable without modifying the framework.
+
+Actually wait, let me reconsider. What if the issue is that RecoveryHintTool wraps tools at the agent builder level, but handle_prompt_events is the consumer of events. The events come from the framework AFTER RecoveryHintTool has already processed the tool call. So RecoveryHintTool's execute() runs as part of the tool execution, and then the framework emits the ToolExecutionEnd event. If RecoveryHintTool adds FailureObserved during execute(), it fires before handle_prompt_events would also fire FailureObserved. Both would fire.
+
+Let me take a step back and think about what the minimal change is that addresses the core gap:
+
+The core gap is: "state_only_failed_tools=27, transcript_only_failed_tools=2"
+
+To fix transcript-only (2): Add FailureObserved in `handle_stream_json_events` for tool failures.
+To fix state-only (27): This is harder to attribute. Could be API-level failures that RecoveryHintTool doesn't see but handle_prompt_events records as FailureObserved. Or could be that RecoveryHintTool catches failures but the enriched error message somehow causes handle_prompt_events to NOT see is_error=true.
+
+Actually, let me look at the other error path in RecoveryHintTool more carefully:
+
+```rust
+Err(other) => {
+    // Non-Failed errors (NotFound, InvalidArgs, Cancelled) pass through
+    // but still count as failures for escalation purposes
+    self.tracker.record_failure(&tool_name);
+    Err(other)
+}
+```
+
+For non-Failed errors, RecoveryHintTool passes them through as-is. The framework might handle these differently than Failed errors. If the framework doesn't emit ToolExecutionEnd with is_error=true for these, then handle_prompt_events wouldn't record FailureObserved. This could account for some state-only or transcript-only failures.
+
+OK let me just implement the fix. Here's my plan:
+
+1. **RecoveryHintTool.execute()**: Add `state::record(EventType::FailureObserved, ...)` in both error paths (Failed and other). Include tool_name, attempt count, and error_preview in the payload.
+
+2. **handle_prompt_events**: Keep the existing FailureObserved recording at lines 899-910. The RecoveryHintTool recording will add additional coverage for edge cases.
+
+3. **handle_stream_json_events**: Add `state::record(EventType::FailureObserved, ...)` for tool failures.
+
+Wait, but double-counting... Let me think about this differently.
+
+Actually, I realize the simplest and cleanest approach is:
+
+- Add FailureObserved recording in RecoveryHintTool.execute() only
+- In handle_prompt_events, when recording FailureObserved for tool errors, check whether the error was already recorded. But how?
+
+Let me look at this from the user's perspective. The task says:
+"Every tool failure that RecoveryHintTool detects and enriches also produces a FailureObserved state event (or conversely, prompt.rs's FailureObserved recording covers RecoveryHintTool-detected failures)."
+
+The "or conversely" is the key. Since prompt.rs's handle_prompt_events already records FailureObserved for all tool failures (because RecoveryHintTool propagates the error as Err and the framework emits ToolExecutionEnd with is_error=true), the "conversely" condition is satisfied. So I don't necessarily need to add FailureObserved in RecoveryHintTool.
+
+BUT the task also says: "The agent should add a state::record(EventType::FailureObserved, ...) call in the same path [RecoveryHintTool.record_failure]."
+
+So the task explicitly asks for:
+1. Add FailureObserved in RecoveryHintTool
+2. Verify prompt.rs covers the same conditions
+3. No double-counting
+
+Given the architecture, the cleanest way to avoid double-counting is:
+- Add FailureObserved recording in RecoveryHintTool.execute()
+- Remove FailureObserved from handle_prompt_events for tool failures (lines 899-910)
+- Keep FailureObserved in handle_prompt_events for InputRejected (lines 958-966)
+- Add FailureObserved in handle_stream_json_events for tool failures (since it has no RecoveryHintTool coverage... wait, it does because tools are still wrapped with RecoveryHintTool, but the streaming JSON handler doesn't record FailureObserved)
+
+Actually, handle_stream_json_events uses the same tool wrappings. The tools are built once and reused. So when a tool is called in streaming JSON mode, it still goes through RecoveryHintTool. If I add FailureObserved to RecoveryHintTool, it will fire. If I then remove FailureObserved from handle_prompt_events, handle_stream_json_events won't have it either.
+
+OK, final plan:
+
+1. **RecoveryHintTool.execute()**: Add `state::record(EventType::FailureObserved, Actor::Harness, payload)` in both error paths. This ensures all tool failures produce a state event.
+
+2. **handle_prompt_events**: Remove the `FailureObserved` recording at lines 899-910 (tool failures). Keep it for InputRejected at lines 958-966.
+
+3. **handle_stream_json_events**: No change needed since RecoveryHintTool covers it now.
+
+This eliminates double-counting because only RecoveryHintTool records FailureObserved for tool errors.
+
+But wait, what about tools not wrapped with RecoveryHintTool? ask_user, todo, web_search. If I remove FailureObserved from handle_prompt_events, these tools' failures won't be recorded. But looking at the code, these tools are pretty simple and unlikely to fail. And the task is specifically about reconciling tool-failure tracking, with the focus on RecoveryHintTool.
+
+Let me also check if there are any tests that verify FailureObserved recording through handle_prompt_events.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand where `handle_stream_json_events` is called from and whether it also handles tool failures, and check if there are tests I need to update:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_stream_json_events' in src/prompt.rs  ▶ search 'test.*FailureObserved' in src/prompt.rs  ▶ search 'test.*recovery_hint' in src/tool_wrappers.rs ✓ (190ms)
+ ✓ (210ms)
+ ✓ (239ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests related to RecoveryHintTool and FailureObserved:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.1s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RecoveryHintTool' in src/tool_wrappers.rs ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the RecoveryHintTool tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2880..2980 ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the ConfigurableMockTool used in tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ConfigurableMockTool' in src/tool_wrappers.rs ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the ConfigurableMockTool definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2041..2121 ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check how `state::record` is used and if there's a way to test it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..51  ▶ search 'pub fn record' in src/state.rs ✓ (131ms)
+ ✓ (131ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:437..527 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I can see that `state::record` takes `EventType`, `Actor`, and a `Value` payload. When the recorder isn't initialized (i.e., in tests), it silently returns (`let Some(recorder) = guard.as_ref() else { return; }`). So calling `state::record` in tests is safe — it'll be a no-op.
+
+Now let me finalize my approach:
+
+The task asks me to add `state::record(EventType::FailureObserved, Actor::Harness, ...)` in RecoveryHintTool's failure paths.
+
+For the prompt.rs side, I need to verify that the FailureObserved at lines ~901 and ~960 covers the same failure conditions. 
+
+Let me now look at how RecoveryHintTool gets the error message and tool name to construct a proper payload:
+
+In RecoveryHintTool.execute():
+- Line 1088: `Err(ToolError::Failed(msg))` - msg is the error string
+- Line 1099: `Err(other)` - other could be NotFound, InvalidArgs, Cancelled
+
+For the payload, I need: tool_name, error_preview (first 200 chars), and attempt count.
+
+Now let me plan the implementation:
+
+1. **src/tool_wrappers.rs**: In RecoveryHintTool.execute(), add `state::record(EventType::FailureObserved, ...)` in both error paths.
+   - For the Failed(msg) path (line 1088-1097), add the record call after `record_failure()` returns the attempt count.
+   - For the other error path (line 1099-1104), add the record call.
+
+2. **src/prompt.rs**: In `handle_prompt_events`, for the `FailureObserved` recording at lines 899-910, I should NOT remove it since the RecoveryHintTool now records it — but I should make sure they don't double-count. Actually, let me reconsider.
+
+The task says: "No double-counting: a single tool failure produces exactly one FailureObserved event and one transcript error-status line."
+
+If RecoveryHintTool records FailureObserved during tool execution, AND handle_prompt_events records it when the ToolExecutionEnd event arrives, that's double-counting. So I need to either:
+a. Remove FailureObserved from handle_prompt_events (since RecoveryHintTool covers all major tools)
+b. Or find a way to deduplicate
+
+Looking at the flow:
+1. RecoveryHintTool.execute() runs → records FailureObserved → returns Err
+2. Framework emits ToolExecutionEnd with is_error=true
+3. handle_prompt_events receives it → records FailureObserved again
+
+The cleanest approach: Have RecoveryHintTool record FailureObserved and REMOVE the tool-failure FailureObserved from handle_prompt_events (lines 899-910). But keep the InputRejected FailureObserved (lines 958-966) since that's for API errors, not tool errors.
+
+But wait, what about tools not wrapped by RecoveryHintTool? ask_user, todo, web_search. Without handle_prompt_events recording FailureObserved, these tools' failures won't be tracked.
+
+Option: Instead of removing FailureObserved from handle_prompt_events, add a flag to the tool result details that indicates FailureObserved was already recorded. RecoveryHintTool could set this flag, and handle_prompt_events could check for it before recording. But that modifies the tool result, which gets passed around...
+
+Actually, the simplest and most robust approach: Just add FailureObserved recording in RecoveryHintTool AND keep it in handle_prompt_events. The "double-counting" concern can be mitigated by noting that the two recordings have slightly different payloads (RecoveryHintTool's has attempt count and more context). Downstream consumers can deduplicate by tool_call_id.
+
+Wait, but the harness downstream tools (log_feedback.py) look at FailureObserved events and count them. Two events for the same failure would inflate counts.
+
+Let me think of another approach. What if I make RecoveryHintTool set a flag in the details of the error result, and handle_prompt_events checks for that flag?
+
+Actually, looking at the ToolError type from yoagent:
+```rust
+Err(yoagent::types::ToolError::Failed(msg))
+```
+
+The error is just a string. I can't add metadata to it directly.
+
+But I could prefix the error message with a marker that handle_prompt_events checks for... that's hacky.
+
+OK, let me take the pragmatic approach the task suggests. Let me re-read:
+
+"Implementation Notes:
+- The RecoveryHintTool in src/tool_wrappers.rs already has a ToolFailureTracker that calls record_failure(tool_name) to track retry counts. The agent should add a state::record(EventType::FailureObserved, ...) call in the same path, with payload including tool_name, attempt number, and error message summary.
+- In src/prompt.rs, the agent should verify that the FailureObserved recording at lines ~901/960 fires for the same failure conditions that RecoveryHintTool detects. If prompt.rs records FailureObserved for conditions RecoveryHintTool doesn't see (e.g., API transport errors), that's correct — those are different failure classes.
+- The goal is not to merge the two paths but to ensure they cover the same ground: every tool execution failure should be visible in both state events AND transcript status."
+
+So the task says to:
+1. Add FailureObserved in RecoveryHintTool
+2. Verify handle_prompt_events also covers it
+3. API transport errors are a different class (covered by InputRejected)
+
+And "The goal is not to merge the two paths but to ensure they cover the same ground."
+
+So the task seems OK with having both record FailureObserved. The concern is just that they should both see the same failures. And the Fixable gap is that RecoveryHintTool doesn't record at all.
+
+But the task also says "No double-counting." Let me re-read...
+
+"Success Criteria:
+- Every tool failure that RecoveryHintTool detects and enriches also produces a FailureObserved state event (or conversely, prompt.rs's FailureObserved recording covers RecoveryHintTool-detected failures).
+- No double-counting: a single tool failure produces exactly one FailureObserved event and one transcript error-status line."
+
+So the success criteria says "exactly one FailureObserved event." This means I need to prevent double-counting.
+
+OK here's my final approach:
+
+1. **Add FailureObserved recording in RecoveryHintTool.execute()** for both error paths
+2. **Remove FailureObserved from handle_prompt_events** for tool failures (lines 899-910), since RecoveryHintTool covers it
+3. Keep FailureObserved in handle_prompt_events for InputRejected (different failure class)
+4. For tools NOT wrapped by RecoveryHintTool, their failures might be missed. But looking at the code: ask_user, todo, web_search. ask_user requires interactive terminal, todo is in-memory, web_search is internet. Their failures are either unlikely or fall into a different class. This is acceptable.
+
+Wait, but there's also the `handle_stream_json_events` path. If I remove FailureObserved from `handle_prompt_events`, the streaming JSON path also won't have it... BUT RecoveryHintTool wraps the tools, so when a tool fails in streaming JSON mode, RecoveryHintTool will catch it and record FailureObserved. So it's covered.
+
+Actually, hold on. Let me think about this more carefully. RecoveryHintTool.execute() calls `state::record(...)`. In test environments, `state::record` is a no-op (no global recorder). So tests of RecoveryHintTool won't be affected. In production, the recorder is initialized before any tool calls.
+
+Let me also check: does RecoveryHintTool have access to `state::record`? Looking at tool_wrappers.rs imports...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'use crate::state' in src/tool_wrappers.rs  ▶ read src/tool_wrappers.rs:1..31 ✓ (52ms)
+ ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`src/tool_wrappers.rs` doesn't import `crate::state`. I'll need to add the import. Let me also check what `crate::prompt_retry` is imported (since RecoveryHintTool uses it):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'prompt_retry' in src/tool_wrappers.rs ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `crate::prompt_retry` is accessed with a fully-qualified path, not imported. I can do the same for `crate::state`.
+
+Now let me also look at `handle_stream_json_events` to understand whether it should also record FailureObserved. Currently it doesn't record FailureObserved for tool failures. With RecoveryHintTool recording FailureObserved, this SHOULD be covered because all tool executions go through RecoveryHintTool regardless of which event handler consumes the results.
+
+Actually wait, I need to be more careful. Let me trace the flow for `handle_stream_json_events`:
+
+1. The tool is called (e.g., by the agent)
+2. The tool goes through RecoveryHintTool wrapper
+3. RecoveryHintTool.execute() runs → catches failure → records FailureObserved → returns Err
+4. The framework emits ToolExecutionEnd with is_error=true
+5. handle_stream_json_events receives it, sets last_tool_error, but does NOT record FailureObserved
+
+So with my fix (adding FailureObserved in RecoveryHintTool), step 3 covers the gap. handle_stream_json_events doesn't need to add FailureObserved because RecoveryHintTool already did.
+
+Now for handle_prompt_events:
+1. Tool called through RecoveryHintTool
+2. RecoveryHintTool.execute() → records FailureObserved → returns Err
+3. Framework emits ToolExecutionEnd with is_error=true
+4. handle_prompt_events receives it → records FailureObserved AGAIN at line 899-910
+
+This is the double-counting. To fix it, I need to either:
+a. Remove FailureObserved from handle_prompt_events (lines 899-910)
+b. Or make it conditional
+
+Since the task says "No double-counting", I'll remove the tool-failure FailureObserved from handle_prompt_events.
+
+But what about tools NOT wrapped by RecoveryHintTool (ask_user, todo, web_search)? Their failures would no longer be recorded. Let me check what kind of errors these tools can produce...
+
+Actually, let me first check if these tools are wrapped by RecoveryHintTool elsewhere. Let me look at `build_tools`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1380..1430 ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `web_search` IS wrapped with `with_recovery_hints` and `with_truncation`. So the only unwrapped tools are `ask_user` and `todo`. 
+
+`ask_user` - only available in interactive mode, asks the user a question. It's unlikely to "fail" in the traditional sense.
+`todo` - in-memory state management. Also unlikely to fail.
+
+So removing FailureObserved from handle_prompt_events for tool failures and relying on RecoveryHintTool to record it is safe.
+
+But wait, I also need to add the `state` import to tool_wrappers.rs. Let me also check what header imports are there...
+
+Now let me implement the changes. My plan:
+
+1. **src/tool_wrappers.rs**: 
+   - Add a `state::record` call in RecoveryHintTool.execute() for the `Failed(msg)` error path
+   - Add a `state::record` call for the `other` error path
+   - Use `crate::state::record(crate::state::EventType::FailureObserved, crate::state::Actor::Harness, payload)` (fully qualified to avoid adding imports)
+
+2. **src/prompt.rs**:
+   - Remove the FailureObserved recording at lines 899-910 (tool failures)
+   - Keep the InputRejected FailureObserved at lines 958-966
+   - Add FailureObserved recording in handle_stream_json_events for tool failures (since this path sets last_tool_error but doesn't record FailureObserved... wait, RecoveryHintTool already records it!)
+   
+   Actually, since RecoveryHintTool records FailureObserved when a tool fails, and handle_stream_json_events processes the same tools, handle_stream_json_events doesn't need to add FailureObserved. The RecoveryHintTool recording covers it.
+
+   But wait - handle_stream_json_events currently sets `last_tool_error` at line 1714, creating the transcript-only failures. Even with RecoveryHintTool recording FailureObserved, the transcript error status is still tracked. So the gap is filled.
+
+3. **Test**: Add a test in tool_wrappers.rs that verifies RecoveryHintTool records a FailureObserved state event. But wait, `state::record` is a no-op when no recorder is initialized (which is the case in tests). So I can't directly test state event recording in unit tests.
+
+   Let me think about this... I could:
+   - Make the test verify that the attempt count is recorded and the error message is enriched (which is already tested)
+   - Add a unit test for the FailureObserved recording by mocking or initializing the state recorder
+   - Or skip the state event test and just verify through the existing tests
+
+   Actually, let me look at how other tests verify state events.
+
+Let me now also think about whether removing FailureObserved from handle_prompt_events could break existing tests. Let me search for tests in prompt.rs that verify FailureObserved recording.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src/prompt.rs ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are only two references to FailureObserved in prompt.rs (at lines 901 and 960), and they're both in the `handle_prompt_events` function. No tests in prompt.rs directly reference FailureObserved. So removing the tool-failure recording (line 901) shouldn't break existing tests.
+
+Now let me proceed with the implementation. Let me also set up a todo list:
+
+1. Add FailureObserved recording in RecoveryHintTool.execute() for both error paths
+2. Remove FailureObserved recording from handle_prompt_events for tool failures (lines 899-910)
+3. Add FailureObserved recording in handle_stream_json_events for tool failures
+4. Add a unit test for RecoveryHintTool's FailureObserved recording (or a verification test)
+5. Verify with cargo build && cargo test
+
+Wait, for point 3: handle_stream_json_events also needs FailureObserved because the RecoveryHintTool records it at the tool execution level, not at the event handler level. So both handle_prompt_events and handle_stream_json_events would receive FailureObserved from RecoveryHintTool. But handle_prompt_events would double-record if I don't remove it.
+
+Actually, let me reconsider. The task says to add FailureObserved in RecoveryHintTool AND keep prompt.rs's recording but make sure they don't double-count.
+
+Hmm, one approach: instead of removing FailureObserved from handle_prompt_events, I could detect whether the tool failure was already recorded by RecoveryHintTool. One way: RecoveryHintTool sets a marker in the ToolResult or ToolError. But ToolError doesn't support custom metadata.
+
+Another approach: RecoveryHintTool records FailureObserved with a specific payload field (like `source: "recovery_hint_tool"`), and handle_prompt_events records with `source: "tool"`. Downstream tools can deduplicate. But this doesn't satisfy "No double-counting."
+
+Actually, the simplest and most correct approach is:
+1. Add FailureObserved in RecoveryHintTool (with payload including tool_name, attempt, error_preview)
+2. Remove FailureObserved from handle_prompt_events (for tool failures only, keep InputRejected)
+3. RecoveryHintTool covers all major tools, and the unwrapped ones (ask_user, todo) are simple enough that their failures are rare and less diagnostic
+
+Let me go with this approach. Let me also add FailureObserved to handle_stream_json_events as a safety net, in case something bypasses RecoveryHintTool.
+
+Wait, nothing can bypass RecoveryHintTool for wrapped tools. The tool is the RecoveryHintTool wrapper, and execute() is the entry point. So if I add FailureObserved in RecoveryHintTool, all wrapped tools are covered.
+
+Let me just implement it.
+
+Actually, I realize I need to also handle one edge case: what if a tool fails with an error that RecoveryHintTool doesn't catch? RecoveryHintTool only catches `ToolError::Failed(msg)` and non-`Failed` errors (`NotFound`, `InvalidArgs`, `Cancelled`). If there's some other error type I'm not aware of, it would propagate up without being recorded. But since RecoveryHintTool's match is exhaustive (Ok, Err(Failed), Err(other)), this should be fine.
+
+Let me now implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding of the failure tracking paths. Let me set up my task list and implement:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (52ms)
+  ▶ todo ✓ (56ms)
+  ▶ todo ✓ (96ms)
+  ▶ todo ✓ (142ms)
+  ▶ todo ✓ (98ms)
+  ▶ todo ✓ (142ms)
+  6 tools completed in 1.0s (6 ✓)
+
+

@@ -1,0 +1,896 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the implementation contract, then assess the evidence and edit surface before making any changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (192ms)
+ ✓ (243ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full preseed_session_plan.py file more carefully, focusing on the `choose_task` function and the TASKS dict. I also need to read the state_graph_tools.py and its test file to understand what's involved.
+
+The key question from the task is: when graph-derived pressure shows analysis-only/no-edit task attempts (reverted_no_edit, task_analysis_only_attempt_count, low task_success_rate), does the preseed script select a concrete, small, landable follow-up task instead of a broad or protected-file harness task?
+
+Let me look at the `choose_task` function and the TASKS list to understand the current logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:200..400  ▶ read scripts/preseed_session_plan.py:400..600 ✓ (222ms)
+ ✓ (214ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the `choose_task` function and then look at the rest of the file to understand the full flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:596..696  ▶ read scripts/preseed_session_plan.py:700..800 ✓ (202ms)
+ ✓ (182ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the remaining tests and the rest of the file, then read the state_graph_tools.py to understand the `build_causal_chains` and `evolution_suggestions` functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:800..1000  ▶ read scripts/state_graph_tools.py:1400..1500 ✓ (225ms)
+ ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the rest of `state_graph_tools.py` to understand `build_causal_chains` and `evolution_suggestions`, focusing on how analysis-only pressure is handled.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_analysis_only' in scripts/state_graph_tools.py  ▶ search 'reverted_no_edit' in scripts/state_graph_tools.py ✓ (123ms)
+ ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `reverted_no_edit` key doesn't appear in state_graph_tools.py. Let me search for how analysis-only pressure gets integrated into the preseed's `choose_task`. Let me also look at the `build_causal_chains` function and understand how the graph-derived pressure flows.
+
+Let me look at how `task_no_edit_revert_count` and `task_analysis_only_attempt_count` flow from state_graph_tools to preseed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_no_edit_revert' in scripts/state_graph_tools.py  ▶ search 'task_success_rate' in scripts/state_graph_tools.py ✓ (109ms)
+ ✓ (133ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `task_artifact_rows` in state_graph_tools.py creates the problem labels and how the gnome values get built. I need to understand the full flow:
+
+1. `state_graph_tools.py::build_causal_chains` → `evolution_suggestions` → prints "Graph-derived Next-Task Pressure" 
+2. `preseed_session_plan.py::choose_task` reads that section and maps it to tasks
+3. The analysis-only pressure path: when `task_analysis_only_attempt_count > 0` or `task_no_edit_revert_count > 0`, the preseed should pick the "Make analysis-only task pressure landable" task.
+
+Let me look at the current flow more carefully. Let me check the `evolution_suggestions` function to see how it outputs the graph-derived pressure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1500..1600  ▶ read scripts/state_graph_tools.py:1290..1490 ✓ (209ms)
+ ✓ (213ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the flow. Let me now understand the full picture of the current code:
+
+1. `state_graph_tools.py` builds gnome values like `task_no_edit_revert_count` and `task_analysis_only_attempt_count`, then `evolution_suggestions` outputs "Graph-derived Next-Task Pressure" suggestions.
+
+2. `preseed_session_plan.py::choose_task` reads these sections and:
+   - Detects `_has_analysis_only_pressure(metrics)` when `task_analysis_only_attempt_count > 0` or `task_no_edit_revert_count > 0` or `reverted_no_edit > 0`
+   - When analysis-only pressure is active, it skips tasks with >3 files (line 579)
+   - When analysis-only pressure is active and lifecycle task is present, it skips lifecycle (lines 581-583)
+   - It also skips protected files (line 575)
+   - The "Make analysis-only task pressure landable" task has matching keys including "no edit revert", "implementation ended without file progress", "analysis only", etc.
+
+Now the task says:
+> When graph-derived pressure shows analysis-only/no-edit task attempts (reverted_no_edit, task_analysis_only_attempt_count, low task_success_rate), the preseed script must select a concrete, small, landable follow-up task instead of a broad or protected-file harness task.
+
+The current code already seems to handle this well:
+- `_has_analysis_only_pressure` checks for `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit` 
+- Analysis-only pressure bypasses lifecycle tasks
+- Analysis-only pressure skips tasks with >3 files
+- Protected files are skipped
+- The "Make analysis-only task pressure landable" task is well-defined
+
+Let me look at what might be missing. The task mentions:
+- `task_success_rate` pressure should also trigger landable task selection
+- The `_ANALYSIS_ONLY_METRICS` tuple only has 3 keys: `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`
+
+Looking at the `evolution_suggestions` function, when `task_success_rate < 1.0`, it adds "Raise verified task success rate". But this doesn't necessarily trigger analysis-only pressure. The key question is: when `task_success_rate` is low and the dominant failure is `reverted_no_edit`, does the preseed properly select the landable task?
+
+Let me trace through more carefully. The `evolution_suggestions` output goes into the assessment text under "Graph-derived Next-Task Pressure". Then `choose_task` reads `current_evidence_text` and looks for matching keys. The "Make analysis-only task pressure landable" task has these keys:
+
+```
+"keys": (
+    "no edit revert",
+    "implementation ended without file progress",
+    "implementation task reverted without touching files",
+    "tasks planned but reverted without touching",
+    "reverted without touching any source file",
+),
+```
+
+And the `evolution_suggestions` outputs like:
+- "Force reverted tasks to leave concrete evidence" → contains "reverted" (matches)
+- "Force analysis-only attempts into action" → contains "analysis only" (matches)
+- "Raise verified task success rate" → does NOT contain any of those keys
+
+Wait, but "Raise verified task success rate" line might contain `reverted_no_edit` from the `dominant_task_failure_detail`. Let me check.
+
+Looking at `dominant_task_failure_detail`:
+
+```python
+def dominant_task_failure_detail(gnomes: dict[str, object]) -> str:
+```
+
+Let me search for this.
+
+Actually, looking at line 1373-1374:
+```python
+failure_detail = dominant_task_failure_detail(gnomes)
+reason_prefix = f"{failure_detail} " if failure_detail else ""
+```
+
+And the add() call at 1375-1382:
+```python
+add(
+    "task",
+    "Raise verified task success rate",
+    reason_prefix + "...",
+    ...
+)
+```
+
+So when task_success_rate is low and the dominant failure is reverted_no_edit, the suggestion text would contain something like "Dominant failure: reverted_no_edit." which doesn't match any keys of the analysis-only task.
+
+But the "Raise verified task success rate" suggestion doesn't match the keys for the "Make analysis-only task pressure landable" task. The keys require "no edit revert" or similar.
+
+So the gap is: when task_success_rate is low and the dominant failure is reverted_no_edit, the "Raise verified task success rate" suggestion text may not trigger the analysis-only task selection.
+
+However, reading the task description more carefully:
+
+> When graph-derived pressure shows analysis-only/no-edit task attempts (reverted_no_edit, task_analysis_only_attempt_count, low task_success_rate), the preseed script must select a concrete, small, landable follow-up task instead of a broad or protected-file harness task.
+
+The intention seems to be: when any of these three signals occur, the preseed should land a small, focused task. Let me check if the current code already handles this well enough...
+
+Actually, looking at this more carefully, the three signals are:
+1. `reverted_no_edit` - already in `_ANALYSIS_ONLY_METRICS` (it's one of the gnome keys)
+2. `task_analysis_only_attempt_count` - already in `_ANALYSIS_ONLY_METRICS`
+3. Low `task_success_rate` - NOT yet in `_ANALYSIS_ONLY_METRICS`, but the "Raise verified task success rate" suggestion text would need to trigger the analysis-only path
+
+But wait - the three signals listed in the task's Evidence section mention gnome metric keys. Let me re-read:
+
+> - Day 111 session: 1/2 tasks, with one reverted_no_edit (no file progress, no terminal evidence).
+> - Day 113 session 2: 0/1 tasks, obsolete_already_satisfied (preseed picked a task for already-implemented work).
+> - Trajectory graph pressure still carries reverted_no_edit and task_analysis_only_attempt_count signals.
+> - Current 10-session win streak means this is preventative — the pressure exists but isn't acute.
+
+So the pressure signals are:
+1. `reverted_no_edit` - already handled  
+2. `task_analysis_only_attempt_count` - already handled
+3. When `task_success_rate` is low - the "Raise verified task success rate" text
+
+Let me now look at what specifically the Fallback says:
+
+> If the implementation agent finds that the analysis-only/no-edit pressure path is already adequately handled (e.g., the Day 113 11:17 fix resolved the stale-detection issue and the obsolete_already_satisfied case is one-off), write a task_01_obsolete.md explaining the evidence and stop. Do not edit code if the problem is already fixed.
+
+Let me now run the self-tests to see the current state, and also look at what the Day 113 11:17 fix was.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 16.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 ✓ (212ms)
+ ✓ (510ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! So Day 112 already had "Make analysis-only task pressure landable (Task 1)" committed. Let me check what that commit did.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 47d8f3f --stat 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 47d8f3f -- scripts/pr… ✓ (214ms)
+ ✓ (522ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's Task 2 on Day 112. Let me check Task 1 which is specifically about analysis-only pressure:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 2a40959 --stat 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 2a40959 2>&1 | head -… ✓ (322ms)
+ ✓ (403ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So Day 112 already added:
+1. `reverted_no_edit` to `_ANALYSIS_ONLY_METRICS`
+2. `_task_file_count` helper
+3. File-count guard in `choose_task`
+4. Tests for analysis-only pressure paths
+
+And then Day 113 11:17 added the word-boundary match for "fail"/"error". Let me check that commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 210e2ad 2>&1 | head -… ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the Day 113 11:17 fix was about word-boundary matching for "fail"/"error" in `_self_tests_show_resolution`. That's a different issue - it's about the stale-task detection (contradiction check), not about analysis-only pressure specifically.
+
+Now, the Fallback says:
+> If the implementation agent finds that the analysis-only/no-edit pressure path is already adequately handled (e.g., the Day 113 11:17 fix resolved the stale-detection issue and the obsolete_already_satisfied case is one-off), write a task_01_obsolete.md explaining the evidence and stop.
+
+Let me carefully assess whether the current code already adequately handles analysis-only pressure:
+
+1. `_has_analysis_only_pressure` checks for `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit` - ✓
+2. Analysis-only pressure skips tasks with >3 files - ✓
+3. Analysis-only pressure skips protected files - ✓
+4. Analysis-only pressure takes priority over lifecycle cleanup - ✓
+5. The "Make analysis-only task pressure landable" task has proper keys - ✓
+6. Tests cover analysis-only pressure scenarios - ✓
+
+But wait - there's one gap I see. The gnome key `task_no_edit_revert_count` and the preseed metric key `task_no_edit_revert_count` match - good. But `reverted_no_edit` is not a gnome key from `state_graph_tools.py` - let me check.
+
+In `state_graph_tools.py`, the `task_artifact_rows` function classifies tasks and produces problem labels like "no_edit_revert" (line 531). The gnome key is `task_no_edit_revert_count`. But `reverted_no_edit` is not a key that state_graph_tools produces - it's a string that might appear in assessment text.
+
+Actually wait, let me check. The `evolution_suggestions` function's output for task_no_edit_revert is:
+```
+Force reverted tasks to leave concrete evidence
+```
+And the assessment text from the trajectory might mention "reverted_no_edit" explicitly. Let me look at how the trajectory text gets constructed.
+
+But actually - the preseed's `_has_analysis_only_pressure` checks for `reverted_no_edit` as a standalone numeric metric in the assessment text. The question is: does the assessment text ever contain `reverted_no_edit=2` or similar?
+
+Looking at the test case (line 766):
+```
+- **Task-state counts**: reverted_no_edit=4 in recent window.
+```
+
+This is synthetic assessment text. In real assessments, would `reverted_no_edit` appear as a metric? Let me check how assessment text is generated.
+
+Actually, looking at the `evolution_suggestions` function more carefully... The `task_no_edit_revert_count` suggestion text contains "reverted" but not "reverted_no_edit". However, the gnome key `task_no_edit_revert_count` IS already in `_ANALYSIS_ONLY_METRICS`.
+
+So the three keys in `_ANALYSIS_ONLY_METRICS` are:
+1. `task_analysis_only_attempt_count` - from gnomes, appears as a numeric metric
+2. `task_no_edit_revert_count` - from gnomes, appears as a numeric metric
+3. `reverted_no_edit` - this would appear in the "dominant failure detail" text from `evolution_suggestions` or in trajectory text
+
+Wait, actually looking more carefully, the `_has_analysis_only_pressure` function uses `numeric_metrics` which extracts `reverted_no_edit=N` patterns. The `reverted_no_edit` key would only match if the assessment text contains `reverted_no_edit=1` or similar. In real assessments, `task_no_edit_revert_count` is the gnome key, not `reverted_no_edit`.
+
+But `reverted_no_edit` could also appear in the dominant_task_failure_detail output. Let me check...
+
+Looking at `dominant_task_failure_detail`:
+
+```python
+def dominant_task_failure_detail(gnomes: dict[str, object]) -> str:
+```
+
+Let me search for this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'dominant_task_failure_detail' in scripts/state_graph_tools.py ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:693..733 ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `dominant_task_failure_detail` outputs text like: "Dominant task failure: task_no_edit_revert_count=1 (reverted tasks without edits)." which does NOT contain "reverted_no_edit" as a word. It contains "reverted tasks without edits" which doesn't match any key in the analysis-only pressure task.
+
+So the `reverted_no_edit` key in `_ANALYSIS_ONLY_METRICS` is somewhat of a catch for assessment text that explicitly contains `reverted_no_edit=N`. But this is likely already covered by `task_no_edit_revert_count`.
+
+Now, let me focus on what the task actually asks for. Let me re-read it:
+
+> **Objective:**
+> When graph-derived pressure shows analysis-only/no-edit task attempts (reverted_no_edit, task_analysis_only_attempt_count, low task_success_rate), the preseed script must select a concrete, small, landable follow-up task instead of a broad or protected-file harness task.
+
+The three signals are:
+1. `reverted_no_edit` / `task_no_edit_revert_count` - already covered
+2. `task_analysis_only_attempt_count` - already covered
+3. Low `task_success_rate` - not directly in `_ANALYSIS_ONLY_METRICS`
+
+The current flow: when `task_success_rate < 1.0`, the `evolution_suggestions` function outputs "Raise verified task success rate" with potential failure detail like "Dominant task failure: task_no_edit_revert_count=1". This text may or may not match the keys for the analysis-only task.
+
+For the "Raise verified task success rate" text to trigger the analysis-only task, it would need to contain "no edit revert" or similar. Let me check if the dominant failure detail text contains any matching keys.
+
+The dominant failure detail for `task_no_edit_revert_count` outputs: "Dominant task failure: task_no_edit_revert_count=1 (reverted tasks without edits)." — this contains "reverted tasks without edits" which doesn't match the analysis-only task keys ("no edit revert", "implementation ended without file progress", etc.)
+
+Wait, actually "reverted tasks without edits" — does that match "no edit revert"? No, the substring "no edit" doesn't appear. "reverted tasks without edits" doesn't contain "no edit revert".
+
+But actually, looking at the task keys:
+```python
+"keys": (
+    "no edit revert",
+    "implementation ended without file progress",
+    "implementation task reverted without touching files",
+    "tasks planned but reverted without touching",
+    "reverted without touching any source file",
+),
+```
+
+"no edit revert" — this would match "reverted tasks without edits" only if the substring "no edit" appears... it doesn't.
+
+So the gap might be: when `task_success_rate` is low and the dominant failure is `task_no_edit_revert_count`, the "Raise verified task success rate" line doesn't match any analysis-only task keys.
+
+But wait - when `task_no_edit_revert_count > 0` is in the gnomes, there's already a separate suggestion: "Force reverted tasks to leave concrete evidence" which DOES appear separately from the task_success_rate suggestion. And that "Force reverted tasks" line contains "reverted" which would match "reverted without touching any source file" key... hmm, actually "reverted" by itself wouldn't match "reverted without touching any source file" because that's checked via `any(key in lower for key in task["keys"])` — "reverted" IS a substring of "reverted without touching any source file", so yes it would match.
+
+Wait no, the check is `any(key in lower for key in task["keys"])` which checks if the key is in the lowercased text. So "reverted without touching any source file" in lower is checked against the text. The text "Force reverted tasks to leave concrete evidence" in lower is "force reverted tasks to leave concrete evidence" — does "reverted without touching any source file" appear in that? No! It's "reverted without touching any source file" that's the key, not "reverted". The key is checked against the text, not the other way around.
+
+So the check is: does the key string appear anywhere in the lowercased assessment text?
+- Key: "no edit revert" — would it appear in "force reverted tasks"? No.
+- Key: "implementation ended without file progress" — would it appear? No.
+- Key: "implementation task reverted without touching files" — would it appear? No.
+- Key: "tasks planned but reverted without touching" — would it appear? No.
+- Key: "reverted without touching any source file" — would it appear? No.
+
+So NONE of the analysis-only task keys match the "Force reverted tasks to leave concrete evidence" suggestion text. The analysis-only task is selected only when the assessment text explicitly mentions those phrases, which would happen from the trajectory text or from specific assessment sections.
+
+But the `_has_analysis_only_pressure` function works differently — it checks for numeric metrics `task_analysis_only_attempt_count > 0` or `task_no_edit_revert_count > 0` or `reverted_no_edit > 0`. When those are detected, `analysis_only_active` is True, and then the choose_task function applies the guards:
+1. Skip tasks with >3 files
+2. Skip lifecycle tasks
+3. Skip protected files
+
+So actually, even if the analysis-only task itself isn't selected (because its keys don't match), the analysis-only pressure flags still affect task selection by filtering out large/protected tasks.
+
+But wait - looking at the `choose_task` function again more carefully:
+
+```python
+for task in TASKS:
+    if not any(key in lower for key in task["keys"]):
+        continue
+    ...
+    if analysis_only_active and _task_file_count(task) > 3:
+        continue
+    ...
+```
+
+If no task's keys match the assessment text, all tasks are skipped, and the fallback is returned. So the `analysis_only_active` guards only matter when at least one task's keys match. If the analysis-only task's keys don't match the assessment text, then the analysis-only task isn't even a candidate, and the guards filter out other tasks, potentially leading to the fallback.
+
+Actually wait, re-reading the `_has_analysis_only_pressure` function: it looks for numeric metrics in the assessment text. These metrics come from the `numeric_metrics` function which extracts `key=value` patterns. If the assessment contains `task_analysis_only_attempt_count=2` or `task_no_edit_revert_count=1` or `reverted_no_edit=4`, then `_has_analysis_only_pressure` returns True.
+
+And the `evolution_suggestions` function outputs lines like:
+```
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): ...
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): ...
+```
+
+These lines DO contain `task_analysis_only_attempt_count=2` and `task_no_edit_revert_count=1`, so `numeric_metrics` would extract them.
+
+So the flow works: `_has_analysis_only_pressure` detects the pressure from the suggestion lines, then `choose_task` applies the guards.
+
+BUT - does the "Raise verified task success rate" line also contribute? When `task_success_rate` is low, the suggestion is:
+```
+Raise verified task success rate ... task_success_rate=0.667
+```
+
+This line doesn't contain analysis-only metrics, so `_has_analysis_only_pressure` might not fire from `task_success_rate` alone. BUT - if there are also `task_no_edit_revert_count` or `task_analysis_only_attempt_count` values in the gnomes, those get their own separate suggestion lines.
+
+So the flow for "low task_success_rate with no-edit dominant failure" already works because:
+1. `task_no_edit_revert_count` (or task_analysis_only_attempt_count) appears as a separate suggestion line
+2. `_has_analysis_only_pressure` detects it
+3. The guards filter tasks appropriately
+
+BUT - what if `task_success_rate` is low but the dominant failure is NOT no-edit? Then the "Raise verified task success rate" suggestion would fire but without analysis-only pressure. The task would need to be something generic about improving task success. This seems correct - the analysis-only pressure path is specifically for when the failure mode IS analysis-only.
+
+Now let me also consider: what if `task_success_rate` is low AND the dominant failure IS reverted_no_edit? In this case:
+1. The "Raise verified task success rate" line has failure_detail = "Dominant task failure: task_no_edit_revert_count=1 (reverted tasks without edits)."
+2. The "Force reverted tasks to leave concrete evidence" line also appears separately
+
+The `_has_analysis_only_pressure` fires from the `task_no_edit_revert_count` metric. Good.
+
+So... is there actually a missing gap? Let me think about this differently. The task says:
+
+> The preseed script is the harness's first line of task selection. When it picks tasks that are too broad, touch protected files, or are already satisfied, the implementation agent wastes a session.
+
+The current code already handles:
+- Skipping protected files ✓
+- Skipping >3 file tasks when analysis pressure is active ✓
+- Prioritizing analysis-only repair over lifecycle ✓
+- Contradiction detection ✓
+
+The Day 113 11:17 fix added word-boundary matching for stale-task detection. That's separate.
+
+Now what about the `task_success_rate` specifically? Let me check - does `_has_analysis_only_pressure` catch when `task_success_rate` is low and the dominant failure is reverted_no_edit?
+
+If `task_no_edit_revert_count > 0`, then yes, `_has_analysis_only_pressure` fires from that metric. The `task_success_rate` is an independent signal.
+
+The only case where `task_success_rate` is low but neither `task_no_edit_revert_count` nor `task_analysis_only_attempt_count` is positive: then `_has_analysis_only_pressure` is False, and the "Raise verified task success rate" text tries to match task keys. This is a different scenario - not no-edit pressure.
+
+OK so I think the current code may already handle the analysis-only pressure path adequately. Let me check if there's any remaining gap by looking at the test coverage and the `test_state_graph_tools.py` file.
+
+Let me also look at what specifically might need to change. The task says the files are:
+- scripts/preseed_session_plan.py
+- scripts/state_graph_tools.py
+- scripts/test_state_graph_tools.py
+
+Let me check if state_graph_tools.py has any analysis-only pressure handling gaps.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1360..1560 ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `task_no_edit_revert_count` more carefully. The `task_artifact_rows` in state_graph_tools.py builds the problem labels. Let me check how `no_edit_revert` is classified.
+
+Actually, I now see the full picture. Let me now think about what's really missing:
+
+The existing code at line 1478-1486 handles `task_no_edit_revert_count`:
+```python
+if int(gnomes.get("task_no_edit_revert_count") or 0) > 0:
+    add(
+        "implementation",
+        "Force reverted tasks to leave concrete evidence",
+        "Implementation tasks reverted without touching files; require an early scoped edit, obsolete note, or concrete blocker instead of analysis-only work.",
+        "task_no_edit_revert_count",
+        gnomes.get("task_no_edit_revert_count"),
+        93 if task_success_pressure_active else 86,
+    )
+```
+
+And the `task_analysis_only_attempt_count` at lines 1487-1495:
+```python
+if int(gnomes.get("task_analysis_only_attempt_count") or 0) > 0:
+    add(
+        "implementation",
+        "Force analysis-only attempts into action",
+        "Implementation ended without file progress or terminal evidence; retry once with an action-first checkpoint and require an early edit, obsolete note, or blocked note.",
+        "task_analysis_only_attempt_count",
+        gnomes.get("task_analysis_only_attempt_count"),
+        94 if task_success_pressure_active else 90,
+    )
+```
+
+These both output lines like:
+```
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): Explanation...
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Explanation...
+```
+
+The preseed `numeric_metrics` extracts `task_no_edit_revert_count=1` and `task_analysis_only_attempt_count=2`.
+
+And `_has_analysis_only_pressure` checks for these metrics.
+
+So the flow works. Let me now look at ONE MORE thing: the `task_success_rate` scenario. When `task_success_rate < 1.0` AND the dominant failure is `task_no_edit_revert_count`, we get BOTH:
+1. "Raise verified task success rate" line with the dominant failure detail
+2. "Force reverted tasks to leave concrete evidence" line
+
+The analysis-only pressure fires from #2. Good.
+
+But what if `task_success_rate < 1.0` and the dominant failure is `task_analysis_only_attempt_count`? Same story - both lines appear.
+
+What if `task_success_rate < 1.0` and the dominant failure is something ELSE (like `task_api_error_count`)? Then the analysis-only pressure would NOT fire (since no `task_no_edit_revert_count` or `task_analysis_only_attempt_count`), and the task selection would be for whatever matches the assessment text. This is correct behavior.
+
+OK so I'm leaning toward the conclusion that this task is already adequately handled. But the Fallback says:
+> If the implementation agent finds that the analysis-only/no-edit pressure path is already adequately handled, write a task_01_obsolete.md explaining the evidence and stop.
+
+BUT - the evolve skill also says:
+> If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation.
+
+So if the code already satisfies the task, I should either:
+1. Add a regression test to prove it stays satisfied, OR
+2. Write task_01_obsolete.md
+
+Let me check if there are any gaps in the test coverage. The existing tests already cover:
+- `reverted_no_edit=4` → selects analysis-only task (line 763-771)
+- `reverted_no_edit=4` + lifecycle → analysis-only wins (line 773-784)
+- `task_analysis_only_attempt_count=3` with file-count guard (line 790-803)
+
+But what about `task_success_rate`? The task explicitly mentions it as a third signal alongside `reverted_no_edit` and `task_analysis_only_attempt_count`. However, `task_success_rate` is not in `_ANALYSIS_ONLY_METRICS` - it's handled differently through the "Raise verified task success rate" suggestion.
+
+Let me think about whether the `task_success_rate` signal should also trigger the analysis-only pressure. The task says:
+
+> When graph-derived pressure shows analysis-only/no-edit task attempts (reverted_no_edit, task_analysis_only_attempt_count, low task_success_rate)
+
+I think `low task_success_rate` here means: when the task success rate is low AND the dominant failure is no-edit. In that case, the `task_no_edit_revert_count` or `task_analysis_only_attempt_count` gnome would also be >0, triggering the analysis-only pressure.
+
+But what if `task_success_rate` is low and the dominant failure is `task_no_edit_revert_count`? The `dominant_task_failure_detail` returns "Dominant task failure: task_no_edit_revert_count=N (reverted tasks without edits)." The "Raise verified task success rate" line would contain this detail. But this doesn't directly help analysis-only pressure detection.
+
+Wait, the metric `task_no_edit_revert_count` already appears separately (line 1478-1486), so it would be extracted as `task_no_edit_revert_count=N` anyway. The analysis-only pressure fires from that.
+
+Hmm, but what if `task_no_edit_revert_count` is 0 but `task_analysis_only_attempt_count > 0` and `task_success_rate < 1.0`? Then:
+1. `_has_analysis_only_pressure` fires from `task_analysis_only_attempt_count > 0`
+2. The analysis-only task is selected if its keys match
+
+Actually, I think the key insight is: `task_success_rate` by itself doesn't need to be in `_ANALYSIS_ONLY_METRICS` because the analysis-only pressure is already detected from the child metrics (`task_no_edit_revert_count`, `task_analysis_only_attempt_count`). `task_success_rate` is a parent metric that aggregates all failure types.
+
+BUT - there IS one scenario where `task_success_rate < 1.0` AND neither `task_no_edit_revert_count` nor `task_analysis_only_attempt_count` is >0 AND yet the failure is analysis-only. This would happen if the no-edit count comes from a different source, or if the dominant failure detail mentions it but the gnome keys are different.
+
+Actually I think the real gap might be something simpler. Let me re-read the task's Evidence:
+
+> - Day 111 session: 1/2 tasks, with one reverted_no_edit (no file progress, no terminal evidence).
+
+This suggests `reverted_no_edit` as a task-outcome status.
+
+> - Day 113 session 2: 0/1 tasks, obsolete_already_satisfied (preseed picked a task for already-implemented work).
+
+This is about stale task detection.
+
+> - Trajectory graph pressure still carries reverted_no_edit and task_analysis_only_attempt_count signals.
+
+So the pressure signals ARE present.
+
+> - Current 10-session win streak means this is preventative — the pressure exists but isn't acute.
+
+So the system is working well right now, but the pressure is there.
+
+I think the task is essentially asking: "when the trajectory pressure says there were analysis-only/no-edit failures, make sure the preseed selects a small, landable task."
+
+And the current code ALREADY does this:
+- Detects analysis-only pressure
+- Skips protected files
+- Skips >3 file tasks
+- Skips lifecycle when analysis-only pressure is active
+
+So the code is already adequate. The Fallback would apply: write a task_01_obsolete.md.
+
+BUT - let me also check if the `task_success_rate` specifically needs integration. The task says "low task_success_rate" as a third signal. Currently, `task_success_rate` triggers "Raise verified task success rate" which goes through the general task matching path, not the analysis-only pressure path. Should low `task_success_rate` also trigger analysis-only pressure?
+
+Looking at the `evolution_suggestions`:
+```python
+if task_success_rate is not None and task_success_rate < 1.0:
+    failure_detail = dominant_task_failure_detail(gnomes)
+    reason_prefix = f"{failure_detail} " if failure_detail else ""
+    add("task", "Raise verified task success rate", ...)
+```
+
+When `task_success_rate < 1.0` and the dominant failure is `task_no_edit_revert_count`, the suggestion text is:
+```
+Raise verified task success rate (task_success_rate=0.667): Dominant task failure: task_no_edit_revert_count=1 (reverted tasks without edits). Selected or attempted tasks did not all finish...
+```
+
+This text contains `task_no_edit_revert_count=1` which `numeric_metrics` extracts. So `_has_analysis_only_pressure` DOES fire from this!
+
+Wait, let me verify. `numeric_metrics` extracts ALL `key=value` patterns. So from that suggestion text, it would extract:
+- `task_success_rate=0.667` → BUT `numeric_metrics` uses r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)" which requires the key to start with a letter and contain only lowercase alphanumeric + underscore. `task_success_rate` matches. But it extracts as int...
+- `task_no_edit_revert_count=1` → This also matches! And it would be `task_no_edit_revert_count: 1` in the metrics dict.
+
+Wait, `numeric_metrics` returns `dict[str, int]`. But the key has underscores in `task_no_edit_revert_count`. Let me check the regex more carefully:
+
+```python
+r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)"
+```
+
+`task_no_edit_revert_count` contains only `[a-z_]` characters, so it matches. Yes, `numeric_metrics` would extract `task_no_edit_revert_count=1` from that text. And then `_has_analysis_only_pressure` would find `task_no_edit_revert_count: 1` and return True.
+
+Great, so even the `task_success_rate` path properly triggers analysis-only pressure when the dominant failure is no-edit.
+
+OK, I'm now fairly convinced that the current code already handles this adequately. The Day 112 commit (2a40959) already added the core analysis-only pressure handling, and the Day 113 11:17 commit (210e2ad) fixed the stale-task detection.
+
+But let me check if there's a specific missing test case: what if both `task_success_rate < 1.0` AND `task_no_edit_revert_count > 0`? Let me trace through the assessment text.
+
+The `evolution_suggestions` function outputs both:
+1. "Raise verified task success rate" line (with dominant failure detail)
+2. "Force reverted tasks to leave concrete evidence" line
+
+Both lines would go into the assessment under "Graph-derived Next-Task Pressure". The `choose_task` function would extract both. `_has_analysis_only_pressure` would find `task_no_edit_revert_count > 0` and return True. Then the analysis-only guards apply.
+
+Now, does the "Make analysis-only task pressure landable" task get selected? The keys are:
+```
+"no edit revert",
+"implementation ended without file progress",
+"implementation task reverted without touching files",
+"tasks planned but reverted without touching",
+"reverted without touching any source file",
+```
+
+The assessment text contains "Force reverted tasks to leave concrete evidence" and "Raise verified task success rate". Do any of the keys match?
+
+- "no edit revert" → not in "Force reverted tasks to leave concrete evidence"
+- "implementation ended without file progress" → not in either
+- etc.
+
+Hmm, NONE of the keys match the "Force reverted tasks" or "Raise verified task success rate" text. So the analysis-only task wouldn't be selected from those lines alone.
+
+BUT - looking at the tests (lines 761-803), the assessment text explicitly includes phrases like "reverted_no_edit", "analysis only", "no edit" etc. These come from the trajectory text, not from `evolution_suggestions`.
+
+So the question is: where does the assessment text come from that contains the matching phrases? It would come from the trajectory or the assessment itself, not from the graph-derived pressure section.
+
+OK, let me step back and think about this pragmatically. The code might be adequate. The Fallback says to write an obsolete note if so. But the evolve skill says I can also add a test to strengthen coverage.
+
+Let me check: is there a test that covers the scenario where `task_success_rate < 1.0` AND `task_no_edit_revert_count > 0` AND the analysis-only task is selected?
+
+Looking at the tests, there's:
+- Line 762-771: `reverted_no_edit=4` → analysis-only task
+- Line 773-784: `reverted_no_edit=4` + lifecycle → analysis-only task
+- Line 790-803: `task_analysis_only_attempt_count=3` + file-count guard
+
+But there's no test that covers `task_success_rate` as a signal. Let me also check if the analysis-only task has a matching key for "task success rate" or "raise verified task success rate".
+
+Looking at the analysis-only task keys again:
+```python
+"keys": (
+    "no edit revert",
+    "implementation ended without file progress",
+    "implementation task reverted without touching files",
+    "tasks planned but reverted without touching",
+    "reverted without touching any source file",
+),
+```
+
+None of these match "task success rate" or "raise verified". So even if `task_success_rate < 1.0` and the dominant failure is no-edit, the analysis-only task might not be selected because its keys don't match the "Raise verified task success rate" text.
+
+But wait - the `task_no_edit_revert_count` gnome also produces a separate "Force reverted tasks to leave concrete evidence" line. This line contains "reverted" but doesn't contain any of the analysis-only task keys either.
+
+So how does the analysis-only task actually get selected? Looking at the tests:
+- Test at line 762-771: "Task-state counts: reverted_no_edit=4" — this contains "no edit" which is a substring of "no edit revert"! Wait, the key is "no edit revert" and the text is "reverted_no_edit" — does "no edit revert" appear in "reverted_no_edit"? No! "no edit revert" is NOT a substring of "reverted_no_edit".
+
+Let me re-check... `any(key in lower for key in task["keys"])` checks if any key is in the lowercased text.
+
+Text: "task-state counts: reverted_no_edit=4 in recent window. these are sessions where tasks were assigned but produced no file changes."
+
+Key "no edit revert" → is "no edit revert" in the text? The text has "reverted_no_edit" and "no file changes" but not "no edit revert". So no.
+
+But the test PASSES! So either the assessment text contains something that matches, or the analysis-only pressure flag causes the task to be selected via a different path.
+
+Wait, let me re-read the test:
+```python
+assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+
+This passes because the metric `reverted_no_edit=4` is extracted, and `_has_analysis_only_pressure` returns True. But does the analysis-only task's keys match? Let me trace through `choose_task`:
+
+1. `current_evidence_text` extracts "Graph-derived Next-Task Pressure" section
+2. `lower` = "...task-state counts: reverted_no_edit=4..."
+3. `metrics = numeric_metrics(lower)` → `{"reverted_no_edit": 4}`
+4. `analysis_only_active = _has_analysis_only_pressure(metrics)` → True (reverted_no_edit > 0)
+5. For each task in TASKS:
+   - `any(key in lower for key in task["keys"])` checks each task
+
+For the analysis-only task, keys include "no edit revert" — is "no edit revert" in "...reverted_no_edit..."? Let me check letter by letter:
+
+"No edit revert" → "no edit revert" (lowercase)
+"...task-state counts: reverted_no_edit=4..." → "r e v e r t e d _ n o _ e d i t"
+
+Is "no edit revert" a substring? The text has "reverted_no_edit" which contains "no_edit" but not "no edit" (with space). So "no edit revert" is NOT a substring.
+
+Hmm, so how does the test pass? Let me re-read the choose_task logic more carefully...
+
+Actually wait - the test might pass because the fallback task is selected. Let me trace:
+
+1. All tasks are checked. None of their keys match the assessment text.
+2. `candidates` list is empty.
+3. The fallback is returned: "Repair evidence-backed planning after no-task sessions"
+
+But the test asserts `task["title"] == "Make analysis-only task pressure landable"`. So either:
+- Some key DOES match, or
+- There's something else going on
+
+Let me look more carefully. The `revert` key... hmm, none of the keys contain just "revert" alone. But wait - let me look at ALL tasks including non-analysis-only ones that might have broader keys.
+
+Oh wait! Let me re-read the test carefully. The assessment text is:
+```
+- **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+```
+
+This contains "no file changes" — but that's not in the analysis-only keys.
+
+Actually, wait. Let me look at `current_evidence_text` again. It extracts these sections:
+- self-test results
+- yoagent-state deepseek feedback
+- structured state snapshot
+- graph-derived next-task pressure
+- capability gaps
+- bugs / friction found
+- open issues summary
+
+The test assessment has `## Graph-derived Next-Task Pressure` which maps to "graph-derived next-task pressure" in the wanted set. So the current evidence includes the pressure section.
+
+Now, `lower` would be the lowercased version of that section. Let me check for each analysis-only task key:
+
+- "no edit revert" — check if "no edit revert" in lower. lower has "reverted_no_edit". Is "no edit revert" in "reverted_no_edit"? No! "no edit" != "no_edit" (space vs underscore).
+
+But wait - python's `in` operator for strings does substring matching. "no edit revert" is the needle, "task-state counts: reverted_no_edit=4" is the haystack. Let me check character by character: "no edit revert" → n o SPACE e d i t. The haystack: "reverted_no_edit" → has "no_edit" but not "no edit". So NO match.
+
+Hmm, so how does the test pass? Let me actually run the test to see:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (14 lines) ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the test passes. Let me debug further to understand which key matches.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (27 lines) ✓ (105ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, "reverted_no_edit" is NOT in the keys. Let me re-read the TASKS dict for the analysis-only task...
+
+Actually, looking more carefully: the key "reverted_no_edit" is NOT listed in the analysis-only task's `keys` tuple. Let me look at it again:
+
+```python
+{
+    "keys": (
+        "no edit revert",
+        "implementation ended without file progress",
+        "implementation task reverted without touching files",
+        "tasks planned but reverted without touching",
+        "reverted without touching any source file",
+    ),
+```
+
+None of these are "reverted_no_edit". But the test shows "reverted_no_edit" MATCHES. That's weird...
+
+Unless the code has changed since the output I'm seeing. Let me re-read the current file directly to check the keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:190..240 ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The keys have already been updated to include broader matching:
+
+```python
+"keys": (
+    "force analysis-only attempts into action",  # Matches evolution_suggestions output
+    "force reverted tasks to leave concrete evidence",  # Matches evolution_suggestions output
+    "task_analysis_only_attempt_count",  # Matches numeric metrics
+    "analysis-only task attempts",  # Matches dominant failure detail
+    "analysis only task attempts",  # Variation
+    "task_no_edit_revert_count",  # Matches numeric metrics
+    "reverted_no_edit",  # Matches text mentions
+    "no-edit revert",  # Variation
+    "no edit revert",  # Variation
+    "implementation ended without file progress",  # Original
+    "implementation task reverted without touching files",  # Original
+    "tasks planned but reverted without touching",  # Original
+    "reverted without touching any source file",  # Original
+),
+```
+
+These keys cover:
+1. Matches from `evolution_suggestions` output: "force analysis-only attempts into action", "force reverted tasks to leave concrete evidence"
+2. Matches from numeric metrics: "task_analysis_only_attempt_count", "task_no_edit_revert_count"
+3. Matches from text mentions: "reverted_no_edit", "analysis-only task attempts"
+4. Original keys for explicit mentions
+
+So the current code is quite comprehensive. The keys match both the graph-derived pressure lines AND the numeric metrics AND explicit text mentions.
+
+Now, the `task_success_rate` scenario: when `task_success_rate < 1.0`, the `evolution_suggestions` outputs:
+```
+- Raise verified task success rate (task_success_rate=0.667): Dominant task failure: task_no_edit_revert_count=1 (reverted tasks without edits). Selected or attempted tasks did not all finish...
+```
+
+Does this match any analysis-only task key?
+- "force analysis-only attempts into action" → no
+- "force reverted tasks to leave concrete evidence" → no
+- "task_analysis_only_attempt_count" → no, that key is "task_no_edit_revert_count" which IS in the text, and "task_analysis_only_attempt_count" is a different key
+- "task_no_edit_revert_count" → YES! "task_no_edit_revert_count=1" is in the text, so `"task_no_edit_revert_count" in lower` returns True!
+
+So when `task_success_rate` is low and the dominant failure is `task_no_edit_revert_count`, the "Raise verified task success rate" line contains `task_no_edit_revert_count=1` which matches the `"task_no_edit_revert_count"` key.
+
+Great, so the third signal (`task_success_rate`) is already adequately covered through the dominant failure detail path.
+
+Now the question is: is there anything left to do? The code seems comprehensive. The Fallback says to write an obsolete note if already adequately handled.
+
+But wait, the evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+So I should either add a test or write an obsolete note. Let me check if there's a test for the `task_success_rate` + `task_no_edit_revert_count` scenario. Let me check the existing tests...
+
+Looking at the tests again:
+- Lines 761-803 cover analysis-only pressure scenarios
+- Line 762-771: `reverted_no_edit=4` → analysis-only task ✓
+- Line 773-784: `reverted_no_edit=4` + lifecycle → analysis-only task ✓ 
+- Line 790-803: `task_analysis_only_attempt_count=3` + file-count guard ✓
+
+But there's NO test for:
+- `task_success_rate` low + dominant `task_no_edit_revert_count` → analysis-only task
+- `task_success_rate` low + dominant `task_analysis_only_attempt_count` → analysis-only task
+
+Also, the `evolution_suggestions` "Force reverted tasks" line should trigger the analysis-only task via the "force reverted tasks to leave concrete evidence" key, but there's no test for that.
+
+Let me add a focused test. I can add:
+1. Test that "Force reverted tasks to leave concrete evidence" suggestion triggers analysis-only task
+2. Test that `task_success_rate` + dominant `task_no_edit_revert_count` triggers analysis-only task
+
+Actually, let me also check what the "Raise verified task success rate" text looks like when dominant failure is `task_analysis_only_attempt_count`. The `dominant_task_failure_detail` would output: "Dominant task failure: task_analysis_only_attempt_count=N (analysis-only task attempts)." This contains "task_analysis_only_attempt_count" and "analysis-only task attempts" which are both in the analysis-only task keys.
+
+OK so the coverage seems adequate for matching. But I should add a focused test for the `task_success_rate` path since the task explicitly mentions it as a signal.
+
+Actually, wait. Let me re-read the task more carefully:
+
+> **Success Criteria:**
+> - Graph-derived analysis-only/no-edit pressure selects a concrete, landable seed (Files list contains no protected implementation files, task is completable in 20 min).
+> - Preseed self-tests cover at least one analysis-only/no-edit pressure scenario.
+> - Existing tests continue to pass.
+
+"at least one analysis-only/no-edit pressure scenario" - the existing tests already cover 3 scenarios. So this criterion is met.
+
+> **Expected Evidence:**
+> - Future task manifests show landable Files entries when task-success repair pressure is present.
+> - Future trajectory pressure leads with implementation failure repair when reverted_no_edit or task_success_rate evidence shows no-edit task failure.
+> - Preseed self-test output includes coverage for the analysis-only pressure path.
+
+All of these are already met!
+
+I think the right move is to write an obsolete note. But I should also strengthen the tests if there's a specific gap. Let me think about what test would add the most value...
+
+The one scenario not explicitly tested is: `task_success_rate` low with dominant failure being `task_no_edit_revert_count`. Let me add that test since the task explicitly calls out `task_success_rate` as a signal, and having a test for it would prove that the "third signal" path works.
+
+Actually, let me reconsider. The task says:
+
+> If the implementation agent finds that the analysis-only/no-edit pressure path is already adequately handled (e.g., the Day 113 11:17 fix resolved the stale-detection issue and the obsolete_already_satisfied case is one-off), write a task_01_obsolete.md explaining the evidence and stop. Do not edit code if the problem is already fixed.
+
+The Day 113 11:17 fix was about word-boundary matching, which is related but separate. The Day 112 commit already added the core analysis-only pressure handling. The task was seeded from evidence that appears to have been fixed.
+
+But... I need to be careful. The task says "do not edit code if the problem is already fixed." The right approach per the evolve skill is to either add a regression test or write the obsolete note. Since the code already works and has tests, I should write the obsolete note.
+
+But actually, I realize there IS one potential gap: the "task_success_rate" signal integration. Let me check if the current code properly routes `task_success_rate` pressure to the analysis-only task. I want to verify this path by adding a test.
+
+Let me write a test that simulates what a real assessment would look like when `task_success_rate < 1.0` and the dominant failure is `task_no_edit_revert_count`. Then I can verify the analysis-only task is selected.
+
+Actually, let me take a step back. The evolve skill says:
+> If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation.
+
+Adding a focused regression test that exercises the `task_success_rate` path would strengthen the verification. Let me do that — it's a small, scoped edit.
+
+Let me add a test case in `preseed_session_plan.py` that:
+1. Has `task_success_rate=0.667` with dominant failure `task_no_edit_revert_count`
+2. Verifies that the analysis-only task is selected
+3. Verifies that protected files are excluded
+
+This would be a ~15 line addition to the `--test` block.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the situation. The Day 112 commit (2a40959) already added comprehensive analysis-only pressure handling with broad key matching and guards. The code is solid. However, the task explicitly mentions `task_success_rate` as a third signal alongside `reverted_no_edit` and `task_analysis_only_attempt_count`. Let me verify this path works and add a focused regression test to lock it in.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (61ms)
+  ▶ todo ✓ (62ms)
+  ▶ todo ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the task_success_rate path by running a quick test.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.4s (3 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (61ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (25 lines) ✓ (183ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `task_success_rate` path works. The "Raise verified task success rate" line contains "task_no_edit_revert_count=1" which matches the "task_no_edit_revert_count" key. And the "Force reverted tasks" line contains "force reverted tasks to leave concrete evidence" which matches that key. The analysis-only task is selected, with no protected files and 3 files (≤3).
+
+Now let me add a focused regression test. I need to find the right place in the test block.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (54ms)
+  ▶ todo ✓ (58ms)
+  2 tools completed in 170ms (2 ✓)
+
+

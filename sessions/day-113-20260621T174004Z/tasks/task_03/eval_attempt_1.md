@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: targeted_recovery_hint now handles file-not-found, permission-denied, and command-not-found for both bash and file tools (read_file/write_file/edit_file/list_files). 9 new unit tests cover each pattern including case insensitivity and non-matching edge cases. Existing bash exit-code and search regex hints are untouched. Hints are concise (≤200 chars). File-not-found distinguishes bash (suggests ls/find) from file tools (suggests list_files). All 16 targeted_recovery_hint tests pass.
