@@ -81,7 +81,7 @@ Uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an option
 
 **Evolution loop** (`scripts/evolve.sh`): pipeline:
 1. Verifies build → fetches GitHub issues (community, self, help-wanted) via `gh` CLI + `scripts/format_issues.py` → scans for pending replies on previously touched issues
-2. **Phase A** (Assessment/planning/refinement): assessment and planning write task files to `session_plan/`; optional A2.5 task refinement tightens broad tasks before manifest selection. When `YOYO_STRONG_REASONING=1` and `ANTHROPIC_API_KEY` is available, reasoning roles can use `anthropic/claude-opus-4-6`; otherwise they stay on the implementation model.
+2. **Phase A** (Assessment/planning): DeepSeek assessment and planning write task files to `session_plan/`.
 3. **Phase B** (Implementation): DeepSeek implementation agents execute each selected task (20 min each), with two fix loops: build/test failures get up to 10 fix attempts (10 min each), then the evaluator runs and rejections get up to 9 more fix attempts (10 min each). Reverts only after all fix attempts are exhausted. Max 3 tasks per session.
 4. Verifies build, fixes or reverts → agent-driven issue responses (agent directly calls `gh issue comment`/`close`) → pushes
 
