@@ -85,18 +85,33 @@ def auto_commit(repo: Path, files: list[str], message: str) -> dict[str, Any]:
         return {"attempted": True, "ok": False, "reason": add.stderr.strip() or "git add failed"}
     diff = git(repo, ["diff", "--cached", "--quiet"])
     if diff.returncode == 0:
-        return {"attempted": True, "ok": True, "reason": "no staged source changes after git add"}
+        file_exists = [f for f in files if (repo / f).exists()]
+        file_missing = [f for f in files if not (repo / f).exists()]
+        reason_parts = ["no staged source changes after git add"]
+        if file_missing:
+            reason_parts.append(f"missing from disk: {', '.join(file_missing)}")
+        if file_exists:
+            reason_parts.append(f"present on disk but nothing staged: {', '.join(file_exists)}")
+        return {
+            "attempted": True,
+            "ok": True,
+            "reason": "; ".join(reason_parts),
+            "file_exists": file_exists,
+            "file_missing": file_missing,
+            "committed": False,
+        }
     commit = git(repo, ["commit", "-m", message])
     return {
         "attempted": True,
         "ok": commit.returncode == 0,
         "reason": commit.stderr.strip() or commit.stdout.strip() or "git commit completed",
+        "committed": commit.returncode == 0,
     }
 
 
 def verify(repo: Path, base: str, message: str, auto: bool) -> dict[str, Any]:
     before = status(repo, base)
-    commit_result = {"attempted": False}
+    commit_result: dict[str, Any] = {"attempted": False}
     if auto and before["uncommitted_source_files"]:
         commit_result = auto_commit(repo, before["uncommitted_source_files"], message)
     after = status(repo, base)
@@ -105,6 +120,11 @@ def verify(repo: Path, base: str, message: str, auto: bool) -> dict[str, Any]:
     if commit_result.get("attempted") and not commit_result.get("ok"):
         result["ok"] = False
         result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+    elif commit_result.get("attempted") and commit_result.get("ok") and not after["ok"]:
+        result["reason"] = (
+            f"{after['reason']}; auto-commit reported ok but no commit landed"
+            f" ({commit_result.get('reason')})"
+        )
     return result
 
 
@@ -137,6 +157,29 @@ def run_self_tests() -> int:
         bookkeeping = verify(repo, git(repo, ["rev-parse", "HEAD"], check=True).stdout.strip(), "noop", auto=True)
         assert bookkeeping["ok"] is True
         assert bookkeeping["auto_commit"]["attempted"] is False
+
+        # Edge case: file exists on disk and is tracked but has no changes.
+        # auto_commit should report the file as present but nothing staged.
+        staged_noop = auto_commit(repo, ["src/lib.rs"], "no-change")
+        assert staged_noop["attempted"] is True
+        assert staged_noop["ok"] is True
+        assert staged_noop["committed"] is False
+        assert staged_noop["file_exists"] == ["src/lib.rs"]
+        assert staged_noop["file_missing"] == []
+        assert "present on disk but nothing staged" in staged_noop["reason"]
+
+        # Edge case: file does not exist on disk.
+        phantom = auto_commit(repo, ["src/ghost.rs"], "phantom")
+        assert phantom["attempted"] is True
+        assert phantom["ok"] is False
+        assert "git add failed" in phantom["reason"] or "did not match" in phantom.get("reason", "")
+
+        # Edge case: verify with auto=True but file is already committed.
+        # verify should report ok=True since source_files are landed.
+        new_base = git(repo, ["rev-parse", "HEAD"], check=True).stdout.strip()
+        already_landed = verify(repo, new_base, "noop", auto=True)
+        assert already_landed["ok"] is True
+        assert already_landed["auto_commit"]["attempted"] is False
     print("task_completion_gate self-tests passed")
     return 0
 
