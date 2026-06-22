@@ -302,9 +302,10 @@ impl StateRecorder {
 /// previous session that did not have its RunCompleted event recorded
 /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
 ///
-/// Scans the last 20 events in the state file for a dangling RunStarted
-/// that has no matching RunCompleted. If found, emits RunCompleted("error")
-/// with the orphaned run's run_id.
+/// Scans backward from the end of the events file for a dangling RunStarted
+/// that has no matching RunCompleted. The scan stops at the first lifecycle
+/// event (RunStarted or RunCompleted) encountered, so it is efficient
+/// regardless of how many non-lifecycle events intervene.
 fn close_orphaned_run_if_needed(
     events_path: &Path,
     store_path: Option<&Path>,
@@ -313,7 +314,7 @@ fn close_orphaned_run_if_needed(
         return Ok(());
     }
 
-    // Read only the last ~20 events
+    // Read the full events file
     let raw = std::fs::read_to_string(events_path)
         .map_err(|e| format!("read state events for orphan check: {e}"))?;
     if raw.trim().is_empty() {
@@ -333,17 +334,12 @@ fn close_orphaned_run_if_needed(
         return Ok(());
     }
 
-    // Examine only the tail of recent events (last 20, O(1) vs total state)
-    let tail_start = if events.len() > 20 {
-        events.len() - 20
-    } else {
-        0
-    };
-    let tail = &events[tail_start..];
-
-    // Find the most recent RunStarted or RunCompleted in the tail
+    // Scan backward from the end until a lifecycle event is found.
+    // This replaces the old fixed-window (last 20 events) approach
+    // which could miss RunStarted events when many non-lifecycle
+    // events intervened between the RunStarted and file end.
     let mut orphan_run_id: Option<String> = None;
-    for event in tail.iter().rev() {
+    for event in events.iter().rev() {
         let event_type = event
             .get("event_type")
             .and_then(|v| v.as_str())
@@ -361,8 +357,8 @@ fn close_orphaned_run_if_needed(
             if rid.is_empty() {
                 return Ok(());
             }
-            // Verify no RunCompleted exists for this run_id in the tail
-            let has_completed = tail.iter().any(|e| {
+            // Verify no RunCompleted exists for this run_id anywhere in the file
+            let has_completed = events.iter().any(|e| {
                 let et = e.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
                 let r = e.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
                 et == "RunCompleted" && r == rid
@@ -6986,6 +6982,206 @@ mod tests {
         assert_eq!(
             run_completed_count, 1,
             "should have exactly one RunCompleted (the original, already-closed): {raw}"
+        );
+    }
+
+    #[test]
+    fn close_orphaned_run_detects_distant_runstarted() {
+        // RunStarted 25 non-lifecycle events ago, no RunCompleted -> orphan closure
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        let orphan_run_id = "run-distant-orphan";
+        // Write RunStarted first
+        let started = StateEvent {
+            event_id: "evt-distant-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_id.into()),
+            session_id: None,
+            trace_id: "trace-distant".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started).unwrap();
+
+        // Write 25 non-lifecycle events (ModelCallStarted)
+        for i in 0..25 {
+            let mid = StateEvent {
+                event_id: format!("evt-mid-{i}"),
+                event_type: EventType::ModelCallStarted,
+                schema_version: STATE_SQLITE_SCHEMA_VERSION,
+                timestamp_ms: 2 + i,
+                actor: Actor::Yoyo,
+                run_id: Some(orphan_run_id.into()),
+                session_id: None,
+                trace_id: "trace-distant".into(),
+                parent_event_ids: Vec::new(),
+                payload: json!({"model": "deepseek-v4", "idx": i}),
+            };
+            append_event(&events_path, &mid).unwrap();
+        }
+
+        // At this point we have 26 events (1 RunStarted + 25 ModelCallStarted).
+        // The RunStarted is 25 events back from file end — beyond the old 20-event window.
+        // Verify no RunCompleted yet
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(!raw.contains("\"kind\":\"RunCompleted\""));
+
+        // Call close_orphaned_run_if_needed directly
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw_after.contains("\"kind\":\"RunCompleted\""),
+            "should have emitted a RunCompleted for the distant orphan: {raw_after}"
+        );
+        assert!(
+            raw_after.contains("\"status\":\"error\""),
+            "orphan closure should have error status: {raw_after}"
+        );
+        assert!(
+            raw_after.contains(&format!("\"run_id\":\"{orphan_run_id}\"")),
+            "retroactive RunCompleted should reference orphan run_id '{orphan_run_id}'"
+        );
+    }
+
+    #[test]
+    fn close_orphaned_run_no_false_positive_when_completed_in_tail() {
+        // RunStarted + 5 non-lifecycle events + RunCompleted -> no orphan
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        let run_id = "run-closed-tail";
+        let started = StateEvent {
+            event_id: "evt-closedtail-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-closedtail".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started).unwrap();
+
+        for i in 0..5 {
+            let mid = StateEvent {
+                event_id: format!("evt-mid-{i}"),
+                event_type: EventType::ModelCallStarted,
+                schema_version: STATE_SQLITE_SCHEMA_VERSION,
+                timestamp_ms: 2 + i,
+                actor: Actor::Yoyo,
+                run_id: Some(run_id.into()),
+                session_id: None,
+                trace_id: "trace-closedtail".into(),
+                parent_event_ids: Vec::new(),
+                payload: json!({"model": "deepseek-v4", "idx": i}),
+            };
+            append_event(&events_path, &mid).unwrap();
+        }
+
+        // RunCompleted at the end
+        let completed = StateEvent {
+            event_id: "evt-closedtail-end".into(),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 10,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-closedtail".into(),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload("completed", None, None),
+        };
+        append_event(&events_path, &completed).unwrap();
+
+        let raw_before = std::fs::read_to_string(&events_path).unwrap();
+        let rc_before = raw_before
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(rc_before, 1);
+
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        let rc_after = raw_after
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_after, 1,
+            "should still have exactly one RunCompleted (no false orphan): {raw_after}"
+        );
+    }
+
+    #[test]
+    fn close_orphaned_run_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        std::fs::write(&events_path, "\n").unwrap(); // whitespace-only
+
+        // Should not panic or error
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+    }
+
+    #[test]
+    fn close_orphaned_run_already_closed_runcompleted_last() {
+        // RunCompleted is the most recent lifecycle event -> no orphan
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        let run_id = "run-already-closed";
+        let started = StateEvent {
+            event_id: "evt-ac-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-ac".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started).unwrap();
+
+        let completed = StateEvent {
+            event_id: "evt-ac-end".into(),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 2,
+            actor: Actor::Harness,
+            run_id: Some(run_id.into()),
+            session_id: None,
+            trace_id: "trace-ac".into(),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload("completed", None, None),
+        };
+        append_event(&events_path, &completed).unwrap();
+
+        let raw_before = std::fs::read_to_string(&events_path).unwrap();
+        let rc_before = raw_before
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(rc_before, 1);
+
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        let rc_after = raw_after
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_after, 1,
+            "RunCompleted count should not increase when already closed: {raw_after}"
         );
     }
 }
