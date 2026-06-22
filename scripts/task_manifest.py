@@ -24,6 +24,12 @@ FILE_MENTION_RE = re.compile(
     r"[A-Za-z0-9_./+-]*[A-Za-z0-9_+-]\.[A-Za-z0-9_+-]+|"
     r"Cargo\.(?:toml|lock)|README\.md)(?!(?:[\w/-]|\.[A-Za-z0-9_+-]))"
 )
+ANALYSIS_ONLY_ESCAPE_RE = re.compile(
+    r"(?:mark|claim|treat)\s+(?:the\s+)?(?:task\s+)?(?:as\s+)?verified\s+without\s+code\s+changes|"
+    r"verified\s+without\s+code\s+changes|"
+    r"document\s+(?:the\s+)?(?:finding|findings)\s+and\s+mark",
+    re.IGNORECASE,
+)
 PROTECTED_IMPLEMENTATION_SURFACES = (
     ".github/workflows/",
     "IDENTITY.md",
@@ -159,6 +165,17 @@ def section_summary(text: str, label: str, limit: int = 360) -> str:
     return " ".join(" ".join(lines).split())[:limit]
 
 
+def has_analysis_only_escape(text: str) -> bool:
+    """Return true when a task lets implementation finish by analysis alone.
+
+    Obsolete/blocker notes are allowed when they are explicit terminal evidence.
+    What we reject here is a softer escape hatch that tells the implementation
+    agent to investigate and mark the task verified without a source edit,
+    focused test, or concrete terminal artifact.
+    """
+    return bool(ANALYSIS_ONLY_ESCAPE_RE.search(text or ""))
+
+
 def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[str, Any]:
     text = read_text(path)
     fields: dict[str, str] = {}
@@ -187,9 +204,14 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
         fields.get("title", "").strip().lower() == "self-improvement"
         and "identify the most impactful improvement" in lower
     )
+    analysis_only_escape = has_analysis_only_escape(text)
     alignment = assessment_alignment(text, assessment_text)
-    quality_score = sum([has_success, has_verification, has_expected_evidence, has_goal, not generic]) / 5.0
+    quality_score = sum(
+        [has_success, has_verification, has_expected_evidence, has_goal, not generic, not analysis_only_escape]
+    ) / 6.0
     if alignment["contradicted_by_assessment"]:
+        quality_score = min(quality_score, 0.5)
+    if analysis_only_escape:
         quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
     declared_files = normalize_file_list(split_list(fields.get("files", "")))
@@ -212,6 +234,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
             "has_verification": has_verification,
             "has_expected_evidence": has_expected_evidence,
             "generic_self_improvement": generic,
+            "analysis_only_escape": analysis_only_escape,
             "assessment_alignment": alignment,
             "score": round(quality_score, 4),
         },
@@ -246,6 +269,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         quality = task.get("quality") if isinstance(task.get("quality"), dict) else {}
         if quality.get("generic_self_improvement"):
             warnings.append(f"{task['task_id']}:generic_self_improvement")
+        if quality.get("analysis_only_escape"):
+            warnings.append(f"{task['task_id']}:analysis_only_escape")
         alignment = quality.get("assessment_alignment") if isinstance(quality, dict) else {}
         if isinstance(alignment, dict) and alignment.get("contradicted_by_assessment"):
             warnings.append(f"{task['task_id']}:assessment_contradiction")
@@ -260,7 +285,15 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             task["protected_files"] = protected
             warnings.append(f"{task['task_id']}:protected_files")
 
-    selectable = [task for task in tasks if not task.get("protected_files")]
+    selectable = [
+        task
+        for task in tasks
+        if not task.get("protected_files")
+        and not (
+            isinstance(task.get("quality"), dict)
+            and task["quality"].get("analysis_only_escape")
+        )
+    ]
     selected = selectable[: args.selected_limit]
     if tasks and not selected:
         warnings.append("no_selectable_tasks")

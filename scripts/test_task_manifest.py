@@ -571,6 +571,88 @@ Expected Evidence:
 
             self.assertNotIn("all_tasks_harness_seeded", manifest["warnings"])
 
+    def test_manifest_rejects_analysis_only_verified_without_code_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text(
+                "# Assessment\nTranscript-only tool failure gap needs current evidence.\n",
+                encoding="utf-8",
+            )
+            (plan / "task_01.md").write_text(
+                """Title: Close transcript-only tool-failure state-capture gap
+Files: src/tool_wrappers.rs, src/state.rs
+Issue: none
+Origin: planner
+
+Evidence:
+- transcript_only_failed_tool_count=1
+
+Objective:
+Ensure every transcript-visible tool failure is represented in state.
+
+Success Criteria:
+- transcript_only_failed_tool_count drops to 0
+
+Verification:
+- cargo test -- tool_failure
+
+Expected Evidence:
+- Future dashboard runs show transcript_only_failed_tool_count=0.
+
+Fallback:
+- If investigation confirms the 1 transcript-only failure is a dashboard false positive,
+  document the finding and mark the task verified without code changes.
+""",
+                encoding="utf-8",
+            )
+            (plan / "task_02.md").write_text(
+                """Title: Tighten manifest planning quality
+Files: scripts/task_manifest.py, scripts/test_task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+Prevent analysis-only implementation tasks from being selected.
+
+Success Criteria:
+- analysis-only escape tasks are skipped before implementation
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- manifest warnings include analysis_only_escape.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+
+            self.assertIn("task_01:analysis_only_escape", manifest["warnings"])
+            self.assertIn("task_01:thin_task_spec", manifest["warnings"])
+            self.assertEqual(manifest["planner"]["selected_task_count"], 1)
+            self.assertEqual(manifest["selected_tasks"][0]["task_id"], "task_02")
+            self.assertTrue(manifest["tasks"][0]["quality"]["analysis_only_escape"])
+            self.assertLess(manifest["tasks"][0]["quality"]["score"], 0.75)
+            self.assertEqual(payload["decision"], "tasks_selected")
+            self.assertEqual(payload["tasks"][0]["task_id"], "task_02")
+
     def test_manifest_rejects_protected_file_tasks_before_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
