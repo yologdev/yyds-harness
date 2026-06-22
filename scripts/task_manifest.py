@@ -230,11 +230,16 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
     issue_text = read_text(args.issue_responses_file)
     failure_text = read_text(args.planning_failure_file)
-    planning_failed = bool(args.planning_failed or failure_text or not tasks)
+    harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+    planning_failed = bool(
+        args.planning_failed
+        or failure_text
+        or not tasks
+        or (tasks and len(harness_seeded) == len(tasks))
+    )
     warnings: list[str] = []
     if planning_failed:
         warnings.append("planner_produced_no_task_files")
-    harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
     if tasks and len(harness_seeded) == len(tasks):
         warnings.append("all_tasks_harness_seeded")
     for task in tasks:

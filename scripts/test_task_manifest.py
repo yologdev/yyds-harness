@@ -515,10 +515,14 @@ Expected Evidence:
 
             manifest = task_manifest.build_manifest(args)
 
-            self.assertFalse(manifest["planner"]["planning_failed"])
+            self.assertTrue(manifest["planner"]["planning_failed"])
             self.assertEqual(len(manifest["tasks"]), 1)
             self.assertEqual(manifest["tasks"][0]["origin"], "harness-seed")
             self.assertIn("all_tasks_harness_seeded", manifest["warnings"])
+            self.assertIn("planner_produced_no_task_files", manifest["warnings"])
+            payload = task_manifest.decision_payload(manifest)
+            self.assertTrue(payload["planning_failed"])
+            self.assertEqual(payload["decision"], "planning_failed")
 
     def test_manifest_no_warning_when_planner_tasks_exist(self):
         with tempfile.TemporaryDirectory() as tmp:
