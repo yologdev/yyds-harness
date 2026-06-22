@@ -194,6 +194,47 @@ TASKS = [
     },
     {
         "keys": (
+            "tool-path recovery",
+            "tool path recovery",
+            "targeted_recovery_hint",
+            "permission error recovery",
+            "common tool failure",
+            "tool failure pattern",
+            "file-not-found recovery",
+            "permission-denied recovery",
+            "insufficient recovery hints",
+            "missing recovery hint",
+        ),
+        "title": "Add recovery hints for common tool-path and permission errors",
+        "files": "src/tool_wrappers.rs",
+        "objective": (
+            "Extend `targeted_recovery_hint` in `src/tool_wrappers.rs` to cover at least one "
+            "additional common tool failure pattern (e.g., file-not-found, permission-denied, "
+            "or invalid-path errors) with a targeted recovery hint that helps agents self-correct "
+            "without manual intervention."
+        ),
+        "why": (
+            "Agents are hitting tool failures without adequate recovery guidance. A small, "
+            "concrete src/*.rs improvement is more landable than script-level seed repair and "
+            "directly raises task success rate."
+        ),
+        "success": [
+            "At least one new targeted recovery hint is added to `targeted_recovery_hint`.",
+            "The new hint fires on a common tool-failure pattern seen in audit logs.",
+            "Existing recovery hint behavior remains unchanged.",
+            "The change touches only `src/tool_wrappers.rs`.",
+        ],
+        "verification": [
+            "cargo test tool_wrappers",
+            "cargo check",
+        ],
+        "evidence": [
+            "Future tool error recovery rates improve for the covered pattern.",
+            "Task lineage shows `src/tool_wrappers.rs` as the changed file.",
+        ],
+    },
+    {
+        "keys": (
             "force analysis-only attempts into action",
             "force reverted tasks to leave concrete evidence",
             "task_analysis_only_attempt_count",
