@@ -560,6 +560,16 @@ def _task_file_count(task: dict[str, object]) -> int:
     return len([path for path in files_str.split(",") if path.strip()])
 
 
+def _has_src_files(task: dict[str, object]) -> bool:
+    """Return True if the task's files list contains at least one src/*.rs file."""
+    files_str = str(task.get("files") or "")
+    for path in files_str.split(","):
+        path = path.strip()
+        if path and path.startswith("src/") and path.endswith(".rs"):
+            return True
+    return False
+
+
 def choose_task(assessment: str) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
@@ -592,6 +602,13 @@ def choose_task(assessment: str) -> dict[str, object]:
             candidates.append(task)
             continue
         candidates.append(task)
+
+    # When analysis-only/no-edit pressure is active, prefer candidates with
+    # verifiable source files (src/*.rs) over script-only candidates, since
+    # src edits produce cargo-testable commits and reduce reverted_no_edit risk.
+    if analysis_only_active:
+        # Stable sort: preserve relative order, src-file tasks first
+        candidates.sort(key=lambda c: not _has_src_files(c))
 
     for candidate in candidates:
         contradicted, reason = check_task_contradiction(candidate, assessment)
@@ -800,6 +817,42 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
         )
         assert not _has_protected_files(task), (
             f"Analysis-only pressure should skip protected files, got: {task['files']}"
+        )
+
+        # --- Evidence-aware re-ranking: prefer src-file candidates when analysis-only pressure active ---
+        # Assessment with reverted_no_edit + api_key_present: sub-agent task (src/*.rs) should win
+        # over analysis-only task (scripts/*.py) because src files produce cargo-testable commits.
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: reverted_no_edit=2 in recent window. Sessions with no file progress.
+- **Sub-agent spawn failures**: api_key_present validation.
+
+## Bugs / Friction Found
+- Sub-agent calls failing due to missing API keys.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Verify and fix sub-agent API key propagation", (
+            f"With reverted_no_edit pressure, src-file candidate should win over scripts-only, got {task['title']}"
+        )
+        assert "src/" in str(task["files"]), (
+            f"Selected task should have src/*.rs files, got {task['files']}"
+        )
+        assert not _has_protected_files(task), (
+            f"Evidence-aware selection should skip protected files, got: {task['files']}"
+        )
+
+        # --- Evidence-aware re-ranking: still picks scripts task when no src candidate matches ---
+        # When reverted_no_edit pressure exists but only the analysis-only task's keys match,
+        # the analysis-only task is still selected (no src candidate to prefer).
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
         )
 
         assessment = """# Assessment
