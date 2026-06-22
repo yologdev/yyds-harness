@@ -2534,12 +2534,12 @@ BFIXEOF
         EVAL_ATTEMPT=$((EVAL_ATTEMPT + 1))
 
         echo "    Evaluator: checking Task $TASK_NUM quality (attempt $EVAL_ATTEMPT)..."
-        EVAL_TIMEOUT=180
+        EVAL_TIMEOUT=90
         EVAL_PROMPT=$(mktemp)
         TASK_DIFF=$(git diff "$PRE_TASK_SHA"..HEAD 2>/dev/null || echo "(git diff failed)")
         cat > "$EVAL_PROMPT" <<EVALEOF
 You are an evaluator agent. Your job: verify that a task was implemented correctly.
-You have 3 minutes. Be fast and focused. Write the verdict as soon as the diff and evidence are enough.
+You have 90 seconds. Be fast and focused. Write the verdict as soon as the diff and evidence are enough.
 
 === TASK DESCRIPTION ===
 $TASK_DESC
@@ -2553,14 +2553,22 @@ Tests: PASS
 
 === YOUR JOB ===
 
-1. Review the diff — does it match what the task asked for?
-2. Treat the build/test status above as authoritative baseline evidence.
-3. Locate the task's Verifier / Verification / Expected Evidence text. PASS only if that verifier passed, equivalent concrete evidence is visible in the diff/build artifacts, or the task was honestly marked obsolete or blocked with proof.
-4. Do NOT rerun full \`cargo test\`, full clippy, or broad build commands in this evaluator step.
-5. Run at most one focused command only if it is directly tied to the task verification and should finish in under 60 seconds.
-6. If a command would be broad or slow, skip it and explain the verifier reason from the diff and task criteria.
-7. If the task added a user-facing feature, try one bounded invocation if practical.
-8. Check if docs were updated (if the task changed behavior).
+VERDICT-FIRST CONTRACT:
+- First inspect the task description and the diff already provided in this prompt.
+- If the diff matches the task and the provided Build/Tests are PASS, write PASS immediately unless you see a concrete bug.
+- If the diff clearly misses the task, write FAIL immediately.
+- Do not keep searching after you have enough evidence for PASS or FAIL.
+- Your final action must be writing session_plan/eval_task_${TASK_NUM}.md.
+
+Verification budget:
+1. Treat the build/test status above as authoritative baseline evidence.
+2. Locate the task's Verifier / Verification / Expected Evidence text in the task description.
+3. PASS only if that verifier passed, equivalent concrete evidence is visible in the diff/build artifacts, or the task was honestly marked obsolete or blocked with proof.
+4. Run at most one focused command only if the diff/task text leaves a concrete uncertainty that blocks the verdict.
+5. The optional command must be bounded and should finish in under 30 seconds. Do not run full \`cargo test\`, full clippy, broad build commands, or multiple verifier attempts.
+6. If the command syntax is uncertain, broad, or slow, skip it and decide from the diff, task criteria, and provided PASS build/test status.
+7. If the task added a user-facing feature, try one bounded invocation only if practical and necessary for the verdict.
+8. Check docs only from the diff; do not launch broad documentation searches.
 9. If you need to search, avoid search-tool regex and flag parsing failures: search a simple identifier, use a focused file read, or use bash fixed-string search with an option terminator such as \`grep -R -F -- 'fn handle_run(' src/\` or \`grep -R -F -- '--json' src/\`. Do not assume \`rg\` is installed; check \`command -v rg\` before using it. Keep searches scoped away from target and generated state files.
 
 Write your verdict to session_plan/eval_task_${TASK_NUM}.md with exactly this format (no code fences):
