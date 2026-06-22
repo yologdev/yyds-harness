@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Added a new "Make analysis-only task pressure landable" task template to TASKS with matching keys for analysis-only pressure signals (task_analysis_only_attempt_count, reverted_no_edit, etc.). The existing choose_task logic already filters and prioritizes correctly — new tests cover reverted_no_edit=1/4, lifecycle deprioritization, ≤3 file guard, and protected-file exclusion. Both verifiers pass: `python3 scripts/preseed_session_plan.py --test` and `python3 -m unittest scripts.test_state_graph_tools` (59 tests OK).

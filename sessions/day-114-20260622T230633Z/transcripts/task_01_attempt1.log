@@ -1,0 +1,1373 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. The problem: When graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed task picker should select a concrete, landable, small-scope task rather than falling through to no-op or broad protected-file work.
+
+2. The goal: Make analysis-only task pressure landable - ensure preseed produces tasks that a DeepSeek implementation agent can actually complete.
+
+Let me first read the evolve skill, then the relevant files to understand the current state.
+
+My plan:
+1. Read `skills/evolve/SKILL.md` for the implementation contract
+2. Read `scripts/preseed_session_plan.py` to understand current logic
+3. Read `scripts/state_graph_tools.py` and `scripts/test_state_graph_tools.py`
+4. Understand the analysis-only pressure logic
+5. Write a test first
+6. Implement the fix
+7. Verify
+
+Let me start by reading the key files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (303ms)
+ ✓ (309ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the key parts of the preseed script. I need to see:
+
+1. The `choose_task` function - how does it decide which task to pick?
+2. The `_has_analysis_only_pressure()` function if it exists
+3. The TASKS list - especially entries related to analysis-only pressure
+4. The `analysis_only_active` logic
+
+Let me read the full file carefully, focusing on the choose_task function and any analysis-only related logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1036..  ▶ search 'analysis_only' in scripts/preseed_session_plan.py ✓ (179ms)
+ ✓ (216ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the `choose_task` function and the TASKS list more carefully. Let me also look at the analysis-only task entry in TASKS.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:180..380  ▶ search 'Make analysis-only' in scripts/preseed_session_plan.py ✓ (152ms)
+ ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the `choose_task` function. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def choose_task' in scripts/preseed_session_plan.py ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Read the choose_task function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:604..804 ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. Let me continue reading to see the rest of the test cases and the `_has_analysis_only_pressure` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:803..1003  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (172ms)
+ ✓ (210ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the helper functions - `_has_analysis_only_pressure`, `_task_file_count`, `_has_src_files`, etc.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:540..600 ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state of the code. Let me analyze what's happening:
+
+1. The `choose_task` function already has logic for `analysis_only_active`:
+   - When analysis-only pressure is detected, it skips lifecycle tasks (lines 628-630)
+   - It filters out tasks with >3 files (line 625-626)
+   - It re-ranks to prefer src-file candidates over script-only (line 645-647)
+
+2. The "Make analysis-only task pressure landable" task entry in TASKS has its own `files` field pointing to `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` - which are all script files, not src files.
+
+3. The problem described in the task is: when graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed should select a concrete, landable, small-scope task. But currently, the analysis-only task itself is about preseed/state_graph_tools scripts - it's a meta-task that tries to fix the preseed picker. The real issue is that the analysis-only task IS selected (the selection logic works), but:
+
+   a) The task lands on the analysis-only task candidate itself, which modifies script files, not a concrete implementation task
+   b) The task itself is a 3-file Python script task that a DeepSeek implementation agent might struggle with
+
+Actually, let me re-read the task more carefully. The issue says:
+
+"Ensure that when graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed task picker selects a concrete, landable, small-scope task rather than falling through to no-op or broad protected-file work."
+
+And: "when analysis-only pressure is detected, the picker selects from concrete, small-scope task templates rather than broad protected-file work"
+
+Wait, looking at the evidence from the current task:
+- "Two recent sessions produced 0 or 1 verified tasks because the planner couldn't convert analysis-only pressure into a landable implementation task"
+- "task_manifest now rejects analysis-only escape hatches (defensive), but the preseed picker should produce a task that a DeepSeek implementation agent can actually complete (offensive)"
+
+The analysis-only task IS currently a meta-task about improving the preseed picker. That's the problem - it's self-referential and hard to land.
+
+But wait - looking at the TASKS more carefully: when analysis-only pressure is active, the current behavior is:
+1. Skip lifecycle tasks
+2. Filter out >3 file tasks
+3. Prefer src-file candidates
+4. If the analysis-only task keys match, select the analysis-only task
+
+The analysis-only task itself points to `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. When selected, it wants the agent to fix the preseed picker. This is circular - the task to fix the preseed picker IS the analysis-only task.
+
+The task's objective says: "The preseed picker's `TASKS` constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair."
+
+Let me think about what the actual fix should be:
+
+1. When analysis-only pressure is detected, instead of selecting the meta self-improvement task about "Make analysis-only task pressure landable", the preseed should select a *different*, more concrete task - something with src/*.rs files that a DeepSeek agent can actually implement.
+
+2. The current analysis-only task in TASKS points to script files. We need to either:
+   a) Change the analysis-only task's files to be concrete src/*.rs files, or
+   b) Change the choose_task logic to prefer other concrete tasks when analysis-only pressure exists, selecting the analysis-only task only as a last resort
+
+Wait, but the whole point of the analysis-only task is to exist as a seed for when the planner runs analysis-only sessions. The issue is that this seed task itself is hard to land.
+
+Let me re-read the objective more carefully:
+
+"Ensure that when graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed task picker selects a concrete, landable, small-scope task rather than falling through to no-op or broad protected-file work."
+
+So the fix is: when analysis-only pressure exists, ensure the selected task is concrete, landable, and small-scope.
+
+Looking at the current TASKS, all tasks are concrete:
+1. "Verify and fix sub-agent API key propagation" - src/tools.rs, src/agent_builder.rs, src/lib.rs - 3 files
+2. "Record DeepSeek prompt cache metrics during prompt runs" - src/prompt.rs, src/deepseek.rs, src/state.rs - 3 files
+3. "Make analysis-only task pressure landable" - scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py - 3 files
+4. "Close yyds state and model lifecycle gaps" - scripts/*.py - 3 files
+5. "Reduce recurring search-tool friction before implementation" - src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py - 3 files
+6. "Extract another focused state CLI module" - src/commands_state.rs, src/commands_state_graph.rs - 2 files
+
+When analysis-only pressure is active:
+- Lifecycle tasks are skipped (line 628-630)
+- The remaining candidates get re-ranked to prefer src files (line 647)
+
+So the analysis-only task itself is scripts-only, which means when re-ranked, other src-file candidates will be preferred. But if no other candidates match the assessment keys, the analysis-only task is selected as the only match, which is the problem.
+
+The fix should be one of:
+1. Change the analysis-only task's files to include src/*.rs files that are small-scope
+2. When analysis-only pressure is active and only the analysis-only task matches, still prefer a concrete src-file task
+3. Add a new small-scope task that gets selected when analysis-only pressure exists
+
+Actually, re-reading the evidence more carefully:
+
+"Two recent sessions produced 0 or 1 verified tasks because the planner couldn't convert analysis-only pressure into a landable implementation task."
+
+The problem is in the PLANNER, not the preseed. The preseed produces a seed file, and the planner (Phase A agent) reads it and may or may not use it. The "Make analysis-only task pressure landable" seed task tells the planner to fix the preseed picker. But the planner might not be able to implement that because:
+1. It's a script file task that requires Python changes
+2. It's self-referential (fixing the thing that picks the task)
+
+So the fix should be: instead of having the analysis-only pressure seed be about fixing the preseed, it should be about a concrete implementation task that any DeepSeek agent can land - something small and src-file-based.
+
+The success criteria says:
+"The picker's TASKS constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair."
+
+So the fix should be to create a new, concrete task entry that gets selected when analysis-only pressure exists. This task should have:
+- src/*.rs files (for cargo-testable commits)
+- At most 3 files
+- Small scope
+- Something a DeepSeek implementation agent can actually complete
+
+But wait... this IS that task. The task I'm working on right now IS "Make analysis-only task pressure landable". I'm the implementation agent. The preseed selected this task because analysis-only pressure was detected. And now I need to modify the preseed picker to make analysis-only pressure produce better tasks in the future.
+
+OK, so what should I actually change?
+
+Looking at the issue: the analysis-only task's `files` field points to scripts. When this task is selected, a DeepSeek implementation agent gets assigned to modify Python scripts in `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. This is hard because:
+1. These are complex Python scripts
+2. The task is about changing the seed selection logic
+3. It's self-referential
+
+But the key insight is: the analysis-only task currently IS what gets selected. The problem is that its files list makes it hard to implement. So we need to change the analysis-only task to have a more landable scope.
+
+Looking again at the task's own "Implementation Notes":
+"The preseed picker's TASKS constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair."
+
+But actually, I think the real fix is different. The problem statement says:
+"Force analysis-only attempts into action" and "Raise verified task success rate (0.5)"
+
+The issue is that when analysis-only pressure exists, the preseed picks the "Make analysis-only task pressure landable" task, which then sends a DeepSeek implementation agent (me, right now) to modify Python scripts. This is potentially too hard and might result in another reverted_no_edit.
+
+The fix should be: when analysis-only pressure is active, instead of always selecting the analysis-only meta-task, prefer tasks that are concrete, small, and src-file-based. But the current code already does prefer src-file candidates (line 645-647).
+
+Let me think about this differently. The current behavior when analysis-only pressure is active and only the analysis-only task keys match:
+
+1. The analysis-only task is the only candidate
+2. It gets selected
+3. The implementation agent gets a task to modify preseed_session_plan.py, state_graph_tools.py, test_state_graph_tools.py
+
+The issue is that this task is:
+- About modifying the preseed picker (self-referential)
+- Script-file based (not cargo-testable)
+- The agent might not be able to implement it well
+
+So the fix should be: change the analysis-only task to point to a concrete, small-scope implementation surface.
+
+Wait, but this IS the task. I need to implement the fix that makes the analysis-only task landable. The task tells me to modify `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`.
+
+Let me think about what concrete change to make:
+
+**Option A**: Change the analysis-only task's files from scripts to a small src/*.rs file. For example, change `files` to `src/tool_wrappers.rs` and make the objective about adding a small tool wrapper improvement. But this would change the nature of the task entirely.
+
+**Option B**: Instead of the analysis-only task being about fixing the preseed, change it to be about a small, concrete task that any DeepSeek agent can land. The task's `files` would point to a single src/*.rs file.
+
+Actually, wait. I think the real issue is more subtle. Let me re-read the evidence:
+
+"Day 114 12:45 session: 0/1 tasks verified — planner produced no actionable tasks, burned a session"
+"Day 114 19:29 session: 1/2 tasks verified — one task was analysis-only with no file progress"
+
+So the analysis-only task was selected in the 19:29 session, and it produced no file progress (reverted_no_edit). The planner couldn't convert the analysis-only pressure seed into a landable implementation.
+
+The fix should be: when the preseed produces the analysis-only task seed, it should be a SEED that the planner can actually convert into a landable implementation. Currently, the seed asks the planner to "fix the preseed picker." But that's a meta-task. Instead, the seed should ask for a concrete implementation task.
+
+So I should change the analysis-only task entry to be about something concrete that a DeepSeek agent can actually implement. For example:
+
+Instead of "Make analysis-only task pressure landable" with files pointing to preseed scripts, I should change it to something like:
+
+```python
+{
+    "keys": (...),
+    "title": "Make analysis-only task pressure landable",
+    "files": "src/tool_wrappers.rs",  # or another small src file
+    "objective": "Add a small, concrete improvement to tool wrappers...",
+    ...
+}
+```
+
+But that would be a completely different task. The preseed is a SEED that the planner reads and may override. The seed just needs to be good enough that the planner can work with it.
+
+Actually, let me look at what happened in the 19:29 session more carefully. The task was "Make analysis-only task pressure landable" and it reverted without touching files. The agent probably couldn't figure out how to implement it.
+
+So the fix I need to make is: change the analysis-only task in TASKS to be more concrete and landable. Instead of being about modifying the preseed picker (which is self-referential), it should be about a small, concrete coding task that has src/*.rs files.
+
+But wait, the current task's objective IS clear:
+"Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+And the success criteria include:
+"Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup."
+"The selected seed Files list contains no protected implementation files."
+"Preseed self-tests cover the analysis-only/no-edit pressure path."
+
+So the current analysis-only task says we should make the preseed produce better tasks. And my job right now is to implement this. The implementation needs to change the preseed picker to select better tasks when analysis-only pressure exists.
+
+But that means I need to change the code that selects tasks, not just the task entry itself. Let me think about what specific code change would fix this.
+
+The current flow:
+1. Assessment comes in with analysis-only pressure
+2. `choose_task` runs
+3. `analysis_only_active` is True
+4. The analysis-only task matches (its keys match the assessment)
+5. No other tasks match (or other tasks are filtered out)
+6. The analysis-only task is selected
+7. → Implementation agent gets a meta-task about fixing the preseed
+
+The fix: when analysis-only pressure is active, instead of selecting the analysis-only meta-task, we should select a concrete implementation task. The analysis-only meta-task should only be selected when there's no other alternative.
+
+How?
+1. Add the analysis-only task itself to the list of tasks that are deprioritized when analysis-only pressure is active (similar to how lifecycle tasks are deprioritized)
+2. When analysis-only pressure is active, treat the analysis-only task as low priority
+3. Or: change the analysis-only task's files to be concrete src/*.rs files
+
+Wait, but that creates a chicken-and-egg problem. If the analysis-only task is deprioritized, how will it ever get fixed? It would only be selected when nothing else matches, which might be never if the fallback task always matches.
+
+Hmm, let me re-read the evidence more carefully:
+
+"Origin: planner (refined from harness-seed)"
+
+So the planner refined this from the harness seed. The seed was already about making analysis-only tasks landable. The planner added specific guidance about what to change.
+
+I think the right fix is:
+
+1. The analysis-only task currently has files pointing to scripts. Change it to also include a small src/*.rs file that's easy to modify.
+2. OR: Change the analysis-only task to not be a self-referential preseed fix, but instead a concrete task that directly fixes an issue.
+
+Actually, I think the most impactful change is:
+
+When analysis-only pressure is active, the preseed should NOT select the "Make analysis-only task pressure landable" task at all. Instead, it should select a concrete implementation task from the TASKS list. The analysis-only task should be renamed/repurposed as a fallback that only triggers when absolutely nothing else works.
+
+Wait, but then the analysis-only task would never be selected, because there's always a fallback.
+
+Let me re-read the task description: "The preseed picker's TASKS constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair."
+
+So the suggestion is to add a NEW task entry. A small-scope task that gets selected when analysis-only pressure exists. This new task should be:
+- Concrete
+- Landable
+- Small scope
+- src/*.rs files
+
+And the existing "Make analysis-only task pressure landable" task should be retired or relegated to a lower priority.
+
+Let me implement this:
+
+1. Add a new TASKS entry: something small and concrete that gets selected when analysis-only pressure exists
+2. This new task should have src/*.rs files
+3. It should be a small, well-scoped task that any DeepSeek agent can complete
+4. The existing analysis-only task should be kept but only selected when nothing else matches
+
+Actually wait, the task says I need to modify the files listed: `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. So I need to change the preseed picker logic and the state graph tools.
+
+Let me understand what `state_graph_tools.py` does in relation to this:
+
+The task says `state_graph_tools.py` is in the Edit Surface. Let me check what analysis-only related logic exists there.
+
+Let me also check the test file. Let me think about my approach.
+
+Actually, I think the simplest and most impactful fix is:
+
+1. In `choose_task`, when analysis-only pressure is active, deprioritize the analysis-only meta-task itself. Instead, prefer concrete tasks that have src/*.rs files. If no concrete task matches, use the analysis-only task as fallback.
+
+2. Add a small, concrete task entry for when analysis-only pressure is the only signal.
+
+Wait, but there's already the re-ranking logic that prefers src-file candidates. The analysis-only task is scripts-only, so it should already be deprioritized. But if no other task matches the assessment keys, the analysis-only task is the only candidate.
+
+The problem is: when analysis-only pressure is the ONLY signal in the assessment, the analysis-only task's keys match and no other task's keys match, so it gets selected.
+
+The fix: when analysis-only pressure is active but no OTHER task matches, we should still prefer a concrete task. We can do this by either:
+a) Adding a new small-concrete task that also matches analysis-only pressure keys
+b) When analysis-only pressure is active, always include at least one concrete src-file task as a candidate
+
+Option (a) is cleaner. Let me add a new task entry that:
+- Has keys that match analysis-only pressure
+- Has src/*.rs files
+- Is small scope (1-2 files)
+- Is concrete and landable
+
+What would be a good concrete task? Let me think... The task should be something an implementation agent can definitely complete. Something like adding a small improvement to an existing feature.
+
+Actually, wait. Let me re-think this. The task says: "The preseed picker should produce a task that a DeepSeek implementation agent can actually complete (offensive)."
+
+The key insight is: when analysis-only pressure exists, the preseed should produce a DIFFERENT kind of seed - one that asks the planner to work on something concrete rather than fixing the preseed logic.
+
+Let me add a new TASKS entry that:
+1. Has keys that match analysis-only pressure evidence
+2. Is positioned BEFORE the analysis-only meta-task in the TASKS list (so it's checked first)
+3. Has src/*.rs files (concrete, landable)
+4. Is small scope (1-2 files)
+
+What concrete task? Looking at the current TASKS, the most landable ones are:
+- "Extract another focused state CLI module" - 2 src files, very concrete
+- "Stabilize run completion guard panic test" - 1 src file, very concrete
+- "Verify and fix sub-agent API key propagation" - 3 src files, concrete
+
+But these all have specific keys that might not match an analysis-only pressure assessment.
+
+The fix should be: when analysis-only pressure is active and no concrete task matches, select a concrete task ANYWAY rather than selecting the analysis-only meta-task. We can do this by adding a new task entry that is both concrete and has analysis-only pressure keys.
+
+Let me add a new entry like:
+
+```python
+{
+    "keys": (
+        "force analysis-only attempts into action",
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+        "reverted_no_edit",
+    ),
+    "title": "Add tool failure rate tracking to ToolFailureTracker",
+    "files": "src/tool_wrappers.rs",
+    "objective": "Add a small improvement to the ToolFailureTracker...",
+    ...
+}
+```
+
+But this feels like making up a random task. That might not be the right approach.
+
+Let me look at this from a different angle. The meta-level problem is: the preseed produces analysis-only seeds, and DeepSeek agents can't land them. The fix should make the preseed produce seeds that ARE landable.
+
+What if, instead of changing the TASKS list, I change the `choose_task` logic? When analysis-only pressure is active and the only matching candidate is the analysis-only meta-task, fall through to a concrete task instead.
+
+Here's my plan:
+1. In `choose_task`, after building candidates but before returning the analysis-only task, check: if the only candidate is the analysis-only task and analysis-only pressure is active, try to select a concrete fallback task instead.
+2. The concrete fallback should be a small, src-file task like "Extract another focused state CLI module" or a new small task.
+
+Actually, the simplest approach: add a new small-scope task entry that has both analysis-only pressure keys and src/*.rs files. Place it BEFORE the existing analysis-only task in the TASKS list. This way, when analysis-only pressure exists, the new concrete task matches first.
+
+Let me think about what concrete task to add. Looking at the codebase... 
+
+A good small-scope task with src/*.rs files would be something like:
+- Improve documentation of a function
+- Add a unit test
+- Clean up a small piece of code
+
+Actually wait, I realize I'm overthinking this. Let me re-read the task objectives:
+
+"Ensure that when graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed task picker selects a concrete, landable, small-scope task rather than falling through to no-op or broad protected-file work."
+
+The fix should be: change the analysis-only task entry to be concrete and landable itself, OR add a new concrete task that is selected instead.
+
+I think the right approach is:
+1. Add a new small-scope task entry to TASKS that is selected when analysis-only pressure exists
+2. Place it before the current analysis-only task so it's checked first
+3. The new task should have src/*.rs files (1-2 files), a concrete objective, and a runnable verifier
+4. The current analysis-only task should be deprioritized (or have an additional filter that skips it when analysis-only pressure is active - because it's self-referential)
+
+Wait, actually the cleanest approach: when analysis-only pressure is active, treat the analysis-only meta-task specially in choose_task. Skip it (like lifecycle tasks are skipped) if there's at least one other concrete candidate. If the analysis-only task is the ONLY candidate, still select it but with a preference for src files.
+
+But the analysis-only task has no src files. So when it's the only candidate, we're back to the same problem.
+
+OK let me just implement the fix:
+
+**Plan:**
+1. Add a new TASKS entry before the analysis-only task that has:
+   - Same/similar keys (analysis-only pressure)
+   - src/*.rs files (1-2 files)
+   - Concrete, small-scope objective
+   - Runnable verifier
+
+2. In `choose_task`, when analysis-only pressure is active, skip the analysis-only meta-task (similar to how lifecycle tasks are skipped) as long as another candidate exists.
+
+Let me think about a good concrete task. Looking at the codebase:
+- `src/tool_wrappers.rs` has `ToolFailureTracker` - adding failure tracking stats
+- `src/session.rs` has session tracking
+- `src/prompt.rs` has prompt logic
+
+Actually, the simplest fix: when analysis-only pressure is active and the analysis-only task is selected, instead change the analysis-only task to point to a small src file. The objective stays the same (improve preseed to produce better tasks), but the implementation surface becomes concretely scoped.
+
+Wait, I think I'm going in circles. Let me take a step back.
+
+The current analysis-only task entry in TASKS says:
+- files: "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"
+- This is the SAME set of files I'm supposed to edit for this task.
+
+The problem is: this task IS selected when analysis-only pressure exists. And it's been selected for me right now. My job is to change the code so that WHEN this task is selected again in the future, the implementation agent can actually land it.
+
+What makes this task hard to land? Looking at the task description:
+1. It requires modifying complex Python code (the preseed picker)
+2. It's self-referential (changing the thing that selected this task)
+3. The scope is 3 files
+
+What would make it easier to land?
+1. Narrower scope - focus on one specific change
+2. Clearer success criteria
+3. More concrete code changes
+
+Actually, I think the key fix is different. The problem is not just that this task is hard. The problem is that when the analysis-only task is selected, the DEEPSEEK IMPLEMENTATION AGENT gets assigned to modify Python scripts. If the task instead pointed to src/*.rs files with a concrete Rust change, the agent would be more likely to succeed.
+
+So the fix: change the analysis-only task to be about a concrete Rust implementation rather than about modifying the preseed picker.
+
+But wait, the task title is "Make analysis-only task pressure landable" - its PURPOSE is to fix the preseed picker. If I change it to be about something else, I'm changing the task's purpose.
+
+Let me re-read the success criteria for this task:
+1. "When graph-derived metrics show task_analysis_only_attempt_count > 0 or reverted_no_edit > 0, preseed selects a small, concrete task with Files entries that are not protected implementation surfaces"
+2. "Preseed self-tests cover the analysis-only/no-edit pressure path with a landable task output"
+3. "The selected task touches at most 3 source files and has a runnable verifier"
+
+So criterion #1 says: preseed selects a small, concrete task with non-protected Files. This means I need to make the preseed select a DIFFERENT task when analysis-only pressure exists, not the current analysis-only meta-task.
+
+The approach: 
+1. Add a new small-scope task entry to TASKS 
+2. When analysis-only pressure is active, prefer this new task
+3. The new task should be concrete, with src/*.rs files, and landable
+
+Let me add a new task entry like:
+
+```python
+{
+    "keys": (
+        "force analysis-only attempts into action",
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+        "reverted_no_edit",
+    ),
+    "title": "Improve tool failure reporting in ToolFailureTracker",
+    "files": "src/tool_wrappers.rs",
+    "objective": (
+        "Add a small improvement to the ToolFailureTracker to track failure categories "
+        "more precisely, making debug output more actionable."
+    ),
+    "why": (
+        "Analysis-only task pressure shows DeepSeek implementation agents are struggling. "
+        "A concrete, small-scope Rust improvement is more landable than script-level seed repair."
+    ),
+    "success": [...],
+    "verification": ["cargo test tool_wrappers", "cargo check"],
+    "evidence": [...],
+}
+```
+
+But this is a completely made-up task. Is that OK? The task says to add a "new small-scope entry specifically for analysis-only pressure repair."
+
+Actually wait, I think I need to be smarter about this. Let me look at what the graph-derived pressure says:
+
+"Force analysis-only attempts into action" and "Raise verified task success rate (0.5)"
+
+The goal is to convert analysis-only pressure into a task that improves the agent's ability to complete tasks. A concrete task could be something like:
+- Improve tool error recovery to reduce task failures
+- Add better error diagnostics
+- Fix a small bug that causes agents to get stuck
+
+Let me look at what's already in the codebase that would be a good small-scope improvement...
+
+Actually, I just realized: the task I'm working on says the "Edit Surface" is `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. These are the files I should change. The changes I make to `preseed_session_plan.py` will be in the `choose_task` function and/or the `TASKS` list.
+
+So my plan:
+1. Add a new concrete task to TASKS that gets selected when analysis-only pressure exists
+2. Modify `choose_task` to prefer this new task over the analysis-only meta-task when analysis-only pressure is active
+3. Update `state_graph_tools.py` and `test_state_graph_tools.py` accordingly
+
+For the new task, I should pick something genuinely useful that a DeepSeek agent can land. Let me look at the codebase for small-scope improvements.
+
+Actually, let me think about this more pragmatically. The task says to add a "new small-scope entry specifically for analysis-only pressure repair." This new entry needs to be:
+1. Small scope (1-3 files max)
+2. src/*.rs files (for cargo testability)
+3. Concrete objective
+4. Runnable verifier
+
+What's a good small-scope Rust task? Looking at the existing TASKS for inspiration:
+
+"Stabilize run completion guard panic test" - 1 file, src/state.rs
+"Extract another focused state CLI module" - 2 files, src/commands_state.rs, src/commands_state_graph.rs
+
+I could add something like:
+"Add structured error reporting to tool failure recovery" - src/tool_wrappers.rs
+"Improve session snapshot fidelity" - src/session.rs
+
+Or something simpler:
+"Fix a documentation or test gap in tool_wrappers"
+"Add a unit test for the ToolFailureTracker"
+
+Let me look at the actual code to find a small-scope improvement. Actually, I don't need to be too clever here. The task is about making the preseed produce landable tasks. Let me just add a new small task entry and make the choose_task logic prefer it.
+
+Wait, I just had another idea. What if instead of adding a new task, I change the approach: when analysis-only pressure is active, rather than picking a specific task, the preseed should pick a SMALL concrete task that is already in the TASKS list but wasn't matched by keys. The idea is: sometimes when analysis-only pressure exists, there IS a concrete task that could be done (e.g., extract state CLI, search friction, etc.), but the assessment didn't explicitly mention its keys. In that case, we should still select a concrete task.
+
+Hmm, but that changes the selection semantics significantly. The current design is: assessment keys must match task keys to select a task. Changing this to allow keyless selection would be a bigger change.
+
+Let me go with the simpler approach: add a new concrete task entry and modify choose_task to prefer it.
+
+Let me look at the state_graph_tools.py to understand what changes might be needed there.
+
+Actually, let me first check what state_graph_tools.py does with analysis-only pressure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/state_graph_tools.py  ▶ read scripts/state_graph_tools.py (50 lines) ✓ (59ms)
+ ✓ (292ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of state_graph_tools.py to understand its analysis-only related logic:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def evolution_suggestions' in scripts/state_graph_tools.py  ▶ read scripts/state_graph_tools.py:1470..1570 ✓ (70ms)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test file to understand the existing test structure:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/test_state_graph_tools.py  ▶ search '?' in scripts/test_preseed ✗ (144ms)
+    │ Invalid arguments: missing 'pattern' parameter
+ ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test_state_graph_tools.py to see the analysis-only related tests:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_state_graph_tools.py:1070..1150  ▶ read scripts/test_state_graph_tools.py:650..730 ✓ (287ms)
+ ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me formulate my approach.
+
+The problem is clear: when analysis-only pressure exists in the assessment, the preseed picks the "Make analysis-only task pressure landable" task. This task points to script files and is self-referential (fixing the thing that picked it). DeepSeek implementation agents struggle with this.
+
+The fix should be:
+1. Add a new concrete task to TASKS that is selected INSTEAD of the analysis-only meta-task when analysis-only pressure exists.
+2. The new task should have src/*.rs files, be small-scope, and be landable.
+3. Modify `choose_task` to prefer this new concrete task.
+4. Update tests.
+
+The new task should be something a DeepSeek agent can actually land. Let me think about what that could be...
+
+Looking at what's actually useful: when analysis-only/no-edit pressure exists, the next session should work on something concrete that improves the agent's execution capability. A good candidate would be something that directly addresses why tasks are reverted without edit.
+
+Common reasons for reverted_no_edit:
+- Agent spends too long reading/planning and doesn't edit
+- Agent can't figure out what to change
+- Agent encounters tool errors
+
+A small-scope concrete task could be: "Add a small improvement to tool error recovery" or "Improve the smart edit tool's fuzzy matching."
+
+Actually, let me think about this differently. The task says "The preseed picker's TASKS constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair."
+
+So I should add a new TASKS entry. This entry should:
+1. Match analysis-only pressure assessment text
+2. Have src/*.rs files
+3. Be small scope
+4. Have a concrete, landable objective
+
+Looking at the codebase structure: `src/tool_wrappers.rs` has ToolFailureTracker which could benefit from improved tracking. `src/smart_edit.rs` could use improvements.
+
+But actually, I think the most pragmatic approach is: when analysis-only pressure is active and only the analysis-only meta-task matches, change behavior to fall through to a concrete task that DOES exist in the codebase. The "Extract another focused state CLI module" task is a good candidate - it has 2 src files, is concrete, and has a track record of being landable (it's survived in the TASKS list).
+
+But that task's keys don't match analysis-only pressure assessment text. So I'd need to either:
+a) Add analysis-only keys to that task, or
+b) Add special logic in choose_task to prefer it
+
+I think (a) is cleaner. Add analysis-only pressure keys to one or more existing concrete tasks so they match.
+
+Wait, that would make those tasks match whenever analysis-only pressure exists, which might not always be desirable. The lifecycle task already has special handling.
+
+Let me go with the approach of adding a new small-scope concrete task. Something like:
+
+```python
+{
+    "keys": (...analysis-only keys...),
+    "title": "Add early-edit guard to implementation prompts",
+    "files": "src/prompt.rs",
+    "objective": "Ensure implementation agents commit to an early edit...",
+    ...
+}
+```
+
+But this is still meta (about improving agent prompts). Let me think about something more concrete.
+
+Actually, looking at the task's Evidence section again:
+"Day 114 trajectory shows reverted_no_edit=1, task_analysis_only_attempt_count=1, task_success_rate=0.5"
+
+The graph-derived pressure says:
+"Force analysis-only attempts into action" and "Raise verified task success rate (0.5)"
+
+The fix should make it so that when these pressures exist, the preseed produces a task that:
+1. A DeepSeek agent CAN complete
+2. Directly improves task success rate
+
+What concrete improvement would increase task success rate? Some ideas:
+- Better tool error recovery (helps agent recover from tool failures)
+- Smarter file path resolution (helps agent find the right files)
+- Better edit verification (helps agent verify its edits)
+
+Let me pick something small and concrete. I'll add a new task that improves tool failure tracking/reporting in `src/tool_wrappers.rs`. This is a single src file, well-understood, and the change would be small.
+
+Actually wait, I think I should make this simpler. The real fix is:
+
+1. When analysis-only pressure is active, the preseed should NOT select the analysis-only meta-task unless it's the ONLY option.
+2. Instead, it should prefer concrete src-file tasks even if their keys don't perfectly match.
+
+Let me modify `choose_task`:
+- When `analysis_only_active` is True and the analysis-only task is the only candidate, try to find a better candidate (one with src files)
+- If a better candidate exists, use it
+- If not, fall through to the analysis-only task
+
+But this doesn't change the TASKS list. Let me think...
+
+Actually, the simplest and most effective fix is:
+
+1. Change the analysis-only task's `files` to include a src/*.rs file alongside the scripts
+2. Make the analysis-only task itself more landable
+
+OR:
+
+1. Add a new concrete task before the analysis-only task in TASKS
+2. The new task matches analysis-only pressure keys
+3. The new task has src/*.rs files and a concrete, landable objective
+
+Let me go with option 2. I'll add a new task:
+
+```python
+{
+    "keys": (
+        "force analysis-only attempts into action",
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+        "reverted_no_edit",
+    ),
+    "title": "Improve task implementation prompt with early-edit checkpoint",
+    "files": "src/prompt_retry.rs, src/task.rs",
+    "objective": (
+        "Add an early-edit checkpoint to implementation prompts that requires "
+        "the agent to produce a scoped edit, obsolete note, or blocked note within "
+        "the first 5 turns, reducing reverted_no_edit sessions."
+    ),
+    ...
+}
+```
+
+Hmm, but `src/task.rs` doesn't exist. Let me look at what files actually exist.
+
+Actually, looking at the task more carefully, the Files list is `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. These are the files I must change. I cannot add new src/*.rs files. So the fix must be in these script files.
+
+The fix in preseed_session_plan.py:
+1. Change the analysis-only task entry in TASKS to point to a smaller, more concrete scope
+2. OR add a new task entry
+3. Modify choose_task logic
+
+Let me focus on what's achievable. The key insight from the task:
+
+"when analysis-only pressure is detected, the picker selects from concrete, small-scope task templates rather than broad protected-file work"
+
+So the fix is: when analysis-only pressure is active, the picker should prefer concrete small-scope tasks. Currently, it does prefer src-file tasks (via re-ranking). But when no src-file task matches the assessment keys, it falls back to the analysis-only task.
+
+I should ensure that when analysis-only pressure is active, a concrete src-file task is ALWAYS available as a candidate. I can do this by:
+
+1. Adding analysis-only pressure keys to one of the existing concrete tasks (e.g., "Extract another focused state CLI module" or "Stabilize run completion guard panic test")
+
+Actually wait, let me re-read the existing tests that verify the analysis-only task is selected:
+
+Line 789-793:
+```python
+assessment = """...
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): ...
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): ...
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): ...
+"""
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable", task
+```
+
+This test verifies that when analysis-only pressure AND lifecycle pressure both exist, the analysis-only task wins. That's because lifecycle tasks are skipped when analysis-only is active.
+
+But the analysis-only task is the only one that matches the analysis-only keys directly. So it's the only candidate left.
+
+My fix: add the analysis-only pressure keys to one or more concrete tasks. This way, when analysis-only pressure exists, the concrete task ALSO matches. Then the re-ranking (prefer src files) will ensure the concrete task wins.
+
+Which concrete tasks should get analysis-only keys? Let me look at the existing tasks:
+
+1. "Verify and fix sub-agent API key propagation" - src/tools.rs, src/agent_builder.rs, src/lib.rs
+2. "Record DeepSeek prompt cache metrics during prompt runs" - src/prompt.rs, src/deepseek.rs, src/state.rs
+3. "Stabilize run completion guard panic test" - src/state.rs
+4. "Extract another focused state CLI module" - src/commands_state.rs, src/commands_state_graph.rs
+5. "Reduce recurring search-tool friction before implementation" - src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py
+
+Of these, tasks 3, 4, 5 seem like good candidates for small-scope concrete work. Task 3 is especially good (1 file). Task 4 is also good (2 files, well-scoped).
+
+But I shouldn't add analysis-only keys to these tasks directly because they serve different purposes. Instead, I should add a NEW concrete task entry that:
+1. Matches analysis-only pressure keys
+2. Has src/*.rs files
+3. Is concrete and landable
+
+Let me create a new task. The task should be something genuinely useful that a DeepSeek agent can land. Let me pick something from `src/tool_wrappers.rs` since it's a well-understood file:
+
+New task: "Improve tool failure category tracking in ToolFailureTracker"
+- files: "src/tool_wrappers.rs"
+- Small, concrete improvement to make failure tracking more precise
+- 1 file
+
+Or even simpler: "Add structured error categories to tool failure recovery hints"
+- files: "src/tool_wrappers.rs"
+
+Actually, I realize I should think about this from the user's perspective. The task is asking me to modify the preseed picker so that analysis-only pressure produces landable tasks. The simplest change is:
+
+1. In the `choose_task` function, when `analysis_only_active` is True and the analysis-only meta-task is the only candidate (or the best candidate after re-ranking), check if there are any concrete src-file tasks available. If so, prefer one of them.
+
+2. To make this work, I need to ensure there's always at least one concrete src-file candidate when analysis-only pressure exists. I can do this by adding a fallback concrete task that gets selected when nothing else matches.
+
+But actually, there's already a fallback ("Repair evidence-backed planning after no-task sessions"). The fallback has script files too. So even the fallback isn't src-file-based.
+
+Let me take the simplest approach that works:
+
+**Approach: Add a new small-scope concrete task entry to TASKS.**
+
+This new task:
+1. Has keys that match analysis-only pressure (so it's selected when analysis-only pressure exists)
+2. Has src/*.rs files (so it's landable)
+3. Is 1-2 files (small scope)
+4. Has a concrete objective
+
+Place it BEFORE the current analysis-only meta-task in the TASKS list so it's checked first.
+
+For the concrete task, I'll pick something small and useful. Let me look at what's available in the codebase...
+
+Actually, I just realized: the current analysis-only task is ALREADY placed appropriately in the TASKS order. It has its own set of keys. The problem is that when these keys match and analysis_only_active is True, this task is selected. If I add another task with the SAME keys before it, the new task would be selected first.
+
+But then what happens to the current analysis-only task? It would never be selected (since its keys are the same as the new task's keys, but the new task is checked first). That's fine - the analysis-only task becomes a backup for when the new concrete task can't be selected (e.g., its files don't exist).
+
+Wait, actually, looking at the `for task in TASKS:` loop, ALL matching tasks are added to candidates. Then the candidates are re-ranked by src-file preference. So even if both tasks match, the src-file one would be preferred after re-ranking.
+
+But there's a subtlety: the analysis-only task has a `files` count check at line 625-626:
+```python
+if analysis_only_active and _task_file_count(task) > 3:
+    continue
+```
+
+The analysis-only task has 3 files (scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py), so it passes the ≤3 check.
+
+And at line 645-647:
+```python
+if analysis_only_active:
+    candidates.sort(key=lambda c: not _has_src_files(c))
+```
+
+This sorts src-file candidates first. So if I add a new task with src files and analysis-only keys, it would be preferred.
+
+OK, here's my plan:
+
+1. Add a new TASKS entry BEFORE the current "Make analysis-only task pressure landable" entry. The new entry should:
+   - Have the same/similar analysis-only keys
+   - Point to a single src/*.rs file
+   - Have a concrete, small-scope objective
+   - Be landable by a DeepSeek agent
+
+2. The new entry should be placed in TASKS such that it's checked first, and when analysis-only pressure exists, it matches and gets preferred (due to src-file re-ranking).
+
+3. Update the tests to verify the new behavior.
+
+Let me create the new task. For the concrete task, I'll use "Add early-edit checkpoint logic to tool_wrappers" or something similar.
+
+Actually, I think there's a simpler approach. Let me look at the existing tests more carefully. The test at line 860-879 shows that when analysis-only pressure exists AND another src-file candidate matches (sub-agent task), the src-file candidate wins. So the mechanism is already there.
+
+The problem is: when analysis-only pressure is the ONLY signal (no other task's keys match), only the analysis-only task matches.
+
+The fix: ensure that when analysis-only pressure exists, there's always at least one concrete src-file task that matches. I can do this by adding analysis-only pressure keys to an existing concrete task.
+
+Let me add analysis-only keys to one of the existing concrete src-file tasks. The "Extract another focused state CLI module" (2 files, src/*.rs) is a good candidate. Or "Stabilize run completion guard panic test" (1 file, src/state.rs).
+
+Wait, but adding analysis-only keys to the state CLI extraction task would make it match whenever analysis-only pressure exists, even when that's not appropriate. The task is about code extraction, not about fixing analysis-only issues.
+
+Hmm, let me think about this more carefully. The task says to add a "new small-scope entry specifically for analysis-only pressure repair." So it should be a NEW entry, purpose-built for this.
+
+What would a good new entry look like? It needs to:
+1. Be selected when analysis-only pressure is detected
+2. Be concrete and landable
+3. Result in improved task success rate
+
+The most concrete way to improve task success rate for DeepSeek agents:
+- Better tool error recovery
+- Better error messages
+- Smarter file search/discovery
+- Better edit verification
+
+Let me pick "Improve ToolFailureTracker to report failure categories" - a small improvement to src/tool_wrappers.rs. This is concrete, src-file-based, and directly helps with task success.
+
+Actually, I want to be more specific. Let me look at ToolFailureTracker to see what could be improved.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 30.5s (2 ✓)
+
+Now let me look at the ToolFailureTracker and understand the code better before writing my implementation:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct ToolFailureTracker' in src/tool_wrappers.rs  ▶ read scripts/preseed_session_plan.py (30 lines) ✓ (112ms)
+ ✓ (327ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the ToolFailureTracker:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:958..1018 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I have a good understanding now. Let me formulate my concrete plan:
+
+The task is asking me to make analysis-only task pressure landable. The issue is that when the preseed selects the "Make analysis-only task pressure landable" task (which is a meta-task about fixing the preseed), a DeepSeek implementation agent struggles to land it because:
+1. It's self-referential
+2. It requires modifying Python scripts (not cargo-testable)
+3. The scope can be unclear
+
+The fix: 
+1. Add a new small-scope concrete task to TASKS that gets selected instead when analysis-only pressure exists
+2. This new task should have src/*.rs files, be concrete, and landable
+3. Update the preseed's choose_task logic to prefer this new task
+
+Now, what concrete task should I add? Let me think about what would be small, landable, and genuinely useful...
+
+Looking at the codebase, `src/tool_wrappers.rs` has `RecoveryHintTool` which wraps tools with recovery hints. The `ToolFailureTracker` tracks tool failures. This is a self-contained subsystem where a small improvement would be:
+- Add recovery hints for more tool error patterns
+- Improve failure tracking granularity
+- Add a method to get failure statistics
+
+But actually, the task I need to complete is: modify scripts/preseed_session_plan.py (and related files) to make analysis-only pressure landable.
+
+Let me take a step back and think about what the MINIMUM viable change is:
+
+The current analysis-only task in TASKS (lines 195-236) has:
+- files: "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"
+- This is what gets selected as the seed task
+
+When this seed task is selected, the planner reads it and creates an implementation task. The implementation agent (me, right now) tries to implement it. The problem is: the seed task itself is hard to land.
+
+The fix should make this seed task MORE landable. Not by changing the TASKS entry (which would be self-referential), but by:
+
+1. Making the analysis-only task entry more concrete and landable
+   - Add src/*.rs files to its files list (or replace scripts with src files)
+   - Make its objective more concrete
+
+OR:
+
+2. Add a NEW task entry that gets selected before the analysis-only task, which is concrete and landable
+
+I think option 2 is better because it doesn't change the purpose of the analysis-only meta-task (which still needs to be fixed eventually when there's a human or more capable agent).
+
+Let me go with option 2. I'll add a new small task entry that:
+- Has analysis-only pressure keys
+- Has 1 src/*.rs file
+- Is concrete and landable
+
+Task: "Add recovery hints for common tool timeout failures"
+- files: "src/tool_wrappers.rs"
+- objective: Add targeted recovery hints for timeout-related tool failures in the RecoveryHintTool
+- This is small, concrete, and directly helps agents recover from failures
+
+OR even simpler:
+
+Task: "Improve RecoveryHintTool coverage for file operation failures"
+- files: "src/tool_wrappers.rs"
+
+Actually, I realize this is taking too long. Let me just implement the simplest thing that works:
+
+1. Add a new TASKS entry before the analysis-only task
+2. The new entry has the same analysis-only keys
+3. It points to a single src file with a concrete objective
+4. The existing analysis-only task stays as backup
+
+For the new task, I'll make it about improving the RecoveryHintTool or ToolFailureTracker in tool_wrappers.rs since that directly helps agents recover from tool failures (increasing task success rate).
+
+Let me also check if there's already a new task entry I could use:
+
+Actually wait. Let me re-read the task one more time:
+
+"Implementation Notes:
+- The preseed picker already has `_has_analysis_only_pressure()` and `analysis_only_active` logic. This task should ensure that when analysis-only pressure is detected, the picker selects from concrete, small-scope task templates rather than broad protected-file work.
+- The picker's `TASKS` constant (or equivalent task templates) may need a new small-scope entry specifically for analysis-only pressure repair.
+- Keep the change scoped to the listed files. The task_manifest.py analysis-only rejection (session 19:29) is complementary — this task fixes the prevention side."
+
+So: add a new small-scope entry to TASKS for analysis-only pressure repair. This is the direct fix.
+
+Let me write the code now. I'll add a new task entry in TASKS (before the analysis-only meta-task), modify the choose_task logic if needed, update tests, and verify.
+
+Here's my concrete plan:
+1. Add a new TASKS entry: "Improve tool failure recovery with targeted hints for common path/enoent errors"
+   - keys: analysis-only pressure keys
+   - files: "src/tool_wrappers.rs"
+   - 1 file, concrete, small-scope
+2. Modify choose_task: when analysis_only_active is True and multiple candidates include the analysis-only meta-task, deprioritize the meta-task
+3. Update the tests
+4. Run verification
+
+Wait, actually, I realize step 2 might not be needed. If I add a new task with analysis-only keys BEFORE the analysis-only task in TASKS, both will match. Then the re-ranking (prefer src files) will put the new task first. The new task also passes the ≤3 file count check (1 file). So it would be selected naturally.
+
+But there's a complication: the `check_task_contradiction` function might contradict the new task if the assessment's Recent Changes mention the analysis-only fix. Let me check...
+
+Actually, the contradiction logic checks if the assessment says the task was already resolved. Since the new task is about tool wrappers (not about preseed), it wouldn't be contradicted by the same conditions that contradict the analysis-only meta-task.
+
+Let me write the code. I'll add a new task entry and update the tests.
+
+Here's my implementation plan:
+
+1. Add a new TASKS entry right before the "Make analysis-only task pressure landable" entry (after the "Stabilize run completion guard panic test" entry, at around line 194).
+
+2. The new entry:
+```python
+{
+    "keys": (
+        "force analysis-only attempts into action",
+        "task_analysis_only_attempt_count",
+        "task_no_edit_revert_count",
+        "reverted_no_edit",
+    ),
+    "title": "Improve RecoveryHintTool coverage for common tool failures",
+    "files": "src/tool_wrappers.rs",
+    "objective": (
+        "Extend the RecoveryHintTool to cover at least one additional common "
+        "tool failure pattern with a targeted recovery hint."
+    ),
+    "why": (
+        "Analysis-only task pressure shows agents are hitting tool failures "
+        "without adequate recovery guidance. A small, concrete src/*.rs improvement "
+        "is more landable than script-level seed repair."
+    ),
+    "success": [
+        "At least one new recovery hint pattern is added to targeted_recovery_hint.",
+        "The existing recovery hint behavior remains unchanged.",
+        "Tests cover the new hint pattern.",
+    ],
+    "verification": [
+        "cargo test tool_wrappers",
+        "cargo check",
+    ],
+    "evidence": [
+        "Future tool error recovery rates improve for the covered pattern.",
+        "Task lineage shows src/tool_wrappers.rs as the changed file.",
+    ],
+},
+```
+
+Wait, but this task would only be selected when BOTH analysis-only pressure AND the specific assessment text mention "recovery" hints. Actually no - the keys include the analysis-only pressure terms, so it would match whenever analysis-only pressure exists.
+
+Hmm, but this creates a problem: if analysis-only pressure exists AND another task also matches (e.g., sub-agent task with api_key_present), both would be candidates. The re-ranking would prefer src-file tasks... but BOTH are src-file tasks. The new task has analysis-only keys AND is src-file. The sub-agent task has sub-agent keys AND is src-file. Whichever is checked first in TASKS gets added to candidates first, and with stable sort, ties are preserved.
+
+But the re-ranking is: `candidates.sort(key=lambda c: not _has_src_files(c))`. Both have src files, so `_has_src_files` returns True for both, so `not True` = False for both. Sort is stable, so original order is preserved. The first matching task in TASKS would win.
+
+If I place the new task BEFORE the analysis-only meta-task but AFTER other concrete tasks (sub-agent, cache, cold-start, panic test), then when both analysis-only pressure AND another signal exist, the other signal's task would be checked first and win.
+
+Wait, no. The loop adds ALL matching tasks to candidates. Then they're sorted. Let me re-read the logic:
+
+```python
+for task in TASKS:
+    if not any(key in lower for key in task["keys"]):
+        continue
+    # ... various continue filters ...
+    candidates.append(task)
+```
+
+So if the assessment says "reverted_no_edit" AND "api_key_present", BOTH the new task (which has "reverted_no_edit" in its keys) AND the sub-agent task (which has "api_key_present" in its keys) would match and be added to candidates.
+
+Then re-ranking:
+```python
+if analysis_only_active:
+    candidates.sort(key=lambda c: not _has_src_files(c))
+```
+
+Both have src files, so the sort is stable. The sub-agent task is checked first in TASKS (index 0), so it's added first. The new task is checked later. After stable sort, the sub-agent task stays first.
+
+Then:
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+```
+
+The sub-agent task is checked first for contradiction. If it's not contradicted, it wins.
+
+This is fine - when both analysis-only AND another signal exist, the other signal's task wins (which is desirable - it's more specific).
+
+When ONLY analysis-only pressure exists, only the new task (and the old analysis-only task) match. Both have analysis-only keys. The new task is checked first in TASKS order (because I'll place it before the old one). Both are added. Then re-ranking: the new task has src files, the old one doesn't. So the new task wins!
+
+This is exactly the desired behavior.
+
+Now let me also make sure the old analysis-only task is still available as a fallback. If the new task's files don't exist (which they should - src/tool_wrappers.rs exists), the new task would be filtered out by `_candidate_files_exist`. Then the old analysis-only task would still be selected.
+
+OK, but there's another issue. Let me check the existing tests. At lines 789-793:
+
+```python
+assessment = """...
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): ...
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): ...
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): ...
+"""
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable", task
+```
+
+With my change, both the new task and the old analysis-only task would match. The new task (src/tool_wrappers.rs) would be preferred because it has src files. So this test would need to be updated to expect the new task title.
+
+Actually, wait. Let me re-check: the assessment text has "Force analysis-only attempts into action (task_analysis_only_attempt_count=2)". Both the new task and the old task have "task_analysis_only_attempt_count" in their keys. So both match. The new task is checked first in TASKS. Both get added to candidates. Re-ranking sorts by src-file preference, putting the new task first. Then contradiction check... the new task wouldn't be contradicted. So the new task wins.
+
+So I need to update this test. Let me also check the other tests that expect the analysis-only task:
+
+Line 821-824 (reverted_no_edit=4):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+→ Would now get the new task.
+
+Line 834-837 (reverted_no_edit + lifecycle):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+→ Would now get the new task.
+
+Line 848-856 (task_analysis_only_attempt_count=3):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+→ Would now get the new task.
+
+Line 889-892 (reverted_no_edit=3 alone):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+→ Would now get the new task.
+
+Line 899-909 (task_no_edit_revert_count=3 alone):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+→ Would now get the new task.
+
+Line 1137-1153 (contradicted by "made landable"):
+```python
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+assert task.get("validated_against_assessment") is False
+```
+→ This one is tricky. The assessment says "Analysis-only task pressure made landable" in Recent Changes. The new task's objective is about tool_wrappers, not about being "made landable." So the contradiction check might NOT flag it. Let me look at how contradiction works:
+
+The contradiction logic (check_task_contradiction) checks Recent Changes and Self-Test Results for evidence that the task was already fixed. The assessment says "Analysis-only task pressure made landable" - this would only contradict the analysis-only meta-task, not the new tool_wrappers task. So the new task would not be contradicted, and validated_against_assessment would be True.
+
+Hmm, but this test expects validated_against_assessment=False. With the new task, it would be True. I need to update this test.
+
+Similarly, line 1154-1172 (Day-prefixed resolution of analysis-only task) would need updating.
+
+OK, I'll need to update several tests. Let me also check lines 861-878 (evidence-aware re-ranking):
+
+```python
+assessment = """...
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: reverted_no_edit=2 in recent window. Sessions with no file progress.
+- **Sub-agent spawn failures**: api_key_present validation.
+...
+"""
+task = choose_task(assessment)
+assert task["title"] == "Verify and fix sub-agent API key propagation"
+```
+
+In this case, both the new task (reverted_no_edit key matches) and the sub-agent task (api_key_present key matches) would be candidates. Both have src files. Stable sort preserves TASKS order. The sub-agent task is checked first in TASKS (it's at index 0). So sub-agent task should win. The test should still pass.
+
+But wait, the sorting key is `not _has_src_files(c)`. Both have src files, so both return False. Stable sort preserves original order. Sub-agent task is first → would still win.
+
+Wait, actually I'm adding the new task AFTER the sub-agent task but BEFORE the analysis-only task. Let me check TASKS order:
+
+Current order:
+1. "Verify and fix sub-agent API key propagation" (lines 39-74)
+2. "Record DeepSeek prompt cache metrics during prompt runs" (lines 75-154)
+3. "Improve cold-start state failure diagnostics" (lines 155-?)
+4. "Stabilize run completion guard panic test" (lines ?-194)
+5. "Make analysis-only task pressure landable" (lines 195-236)
+6. "Close yyds state and model lifecycle gaps" (lines 237-281)
+7. "Reduce recurring search-tool friction before implementation" (lines 282-310)
+8. "Extract another focused state CLI module" (lines 311-343)
+
+I'll add the new task between positions 4 and 5 (after panic test, before analysis-only task). It should be around line 195, before the analysis-only task.
+
+Actually wait, I need to be careful. Let me look at the exact line numbers. The analysis-only task starts at line 195:
+```python
+    {
+        "keys": (
+            "force analysis-only attempts into action",
+            ...
+        ),
+        "title": "Make analysis-only task pressure landable",
+```
+
+And the panic test task is right before it (lines 161-194).
+
+I'll insert the new task between them.
+
+Now, for the new task, I need to decide on a title and content. The task should be small, concrete, src-file-based, and landable. Let me use one that's closely related to improving agent task success:
+
+Title: "Extend recovery hints for file-not-found and permission errors"
+Files: "src/tool_wrappers.rs"
+
+Wait, I should make the title unique so it doesn't conflict. Let me check what titles already exist...
+
+Current titles:
+- "Verify and fix sub-agent API key propagation"
+- "Record DeepSeek prompt cache metrics during prompt runs"
+- "Improve cold-start state failure diagnostics"
+- "Stabilize run completion guard panic test"
+- "Make analysis-only task pressure landable"
+- "Close yyds state and model lifecycle gaps"
+- "Reduce recurring search-tool friction before implementation"
+- "Extract another focused state CLI module"
+- "Repair evidence-backed planning after no-task sessions" (fallback)
+
+New title: "Add targeted recovery hints for common tool error patterns"
+
+OK let me just write the code now. I'll:
+
+1. Add the new task entry to TASKS (before the analysis-only task)
+2. Update the tests to expect the new task where appropriate
+3. Add new test coverage for the scenario
+
+Let me also check what the state_graph_tools.py and test_state_graph_tools.py files need. The task says these are also in the Edit Surface. Let me check what changes might be needed there...
+
+Looking at `state_graph_tools.py`, it has the evolution_suggestions function that produces the "Force analysis-only attempts into action" suggestion. The task is about the PRESEED picker, not the suggestions. The suggestions are inputs to the preseed (they appear in the assessment's "Graph-derived Next-Task Pressure" section). So state_graph_tools.py probably doesn't need changes unless we want to modify the suggestion text.
+
+Looking at the test file, I should add a test that verifies the new task is selected correctly.
+
+But actually, the task says the files are "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py". The primary change is in preseed_session_plan.py. The state_graph_tools changes are probably about ensuring the analysis-only pressure metrics are correctly reported. Let me check if there are any issues with how state_graph_tools reports these metrics...
+
+The `evolution_suggestions` function already correctly reports analysis-only metrics (task_analysis_only_attempt_count, task_no_edit_revert_count, reverted_no_edit). These feed into the assessment that the preseed reads. So state_graph_tools.py might not need changes.
+
+But the task explicitly lists it. Let me check if there are any interrelated concerns...
+
+Actually, I think the state_graph_tools.py changes might be needed to ensure the gnome metrics it produces are correctly labeled or prioritized. Let me look at the `corrected_latest_gnomes` function:
+
+Actually, let me just focus on the preseed change first and add the new task entry. I'll check the tests and then determine if state_graph_tools needs changes.
+
+Let me now write the implementation. First, I need to be precise about where to insert the new task entry.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me implement the fix. The core issue: when analysis-only pressure exists, the preseed selects the "Make analysis-only task pressure landable" meta-task (scripts-only), which DeepSeek agents struggle to land. The fix is to add a new concrete, src-file task entry that gets selected instead.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (62ms)
+  ▶ todo ✓ (102ms)
+  ▶ todo ✓ (155ms)
+  ▶ todo ✓ (155ms)
+  ▶ todo ✓ (154ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the exact lines where I need to insert the new task entry. The analysis-only task starts at line 195. The previous task (panic test) ends around line 194. Let me read those exact lines to prepare the edit.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.1s (5 ✓)
+
+Let me read the exact insertion point:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:190..200 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The insertion point is between line 194 (end of panic test task) and line 195 (start of analysis-only task). I'll insert the new task entry there.
+
+Now let me create the new task. It should be:
+1. Small scope (1-2 src/*.rs files)
+2. Concrete and landable
+3. Has analysis-only pressure keys so it matches
+4. Placed before the analysis-only meta-task
+
+For the concrete task, I'll use "Add recovery hints for common tool-path and permission errors" targeting `src/tool_wrappers.rs`. This is small, concrete, and directly improves agent execution reliability.
+
+Let me write the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll insert the new TASKS entry. I need to insert it after line 194 (the `},` closing the panic test task) and before line 195 (the `{` opening the analysis-only task).
+
+Let me craft the edit carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +         ],
+  +     },
+  +     {
+  +         "keys": (
+  +             "force analysis-only attempts into action",
+  +             "task_analysis_only_attempt_count",
+  +             "task_no_edit_revert_count",
+  +             "reverted_no_edit",
+  +         ),
+  +         "title": "Add recovery hints for common tool-path and permission errors",
+  +         "files": "src/tool_wrappers.rs",
+  +         "objective": (
+  +             "Extend `targeted_recovery_hint` in `src/tool_wrappers.rs` to cover at least one "
+  +             "additional common tool failure pattern (e.g., file-not-found, permission-denied, "
+  +             "or invalid-path errors) with a targeted recovery hint that helps agents self-correct "
+  +             "without manual intervention."
+  +         ),
+  +         "why": (
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 38 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 38 lines)
+  +         ],
+  +     },
+  +     {
+  +         "keys": (
+  +             "force analysis-only attempts into action",
+  +             "task_analysis_only_attempt_count",
+  +             "task_no_edit_revert_count",
+  +             "reverted_no_edit",
+  +         ),
+  +         "title": "Add recovery hints for common tool-path and permission errors",
+  +         "files": "src/tool_wrappers.rs",
+  +         "objective": (
+  +             "Extend `targeted_recovery_hint` in `src/tool_wrappers.rs` to cover at least one "
+  +             "additional common tool failure pattern (e.g., file-not-found, permission-denied, "
+  +             "or invalid-path errors) with a targeted recovery hint that helps agents self-correct "
+  +             "without manual intervention."
+  +         ),
+  +         "why": (
+  +             "Analysis-only task pressure shows agents are hitting tool failures without adequate "
+  +             "recovery guidance. A small, concrete src/*.rs improvement is more landable than "
+  ... (18 more lines)
+ ✗ (183ms)
+    │ old_text matches 7 locations in scripts/preseed_session_plan.py. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need more context to make the match unique. Let me include more surrounding lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                "Future CI/log feedback stops repeating the `run_completion_guard` flaky failure.",
+                "Task lineage links a strict one-file source change to the lifecycle reliability issue.",
+  +         ],
+  +     },
+  +     {
+  +         "keys": (
+  +             "force analysis-only attempts into action",
+  +             "task_analysis_only_attempt_count",
+  +             "task_no_edit_revert_count",
+  +             "reverted_no_edit",
+  +         ),
+  +         "title": "Add recovery hints for common tool-path and permission errors",
+  +         "files": "src/tool_wrappers.rs",
+  +         "objective": (
+  +             "Extend `targeted_recovery_hint` in `src/tool_wrappers.rs` to cover at least one "
+  +             "additional common tool failure pattern (e.g., file-not-found, permission-denied, "
+  +             "or invalid-path errors) with a targeted recovery hint that helps agents self-correct "
+  +             "without manual intervention."
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 40 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 40 lines)
+                "Future CI/log feedback stops repeating the `run_completion_guard` flaky failure.",
+                "Task lineage links a strict one-file source change to the lifecycle reliability issue.",
+  +         ],
+  +     },
+  +     {
+  +         "keys": (
+  +             "force analysis-only attempts into action",
+  +             "task_analysis_only_attempt_count",
+  +             "task_no_edit_revert_count",
+  +             "reverted_no_edit",
+  +         ),
+  +         "title": "Add recovery hints for common tool-path and permission errors",
+  +         "files": "src/tool_wrappers.rs",
+  +         "objective": (
+  +             "Extend `targeted_recovery_hint` in `src/tool_wrappers.rs` to cover at least one "
+  +             "additional common tool failure pattern (e.g., file-not-found, permission-denied, "
+  +             "or invalid-path errors) with a targeted recovery hint that helps agents self-correct "
+  +             "without manual intervention."
+  +         ),
+  +         "why": (
+  ... (20 more lines)
+ ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the new task entry has been inserted. Now I need to update the tests. Let me run the existing tests first to see which ones fail.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me run the tests to see which ones need updating:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (155ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+As expected, the test at line 825 now fails because the new concrete task is selected instead of the analysis-only meta-task. I need to update all the tests that previously expected "Make analysis-only task pressure landable" to now expect the new task title.
+
+Let me update the tests. The tests that need updating are those where:
+- Analysis-only pressure exists AND no other task's keys match (so only analysis-only tasks match)
+- The new task is preferred because it has src files
+
+Let me update them one by one.
+────────────────────────────────────────────────────────────────────────────────
+
+Expected - the new task wins now. Let me update the tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (60ms)
+  ▶ todo ✓ (94ms)
+  2 tools completed in 213ms (2 ✓)
+
+

@@ -1,0 +1,565 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator rejected my implementation because:
+   - Two new task templates share overlapping keys (`force analysis-only attempts into action`, `task_analysis_only_attempt_count`)
+   - This causes "Add recovery hints" to be selected instead of "Make analysis-only task pressure landable"
+   - The test at line 825 expects the analysis-only task to be selected
+   - I also didn't touch state_graph_tools.py or test_state_graph_tools.py
+
+2. I need to fix the overlapping keys issue in preseed_session_plan.py, and also touch state_graph_tools.py and test_state_graph_tools.py as specified.
+
+Let me start by reading the relevant files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (61ms)
+  ▶ todo ✓ (83ms)
+  ▶ todo ✓ (154ms)
+  ▶ todo ✓ (154ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the preseed_session_plan.py to understand the current state and find the overlapping keys issue.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.7s (4 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the preseed_session_plan.py to see the current state, particularly around the overlapping template keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py (100 lines) ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the analysis-only task template and the overlapping keys issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/preseed_session_plan.py ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the task templates area and the analysis-only pressure handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TASKS = ' in scripts/preseed_session_plan.py ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the TASKS list to find the analysis-only template and the overlapping keys issue.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at the full TASKS list and the analysis-only related logic:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:38..268 ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. There are two task templates that both have `"force analysis-only attempts into action"` as keys:
+
+1. Task starting at line 195: `"Add recovery hints for common tool-path and permission errors"` (keys include `"force analysis-only attempts into action", "task_analysis_only_attempt_count"`)
+2. Task starting at line 230: `"Make analysis-only task pressure landable"` (keys also include `"force analysis-only attempts into action", "task_analysis_only_attempt_count"`)
+
+Both share the key `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"`. The first one appears earlier in the list and is selected instead of the second ("Make analysis-only task pressure landable").
+
+The test at line 825 expects "Make analysis-only task pressure landable" to be selected, but "Add recovery hints" is picked first because it's earlier in the list and matches the same keys.
+
+The fix: The "Add recovery hints" task (the first one) needs different keys that don't overlap with the "Make analysis-only task pressure landable" task. I need to remove the overlapping keys from the first task or adjust them so they're distinct.
+
+Looking at the first task more carefully:
+- Title: "Add recovery hints for common tool-path and permission errors"
+- Keys: `"force analysis-only attempts into action", "task_analysis_only_attempt_count", "task_no_edit_revert_count", "reverted_no_edit"`
+
+The second task:
+- Title: "Make analysis-only task pressure landable"  
+- Keys: `"force analysis-only attempts into action", "force reverted tasks to leave concrete evidence", "task_analysis_only_attempt_count", "analysis-only task attempts", "analysis only task attempts", "task_no_edit_revert_count", "reverted_no_edit", "no-edit revert", "no edit revert", "implementation ended without file progress", "implementation task reverted without touching files", "tasks planned but reverted without touching", "reverted without touching any source file"`
+
+The first task (Add recovery hints) is supposed to be about recovery hints in tool_wrappers.rs. The second task is about making the analysis-only task pressure landable in scripts. They have overlapping keys which is causing the wrong one to be picked.
+
+The fix should change the keys in one of these tasks so they don't overlap. Since the evaluator says the test expects "Make analysis-only task pressure landable" to be selected when the analysis-only pressure is detected, I should:
+
+1. Remove `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"` from the "Add recovery hints" task's keys
+2. Keep `"task_no_edit_revert_count"` and `"reverted_no_edit"` in the "Add recovery hints" task (these are distinct overlap but might still cause issues)
+
+Wait, but both also share `"task_no_edit_revert_count"` and `"reverted_no_edit"`. Let me re-read.
+
+Actually, looking at the evaluator feedback again: "two new task templates share overlapping keys (`force analysis-only attempts into action`, `task_analysis_only_attempt_count`), causing 'Add recovery hints' (src/tool_wrappers.rs) to be selected instead of 'Make analysis-only task pressure landable' as the test at line 825 expects."
+
+So the issue is specifically that `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"` appear in BOTH task templates. The first one (Add recovery hints) wins because it appears earlier in the TASKS list.
+
+The fix: Remove `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"` from the "Add recovery hints" task. Keep `"task_no_edit_revert_count"` and `"reverted_no_edit"` since those should remain valid triggers for the recovery hints task.
+
+But wait - I also need to check what the test at line 825 expects. Let me read that.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I can see the issue. Let me also look at the test around line 825 and the `_has_analysis_only_pressure` function:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:790..890  ▶ search '_has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (75ms)
+ ✓ (234ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The test at line 817-828 expects "Make analysis-only task pressure landable" to be selected when the assessment includes "Force analysis-only attempts into action (task_analysis_only_attempt_count=2)". But the "Add recovery hints" task also matches on those same keys and appears earlier in the TASKS list.
+
+Let me also read the `_has_analysis_only_pressure` and the `choose_task` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:618..718 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue fully. The `choose_task` function iterates through `TASKS` in order. When it finds a task whose keys match the assessment, it adds it to `candidates`. The "Add recovery hints" task appears first in TASKS (line 195) and shares keys with "Make analysis-only task pressure landable" (line 230).
+
+The test at line 824-825 expects "Make analysis-only task pressure landable" to be selected, but the first matching candidate is "Add recovery hints" because its keys also include `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"`.
+
+The fix: Remove `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"` from the "Add recovery hints" task's keys. Keep `"task_no_edit_revert_count"` and `"reverted_no_edit"` so it still triggers on no-edit reverts.
+
+But wait, both tasks also share `"task_no_edit_revert_count"` and `"reverted_no_edit"`. However, since the "Make analysis-only" task appears after "Add recovery hints", the recovery hints task would still be selected first. Let me think about this differently.
+
+Actually, looking at the analysis_only_active logic (line 680-682): when analysis_only_active is true, candidates are sorted with src-file tasks first. The "Add recovery hints" task has `"files": "src/tool_wrappers.rs"` (src files), while "Make analysis-only task pressure landable" has `"files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"` (no src/*.rs files).
+
+So when analysis_only_active is True:
+- "Add recovery hints" has src files → sorts first
+- "Make analysis-only" has no src files → sorts second
+
+The `_has_src_files` check on "Add recovery hints": `"src/tool_wrappers.rs"` → starts with "src/" and ends with ".rs" → True.
+The `_has_src_files` check on "Make analysis-only": `"scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"` → none start with "src/" → False.
+
+So the sorting makes "Add recovery hints" sort first (has src files), then "Make analysis-only task pressure landable" sorts second (no src files). The stable sort ensures both appear in candidates but "Add recovery hints" comes first.
+
+The fix needs to ensure "Make analysis-only task pressure landable" is selected instead of "Add recovery hints" when the analysis-only pressure comes from graph-derived pressure that includes "Force analysis-only attempts into action".
+
+The best approach: Remove the overlapping keys from the "Add recovery hints" task. Specifically, remove `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"` from the Add recovery hints task. Keep `"task_no_edit_revert_count"` and `"reverted_no_edit"` there.
+
+But both tasks still share `"task_no_edit_revert_count"` and `"reverted_no_edit"`. So if those are the only matching keys in the assessment, "Add recovery hints" would still win.
+
+Wait, but the test at 817-828 specifically uses "Force analysis-only attempts into action (task_analysis_only_attempt_count=2)". So the key match for "Add recovery hints" is `"force analysis-only attempts into action"` AND `"task_analysis_only_attempt_count"`. If I remove both from "Add recovery hints", it won't match at all for that assessment, and the only match will be "Make analysis-only task pressure landable".
+
+But then there's still the issue with shared `"task_no_edit_revert_count"` and `"reverted_no_edit"`. If the assessment text only contains `reverted_no_edit=4` (like the test at line 851-858), both tasks would still match. But in that test, the expected result is also "Make analysis-only task pressure landable".
+
+Let me re-read the test at 851-858 more carefully:
+```
+assessment = """# Assessment
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Make analysis-only task pressure landable"
+```
+
+In this case, the assessment only mentions `reverted_no_edit=4`. Both "Add recovery hints" and "Make analysis-only" have `"reverted_no_edit"` as a key. Both would match. The analysis_only_active would be True (because `_ANALYSIS_ONLY_METRICS` includes `reverted_no_edit`). Then sorting would put "Add recovery hints" first (has src files). So this test would also fail.
+
+So I need to make these two tasks not overlap at all. The "Add recovery hints" task should have different trigger keys that are distinct from the "Make analysis-only task pressure landable" task.
+
+Looking at what "Add recovery hints" is about: it's about recovery hints for tool-path and permission errors. Its keys should be about tool failures, recovery hints, etc. — not about analysis-only pressure.
+
+Let me think about what keys the "Add recovery hints" task should have:
+- It's about tool-path errors, permission errors, recovery hints
+- The original keys were `"force analysis-only attempts into action", "task_analysis_only_attempt_count", "task_no_edit_revert_count", "reverted_no_edit"` — these are all about analysis-only pressure, not about recovery hints
+
+Wait, actually the intent here is that the "Add recovery hints" task was created as a small concrete task when analysis-only pressure is detected. But the "Make analysis-only task pressure landable" task is also about analysis-only pressure, but at the preseed/scripts level.
+
+The difference is:
+- "Add recovery hints": touches src/tool_wrappers.rs, adds recovery hints. It's a concrete src-level change.
+- "Make analysis-only task pressure landable": touches scripts/, makes the preseed picker produce landable tasks.
+
+The test at line 817 expects the preseed picker to select "Make analysis-only task pressure landable" for the analysis-only pressure path. So the "Add recovery hints" task should be triggered by something different.
+
+Given the evaluator feedback: "two new task templates share overlapping keys" - this suggests the fix is to differentiate the keys. The "Add recovery hints" task's purpose is about recovery hints in tool_wrappers.rs. Its keys should relate to tool failures, recovery patterns, permission errors, etc.
+
+Let me change the "Add recovery hints" task's keys to be about recovery hints and tool failures, not analysis-only pressure. Something like:
+
+```python
+"keys": (
+    "recovery hint",
+    "recovery hints", 
+    "tool-path error",
+    "tool path error",
+    "permission error recovery",
+    "tool failure pattern",
+    "targeted_recovery_hint",
+),
+```
+
+But this might not match from the current assessment patterns. The evaluator wants:
+- When graph-derived metrics show `task_analysis_only_attempt_count > 0` or `reverted_no_edit > 0`, preseed selects "Make analysis-only task pressure landable"
+- The "Add recovery hints" task in `src/tool_wrappers.rs` is a different (complementary) task
+
+Actually, re-reading the evaluator feedback more carefully: "two new task templates share overlapping keys (`force analysis-only attempts into action`, `task_analysis_only_attempt_count`), causing 'Add recovery hints' (src/tool_wrappers.rs) to be selected instead of 'Make analysis-only task pressure landable'"
+
+The fix: Remove the shared keys from "Add recovery hints". The simplest approach is to change the "Add recovery hints" keys to NOT include `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"`.
+
+But I also need to make sure the "Add recovery hints" task still has valid triggered keys. Let me think about what assessment evidence would point to needing recovery hints...
+
+The task is about "common tool-path and permission errors" and "recovery hints". The original motivation was that analysis-only pressure shows agents hitting tool failures without recovery guidance. But the actual trigger keys don't need to be the analysis-only pressure keys — they could be about tool failures directly.
+
+Let me give "Add recovery hints" keys that are related to tool failures and recovery:
+- `"tool failure"`, `"tool failures"`, `"recovery hint"`, `"tool-path error"`, `"permission error"`, `"file not found error"`, `"targeted_recovery_hint"`
+
+But I also need `"task_no_edit_revert_count"` and `"reverted_no_edit"` to remain only on the "Make analysis-only task pressure landable" task. The issue is both share these. Let me remove them from "Add recovery hints" too, changing its keys entirely.
+
+Actually wait, let me re-read the evaluator feedback one more time:
+
+"two new task templates share overlapping keys (`force analysis-only attempts into action`, `task_analysis_only_attempt_count`), causing 'Add recovery hints' (src/tool_wrappers.rs) to be selected instead of 'Make analysis-only task pressure landable' as the test at line 825 expects"
+
+OK so the specific overlapping keys are:
+1. `force analysis-only attempts into action`
+2. `task_analysis_only_attempt_count`
+
+Both also share `task_no_edit_revert_count` and `reverted_no_edit`, but the evaluator specifically calls out those two. I should remove those two from the "Add recovery hints" task AND also address the shared `task_no_edit_revert_count` and `reverted_no_edit` keys.
+
+Let me do this cleanly: change the "Add recovery hints" task keys to be about tool failures and recovery, not about analysis-only pressure. This makes semantic sense too — the "Add recovery hints" task is about improving recovery in tool_wrappers.rs, triggered by tool failure evidence, not by analysis-only pressure per se.
+
+For the shared `task_no_edit_revert_count` and `reverted_no_edit`: I should keep these only in the "Make analysis-only task pressure landable" task. The "Add recovery hints" task should not match on these.
+
+Now, since both tasks also share `"task_no_edit_revert_count"` and `"reverted_no_edit"`, and the evaluator test at line 851-858 uses `reverted_no_edit=4` as the sole pressure trigger, I need to ensure that test picks "Make analysis-only task pressure landable". If I remove these keys from "Add recovery hints", it won't match.
+
+Let me implement this fix now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (60ms)
+  ▶ todo ✓ (107ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the problem clearly. The "Add recovery hints for common tool-path and permission errors" task (line 195-229) and "Make analysis-only task pressure landable" (line 230+) share the keys `"force analysis-only attempts into action"` and `"task_analysis_only_attempt_count"`. Both also share `"task_no_edit_revert_count"` and `"reverted_no_edit"`.
+
+The fix: change the keys in the "Add recovery hints" task to not overlap. I'll replace them with keys related to tool failures, recovery hints, and permission errors — the actual content of the task.
+
+Let me also look at what the _ANALYSIS_ONLY_METRICS constant is and how the tests work:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+Let me also check the `_ANALYSIS_ONLY_METRICS` constant:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that constant definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:605..620 ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `_ANALYSIS_ONLY_METRICS` are: `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`.
+
+The "Add recovery hints" task has keys: `"force analysis-only attempts into action"`, `"task_analysis_only_attempt_count"`, `"task_no_edit_revert_count"`, `"reverted_no_edit"`.
+
+The "Make analysis-only task pressure landable" task has keys: `"force analysis-only attempts into action"`, `"force reverted tasks to leave concrete evidence"`, `"task_analysis_only_attempt_count"`, `"analysis-only task attempts"`, `"analysis only task attempts"`, `"task_no_edit_revert_count"`, `"reverted_no_edit"`, `"no-edit revert"`, `"no edit revert"`, `"implementation ended without file progress"`, `"implementation task reverted without touching files"`, `"tasks planned but reverted without touching"`, `"reverted without touching any source file"`.
+
+The overlap: `"force analysis-only attempts into action"`, `"task_analysis_only_attempt_count"`, `"task_no_edit_revert_count"`, `"reverted_no_edit"`.
+
+The fix: Change the "Add recovery hints" task keys to be about tool-path/permission errors and recovery hints, not about analysis-only pressure. I'll change them to something like:
+
+```python
+"keys": (
+    "tool-path recovery",
+    "tool path recovery",
+    "permission error recovery",
+    "targeted_recovery_hint",
+    "add recovery hint",
+    "recovery hints for tool",
+    "tool error recovery",
+    "common tool failure",
+),
+```
+
+This way, it won't overlap with the "Make analysis-only task pressure landable" task. But I need to make sure it can still be triggered by assessment evidence. Let me think about what assessment text might trigger it...
+
+Actually, the "Add recovery hints" task is supposed to be triggered by tool-failure patterns. Looking at the assessment patterns, common tool failures include search errors, file-not-found, permission-denied. The task's `why` field says "Analysis-only task pressure shows agents are hitting tool failures without adequate recovery guidance."
+
+So instead of being triggered by analysis-only pressure keys directly, it should be triggered by tool failure evidence. Let me use keys like:
+- `"tool failure pattern"`
+- `"tool-path error"`
+- `"permission error"`
+- `"recovery hint"`
+- `"file-not-found error"`
+
+These should appear in assessments when there are tool failures that need recovery.
+
+Let me now make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The fix is clear: the "Add recovery hints for common tool-path and permission errors" task (line 195-229) shares four keys with "Make analysis-only task pressure landable" (line 230+): `"force analysis-only attempts into action"`, `"task_analysis_only_attempt_count"`, `"task_no_edit_revert_count"`, and `"reverted_no_edit"`. I need to change the "Add recovery hints" task keys so they don't overlap.
+        {
+            "keys": (
+  -             "force analysis-only attempts into action",
+  -             "task_analysis_only_attempt_count",
+  -             "task_no_edit_revert_count",
+  -             "reverted_no_edit",
+  +             "tool-path recovery",
+  +             "tool path recovery",
+  +             "targeted_recovery_hint",
+  +             "permission error recovery",
+  +             "common tool failure",
+  +             "tool failure pattern",
+  +             "file-not-found recovery",
+  +             "permission-denied recovery",
+  +             "insufficient recovery hints",
+  +             "missing recovery hint",
+            ),
+            "title": "Add recovery hints for common tool-path and permission errors",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (35 → 41 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (35 → 41 lines)
+        {
+            "keys": (
+  -             "force analysis-only attempts into action",
+  -             "task_analysis_only_attempt_count",
+  -             "task_no_edit_revert_count",
+  -             "reverted_no_edit",
+  +             "tool-path recovery",
+  +             "tool path recovery",
+  +             "targeted_recovery_hint",
+  +             "permission error recovery",
+  +             "common tool failure",
+  +             "tool failure pattern",
+  +             "file-not-found recovery",
+  +             "permission-denied recovery",
+  +             "insufficient recovery hints",
+  +             "missing recovery hint",
+            ),
+            "title": "Add recovery hints for common tool-path and permission errors",
+            "files": "src/tool_wrappers.rs",
+  ···
+  ... (12 more lines)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the change with the preseed --test command.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the preseed self-tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The preseed self-tests pass. Now I need to check what work needs to be done in state_graph_tools.py and test_state_graph_tools.py. The evaluator said: "Implementation also did not touch state_graph_tools.py or test_state_graph_tools.py as the task's Edit Surface specified, working on task_manifest.py instead."
+
+So the previous implementation attempt worked on task_manifest.py instead of state_graph_tools.py and test_state_graph_tools.py. The task's Edit Surface lists:
+- scripts/preseed_session_plan.py (done)
+- scripts/state_graph_tools.py (needs work)
+- scripts/test_state_graph_tools.py (needs work)
+
+Let me check what needs updating in these files. The task is about making analysis-only task pressure landable. The preseed picker change is the main fix, but the task also requires changes to state_graph_tools.py and test_state_graph_tools.py.
+
+Let me read state_graph_tools.py to understand what might need changing.
+────────────────────────────────────────────────────────────────────────────────
+
+Preseed tests pass. Now let me check the other files that need work:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (60ms)
+  ▶ todo ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check state_graph_tools.py to see what needs updating. The evaluator mentioned that the previous implementation worked on task_manifest.py instead. So I need to find what analysis-only related changes should be in state_graph_tools.py and test_state_graph_tools.py.
+
+The task says:
+> "Ensure that when graph-derived pressure includes analysis-only/no-edit task failure evidence, the preseed task picker selects a concrete, landable, small-scope task rather than falling through to no-op or broad protected-file work."
+
+The state_graph_tools.py probably needs to expose analysis-only pressure metrics that the preseed picker can consume. Let me check if there are already analysis-only related metrics in state_graph_tools.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/state_graph_tools.py  ▶ search 'reverted_no_edit' in scripts/state_graph_tools.py  ▶ search 'analysis.only' in scripts/state_graph_tools.py ✓ (222ms)
+ ✓ (260ms)
+ ✓ (356ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the GNOME_COMPARE_KEYS and understand how analysis-only metrics are used in state_graph_tools.py.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.1s (3 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:55..85 ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see `task_analysis_only_attempt_count` is already in GNOME_COMPARE_KEYS. But the task mentions `reverted_no_edit` — and that's NOT in GNOME_COMPARE_KEYS. Let me check whether `reverted_no_edit` needs to be added to state_graph_tools.py.
+
+Looking at the task edit surface: state_graph_tools.py needs to include `reverted_no_edit` and `task_no_edit_revert_count` in its comparison keys so that the graph-derived pressure can surface these metrics.
+
+Let me also check test_state_graph_tools.py for analysis-only related tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts/test_state_graph_tools.py  ▶ search 'reverted_no_edit' in scripts/test_state_graph_tools.py  ▶ search 'task_no_edit' in scripts/test_state_graph_tools.py ✓ (236ms)
+ ✓ (271ms)
+ ✓ (370ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Both files already have references to `reverted_no_edit` and `task_no_edit_revert_count`. Let me check what the GNOME_COMPARE_KEYS in state_graph_tools.py contain and whether `reverted_no_edit` or `task_no_edit_revert_count` need to be added there.
+
+Let me read the full GNOME_COMPARE_KEYS:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:43..63 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see `task_analysis_only_attempt_count` is in GNOME_COMPARE_KEYS but `task_no_edit_revert_count` and `reverted_no_edit` are not. These are the metrics that the preseed picker uses to detect analysis-only pressure (in `_ANALYSIS_ONLY_METRICS`).
+
+Let me check if `task_no_edit_revert_count` is missing from GNOME_COMPARE_KEYS. Since the task is about making analysis-only task pressure landable, and the edit surface includes state_graph_tools.py, I should add `task_no_edit_revert_count` to GNOME_COMPARE_KEYS so the graph-derived pressure can include it in its output.
+
+But wait, let me first check where `task_no_edit_revert_count` is computed in state_graph_tools.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_no_edit_revert_count' in scripts/state_graph_tools.py ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `task_no_edit_revert_count` is computed in state_graph_tools.py at line 531 and used at line 1484. But it's not in GNOME_COMPARE_KEYS (the list at line 43-71). 
+
+The task's Edit Surface says state_graph_tools.py needs changes. The likely change is to add `task_no_edit_revert_count` to GNOME_COMPARE_KEYS so that graph-derived pressure can compare and surface this metric.
+
+Let me read the GNOME_COMPARE_KEYS list fully to see where to add it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:41..76 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `"task_no_edit_revert_count"` to GNOME_COMPARE_KEYS. This will allow the graph-derived pressure to include this metric in its output, which the preseed picker can then use to detect analysis-only pressure.
+
+Let me also check test_state_graph_tools.py to see if there are tests that need updating for this metric being included in the compare keys.
+
+Let me also check the `latest_gnomes` function and `compare_sessions` to understand how GNOME_COMPARE_KEYS is used:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GNOME_COMPARE_KEYS' in scripts/state_graph_tools.py ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me also look at how the comparison works and how `task_no_edit_revert_count` is computed. The key is used in `latest_gnomes` and `compare_sessions` to surface metrics. Adding it to GNOME_COMPARE_KEYS will make the metric visible in graph-derived pressure output.
+
+Let me also check the test to see if there are expectations about what's in GNOME_COMPARE_KEYS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GNOME_COMPARE_KEYS' in scripts/test_state_graph_tools.py ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the tests don't reference GNOME_COMPARE_KEYS directly. Let me check if there are tests that check the compare output format or specific gnome keys.
+
+Let me also look at how `task_no_edit_revert_count` is computed and used in state_graph_tools.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:520..550 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see that `task_no_edit_revert_count` is already computed in the gnomes dictionary at line 531. I need to add it to GNOME_COMPARE_KEYS so it appears in the graph-derived pressure output.
+
+Let me also check how `latest_gnomes` uses GNOME_COMPARE_KEYS to see the full picture:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1050..1070 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The GNOME_COMPARE_KEYS list controls which gnome keys are included in the session comparison output. Adding `task_no_edit_revert_count` here will make this metric visible in graph-derived pressure output, which feeds into the preseed picker.
+
+Now let me also look at `latest_gnomes` to see if it also uses GNOME_COMPARE_KEYS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def latest_gnomes' in scripts/state_graph_tools.py ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the full gnomes computation at line 410+ to understand how gnomes are built. Actually, I think the key task here is adding `task_no_edit_revert_count` to GNOME_COMPARE_KEYS. Let me also check the test to see if there are test expectations about what's in the compare output.
+
+Let me check the test file for any relevant tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_no_edit_revert_count' in scripts/test_state_graph_tools.py ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how it's used in the test, particularly around line 289 and 1843:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_state_graph_tools.py:280..310 ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that at line 288-292, `task_no_edit_revert_count` is mapped to the suggestion "Force reverted tasks to leave concrete evidence". This is the same text that the preseed picker's "Make analysis-only task pressure landable" task uses as one of its keys.
+
+Let me look at how this mapping is used. It's likely in `evolution_suggestions` or a similar function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_state_graph_tools.py:255..285 ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. Let me look at the full `test_evolution_suggestions_surface_measured_execution_state_and_cache_pressure` function to understand the pattern, and then check whether `task_no_edit_revert_count` being in GNOME_COMPARE_KEYS would affect this test.
+
+Actually, looking at line 260, the test calls `state_graph_tools.evolution_suggestions(session, limit=3)`. This function likely uses GNOME_COMPARE_KEYS or similar structure.
+
+Let me check the `evolution_suggestions` function in state_graph_tools.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def evolution_suggestions' in scripts/state_graph_tools.py ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand how it uses the metrics:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1121..1221 ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see where analysis-only pressure is handled:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1220..1300 ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue to see if there's handling for analysis-only / no-edit task pressure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1300..1400 ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see if there are analysis-only pressure suggestions:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1400..1500 ✓ (62ms)
+
+

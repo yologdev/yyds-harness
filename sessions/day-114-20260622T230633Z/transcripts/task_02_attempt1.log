@@ -1,0 +1,534 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task requirements, then dive into the code to find the root cause of the 1 transcript-only tool failure gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (100 lines)  ▶ read scripts/build_evolution_dashboard.py:600..650 ✓ (146ms)
+ ✓ (154ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the key parts of the dashboard file to understand the reconciliation logic. I need to find:
+1. `unique_delta_count` / `unique_delta_labels` functions
+2. Where `transcript_only_failed_tool_count` is computed
+3. How `normalize_transcript_path` and `normalize_evidence_path` differ
+
+Let me search for these key functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'transcript_only_failed_tool_count' in scripts/build_evolution_dashboard.py  ▶ search 'unique_delta_count' in scripts/build_evolution_dashboard.py ✓ (89ms)
+ ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me read the `unique_delta_count` function and the surrounding context for how `transcript_failed_tools_all` and `state_failed_tools_all` are built.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:475..505  ▶ read scripts/build_evolution_dashboard.py:2620..2670 ✓ (132ms)
+ ✓ (127ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand how `transcript_failed_tools_all` and `state_failed_tools_all` are built. The key is lines 2639-2640. Let me look at how `transcript_actions["_failed_tools_all"]` vs `transcript_actions["failed_tools"]` differ, and similarly for `event_data`.
+
+Let me search for `_failed_tools_all` to understand how it's populated.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2669..2699  ▶ search '_failed_tools_all' in scripts/build_evolution_dashboard.py ✓ (87ms)
+ ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the area around line 714 where `_failed_tools_all` is set in the transcript actions context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:700..740 ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `_failed_tools_all` contains the full list (not compacted), while `failed_tools` is the compacted list. The same for both transcript and state evidence.
+
+Now I need to understand:
+1. How `transcript_actions["failed_tools"]` is built - it goes through `failed_tool_pattern_summary` and `compact_list`
+2. How `event_data["failed_tools"]` is built - need to find where this is
+3. The key question: when we compare `transcript_failed_tools_all` vs `state_failed_tools_all`, what normalization happens? Both go through `normalized_set()` which calls `clean_transcript_action` indirectly...
+
+Wait, let me re-read more carefully. `unique_delta_count` calls `normalized_set`:
+
+```python
+def unique_delta_count(left: list[str], right: list[str]) -> int:
+    return len(normalized_set(left) - normalized_set(right))
+```
+
+And `normalized_set`:
+```python
+def normalized_set(values):
+    return {text for value in values if (text := " ".join(str(value).split()))}
+```
+
+So `normalized_set` just normalizes whitespace. It doesn't call `normalize_transcript_path` or `normalize_evidence_path`.
+
+But the labels themselves (the strings in `failed_tools` list) - how are they constructed? Let me trace this back.
+
+The failed tools in the transcript side come from `summarize_transcript_actions` which builds `failed_tools` list. Let me look at that function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:640..760 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `transcript_tool_label` and `transcript_failure_detail`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def transcript_tool_label' in scripts/build_evolution_dashboard.py  ▶ search 'def transcript_failure_detail' in scripts/build_evolution_dashboard.py ✓ (91ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:518..573 ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the state side. The `event_data` comes from somewhere, and I need to see how `failed_tools` is built for state evidence. Let me search for where `event_data` is consumed in the reconciliation logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def build_action_evidence' in scripts/build_evolution_dashboard.py  ▶ search 'event_data\[.failed_tools.\]' in scripts/build_evolution_dashboard.py ✓ (92ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look around the broader context where `state_failed_tools_all` and `transcript_failed_tools_all` are used. The area around line 2639 should give me the function name.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2570..2630 ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `summarize_events_for_work` to understand how state `failed_tools` are structured.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def summarize_events_for_work' in scripts/build_evolution_dashboard.py ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2199..2299 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see how failed_tools are populated in the state evidence path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2298..2378 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `tool_failure_label` - this is the key function that generates failed tool labels from state events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def tool_failure_label' in scripts/build_evolution_dashboard.py ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `tool_failure_label`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:599..619 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `tool_context`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def tool_context' in scripts/build_evolution_dashboard.py ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:576..601 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the difference! 
+
+In `tool_context` (line 587-595), for non-bash, non-search tools with a path/file arg, it calls `normalize_transcript_path(value)` on the path. This processes `./src/file.rs` → `src/file.rs`.
+
+But for **search** tools (line 587-591), it also calls `normalize_transcript_path(path)` on the path arg.
+
+Now, on the transcript side, `transcript_tool_label` (line 558-563) calls `transcript_path_token` which also calls `normalize_transcript_path`. But let me look at how the `action` is constructed before `transcript_tool_label` is called.
+
+In `summarize_transcript_actions` (line 660-674):
+```python
+for match in TRANSCRIPT_ACTION_RE.finditer(line):
+    raw = match.group(1)
+    action = clean_transcript_action(raw)
+    ...
+    if failed and (action starts with read/edit/write/search):
+        detail = transcript_failure_detail(lines, index, raw)
+        label = transcript_tool_label(action)
+        failed_tools.append(f"{label}: {detail}" if detail else label)
+```
+
+So the transcript route:
+1. Extracts `action` from the transcript line
+2. Calls `clean_transcript_action(action)` on it
+3. Then `transcript_tool_label(action)` which for read/edit/write calls `transcript_path_token` → `normalize_transcript_path`
+
+And the state route:
+1. Gets tool name and args from the ToolCallCompleted event
+2. Calls `tool_failure_label(tool, args, data)` which calls `tool_context(tool, args)` which calls `normalize_transcript_path` on path args
+
+So both routes call `normalize_transcript_path` on the path. That should be consistent.
+
+But wait - the state route also calls `clean_transcript_action` on the `command` for bash tools (line 582/585), but not on the path for file tools (line 595). For file tools, it calls `normalize_transcript_path(value)` directly.
+
+And the transcript route calls `clean_transcript_action(action)` first, then passes to `transcript_tool_label`.
+
+The key difference might be in how `clean_transcript_action` processes the path vs how `normalize_transcript_path` processes it.
+
+Let me re-read `clean_transcript_action`:
+```python
+def clean_transcript_action(value: str) -> str:
+    text = TRANSCRIPT_STATUS_RE.sub("", evidence_text(value, 500)).strip()
+    text = WORKSPACE_PREFIX_RE.sub(".", text)
+    for root in PSEUDO_ROOT_NAMES:
+        text = text.replace(f".{root}/", f"{root}/")
+        text = re.sub(rf"(?<!\S)\.{re.escape(root)}(?=$|\s)", root, text)
+    return re.sub(r"\bcd\s+\.\s*&&\s*", "", text).strip()
+```
+
+And `normalize_transcript_path`:
+```python
+def normalize_transcript_path(path: str) -> str:
+    text = path.strip()
+    if text.startswith("..") and not text.startswith("../"):
+        text = text[1:]
+    if text.startswith("./"):
+        text = text[2:]
+    pseudo_roots = (...)
+    if text.startswith(".") and any(text[1:].startswith(root) for root in pseudo_roots):
+        return text[1:]
+    if text.startswith(".") and text[1:] in PSEUDO_ROOT_NAMES:
+        return text[1:]
+    return text
+```
+
+Now, let me check `PSEUDO_ROOT_NAMES`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'PSEUDO_ROOT_NAMES' in scripts/build_evolution_dashboard.py ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the definition of PSEUDO_ROOT_NAMES:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:24..54 ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me think about what the actual mismatch could be. Let me look at the actual Day 114 state data and transcripts to find the specific mismatched event. But first, let me think about possible differences:
+
+1. **Path normalization**: `clean_transcript_action` is called before `normalize_transcript_path` in the state route for bash commands, but not for file paths in `tool_context`. However, for read/edit/write tools, the state route calls `normalize_transcript_path` on the `args.get(key)` value directly, while the transcript route first calls `clean_transcript_action` on the raw action, then `transcript_tool_label` → `transcript_path_token` → `normalize_transcript_path`.
+
+The difference: In the transcript route, `clean_transcript_action` is called on the **entire action string** (e.g., "read src/file.rs"), while in the state route, `normalize_transcript_path` is called on just the **path value** (e.g., "src/file.rs").
+
+But `clean_transcript_action` replaces `.src/` with `src/` and then `normalize_transcript_path` also handles the `.` prefix. Wait, let me trace more carefully.
+
+`clean_transcript_action` does:
+```python
+text = TRANSCRIPT_STATUS_RE.sub("", evidence_text(value, 500)).strip()
+text = WORKSPACE_PREFIX_RE.sub(".", text)
+for root in PSEUDO_ROOT_NAMES:
+    text = text.replace(f".{root}/", f"{root}/")
+    text = re.sub(rf"(?<!\S)\.{re.escape(root)}(?=$|\s)", root, text)
+```
+
+This converts e.g. `.src/` to `src/`. And it's applied to the ENTIRE action including the tool prefix. So if the action is "read .src/file.rs", it becomes "read src/file.rs".
+
+Then `transcript_path_token(value)` extracts just the path from the tool-prefixed action. For "read src/file.rs", it strips "read " prefix, then calls `normalize_transcript_path("src/file.rs")` → "src/file.rs".
+
+In the state route, `tool_context` gets the path arg directly, e.g., `args.get("path") = ".src/file.rs"` or `args.get("path") = "src/file.rs"`. It calls `normalize_transcript_path(value)` which handles `./` but NOT `.src/`. Wait, but `normalize_transcript_path` has:
+```python
+if text.startswith(".") and any(text[1:].startswith(root) for root in pseudo_roots):
+    return text[1:]
+```
+
+So if the path is `.src/file.rs`, `normalize_transcript_path` will strip the leading `.` to get `src/file.rs`. Good.
+
+Both routes should normalize to the same form.
+
+2. **Another possibility**: The mismatch could be in how the tool name is recorded. On the transcript side, `action` starts with "read ", "edit ", "write ", or "search " - these are the tool names from the transcript. On the state side, `tool` is the actual tool name like "read_file", "edit_file", "write_file", "bash", "search" etc.
+
+Wait, but `tool_context` handles this - for `tool == "search"`, it formats as `search ... in ...`. For other tools, it uses `f"{tool} {normalize_transcript_path(value)}"`.
+
+But on the transcript side, `transcript_tool_label` does:
+```python
+for prefix in ("read ", "edit ", "write "):
+    if action.startswith(prefix):
+        target = transcript_path_token(action.removeprefix(prefix))
+        return f"{prefix.strip()} {target}" if target else action
+return action
+```
+
+So the transcript generates labels like `"read src/file.rs"` while the state generates `"read_file src/file.rs"` — these are DIFFERENT! `"read "` vs `"read_file "`.
+
+Wait, but `transcript_tool_label` returns `f"{prefix.strip()} {target}"` where `prefix` is "read ". `.strip()` would make it "read". So the label would be "read src/file.rs".
+
+While `tool_context` returns `f"{tool} {normalize_transcript_path(value)}"` where `tool` is e.g., "read_file". So the label would be "read_file src/file.rs".
+
+These are different strings! "read src/file.rs" vs "read_file src/file.rs". Is this the gap?
+
+But wait, then the difference would be much larger than 1 event. There would be many mismatches. Unless some tool calls get filtered differently.
+
+Hmm, let me re-read the transcript side. In `summarize_transcript_actions`:
+```python
+if failed and (
+    action.startswith("read ")
+    or action.startswith("edit ")
+    or action.startswith("write ")
+    or action.startswith("search ")
+):
+    detail = transcript_failure_detail(lines, index, raw)
+    label = transcript_tool_label(action)
+    failed_tools.append(f"{label}: {detail}" if detail else label)
+```
+
+So `action` starts with "read ", "edit ", "write ", "search ". And `transcript_tool_label` for "read " prefix returns `f"read {target}"`.
+
+On the state side, `tool_failure_label` calls `tool_context(tool, args)` which for non-bash, non-search tools returns `f"{tool} {normalize_transcript_path(value)}"`. For "read_file", this would be `f"read_file {normalized_path}"`.
+
+So the labels ARE different: "read X" vs "read_file X".
+
+But wait - `unique_delta_count` compares `transcript_failed_tools_all` vs `state_failed_tools_all`. These are sets after `normalized_set` which just normalizes whitespace. So "read src/file.rs" != "read_file src/file.rs" because of the tool name difference.
+
+But then ALL file read/edit/write failures would appear as transcript-only or state-only. The count should be much larger than 1.
+
+UNLESS... most tool failures are of other types (bash, search) where the naming is consistent, and there's only 1 file-operation failure. Let me check what categories of failures exist.
+
+Actually wait, let me go back and re-read `failed_tool_category`:
+```python
+if text.startswith("search "): ...
+if text.startswith("read "): ...
+if text.startswith("edit "): ...
+if text.startswith("write "): ...
+if text.startswith("bash "): ...
+```
+
+This function is checking against "read ", "edit ", "write " - NOT "read_file ". So on the transcript side, labels start with "read ", but on the state side they might start with "read_file ".
+
+But this function is only used in `failed_tool_pattern_summary`, not in the reconciliation.
+
+Let me focus on the actual reconciliation. The key question: when comparing `state_failed_tools_all` and `transcript_failed_tools_all`, what goes into each list?
+
+For the transcript side: `_failed_tools_all` = raw `failed_tools` list from `summarize_transcript_actions`. These labels are like `"read src/file.rs: error message"` or `"search 'pattern' in src/: error"`.
+
+For the state side: `_failed_tools_all` from `summarize_events_for_work`. These labels are like `"read_file src/file.rs: error message"`.
+
+The comparison uses `normalized_set` which just normalizes whitespace. So if the prefix differs ("read " vs "read_file "), the labels won't match.
+
+But wait, maybe state events also use "read" not "read_file"? Let me check what tool names are in state events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'normalize_evidence_path' in scripts/build_evolution_dashboard.py ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look more carefully at the state-side failed_tools extraction. I see that `tool_failure_label` calls `tool_context` which for non-bash, non-search tools returns `f"{tool} {normalize_transcript_path(value)}"`. The `tool` here is the raw tool name from the event, which could be "read_file", "write_file", "edit_file", etc.
+
+On the transcript side, `transcript_tool_label` returns `f"read {target}"` (prefix.strip() = "read"). 
+
+So yes, there's a normalization mismatch in tool names: "read_file" vs "read". This would cause ALL file-related tool failures to mismatch between state and transcript.
+
+But the task says `transcript_only_failed_tool_count=1`, which is small. This suggests that the majority of failures are not file-reading-type failures, but rather bash/search failures where the naming IS consistent.
+
+Let me verify: For bash failures, the transcript side has action starting with `$ ` and goes to `failed_commands`, not `failed_tools`. Actually wait, let me re-read:
+
+```python
+if failed and (
+    action.startswith("read ")
+    or action.startswith("edit ")
+    or action.startswith("write ")
+    or action.startswith("search ")
+):
+    ...
+    failed_tools.append(...)
+if action.startswith("$ "):
+    command = action[2:].strip()
+    if command:
+        commands.append(command)
+        if failed:
+            failed_commands.append(command)
+    continue
+...
+if failed and action:
+    failed_commands.append(action)
+```
+
+So `failed_tools` only captures read/edit/write/search failures - NOT bash failures! Bash failures go to `failed_commands`.
+
+And on the state side, `tool_failure_label` for "bash" returns `f"bash {clean_transcript_action(command)}"`. But this is appended to `failed_tools` list.
+
+Wait no, I misread. Let me look at the state side again:
+
+```python
+if kind == "ToolCallCompleted" and isinstance(tool, str) and (is_error or exit_code_failure):
+    started = tool_starts.get(call_id) ...
+    args = started.get("args") ...
+    failed_tools.append(tool_failure_label(tool, args, data))
+```
+
+So ALL tool failures go to `failed_tools`, including bash. But on the transcript side, bash failures go to `failed_commands`.
+
+But the reconciliation compares `state_failed_tools_all` vs `transcript_failed_tools_all`. Since bash failures don't go into `transcript_failed_tools_all`, the bash failures in `state_failed_tools_all` would all be counted as `state_only_failed_tool_count` (which is 33), NOT `transcript_only_failed_tool_count`.
+
+So the `transcript_only_failed_tool_count=1` is specifically a tool failure captured in the transcript but not in state — where both are read/edit/write/search tool failures.
+
+The most likely cause is:
+1. A transcript tool failure that wasn't recorded in state events
+2. A normalization mismatch between the two paths
+
+Let me look at how `normalize_evidence_path` differs from `normalize_transcript_path`:
+
+```python
+def normalize_evidence_path(path: str) -> str:
+    return normalize_transcript_path(clean_transcript_action(path))
+```
+
+So `normalize_evidence_path` applies `clean_transcript_action` FIRST, then `normalize_transcript_path`. But `normalize_evidence_path` is used for FileEdited/FileRead events in state, not for tool failure labels.
+
+For tool failure labels, the state side uses `tool_context` → `normalize_transcript_path(value)` directly (without `clean_transcript_action`).
+
+And the transcript side uses `clean_transcript_action(action)` first (on the full action string), then `transcript_tool_label(action)` → `transcript_path_token` → `normalize_transcript_path`.
+
+The key: `clean_transcript_action` is applied to the FULL ACTION STRING in the transcript route, not just the path. So for an action like "read src/file.rs", `clean_transcript_action` does:
+- `WORKSPACE_PREFIX_RE.sub(".", text)` — replaces `/home/runner/work/yyds-harness/yyds-harness/` with `.`
+- `.PSEUDO_ROOT/` → `PSEUDO_ROOT/` replacements
+
+But if the action doesn't contain workspace paths or pseudo-root paths, `clean_transcript_action` is mostly a no-op, and then `normalize_transcript_path` cleans the path.
+
+Now, the state route for non-bash, non-search: `normalize_transcript_path(value)` is called directly on the path arg, without `clean_transcript_action`.
+
+So there could be a mismatch if the path in state events contains a workspace prefix like `/home/runner/work/yyds-harness/yyds-harness/src/file.rs` — the state route would NOT strip it (since `normalize_transcript_path` doesn't have WORKSPACE_PREFIX_RE), but the transcript route WOULD strip it (since `clean_transcript_action` runs first).
+
+BUT the transcript route calls `clean_transcript_action` on the full action "read /home/runner/work/.../src/file.rs", and then `normalize_transcript_path` on just the path part. So the path would be normalized.
+
+Hmm, but that's not the issue because the 1-event gap is small. Let me think about other possibilities.
+
+Actually, maybe the issue is simpler. The `event_data["failed_tools"]` is a `compact_list` (first 8 items), and `_failed_tools_all` is the full list. If `_failed_tools_all` is missing, it falls back to the compacted list. What if one of the sides has `_failed_tools_all` and the other doesn't?
+
+Wait, both sides explicitly provide `_failed_tools_all`:
+- State: `summarize_events_for_work` must provide it
+- Transcript: `summarize_transcript_actions` provides it
+
+Let me check if `summarize_events_for_work` actually sets `_failed_tools_all`. Let me search for it in the function output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search '_failed_tools_all' in scripts/build_evolution_dashboard.py ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see only one definition of `_failed_tools_all` — in `summarize_transcript_actions` (line 714). Let me check if `summarize_events_for_work` also outputs `_failed_tools_all`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2470..2570 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the return value of `summarize_events_for_work` to see if it includes `_failed_tools_all`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2400..2430 ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of `summarize_events_for_work` to see its full return value:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2430..2480 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so both `summarize_events_for_work` and `summarize_transcript_actions` provide `_failed_tools_all`. Good.
+
+Now, I need to understand the specific mismatch. The evidence says `transcript_only_failed_tool_count=1`. Let me actually look at the state data and transcript data for Day 114 to find the specific mismatched event.
+
+But first, let me think about what could cause a 1-event gap:
+
+1. A read/edit/write/search tool failure that appears in transcript but not in state events
+2. A normalization mismatch that makes the same event look different
+
+For case 1: The state events might have missed recording a tool failure due to a network timeout during event flush, or some filtering in the event processing.
+
+For case 2: The `clean_transcript_action` on the action vs `normalize_transcript_path` on the path might produce slightly different strings.
+
+Let me look at the actual evidence. Let me check if there's state data for Day 114:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls sessions/ 2>/dev/null | tail -20; echo "---"; ls data/sessions/ 2>/dev/null |… ✓ (84ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No sessions directory. Let me check for state data in other locations:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/ 2>/dev/null; echo "---"; find . -name "events.jsonl" 2>/dev/null |… ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me look at the state events and then try running the dashboard to see the actual mismatch. But first, let me check if there are transcripts:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/ 2>/dev/null; echo "---"; find . -name "*.log" -path "*/trans… ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No transcripts directory inside .yoyo/state. Let me look for them elsewhere.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ find . -name "transcripts" -type d 2>/dev/null | head -5 ✓ (82ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Preseed --test assertion fails: two new task templates share overlapping keys (`force analysis-only attempts into action`, `task_analysis_only_attempt_count`), causing "Add recovery hints" (src/tool_wrappers.rs) to be selected instead of "Make analysis-only task pressure landable" as the test at line 825 expects. Implementation also did not touch state_graph_tools.py or test_state_graph_tools.py as the task's Edit Surface specified, working on task_manifest.py instead.
