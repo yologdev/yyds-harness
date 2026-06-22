@@ -1,0 +1,832 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to close a gap in the completion gate where unlanded source edits can occur. Let me first read the evolve skill, then investigate the relevant files.
+
+Let me break this down:
+
+1. First read `skills/evolve/SKILL.md` for the implementation contract
+2. Then read `scripts/task_completion_gate.py` to understand the current logic
+3. Read the test files to understand what's already tested
+4. Identify the gap and fix it
+5. Write tests, verify, commit
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/task_completion_gate.py ✓ (18ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the task_lineage module to understand `source_file()` and `commit_records()`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_lineage.py  ▶ read scripts/test_task_lineage_feedback.py (100 lines) ✓ (18ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the existing test for task_completion_gate in the test file, and understand the `source_file` function better. Then I'll identify the gap and write a fix.
+
+Let me search for the existing task_completion_gate tests in the test file:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_completion_gate' in scripts/test_task_lineage_feedback.py  ▶ search 'task_completion_gate' in scripts/test_build_evolution_dashboard.py ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 696:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:655..755 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me analyze the gaps in `task_completion_gate.py`:
+
+1. **`uncommitted_source_files()`** — `git diff --name-only` returns both modified and deleted files. If a file is deleted, `git add` on a deleted file doesn't stage anything meaningful. Also, `git ls-files --others --exclude-standard` returns untracked files that aren't gitignored — these are correctly handled.
+
+2. **`auto_commit()` — line 86-88**: When `git diff --cached --quiet` returns 0 (no staged changes), the function returns `ok: True` with reason "no staged source changes after git add". This is misleading — it means `git add` did nothing, which could mean:
+   - Files don't exist on disk (but were listed by `git diff --name-only`)
+   - Files are already committed
+   - Something else went wrong
+
+3. **The `source_file()` function** in `task_lineage.py` is quite permissive — it only excludes specific prefixes and files. The issue likely isn't here.
+
+Let me think about what edge cases could cause unlanded source edits:
+
+a. **Deleted files**: `git diff --name-only` shows deleted files. `git add` on a deleted file stages the deletion, so `git diff --cached --quiet` would show changes. But if the deletion was already committed, `git diff --name-only` wouldn't show it, so this seems fine.
+
+b. **Files listed by `git diff --name-only` that don't exist on disk**: This could happen if a file was modified and then deleted. `git diff --name-only` compares working tree to index. If a file was modified in the working tree and then the working tree file is deleted, `git diff --name-only` might still show it.
+
+c. **`auto_commit` returns `ok: True` when nothing was staged**: This is the key issue! If `git add -- <files>` succeeds (return code 0) but doesn't stage anything (either because the files don't exist or they're already committed), then `git diff --cached --quiet` returns 0. The function interprets this as success, even though no commit was made. This is the gap!
+
+Let me verify by looking at what `git add` does with non-existent files:
+
+```
+$ git add -- nonexistent-file
+# Returns 0? Let me check...
+```
+
+Actually, `git add` does return non-zero for non-existent files. So the main gap is: what if the files exist but are already committed? Then `git add` succeeds (return code 0) but `git diff --cached --quiet` returns 0 because nothing changed. The function then returns `ok: True` — claiming success — but no actual commit was made.
+
+Wait, actually the function returns `ok: True` but `attempted: True` with reason "no staged source changes after git add". The problem is that the `verify()` function at line 101-107 is:
+
+```python
+if commit_result.get("attempted") and not commit_result.get("ok"):
+    result["ok"] = False
+    ...
+```
+
+So if `auto_commit` returns `ok: True`, the verify function keeps `result["ok"]` as whatever `after["ok"]` is, and `after["ok"]` will be... let's see: `status()` at line 61 says `ok = not touched or bool(source_commits)`. If there are source files that were touched but no source commits were detected, `ok` is False. After auto-commit, if a commit was made, `source_commits` would be True, and `ok` would become True.
+
+But if auto-commit returned `ok: True` without actually committing anything, then `after` would still show `ok: False` (touched files exist but no source commits). However, the function returns `attempted: True, ok: True` — which is misleading but the verify function would still correctly report `after["ok"]` as False.
+
+Wait, let me re-read verify more carefully:
+
+```python
+def verify(repo, base, message, auto):
+    before = status(repo, base)
+    commit_result = {"attempted": False}
+    if auto and before["uncommitted_source_files"]:
+        commit_result = auto_commit(repo, before["uncommitted_source_files"], message)
+    after = status(repo, base)
+    result = dict(after)
+    result["auto_commit"] = commit_result
+    if commit_result.get("attempted") and not commit_result.get("ok"):
+        result["ok"] = False
+        result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+    return result
+```
+
+So if `auto_commit` returns `{"attempted": True, "ok": True, "reason": "no staged source changes after git add"}`, then `commit_result.get("ok")` is `True`, so the `if` block at line 105 doesn't execute. The result keeps `after["ok"]` which would be `False` (since no commit was actually made, `source_commits` would be empty). So the gate still correctly reports `ok: False`.
+
+But wait — the `auto_commit` function's return value `ok: True` is misleading. It says "no staged source changes after git add" which sounds like success but actually means "nothing happened." This is confusing in the diagnostic output.
+
+Let me think about what scenario actually causes `task_unlanded_source_count=1`:
+
+The scenario is: task touches source files, but no commit lands. The gate is supposed to catch this. But the gate might not even be running in the right place, or the files might not be detected by `uncommitted_source_files()`.
+
+Actually, looking at this more carefully, the real problem might be about **timing**. If `git add` stages the file but then something happens (like a checkout or reset) before the commit, the staged changes could be lost. But that's in `evolve.sh` which is protected.
+
+Let me focus on what I can fix in `task_completion_gate.py`:
+
+1. **The `auto_commit` function's "no staged source changes after git add" should be a warning**, not an `ok: True`. It should be `ok: True` (the add succeeded) but the diagnostic should make it clearer that nothing was committed. Actually, let me re-examine: if `git add` stages nothing, it's not an error — the files were already committed or don't exist. So `ok: True` is technically correct. But the reason text is ambiguous.
+
+2. **Better diagnostic: distinguish between detection layers**. When `uncommitted_source_files()` returns files but `auto_commit` doesn't create a commit, we need to know why. Let me add a diagnostic that records the state of each file on disk.
+
+3. **Add self-tests for edge cases**: files that don't exist on disk but are listed by git diff, gitignored files, etc.
+
+Let me plan my changes:
+
+1. In `auto_commit()`: When `git diff --cached --quiet` returns 0 after `git add`, check if the files actually exist on disk. If they don't, return a different reason that distinguishes this case.
+
+2. Add better diagnostic context: include `file_exists` status for each file in the auto_commit result.
+
+3. Add self-tests for edge cases.
+
+Let me think about the most impactful change:
+
+The biggest gap I see is: when `auto_commit` returns `ok: True` but no commit was actually made, the `verify` function doesn't flag this. The gate reports `ok: False` (because `after` status shows no source commits), but the `auto_commit` result misleadingly says `ok: True`. 
+
+Actually wait, re-reading `verify`:
+
+```python
+result = dict(after)
+result["auto_commit"] = commit_result
+if commit_result.get("attempted") and not commit_result.get("ok"):
+    result["ok"] = False
+    result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+```
+
+If `commit_result["ok"]` is True but no commit was actually created, then `after["ok"]` would be False, so `result["ok"]` would be False. The gate still fails. Good.
+
+But the diagnostic is confusing. The `auto_commit` field says `ok: True` but the overall result is `ok: False`. This makes it hard to debug.
+
+The real fix should be: in `auto_commit`, when `git diff --cached --quiet` returns 0, we should:
+1. Check if the files actually exist on disk
+2. If they do exist, check if they're already in the latest commit
+3. Return more detailed diagnostic info
+
+Let me also look at `verify()` more carefully. The problem states: "the unlanded edit still occurred." This means the gate didn't catch it. Let me think about when the gate would falsely report `ok: True`...
+
+The only way the gate reports `ok: True` without a commit is if:
+- `touched` is empty (no source files changed between base and head), OR
+- `source_commits` is non-empty (a source commit was detected)
+
+If neither is true, `ok` is False. So the gate should be working correctly. 
+
+But wait — the task says `task_unlanded_source_count=1`. This means the dashboard detected an unlanded source edit. Let me look at how that's computed...
+
+The dashboard probably checks if source files were touched but no source commit landed. But the completion gate is supposed to prevent this by auto-committing. If the gate ran but still let it through, there must be a gap.
+
+Possible gaps:
+1. The gate isn't being called at the right time (evolve.sh issue — protected)
+2. `uncommitted_source_files()` returns empty because the files were already committed but the commit was then reverted/lost
+3. The `source_file()` filter is too strict and misses some files
+4. The `auto_commit()` function returns `ok: True` but no commit was created, and somehow `after["ok"]` is also True
+
+Let me focus on #4: Can `after["ok"]` be True when no commit was created? Let's trace through:
+
+`after = status(repo, base)` where `status`:
+- `touched = [path for path in task_lineage.changed_files(repo, base, head) if task_lineage.source_file(path)]`
+- `source_commits = source_commit_records(repo, base, head)`
+- `ok = not touched or bool(source_commits)`
+
+If the task DID touch source files, `touched` is non-empty. So `not touched` is False. For `ok` to be True, `bool(source_commits)` must be True, meaning there must be at least one commit between base and head with `source_files` field.
+
+But if `auto_commit` didn't create a commit, where would the source commit come from? If there's another commit in the range that has source_files... but that would be correct behavior.
+
+OK, I think the most likely scenario is: the gate auto-committed successfully (no bug), but the commit was later lost (e.g., a subsequent task's revert undid it, or a git operation in evolve.sh dropped it). But since I can't modify evolve.sh, I should focus on making the diagnostic better.
+
+Alternatively, let me look at `source_commit_records`:
+
+```python
+def source_commit_records(repo, base, head):
+    return [
+        commit
+        for commit in task_lineage.commit_records(repo, base, head)
+        if commit.get("source_files")
+    ]
+```
+
+And `commit_records` in task_lineage.py... let me find it.
+
+Actually, let me search for `commit_records` in task_lineage.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'commit_records' in scripts/task_lineage.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the commit_records function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_lineage.py:121..181 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me now think about what specific changes to make:
+
+**Key Analysis:**
+
+1. `uncommitted_source_files()` (line 36-41): Collects files from `git diff --cached`, `git diff`, and `git ls-files --others`. Filters through `source_file()`. This seems fine — `source_file()` is permissive.
+
+2. `auto_commit()` (line 80-94): The main issue is at lines 86-88. When `git diff --cached --quiet` returns 0 after `git add`, it means nothing was staged. The function returns `ok: True` with reason "no staged source changes after git add". This is confusing because:
+   - It says `ok: True` but nothing was committed
+   - The reason doesn't explain WHY nothing was staged (files don't exist? already committed? gitignore?)
+
+3. `status()` (line 52-77): `ok = not touched or bool(source_commits)`. If source files were touched but no source commits are found, `ok` is False. This is correct.
+
+4. `verify()` (line 97-108): Only sets `result["ok"] = False` when `auto_commit` fails. But `auto_commit` returning `ok: True` without actually committing is not treated as a failure.
+
+**The Actual Gap:**
+
+The most likely scenario for `task_unlanded_source_count=1` is:
+- A task touched source files
+- The gate ran with `--auto-commit`
+- `uncommitted_source_files()` detected the files
+- `auto_commit()` ran `git add` successfully
+- BUT `git diff --cached --quiet` returned 0 (nothing staged), so `auto_commit` returned `ok: True` without creating a commit
+- `verify()` then called `status()` again, which showed `ok: False` (touched files exist, no source commits)
+- But `verify()` didn't flag `auto_commit` as a failure because it returned `ok: True`
+
+Wait, but even if verify doesn't flag it, the overall `result["ok"]` would still be False because `after["ok"]` is False. So the gate would report failure. Unless...
+
+OH WAIT. Let me re-read verify:
+
+```python
+result = dict(after)
+result["auto_commit"] = commit_result
+if commit_result.get("attempted") and not commit_result.get("ok"):
+    result["ok"] = False
+    result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+return result
+```
+
+If `after["ok"]` is False and `auto_commit["ok"]` is True, then `result["ok"]` stays as False. The gate correctly reports failure.
+
+But the task says: "the unlanded edit still occurred" meaning the gate didn't prevent it. So maybe the gate wasn't called, or it was called but reported success.
+
+Let me think about this differently. Maybe the issue is:
+- The gate ran and auto-committed
+- The auto-commit created a valid commit
+- But later, something in evolve.sh (e.g., a revert) undid the commit
+- The gate's result was "ok: True" at the time, but later the commit was lost
+
+This would explain `task_unlanded_source_count=1` — the task touched source files, committed, but the commit didn't survive. This is an evolve.sh issue.
+
+Since I can't modify evolve.sh, I should focus on:
+1. Making `auto_commit`'s "no staged source changes" case return better diagnostics
+2. Adding edge-case tests
+3. Ensuring the gate's JSON output includes enough detail to distinguish scenarios
+
+Let me plan my changes:
+
+### Change 1: Fix `auto_commit()` to distinguish between detection layers
+
+When `git diff --cached --quiet` returns 0, add checks:
+- Do the files exist on disk?
+- Are the files already in HEAD?
+- Add `file_status` field to the result
+
+### Change 2: Add self-tests for edge cases
+
+- Files that don't exist on disk
+- Files that are already committed (no-op auto-commit)
+- Verify the diagnostic output is detailed enough
+
+### Change 3: Make `verify()` treat "no staged changes after add" as a potential warning
+
+Actually, let me reconsider. The most valuable change is:
+
+When `auto_commit` returns `ok: True` with "no staged source changes after git add", the diagnostic should help distinguish:
+- "Files already committed" (benign — the commit already landed)
+- "Files don't exist on disk" (concerning — git diff returned phantom files)
+- "Files are gitignored" (concerning — the files shouldn't be source files)
+
+Let me also double-check: does the verify function's auto_commit path actually work when `auto_commit` returns `ok: True` but nothing was committed? Let me trace through:
+
+1. `before = status(repo, base)` → suppose `before["uncommitted_source_files"] = ["src/lib.rs"]`, `before["source_files"] = ["src/lib.rs"]`
+2. `commit_result = auto_commit(repo, ["src/lib.rs"], message)` → suppose the file is already committed. `git add` returns 0. `git diff --cached --quiet` returns 0. `auto_commit` returns `{"attempted": True, "ok": True, "reason": "no staged source changes after git add"}`
+3. `after = status(repo, base)` → `after["source_files"] = ["src/lib.rs"]` (still touched), `after["uncommitted_source_files"] = ["src/lib.rs"]` (still uncommitted because no commit was made), `after["source_commit_shas"] = []`, `after["ok"] = False` (touched but no commits)
+4. `result = dict(after)` → `result["ok"] = False`
+5. `commit_result.get("attempted") and not commit_result.get("ok")` → `True and not True` → `False` → skip
+6. Return `result` with `ok: False`
+
+So the gate correctly reports `ok: False`. Good — the gate doesn't falsely report success.
+
+But then how does `task_unlanded_source_count=1` happen? The gate must have reported `ok: True` at some point. Let me think...
+
+Actually, maybe the issue is that the gate IS correctly reporting `ok: False`, but evolve.sh checks something different. Or maybe the gate is called at the wrong base commit.
+
+OR — maybe the scenario is simpler. The task touched source files and the agent committed them, but the commit was a non-source commit (no `source_files` in the commit_records output). Like maybe it was a docs-only commit. No wait, if it touched `src/` files, `source_file()` would classify them as source files.
+
+Let me focus on what I can actually do. The task says to add better diagnostics and edge-case tests. Let me also look for actual bugs.
+
+**Bug I found**: In `auto_commit()`, when `git diff --cached --quiet` returns 0, the function returns `ok: True`. But this is misleading — it means the auto-commit didn't actually create a commit. The `ok` field here should indicate whether the operation was successful, not whether it was attempted. If no commit was created, it should probably be `ok: False` because the goal of auto-commit is to create a commit.
+
+Actually wait, let's think about this case: what if the files are already committed? Then `uncommitted_source_files()` wouldn't return them (since `git diff --cached`, `git diff`, and `git ls-files --others` would all be empty for already-committed files). So `auto_commit` wouldn't even be called.
+
+The only way `uncommitted_source_files()` returns files that can't be staged is if:
+- `git diff --name-only` returns deleted files
+- `git ls-files --others --exclude-standard` returns files that are gitignored (but `.gitignore` filtering should handle this)
+
+Wait, `git ls-files --others --exclude-standard` already excludes gitignored files. So that's fine.
+
+Let me test: does `git diff --name-only` return deleted files? Yes it does. And `git diff --cached --name-only` returns staged changes including deletions. So if a source file was deleted, `uncommitted_source_files()` would list it. `git add` on a deleted file... let me think. If the deletion is already reflected in the working tree (the file doesn't exist), `git diff --name-only` wouldn't show it (since the deletion is in the working tree, and `git diff` shows working tree vs index). But `git diff --cached --name-only` would show it if the deletion was staged. So:
+
+Actually, `git diff --name-only` (without --cached) shows unstaged changes. If a file is deleted but the deletion is not staged, `git diff --name-only` would NOT show it (because `git diff` only shows modifications to tracked files, and a deleted tracked file would show... actually it does show). Let me just test this.
+
+OK let me stop guessing and write the code. My plan:
+
+1. **In `auto_commit()`**: After `git add` succeeds and `git diff --cached --quiet` returns 0, add a diagnostic check: list which of the requested files actually exist on disk. Add `file_exists` and `file_missing` fields to the result.
+
+2. **In `verify()`**: When `auto_commit` returns `ok: True` but no commit was actually created (i.e., `auto_commit["attempted"]` is True but `git diff --cached --quiet` returned 0), and `after["ok"]` is False, add the auto_commit diagnostic reason to the overall reason to help debugging.
+
+3. **Add self-tests**: Test edge cases in `run_self_tests()`.
+
+Actually, re-reading the task more carefully:
+
+> 2. The `auto_commit()` function returns `ok: True` when `git diff --cached --quiet` shows no staged changes after `git add` — this could mask cases where git add silently did nothing (e.g., files were already committed but the diff showed them as new because they exist only in the worktree, or the files don't exist on disk but were listed by `git diff --name-only`).
+
+So the task is already telling me the gap: `auto_commit` returns `ok: True` but nothing was actually staged. Let me fix this.
+
+The fix should be: When `git diff --cached --quiet` returns 0 after `git add`, check if the files exist on disk. If they don't, this is an error. If they do, check if they're already committed. The return should include more details.
+
+Let me also think about another scenario: what if `git diff --name-only` returns a file that doesn't exist on disk? This could happen if:
+- The file was deleted from the working tree but git still tracks it
+- Actually `git diff --name-only` would show `D file` or similar for deleted files
+
+Actually, `git diff --name-only` outputs just filenames, not status letters. A deleted file would still appear in the output as the filename. So `uncommitted_source_files()` would include it. Then `git add` on a deleted file would stage the deletion, so `git diff --cached --quiet` would return non-zero. So the commit would happen. This seems fine.
+
+Wait, what about the case where a file was deleted from the working tree but `git add` is called on it? Let me think:
+- `git diff --name-only` shows it (deletion of tracked file shows in diff)
+- `git add -- deleted_file` → stages the deletion
+- `git diff --cached --quiet` → non-zero (deletion is staged)
+- Commit is created
+
+This seems fine.
+
+What about: file exists in working tree and is tracked, but is identical to HEAD? Then:
+- `git diff --name-only` → empty (no changes)
+- `git diff --cached --name-only` → empty (no staged changes)  
+- `git ls-files --others --exclude-standard` → empty (file is tracked)
+- `uncommitted_source_files()` → empty
+- `auto_commit` is not called
+
+This is also fine.
+
+What about: file is new (untracked), not in .gitignore:
+- `git diff --name-only` → empty (untracked files don't show in diff)
+- `git diff --cached --name-only` → empty
+- `git ls-files --others --exclude-standard` → includes the file
+- `git add -- new_file` → stages it
+- `git diff --cached --quiet` → non-zero (file is staged)
+- Commit is created
+
+Fine.
+
+I'm now fairly convinced there's no actual bug in the detection chain that would cause a false positive. The issue might be in how evolve.sh calls the gate, or in timing. But I should still improve the diagnostics.
+
+Let me focus on making the changes:
+
+1. **In `auto_commit()`**: When nothing is staged after `git add`, determine WHY:
+   - Files that don't exist on disk → problem
+   - Files that exist but are already committed → should check if they're still in `uncommitted_source_files` 
+   - Add a `file_status` field
+
+2. **In `run_self_tests()`**: Add test for files that don't exist on disk
+
+3. **In `verify()`**: When auto_commit returns `ok: True` but `after["ok"]` is False, include the auto_commit reason in the result reason
+
+Let me now write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand the full picture. Let me also run the existing self-tests to confirm baseline:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_completio… ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, baseline passes. Now let me analyze the gaps and plan my changes.
+
+The key issues I see:
+
+1. **`auto_commit()` returns `ok: True` when nothing was staged**: Lines 86-88 — when `git diff --cached --quiet` returns 0, the function claims success but no commit was created. This is misleading.
+
+2. **No edge-case test for phantom files**: The self-tests don't cover the case where `uncommitted_source_files()` returns files that don't exist on disk or can't be staged.
+
+Let me now plan the exact changes:
+
+### Changes to `task_completion_gate.py`:
+
+**a) `auto_commit()`**: When `git diff --cached --quiet` returns 0:
+- Check which files exist on disk
+- Return a more detailed diagnostic including `file_exists` and `file_missing`
+- Change the return to distinguish between "files already committed" vs "files missing"
+
+**b) `run_self_tests()`**: Add tests for:
+- Files that don't exist on disk but are listed by `uncommitted_source_files()`
+- Verify the diagnostic payload has the needed fields
+
+**c) `verify()`**: When `auto_commit` returns `ok: True` but `after["ok"]` is False, merge the auto_commit reason into the result reason for better diagnostics.
+
+Let me also check if there's a subtle issue with `source_file()` and the touch detection. Looking at `source_file()`:
+
+```python
+NON_SOURCE_PREFIXES = (
+    ".yoyo/", "journals/", "memory/", "session_plan/", "sessions/", "site/",
+)
+NON_SOURCE_FILES = {".skill_evolve_counter", "DAY_COUNT", "ISSUES_TODAY.md"}
+
+def source_file(path: str) -> bool:
+    if not path: return False
+    if path.endswith(".bak"): return False
+    if path.startswith(NON_SOURCE_PREFIXES): return False
+    return path not in NON_SOURCE_FILES
+```
+
+This is permissive — anything not in the exclusion list is a source file. So Cargo.toml, Cargo.lock, scripts/*, src/*, etc. are all source files. This seems correct for the purpose of detecting source edits.
+
+Now let me think about the real scenario that causes `task_unlanded_source_count=1`:
+
+The gate calls `verify(repo, base, message, auto=True)`. Inside verify:
+1. `before = status(repo, base)` — detects uncommitted files
+2. `auto_commit(repo, files, message)` — tries to commit
+3. `after = status(repo, base)` — checks if commits landed
+
+The scenario where this fails silently: `before["uncommitted_source_files"]` is non-empty, `auto_commit` returns `ok: True`, but `after["source_commits"]` is empty. In this case, `result["ok"]` would be False. So the gate correctly reports failure.
+
+But wait — `status()` at line 61 says `ok = not touched or bool(source_commits)`. What if `touched` is empty? Then `ok` would be True even without commits. Let me check `touched`:
+
+```python
+touched = [path for path in task_lineage.changed_files(repo, base, head) if task_lineage.source_file(path)]
+```
+
+And `changed_files`:
+```python
+def changed_files(repo, base, head):
+    files = []
+    if base and head and base != head:
+        files.extend(git_lines(repo, ["diff", "--name-only", f"{base}..{head}"]))
+    files.extend(git_lines(repo, ["diff", "--cached", "--name-only"]))
+    files.extend(git_lines(repo, ["diff", "--name-only"]))
+    files.extend(git_lines(repo, ["ls-files", "--others", "--exclude-standard"]))
+    return compact(files)
+```
+
+So `changed_files` collects all uncommitted changes + changes between base and head. If the task touched source files, they should be in this list. So `touched` should be non-empty. And `ok` would be False unless `source_commits` is non-empty.
+
+OK I'm going in circles. Let me just implement the improvements:
+
+1. Better diagnostics in `auto_commit`
+2. Edge case tests
+3. Clearer reason strings
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, baseline passes. Now let me analyze the gaps and implement the fix.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now analyze the gap and plan my changes. Let me trace through the key flow:
+
+**The gap**: `auto_commit()` at line 86-88 returns `ok: True` when `git diff --cached --quiet` returns 0. This means nothing was staged, but the function reports success. The problem is that `ok: True` is then used by `verify()` at line 105: `if commit_result.get("attempted") and not commit_result.get("ok")` — since `ok` is True, this block doesn't execute, so the function doesn't add the auto-commit failure to the reason. The overall `result["ok"]` would still be False (because `after["ok"]` is False as no commits were created), but the diagnostic is confusing because `auto_commit` says `ok: True` while the overall result says `ok: False`.
+
+But more importantly, the task says "the unlanded edit still occurred." This means the gate might have reported `ok: True` overall. Let me think about when that could happen...
+
+`status()`: `ok = not touched or bool(source_commits)`
+
+If `touched` is non-empty (source files were changed) AND `source_commits` is non-empty (a source commit exists), then `ok` is True. But `source_commits` checks for commits with `source_files`. If auto_commit created no commit, `source_commits` would be empty. So the only way `ok` can be True without a commit is if `touched` is empty — meaning no source files were detected as changed between base and head.
+
+So maybe the issue is: `changed_files()` doesn't detect the source changes, perhaps because of a timing issue with git state.
+
+Anyway, let me focus on what I can improve:
+
+1. Make `auto_commit` return more detailed diagnostics when nothing is staged
+2. Add file-existence checks
+3. Add edge-case tests
+
+Let me now write the code.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 6.1s (5 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. Here's my plan:
+
+### Change 1: `auto_commit()` — add file-existence check
+
+When `git diff --cached --quiet` returns 0:
+- Check which files exist on disk
+- Return `file_status` field with `exists` and `missing` lists
+- Change the reason to be more descriptive
+
+### Change 2: `auto_commit()` — return `ok: True` only when a commit was actually created
+
+Actually, the current logic returns `ok: True` when no staged changes exist, which is wrong semantically — it should be `ok: False` or at least differentiate the case.
+
+Wait, let me reconsider. The function is called `auto_commit` — its purpose is to try to commit. If nothing needs to be committed (all files already committed or don't exist), is that "ok"? 
+
+I think the right behavior is:
+- If `git add` fails → `ok: False`
+- If `git add` succeeds but nothing is staged → `ok: True` (nothing to commit) but with clear diagnostic
+- If commit succeeds → `ok: True`
+
+But the issue is that `verify()` uses `ok: False` to set the overall result to False. So if I change the "nothing staged" case to `ok: False`, then `verify()` would report failure even though there's nothing wrong — the files might already be committed.
+
+Actually, let me re-read verify:
+
+```python
+if commit_result.get("attempted") and not commit_result.get("ok"):
+    result["ok"] = False
+    result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+```
+
+If I mark "nothing staged" as `ok: False`, then `verify()` would set `result["ok"] = False` even if `after["ok"]` is True. That's wrong — if the files are already committed, the gate should pass.
+
+So the current behavior is correct: "nothing staged" is `ok: True` because it's not an error. But we need better diagnostics.
+
+Let me refine my approach:
+
+1. Keep `ok: True` for "nothing staged" case
+2. Add richer diagnostic: `file_exists`, `file_missing`, and an explicit `committed: False` field
+3. In `verify()`, when `auto_commit["ok"]` is True but `after["ok"]` is False, add a note to the reason explaining the discrepancy
+
+### Change 3: Self-tests
+
+Add tests for:
+- File listed by `git diff --name-only` that doesn't exist on disk
+- File that is already committed (no-op auto_commit)
+
+Let me now code this up.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the changes. The key improvements:
+
+1. **`auto_commit()`**: When nothing is staged after `git add`, check file existence and return richer diagnostics
+2. **`verify()`**: When `auto_commit` says ok but `after` says not ok, merge the reason for debuggability  
+3. **Self-tests**: Add edge cases for phantom/missing files
+            return {"attempted": True, "ok": False, "reason": add.stderr.strip() or "git add failed"}
+        diff = git(repo, ["diff", "--cached", "--quiet"])
+        if diff.returncode == 0:
+  -         return {"attempted": True, "ok": True, "reason": "no staged source changes after git add"}
+  +         file_exists = [f for f in files if (repo / f).exists()]
+  +         file_missing = [f for f in files if not (repo / f).exists()]
+  +         reason_parts = ["no staged source changes after git add"]
+  +         if file_missing:
+  +             reason_parts.append(f"missing from disk: {', '.join(file_missing)}")
+  +         if file_exists:
+  +             reason_parts.append(f"present on disk but nothing staged: {', '.join(file_exists)}")
+  +         return {
+  +             "attempted": True,
+  +             "ok": True,
+  +             "reason": "; ".join(reason_parts),
+  +             "file_exists": file_exists,
+  +             "file_missing": file_missing,
+  +             "committed": False,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/task_completion_gate.py (15 → 30 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_completion_gate.py (15 → 30 lines)
+            return {"attempted": True, "ok": False, "reason": add.stderr.strip() or "git add failed"}
+        diff = git(repo, ["diff", "--cached", "--quiet"])
+        if diff.returncode == 0:
+  -         return {"attempted": True, "ok": True, "reason": "no staged source changes after git add"}
+  +         file_exists = [f for f in files if (repo / f).exists()]
+  +         file_missing = [f for f in files if not (repo / f).exists()]
+  +         reason_parts = ["no staged source changes after git add"]
+  +         if file_missing:
+  +             reason_parts.append(f"missing from disk: {', '.join(file_missing)}")
+  +         if file_exists:
+  +             reason_parts.append(f"present on disk but nothing staged: {', '.join(file_exists)}")
+  +         return {
+  +             "attempted": True,
+  +             "ok": True,
+  +             "reason": "; ".join(reason_parts),
+  +             "file_exists": file_exists,
+  +             "file_missing": file_missing,
+  +             "committed": False,
+  +         }
+        commit = git(repo, ["commit", "-m", message])
+  ... (6 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update `verify()` to merge auto_commit diagnostic into the reason when auto_commit says ok but after says not ok. This helps future sessions debug the gap.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `verify()` to merge the auto_commit reason when there's a diagnostic discrepancy:
+    def verify(repo: Path, base: str, message: str, auto: bool) -> dict[str, Any]:
+        before = status(repo, base)
+  -     commit_result = {"attempted": False}
+  +     commit_result: dict[str, Any] = {"attempted": False}
+        if auto and before["uncommitted_source_files"]:
+            commit_result = auto_commit(repo, before["uncommitted_source_files"], message)
+        after = status(repo, base)
+  ···
+        if commit_result.get("attempted") and not commit_result.get("ok"):
+            result["ok"] = False
+            result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+  +     elif commit_result.get("attempted") and commit_result.get("ok") and not after["ok"]:
+  +         result["reason"] = (
+  +             f"{after['reason']}; auto-commit reported ok but no commit landed"
+  +             f" ({commit_result.get('reason')})"
+  +         )
+        return result
+  ✓ Auto-approved: edit: scripts/task_completion_gate.py (12 → 17 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_completion_gate.py (12 → 17 lines)
+    def verify(repo: Path, base: str, message: str, auto: bool) -> dict[str, Any]:
+        before = status(repo, base)
+  -     commit_result = {"attempted": False}
+  +     commit_result: dict[str, Any] = {"attempted": False}
+        if auto and before["uncommitted_source_files"]:
+            commit_result = auto_commit(repo, before["uncommitted_source_files"], message)
+        after = status(repo, base)
+  ···
+        if commit_result.get("attempted") and not commit_result.get("ok"):
+            result["ok"] = False
+            result["reason"] = f"auto-commit failed: {commit_result.get('reason')}"
+  +     elif commit_result.get("attempted") and commit_result.get("ok") and not after["ok"]:
+  +         result["reason"] = (
+  +             f"{after['reason']}; auto-commit reported ok but no commit landed"
+  +             f" ({commit_result.get('reason')})"
+  +         )
+        return result
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add self-tests for edge cases. Let me update `run_self_tests()`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add self-tests. I need to add edge-case tests to `run_self_tests()`. Let me plan:
+
+1. **File doesn't exist on disk but is listed by uncommitted_source_files**: I can simulate this by:
+   - Creating a file, adding it to the index but not committing, then deleting it from disk
+   - This way `git diff --cached --name-only` would show it (staged addition), and `git diff --name-only` would show it as deleted from working tree
+   - Wait, that doesn't make sense. Let me think differently.
+   
+   Actually, to test the diagnostic, I can test `auto_commit()` directly with a file that doesn't exist:
+   - Call `auto_commit(repo, ["nonexistent.rs"], "test")` — but `git add` would fail for non-existent files (return non-zero), so it'd hit the first error path.
+   
+   Actually, the case I want to test is: `git add` succeeds but `git diff --cached --quiet` returns 0. For this, the file must exist but already be identical to what's in the index. Let me test:
+   - File exists and is tracked and unchanged → `git add` succeeds, `git diff --cached --quiet` returns 0
+   - This is the "already committed" case
+
+2. **File exists on disk, is staged identically to HEAD**: This happens when a file was modified, staged, then the working tree was reverted to match HEAD. Not easy to simulate cleanly.
+
+3. **The "no staged source changes" case covered by diagnostic**: Create a tracked file with no modifications, call auto_commit.
+
+Actually, let me think about what's most useful to test. The key edge case the task mentions is: "files were already committed but the diff showed them as new because they exist only in the worktree."
+
+Wait, `git diff --name-only` shows tracked files with unstaged modifications. If a file was just created and not added to git at all, it wouldn't show in `git diff --name-only`. It would only show in `git ls-files --others --exclude-standard`. 
+
+And if a file is in `git ls-files --others --exclude-standard` (untracked), `git add` would stage it, so `git diff --cached --quiet` would return non-zero, and a commit would be created. So this path works fine.
+
+I think the most useful test is: verify that when a tracked source file has no modifications, `auto_commit` returns a clear diagnostic with `file_exists` and `file_missing` fields. Let me add that.
+
+Also, let me add a test for the `verify()` diagnostic merge path: when auto_commit reports `ok: True` but no commit landed, the result reason should include the auto_commit diagnostic.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.4s (3 ✓)
+
+Now let me add edge-case self-tests. I'll add a test for the "already committed" case and a test for the merged diagnostic:
+            bookkeeping = verify(repo, git(repo, ["rev-parse", "HEAD"], check=True).stdout.strip(), "noop", auto=True)
+            assert bookkeeping["ok"] is True
+            assert bookkeeping["auto_commit"]["attempted"] is False
+  + 
+  +         # Edge case: file exists on disk and is tracked but has no changes.
+  +         # auto_commit should report the file as present but nothing staged.
+  +         staged_noop = auto_commit(repo, ["src/lib.rs"], "no-change")
+  +         assert staged_noop["attempted"] is True
+  +         assert staged_noop["ok"] is True
+  +         assert staged_noop["committed"] is False
+  +         assert staged_noop["file_exists"] == ["src/lib.rs"]
+  +         assert staged_noop["file_missing"] == []
+  +         assert "present on disk but nothing staged" in staged_noop["reason"]
+  + 
+  +         # Edge case: file does not exist on disk.
+  +         phantom = auto_commit(repo, ["src/ghost.rs"], "phantom")
+  +         assert phantom["attempted"] is True
+  +         assert phantom["ok"] is False
+  +         assert "git add failed" in phantom["reason"] or "did not match" in phantom.get("reason", "")
+  + 
+  ... (6 more lines)
+  ✓ Auto-approved: edit: scripts/task_completion_gate.py (4 → 27 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_completion_gate.py (4 → 27 lines)
+            bookkeeping = verify(repo, git(repo, ["rev-parse", "HEAD"], check=True).stdout.strip(), "noop", auto=True)
+            assert bookkeeping["ok"] is True
+            assert bookkeeping["auto_commit"]["attempted"] is False
+  + 
+  +         # Edge case: file exists on disk and is tracked but has no changes.
+  +         # auto_commit should report the file as present but nothing staged.
+  +         staged_noop = auto_commit(repo, ["src/lib.rs"], "no-change")
+  +         assert staged_noop["attempted"] is True
+  +         assert staged_noop["ok"] is True
+  +         assert staged_noop["committed"] is False
+  +         assert staged_noop["file_exists"] == ["src/lib.rs"]
+  +         assert staged_noop["file_missing"] == []
+  +         assert "present on disk but nothing staged" in staged_noop["reason"]
+  + 
+  +         # Edge case: file does not exist on disk.
+  +         phantom = auto_commit(repo, ["src/ghost.rs"], "phantom")
+  +         assert phantom["attempted"] is True
+  +         assert phantom["ok"] is False
+  +         assert "git add failed" in phantom["reason"] or "did not match" in phantom.get("reason", "")
+  + 
+  ... (6 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the self-tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the self-tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_completio… ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All self-tests pass. Now let me run the existing test suites that reference task_completion_gate:
+────────────────────────────────────────────────────────────────────────────────
+
+Self-tests pass. Now let me run the broader test suite:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No pytest. Let me try unittest instead:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The class is `TaskLineageFeedback`, not `TestTaskLineageFeedback`. Let me find the correct test method name:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That test name doesn't exist. Let me search for actual test method names that reference task_completion_gate:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def test_task_completion_gate' in scripts/test_task_lineage_feedback.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run both of these tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (231ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both existing tests pass. Let me also check the dashboard test:
+────────────────────────────────────────────────────────────────────────────────
+
+Existing tests pass. Let me also run the dashboard tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (541ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me do the broader checks: rust-related builds.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Now let me run the Rust checks:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `cargo fmt -- --check` passes. But wait — I only changed Python files. No Rust code was modified. I don't need to run `cargo build` for Python-only changes. But let me verify my diff is only Python.
+
+Actually, the task says to run `cargo fmt -- --check` and `cargo build` or the smallest relevant check. Since I only changed Python files, let me just verify what's in the diff and skip cargo build.
+
+Let me check git diff:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only the task-scope file changed. Let me review the final file to make sure everything looks good:
+────────────────────────────────────────────────────────────────────────────────
+
+Only the task-scope file changed. Let me verify the final state of the file:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_completion_gate.py ✓ (5ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds _has_src_files() helper and stable-sort re-ranking in choose_task() that prefers src/*.rs candidates when reverted_no_edit pressure is detected. Both verifiers pass (preseed self-tests + 58 state_graph_tools tests). Self-tests cover the evidence-aware path with two scenarios: src candidate wins over scripts-only, and fallback when no src candidate matches.

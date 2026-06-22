@@ -1,0 +1,603 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to make the preseed task selection evidence-aware, specifically to reduce the `reverted_no_edit` rate. The key insight is that the `choose_task` function in `scripts/preseed_session_plan.py` matches candidates by keyword but doesn't check whether a candidate's success criteria can be verified with available state evidence.
+
+Let me first read the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (218ms)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full preseed file to understand the `choose_task` function and the analysis-only pressure handling. I need to read the key sections around lines where `choose_task` is defined and where the `_has_analysis_only_pressure` function is. The file was truncated at line 1099 but I only saw up to about line 200 of the TASKS list. Let me read the key functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:530..730  ▶ read scripts/preseed_session_plan.py:900..1100 ✓ (188ms)
+ ✓ (197ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the preseed code. Let me analyze what I've seen:
+
+1. The `choose_task` function (lines 563-638) selects candidate tasks by matching keys against the assessment, applies reject_keys, checks for protected files, checks files exist, and applies some analysis-only pressure logic (line 579: if `analysis_only_active and _task_file_count(task) > 3`, skip) and lifecycle priority (lines 581-588).
+
+2. The `_has_analysis_only_pressure` function (lines 552-554) checks against `_ANALYSIS_ONLY_METRICS` which includes `"reverted_no_edit"`.
+
+3. The key gap: when `analysis_only_active` is True, the code currently skips tasks with >3 files (line 579), but it doesn't re-rank candidates to prefer tasks that target verifiable source files (e.g., `src/*.rs`) over analysis-only candidates.
+
+4. The "Make analysis-only task pressure landable" task (referenced at line 206 according to the Implementation Notes) is likely one of the TASKS entries. Let me find it.
+
+Let me look at the specific task entry and understand what's happening. Let me also check the test cases to see if any test already covers the evidence-aware path.
+
+Looking at the test cases from lines 699+: The tests check various scenarios but none seem to specifically test evidence-aware filtering based on reverted_no_edit pressure. Let me find the "Make analysis-only task pressure landable" task in the TASKS list.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Make analysis-only task pressure landable' in scripts/preseed_session_plan.py  ▶ search 'reverted_no_edit' in scripts ✓ (106ms)
+ ✓ (119ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me read the "Make analysis-only task pressure landable" task definition (around line 200) and also the test around line 783 that's checking for reverted_no_edit + lifecycle.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:195..285  ▶ read scripts/preseed_session_plan.py:730..900 ✓ (186ms)
+ ✓ (196ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding of the code. Let me summarize what I've found:
+
+1. The "Make analysis-only task pressure landable" task is already defined in TASKS (line 206).
+2. The `choose_task` function already handles analysis-only pressure by:
+   - Skipping tasks with >3 files when `analysis_only_active` (line 579)
+   - Prioritizing analysis-only task over lifecycle task (lines 581-584)
+3. The self-tests already cover reverted_no_edit pressure scenarios (lines 761-803).
+
+But the task says I need to make selection evidence-aware: when analysis-only pressure is active, prefer candidates whose Files list contains source files that can produce git-committable changes. The current implementation:
+- Skips tasks with >3 files when analysis_only_active (good)
+- But doesn't rank remaining candidates by whether they touch verifiable source files vs diagnostic-only scripts.
+
+Looking more carefully at the `choose_task` function, the gap is: when `analysis_only_active` is True, after filtering out tasks with >3 files, it still uses a first-match strategy (first non-contradicted task wins). The task says it should prefer candidates with verifiable source files.
+
+But wait—looking at the candidates list: the "Make analysis-only task pressure landable" task itself has `files: "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"` — these are Python scripts that can produce verifiable changes (they have tests). So this task is fine.
+
+The actual gap is: when two candidates both match the assessment and both pass filtering, but one targets `src/*.rs` (edit source, verifiable via cargo test) and the other targets only `scripts/*.py` (diagnostic scripts), we should prefer the one that can produce concrete git-tracked source changes.
+
+Let me re-read the task more carefully:
+
+> Key change: when `_has_analysis_only_pressure(metrics)` returns True, the scoring should prefer candidates whose Files list contains source files that can produce git-committable changes (i.e., tasks that touch `src/*.rs` or non-analysis scripts that produce state artifacts), over analysis-only candidates that only modify diagnostic scripts.
+
+So the change is about preferring verifiable-edit tasks over diagnostic-only tasks when analysis-only pressure is active. Let me think about what the implementation should be:
+
+1. After the first-pass candidate filtering in `choose_task`, when `analysis_only_active` is True, we should re-rank the candidates so that tasks with verifiable source files (that can produce commits) are preferred.
+
+2. We need a function that checks whether a candidate's files list contains "verifiable" source files — i.e., files that when edited produce testable, committable changes. Files like `src/*.rs` are verifiable (cargo test). Python scripts like `scripts/preseed_session_plan.py` (that have `--test`) are also verifiable. But files that are purely diagnostic/analytical with no test suite or verifiable output might need to be ranked lower.
+
+Actually, re-reading the task again more carefully:
+
+> If the implementation finds that the preseed already handles this correctly and the gap is downstream in the manifest, narrow the task to adding a preseed self-test that verifies the evidence-aware path and write a note about the manifest gap for the next session.
+
+Let me check: does the preseed already handle this correctly? The preseed selects the "Make analysis-only task pressure landable" task when analysis-only pressure is detected. This task's files include `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` — these are all script files that can produce verifiable changes (they have tests). So the preseed IS already selecting a task with verifiable files.
+
+But the question is: does the system bias towards verifiable files among multiple candidates? Looking at the code, when `analysis_only_active` is True:
+- The "Make analysis-only task pressure landable" task is the first match in TASKS (line 206 vs the lifecycle task at line 252) since `TASKS` is iterated in order
+- If it matches assessment keys, and passes all filters, it gets selected first
+- If it's contradicted, the next valid candidate is selected
+
+So the system already works by accident (the analysis-only task is listed before other tasks in TASKS), but the ordering is implicit rather than explicit.
+
+Let me think about what the minimal scoped change should be. The task's Evidence section says:
+- `reverted_no_edit=2` from Day 113
+- Two tasks selected but reverted with zero file edits because they had 0 verification evidence in state
+
+The root cause is: tasks are selected whose success criteria can't be verified with available state evidence. The fix should be in the preseed: when analysis-only pressure is active, prefer candidates that can produce verifiable source edits.
+
+I think the right approach is:
+1. Add a function that scores candidates by "verifiability" — whether their files contain source files that can produce git-committable changes
+2. When `analysis_only_active`, sort candidates so verifiable-file tasks come first
+3. Add a self-test that verifies this behavior
+
+Let me now look at what source files vs diagnostic files means in context. Let me look at the candidates more carefully. Actually, let me re-examine the existing test at lines 761-803 more carefully, and then consider what specific change to make.
+
+The existing tests already verify that:
+- When `reverted_no_edit` is detected, the "Make analysis-only task pressure landable" task is selected
+- The selected task has ≤3 files and no protected files
+
+What's missing: explicit verification that when multiple candidates are available, the one with verifiable source edits is selected over diagnostic-only candidates.
+
+But wait - are there actually any candidates in TASKS that are "diagnostic-only"? Let me scan the TASKS array for the files lists.
+
+Let me read the full TASKS list to check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 17.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:38..98 ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the rest of the TASKS to see all the candidates and their files. I know the analysis-only task is at line 206. Let me also check what other tasks exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"title":' in scripts/preseed_session_plan.py ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get all the matches with context to see the files for each TASKS entry.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -F '"title":' scripts/preseed_session_plan.py ✓ (131ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the TASKS. Let me check the files for each:
+
+1. "Verify and fix sub-agent API key propagation" - `src/tools.rs, src/agent_builder.rs, src/lib.rs` → Rust source
+2. "Record DeepSeek prompt cache metrics during prompt runs" - `src/prompt.rs, src/deepseek.rs, src/state.rs` → Rust source
+3. "Improve cold-start state failure diagnostics" - let me check
+4. "Stabilize run completion guard panic test" - `src/state.rs` → Rust source
+5. "Make analysis-only task pressure landable" - `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` → Python scripts
+6. LIFECYCLE_TASK_TITLE - `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` → Python scripts
+7. SEARCH_FRICTION_TASK_TITLE - `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py` → mixed
+8. "Extract another focused state CLI module" - let me check
+
+So most tasks target either `src/*.rs` or `scripts/*.py`. The question is: among equal candidates when analysis-only pressure is active, should we prefer `src/*.rs` candidates (which are verifiable via cargo test) over Python scripts (which are verifiable via their own tests)?
+
+Actually, Python scripts with `--test` flags are also verifiable. The "diagnostic-only" scripts would be things that only do analysis without tests... Let me think again about what the actual gap is.
+
+Looking at the evidence more carefully:
+- `reverted_no_edit=2` means two tasks were selected but produced zero file edits
+- The preseed currently selects the "Make analysis-only task pressure landable" task when analysis-only pressure is detected
+- This task IS already targeting `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`
+- But maybe the issue is that this task was selected and then reverted without edits?
+
+Wait, let me re-read the evidence:
+- "two tasks were selected by the manifest but reverted with zero file edits because they had 0 verification evidence in state"
+- "A task with keys that match the assessment but whose success can't be verified produces a wasted implementation slot"
+
+So the problem is that tasks are getting selected (they match assessment keywords) but can't actually be verified because there's no state evidence to validate success. The task needs the preseed to check whether a candidate's success criteria can be **verified** with available evidence.
+
+But the preseed doesn't have access to state evidence at selection time. It only has the assessment text. The verifiability of a task is about whether its expected evidence/success criteria can actually be checked. 
+
+However, looking at the specific evidence: "reverted_no_edit" means the tasks were reverted without making any edits. This could mean the selected tasks were analysis-only (no code changes needed, just analysis), or that the tasks' success criteria required state evidence that wasn't available.
+
+The task says: "When analysis-only/no-edit pressure is active, candidates that require source-file edits (have non-script Files) are scored higher than analysis-only candidates, since they can produce verifiable commits."
+
+So the key insight is: tasks with `src/*.rs` files produce Rust code changes that are verifiable via `cargo test`. Tasks with only script files might be analysis-only (no code changes to commit). When reverted_no_edit pressure exists, we should prefer Rust source tasks over Python script tasks.
+
+Let me now design the implementation:
+
+1. Add a helper function `_has_verifiable_source_files(task)` that checks whether a candidate's files list contains source files (src/*.rs) that produce verifiable cargo-testable changes.
+
+2. Modify `choose_task` to (when `analysis_only_active` is True) prefer candidates with verifiable source files over those without. This can be done by:
+   - Sorting candidates: those with verifiable source files first, then the rest
+   - Or: when iteration finds a candidate, prefer one with verifiable files
+
+3. Add self-tests that verify this behavior.
+
+Let me also look at the existing contradiction detection flow more carefully. In `choose_task`:
+- Lines 596-607: iterate candidates, first non-contradicted one wins
+- If all contradicted, the first candidate is returned with contradiction annotation
+
+When `analysis_only_active` is True, the plan should be:
+- After building the candidates list, reorder so that candidates with verifiable source files come first
+- Then proceed with the existing contradiction detection
+
+Let me implement this now. Here's my plan:
+1. Add `_has_verifiable_source_files(task)` function
+2. Modify `choose_task` to prefer verifiable-file candidates when `analysis_only_active`
+3. Add self-tests
+
+Actually, let me think about what "verifiable source files" means more precisely. The task says:
+> "candidates that require source-file edits (have non-script Files) are scored higher than analysis-only candidates, since they can produce verifiable commits"
+
+So the binary is: does this task touch Rust source files (src/*.rs)? If yes, higher score. If only Python scripts, lower score.
+
+Let me check: are all TASKS candidates' files either src/*.rs or scripts/*.py? Let me check a few more tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -A1 '"title":' scripts/preseed_session_plan.py | head -20  ▶ read scripts/preseed_session_plan.py:133..163  ▶ read scripts/preseed_session_plan.py:164..214  ▶ read scripts/preseed_session_plan.py:313..363 ✓ (554ms)
+ ✓ (507ms)
+ ✓ (352ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture of all TASKS entries and their files:
+
+1. "Verify and fix sub-agent API key propagation" - `src/tools.rs, src/agent_builder.rs, src/lib.rs` → all src/*.rs (3 files)
+2. "Record DeepSeek prompt cache metrics during prompt runs" - `src/prompt.rs, src/deepseek.rs, src/state.rs` → all src/*.rs (3 files)
+3. "Improve cold-start state failure diagnostics" - `src/commands_state.rs, src/state.rs` → all src/*.rs (2 files)
+4. "Stabilize run completion guard panic test" - `src/state.rs` → all src/*.rs (1 file)
+5. "Make analysis-only task pressure landable" - `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` → all scripts/*.py (3 files)
+6. LIFECYCLE_TASK_TITLE - `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` → all scripts/*.py (3 files)
+7. SEARCH_FRICTION_TASK_TITLE - `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py` → mixed (3 files)
+8. "Extract another focused state CLI module" - `src/commands_state.rs, src/commands_state_graph.rs` → all src/*.rs (2 files)
+
+Now, the current behavior of `choose_task` when `analysis_only_active` is True:
+1. All candidates are iterated - tasks with >3 files are skipped
+2. The lifecycle task is skipped (if analysis_only_active takes priority)
+3. Candidates are appended in TASKS order
+4. First non-contradicted candidate wins
+
+The current ordering: When analysis-only pressure exists AND `reverted_no_edit` is in the assessment, the "Make analysis-only task pressure landable" task (position 5 in TASKS) matches because of the `reverted_no_edit` key. But there could be earlier candidates that also match AND have verifiable source files.
+
+Wait, I need to think about this differently. When the assessment contains `reverted_no_edit`, the only TASKS entry whose keys match would be the "Make analysis-only task pressure landable" one (since it has `reverted_no_edit` as a key). Unless the assessment also mentions other matching keys like `sub-agent` etc.
+
+So in most cases, when `reverted_no_edit` is the primary signal, only the analysis-only task will match. The issue the task describes might be more subtle - it's about when multiple candidates match and one is analysis-only while another has verifiable source files.
+
+Let me re-read the task's Objective:
+
+> "Make preseed task selection evidence-aware: when the trajectory/assessment shows reverted_no_edit pressure, `choose_task` should prefer candidates whose success criteria can be verified with available state evidence, and should demote or annotate candidates that lack verifiable success paths."
+
+And the Implementation Notes:
+
+> "Key change: when `_has_analysis_only_pressure(metrics)` returns True, the scoring should prefer candidates whose Files list contains source files that can produce git-committable changes (i.e., tasks that touch `src/*.rs` or non-analysis scripts that produce state artifacts), over analysis-only candidates that only modify diagnostic scripts."
+
+OK so the change is to add scoring in `choose_task` that prefers candidates with verifiable source files when analysis-only pressure is active. Instead of using first-match order, sort the candidates.
+
+But wait - there's a filter at line 579: `if analysis_only_active and _task_file_count(task) > 3: continue` — this already filters large tasks. What if, instead of just filtering, we sort candidates?
+
+Let me think about what "verifiable source files" means practically:
+- Tasks with `src/*.rs` files: verifiable via cargo test → HIGH priority
+- Tasks with mixed `src/*.rs` + `scripts/*.py`: still verifiable → HIGH priority  
+- Tasks with only `scripts/*.py` that have tests: somewhat verifiable → MEDIUM priority (but can also produce "reverted_no_edit" since the harness may not run the tests)
+- Tasks with only diagnostic scripts: analysis-only → LOW priority
+
+Given the current code structure, I think the simplest effective change is:
+
+1. Add a function `_prefers_verifiable_edits(task)` that returns True if the task's files list contains `src/*.rs` files (i.e., Rust source that produces cargo-testable commits).
+
+2. In `choose_task`, when `analysis_only_active` is True, sort the candidates list so that tasks with verifiable source files come first before the contradiction check.
+
+This way, when analysis-only pressure is active and multiple candidates match, the system prefers tasks that can produce verifiable cargo-testable changes (which directly reduces reverted_no_edit risk).
+
+Let me implement this now. First, let me write the test, then modify the code.
+
+Actually, let me think about whether the preseed already handles this. Looking at lines 596-607:
+
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+```
+
+This iterates in insertion order (TASKS order). When `analysis_only_active`, the "Make analysis-only task pressure landable" task is one of the few that would match `reverted_no_edit` keys. But what if the assessment also matches other keys?
+
+Example: assessment has both `reverted_no_edit` AND `sub-agent` keys → both the analysis-only task AND the sub-agent task would match. Currently, the sub-agent task (src/*.rs, position 1) would be selected first (it comes earlier in TASKS). This is actually correct behavior - the sub-agent task has verifiable source files.
+
+But what if the order were reversed in TASKS? The current code relies on insertion order rather than explicit scoring.
+
+The issue might be more specific: when the assessment mentions `reverted_no_edit` but also mentions something like `empty_input` (which could match the reject_keys on the sub-agent task), the sub-agent task gets filtered out, and the analysis-only task wins. The analysis-only task targets scripts/*.py, which might produce a reverted_no_edit again if the implementation doesn't actually edit anything.
+
+Actually, let me re-read the task more carefully:
+
+> "The preseed `choose_task` function matches candidate tasks by keyword against assessment text but does not check whether a candidate's verifier criteria have supporting state evidence."
+
+The issue is that the **verifier criteria** (how to verify success) aren't checked. A task might have keys that match the assessment but the verifier criteria can't be satisfied because there's no state evidence. For example, "Make analysis-only task pressure landable" has verifier `python3 scripts/preseed_session_plan.py --test` and `python3 -m unittest scripts.test_state_graph_tools` — both can be run, so it's verifiable.
+
+But wait, the reverted_no_edit tasks were selected and reverted without edits. This could be because:
+1. The task was analysis-only (no code to commit)
+2. The task's success couldn't be verified with available evidence
+
+I think the core change needed is: **when analysis-only pressure is active, prioritize tasks whose files list contains src/*.rs files that can produce verifiable commits (via cargo test) over tasks that only target script files.**
+
+This is because script-only tasks are more likely to be analysis-only, and src/*.rs tasks produce concrete code changes that are verifiable through the standard cargo test pipeline.
+
+Let me implement this now.
+
+Plan:
+1. Add `_has_src_files(task)` helper that checks if any file starts with `src/`
+2. In `choose_task`, when `analysis_only_active` is True, sort candidates so `_has_src_files` tasks come first
+3. Add self-tests
+
+Let me code this up.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 20.4s (4 ✓)
+
+Now I have a complete picture. Let me plan and implement the change.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (54ms)
+  ▶ todo ✓ (50ms)
+  ▶ todo ✓ (112ms)
+  ▶ todo ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, I'll add the `_has_src_files` helper function. Then modify `choose_task` to re-rank candidates. Then add tests.
+
+The helper should check if any file in the candidate's files list starts with `src/`. This indicates the task touches Rust source code that can be verified via `cargo test`.
+
+The sort in `choose_task` should be: when `analysis_only_active` is True, candidates with src files come first, then others. The existing ordering within each group is preserved.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.0s (4 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add `_has_src_files` right after the `_task_file_count` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        """Return the number of files listed in a task's files field."""
+        files_str = str(task.get("files") or "")
+        return len([path for path in files_str.split(",") if path.strip()])
+  + 
+  + 
+  + def _has_src_files(task: dict[str, object]) -> bool:
+  +     """Return True if the task's files list contains at least one src/*.rs file."""
+  +     files_str = str(task.get("files") or "")
+  +     for path in files_str.split(","):
+  +         path = path.strip()
+  +         if path and path.startswith("src/") and path.endswith(".rs"):
+  +             return True
+  +     return False
+    
+    
+    def choose_task(assessment: str) -> dict[str, object]:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (7 → 17 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (7 → 17 lines)
+        """Return the number of files listed in a task's files field."""
+        files_str = str(task.get("files") or "")
+        return len([path for path in files_str.split(",") if path.strip()])
+  + 
+  + 
+  + def _has_src_files(task: dict[str, object]) -> bool:
+  +     """Return True if the task's files list contains at least one src/*.rs file."""
+  +     files_str = str(task.get("files") or "")
+  +     for path in files_str.split(","):
+  +         path = path.strip()
+  +         if path and path.startswith("src/") and path.endswith(".rs"):
+  +             return True
+  +     return False
+    
+    
+    def choose_task(assessment: str) -> dict[str, object]:
+ ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `choose_task` to sort candidates by verifiable source files when analysis_only_active. Let me look at the current candidate iteration logic again.
+
+Current logic (lines 596-607):
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+
+# All candidates are contradicted — return the first with annotation
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+    candidates[0]["validated_against_assessment"] = False
+    candidates[0]["contradiction_reason"] = reason
+    return candidates[0]
+```
+
+I need to insert a sort before the for loop when `analysis_only_active` is True. The sort should put candidates with `_has_src_files` first, preserving relative order within each group.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (52ms)
+  ▶ todo ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now modify `choose_task` to sort candidates. I need to find the exact lines.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:605..665 ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to insert a sort before line 606. When `analysis_only_active` is True, sort candidates so that tasks with `_has_src_files` come first.
+────────────────────────────────────────────────────────────────────────────────
+
+  + 
+  +     # When analysis-only/no-edit pressure is active, prefer candidates with
+  +     # verifiable source files (src/*.rs) over script-only candidates, since
+  +     # src edits produce cargo-testable commits and reduce reverted_no_edit risk.
+  +     if analysis_only_active:
+  +         # Stable sort: preserve relative order, src-file tasks first
+  +         candidates.sort(key=lambda c: not _has_src_files(c))
+    
+        for candidate in candidates:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 9 lines)
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 9 lines)
+  + 
+  +     # When analysis-only/no-edit pressure is active, prefer candidates with
+  +     # verifiable source files (src/*.rs) over script-only candidates, since
+  +     # src edits produce cargo-testable commits and reduce reverted_no_edit risk.
+  +     if analysis_only_active:
+  +         # Stable sort: preserve relative order, src-file tasks first
+  +         candidates.sort(key=lambda c: not _has_src_files(c))
+    
+        for candidate in candidates:
+ ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me add the self-tests. I need to add a test that verifies: when an assessment triggers both an analysis-only pressure candidate (scripts/*.py) AND a source-file candidate (src/*.rs), and analysis-only pressure is active, the source-file candidate is preferred.
+
+Let me look at the existing test cases to find a good place to add the new test. The existing test around lines 761-803 covers reverted_no_edit scenarios. Let me also find a scenario where both an analysis-only and a src-file candidate would match.
+
+Looking at the keys:
+- Analysis-only task keys include: `reverted_no_edit`, `task_analysis_only_attempt_count`, `analysis-only task attempts`, etc.
+- Sub-agent task keys include: `sub-agent`, `sub agent`, `api_key_present`, `api key`, `worker agents`
+- Search friction task keys include: `search_regex_error`, `search_binary_match`, etc.
+
+For a test that verifies the re-ranking, I need an assessment that:
+1. Contains `reverted_no_edit` (to trigger analysis_only_active)
+2. Also contains keys that match a src-file candidate (e.g., something that matches sub-agent or cache)
+3. The src-file candidate should NOT be contradicted by the assessment
+
+Let me construct a test assessment that has both:
+- `reverted_no_edit=2` (triggers analysis_only_active)
+- `sub-agent` or `api_key_present` (matches the sub-agent task which has src/*.rs files)
+
+But wait - the current code does key matching first (lines ~579-604), then sorting when analysis_only_active. So if the sub-agent task's keys match AND it passes all filters (protected files, file existence, file count when analysis_only_active), it will be in candidates. Then the sort puts it first since `_has_src_files` returns True for `src/tools.rs, src/agent_builder.rs, src/lib.rs`.
+
+The test needs to verify that the sub-agent task (src files) is selected over the analysis-only task (scripts only) when both match.
+
+But wait, there's a subtlety: the sub-agent task has reject_keys including `empty_input`, `empty input`, `ci/automation noise`, `automation noise`, `expected for ci`, `expected in ci`. If the assessment doesn't contain those, it won't be rejected. Good.
+
+Let me also check: the sub-agent task has 3 files, so `_task_file_count` is 3, which is NOT >3, so the `analysis_only_active and _task_file_count(task) > 3` filter won't skip it. Good.
+
+Now let me add the test. I'll add it after the existing reverted_no_edit tests (around line 803).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (53ms)
+  ▶ todo ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test. I need to find the exact location after the existing analysis-only pressure tests (right after line ~803) and before the next test block.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:805..820 ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a few more lines to find where to insert the new test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:818..838 ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert the new evidence-aware re-ranking test right after line 820 (after the file-count guard test, before the lifecycle gnome test). This is a good location since it follows the existing analysis-only pressure tests.
+
+Let me construct the test:
+- Assessment contains `reverted_no_edit` (triggers analysis_only_active) AND `api_key_present` (matches the sub-agent task)
+- The sub-agent task has src/*.rs files, so it should be preferred over the analysis-only task
+- The sub-agent task shouldn't be contradicted by reject_keys
+
+Wait, but will the sub-agent task's reject_keys match? The sub-agent task rejects: `ci/automation noise`, `ci automation noise`, `empty_input`, `empty input`, `automation noise`, `expected for ci`, `expected in ci`. If the assessment doesn't contain these, it won't be rejected.
+
+Let me also check: does the sub-agent task have protected files? `src/tools.rs, src/agent_builder.rs, src/lib.rs` - none of these are in PROTECTED_IMPLEMENTATION_FILES. Good.
+
+And `_candidate_files_exist` should return True for src/tools.rs, src/agent_builder.rs, src/lib.rs. These are tracked and existing files.
+
+Now the `_task_file_count` filter: the sub-agent task has 3 files, which is not >3, so it passes.
+
+So in the test: when assessment has both `reverted_no_edit` (triggering analysis_only_active via metrics) and `api_key_present` (matching sub-agent task keys), the sub-agent task (with src/*.rs files) should be selected over the analysis-only task (with only scripts/*.py files).
+
+Actually, wait. Let me re-read the analysis_only_active check more carefully. The `_has_analysis_only_pressure` function checks for `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, and `reverted_no_edit` in the metrics dict. The metrics come from `numeric_metrics` which parses `key=value` patterns from the assessment text.
+
+So for the test, I need the assessment to contain something like `reverted_no_edit=2` for the metrics parser to detect it. Let me check what `numeric_metrics` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def numeric_metrics' in scripts/preseed_session_plan.py ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the numeric_metrics function to understand how it parses metrics from the assessment.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:456..486 ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `numeric_metrics` function parses patterns like `reverted_no_edit=2` or `reverted_no_edit: 2` from the assessment text. So for my test, I need the assessment to include `reverted_no_edit=2` (or similar) AND some key that matches a src-file candidate.
+
+Now let me write the test. I'll insert it after line 820 (after the existing `analysis_only_active` tests).
+
+The test should:
+1. Create an assessment with both `reverted_no_edit=2` (triggers analysis_only_active) and a key like `api_key_present` (matches sub-agent task which has src/*.rs)
+2. Verify the sub-agent task is selected over the analysis-only task
+3. Also verify that when no src-file candidate matches, the analysis-only task is still selected (existing behavior preserved)
+
+Let me also add a second test case where only analysis-only candidates match (no src-file candidates), to verify the fallback still works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert not _has_protected_files(task), (
+                f"Analysis-only pressure should skip protected files, got: {task['files']}"
+  +         )
+  + 
+  +         # --- Evidence-aware re-ranking: prefer src-file candidates when analysis-only pressure active ---
+  +         # Assessment with reverted_no_edit + api_key_present: sub-agent task (src/*.rs) should win
+  +         # over analysis-only task (scripts/*.py) because src files produce cargo-testable commits.
+  +         assessment = """# Assessment
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + - **Task-state counts**: reverted_no_edit=2 in recent window. Sessions with no file progress.
+  + - **Sub-agent spawn failures**: api_key_present validation.
+  + 
+  + ## Bugs / Friction Found
+  + - Sub-agent calls failing due to missing API keys.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Verify and fix sub-agent API key propagation", (
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 41 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 41 lines)
+            assert not _has_protected_files(task), (
+                f"Analysis-only pressure should skip protected files, got: {task['files']}"
+  +         )
+  + 
+  +         # --- Evidence-aware re-ranking: prefer src-file candidates when analysis-only pressure active ---
+  +         # Assessment with reverted_no_edit + api_key_present: sub-agent task (src/*.rs) should win
+  +         # over analysis-only task (scripts/*.py) because src files produce cargo-testable commits.
+  +         assessment = """# Assessment
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + - **Task-state counts**: reverted_no_edit=2 in recent window. Sessions with no file progress.
+  + - **Sub-agent spawn failures**: api_key_present validation.
+  + 
+  + ## Bugs / Friction Found
+  + - Sub-agent calls failing due to missing API keys.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Verify and fix sub-agent API key propagation", (
+  +             f"With reverted_no_edit pressure, src-file candidate should win over scripts-only, got {task['title']}"
+  +         )
+  ... (21 more lines)
+ ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the self-tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (52ms)
+  ▶ todo ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (103ms)
+
+
