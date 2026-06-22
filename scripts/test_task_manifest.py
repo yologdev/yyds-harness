@@ -356,6 +356,61 @@ Verification:
             self.assertLess(quality["score"], 0.75)
             self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
 
+    def test_manifest_flags_cold_start_seed_when_no_completed_failure_sessions_is_healthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text(
+                """# Assessment
+
+## Recent Changes
+Day 113 fixed `state why last-failure` messaging: it no longer says `no state event found`.
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+""",
+                encoding="utf-8",
+            )
+            (plan / "task_01.md").write_text(
+                """Title: Improve cold-start state failure diagnostics
+Files: src/commands_state.rs, src/state.rs
+Issue: none
+Origin: harness-seed
+
+Objective:
+Make `yyds state why last-failure` useful when there are no completed failed sessions yet.
+
+Why this matters:
+The assessment found `state why last-failure` returning only `no state event found` during fresh-state sessions.
+
+Success Criteria:
+- output gives actionable diagnostics
+
+Verification:
+- cargo test commands_state state
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            quality = manifest["selected_tasks"][0]["quality"]
+
+            self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
+            self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
+
     def test_manifest_ignores_obsolete_note_files_as_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

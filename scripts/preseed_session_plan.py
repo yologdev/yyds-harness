@@ -113,13 +113,18 @@ TASKS = [
         ],
     },
     {
-        "keys": ("why last-failure", "cold-start", "cold start", "no state event found"),
+        # Keep this seed tied to the actual broken output. Assessments mention
+        # `state why last-failure` every run, so broad cold-start phrases would
+        # keep reactivating this task after the command is healthy.
+        "keys": ("no state event found",),
         "reject_keys": (
             "now properly explains cold-start",
             "cold-start diagnostics now",
             "cold-start diagnostics now inspect",
             "fixed cold-start",
             "replaced \"no state log found\"",
+            "no completed failure sessions",
+            "correctly reports",
             "no sessions completed yet",
             "no failure found",
             "healthy state",
@@ -435,6 +440,26 @@ def _self_tests_show_resolution(self_tests: str, task_keys: tuple[str, ...]) -> 
     return False
 
 
+def _has_cold_start_failure_evidence(text: str) -> bool:
+    """Return True only when current evidence shows the old cold-start failure."""
+    lower = text.lower()
+    if "state why last-failure" not in lower:
+        return False
+    if "no state event found" not in lower:
+        return False
+    healthy_phrases = (
+        "expected for fresh state",
+        "expected for a freshly initialized",
+        "clean output",
+        "no completed failure sessions",
+        "correctly reports",
+        "no failure found",
+        "healthy state",
+        "now properly explains cold-start",
+    )
+    return not any(phrase in lower for phrase in healthy_phrases)
+
+
 def check_task_contradiction(
     task: dict[str, object], assessment: str
 ) -> tuple[bool, str]:
@@ -585,6 +610,11 @@ def choose_task(assessment: str) -> dict[str, object]:
     candidates: list[dict[str, object]] = []
     for task in TASKS:
         if not any(key in lower for key in task["keys"]):
+            continue
+        if (
+            task["title"] == "Improve cold-start state failure diagnostics"
+            and not _has_cold_start_failure_evidence(lower)
+        ):
             continue
         if any(key in lower for key in task.get("reject_keys", ())):
             continue
@@ -944,6 +974,18 @@ Tool failures: search_regex_error=57; search_binary_match=19
 """
         task = choose_task(assessment)
         assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+        assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+
+## Structured State Snapshot
+state_run_incomplete_count=1
+"""
+        task = choose_task(assessment)
+        assert task["title"] != "Improve cold-start state failure diagnostics", (
+            f"healthy last-failure output should not reactivate cold-start seed, got {task['title']}"
+        )
         assessment = """# Assessment
 
 ## Structured State Snapshot

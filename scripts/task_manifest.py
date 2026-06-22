@@ -57,6 +57,8 @@ def assessment_alignment(task_text: str, assessment_text: str) -> dict[str, Any]
             "healthy state",
             "shows diagnostic guidance",
             "now properly explains cold-start",
+            "no completed failure sessions",
+            "correctly reports",
             "returned nothing - meaning no",
             "returned nothing — meaning no",
         )
