@@ -1000,10 +1000,11 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                 || msg_lower.contains("command failed")
             {
                 Some(
-                    "Check the exit code with `echo $?` after the command. \
-                     For piped commands, prepend `set -o pipefail;` to catch failures \
-                     in any part of the pipeline. Retry with `set -x` at the start of \
-                     your command to trace each step."
+                    "Use explicit paths like `./script.sh` to avoid PATH ambiguity, \
+                     and check `$?` immediately after the failing command to understand the exit code. \
+                     Start multi-command scripts with `set -e` (and `set -o pipefail` for pipelines) \
+                     to fail fast on the first error. \
+                     Retry with `set -x` at the start of your command to trace each step."
                         .to_string(),
                 )
             } else if msg_lower.contains("timed out") {
@@ -2869,9 +2870,22 @@ mod tests {
         let hint = targeted_recovery_hint("bash", "Exit code: 1\nsome output");
         assert!(hint.is_some());
         let hint = hint.unwrap();
-        assert!(hint.contains("echo $?"));
+        assert!(hint.contains("$?"));
         assert!(hint.contains("set -o pipefail"));
         assert!(hint.contains("set -x"));
+        // New assertions for path-bounding and exit-code inspection guidance
+        assert!(
+            hint.contains("./script.sh"),
+            "hint should mention explicit paths with ./script.sh: {hint}"
+        );
+        assert!(
+            hint.contains("set -e"),
+            "hint should mention set -e for fail-fast: {hint}"
+        );
+        assert!(
+            hint.contains("immediately after") || hint.contains("right after"),
+            "hint should advise checking $? immediately after the failing command: {hint}"
+        );
     }
 
     #[test]
@@ -3013,7 +3027,7 @@ mod tests {
             .to_string();
         assert!(err.contains("💡 Recovery hint:"));
         assert!(err.contains("🎯 Targeted hint:"));
-        assert!(err.contains("echo $?"));
+        assert!(err.contains("$?"));
         assert!(err.contains("set -x"));
     }
 
