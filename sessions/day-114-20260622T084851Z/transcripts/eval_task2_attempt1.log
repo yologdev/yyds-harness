@@ -1,0 +1,54 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully.
+
+The task is to fix `close_orphaned_run_if_needed` in `src/state.rs` to scan the full events file instead of just the last 20 events, so orphaned runs are reliably detected regardless of how many events intervene.
+
+Let me verify the diff matches the task description:
+
+1. **Doc comment updated** (lines 305-308): Changed from "Scans the last 20 events" to "Scans backward from the end of the events file... stops at the first lifecycle event" ✓
+
+2. **Removed tail_start/slice logic** (old lines 337-342): The `tail_start` calculation and `let tail = &events[tail_start..]` are removed ✓
+
+3. **Changed loop to iterate full events in reverse**: `for event in events.iter().rev()` instead of `for event in tail.iter().rev()` ✓
+
+4. **Updated `has_completed` check**: Changed from `tail.iter().any(...)` to `events.iter().any(...)` ✓
+
+5. **Added 4 unit tests**:
+   - `close_orphaned_run_detects_distant_runstarted` - RunStarted + 25 events + no RunCompleted → orphan closure ✓
+   - `close_orphaned_run_no_false_positive_when_completed_in_tail` - RunStarted + 5 events + RunCompleted → no orphan ✓
+   - `close_orphaned_run_empty_file` - empty/whitespace-only file → no panic ✓
+   - `close_orphaned_run_already_closed_runcompleted_last` - RunCompleted is most recent → no orphan ✓
+
+6. **Build/Tests are PASS** according to the provided status.
+
+Let me double-check there are no bugs by reading the actual changed code in the diff more carefully:
+
+The key change is:
+- Old: `for event in tail.iter().rev()` where tail = last 20 events
+- New: `for event in events.iter().rev()` where events = all events
+
+This is exactly what the task asks for. The scan still stops at the first lifecycle event found (RunStarted or RunCompleted), so it's efficient.
+
+The `has_completed` check was also updated from `tail.iter().any(...)` to `events.iter().any(...)` which is correct - it now checks the entire file for a RunCompleted matching the orphaned run_id.
+
+One concern: the `has_completed` check now scans the full events vec even in the common case where the run is already closed. But this is still bounded and correct - it's just checking if a RunCompleted exists for the run_id, which is a necessary check.
+
+The tests cover:
+- Distant orphan detection (beyond 20 events) ✓
+- No false positive when RunCompleted exists ✓
+- Empty file handling ✓
+- Already-closed run ✓
+
+Build and tests pass. The implementation matches the task description exactly.
+
+Verdict: PASS
+────────────────────────────────────────────────────────────────────────────────
+
+The diff matches the task description precisely: the 20-event scan window is removed, the loop iterates over the full events vec in reverse, and the `has_completed` check scans the full file. Four well-designed unit tests cover the key scenarios. Build and tests are PASS.
+  + Verdict: PASS
+  + Reason: The diff removes the 20-event tail window and scans the full events file in reverse (stopping at first lifecycle event), exactly matching the task spec. Four unit tests cover distant-orphan detection, no false positives, empty file, and already-closed runs. Build and tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (10ms)

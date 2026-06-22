@@ -1,0 +1,386 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant source code to understand the current implementation before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (60 lines)  ▶ read src/state.rs:300..380 ✓ (29ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the function clearly. Let me read the rest of it and then check for existing tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:379..439  ▶ search 'close_orphaned_run' in src/state.rs ✓ (10ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find existing tests for this function and the broader state module tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where the existing tests are for state.rs and specifically for close_orphaned_run_if_needed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'orphan' in src/state.rs  ▶ search '#\[cfg\(test\)\]' in src/state.rs ✓ (21ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test module to understand the test patterns used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the existing test `init_global_closes_orphaned_run_from_previous_session` and the test helper patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6830..7030 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the code structure. Let me now look at the test helpers (append_event, state_global_test_lock, etc.) to understand the test patterns used.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the test helpers and the beginning of the test module:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3274..3354  ▶ search 'state_global_test_lock' in src/state.rs ✓ (22ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `append_event` function to understand how tests add events:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event\b' in src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search failed because `append_event` is likely defined in the same file but possibly outside the test module. Let me search differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event' in src/state.rs ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me plan the changes:
+
+1. **Fix `close_orphaned_run_if_needed`**: Remove the `tail_start` / slice logic (lines 337-342), change the loop to iterate over the full `events` vec in reverse, and update the doc comment.
+
+2. **Add unit tests**:
+   - `test_close_orphaned_run_detects_distant_runstarted`: RunStarted + 25 non-lifecycle events, no RunCompleted → expect orphan closure
+   - `test_close_orphaned_run_no_false_positive`: RunStarted + 5 non-lifecycle events + RunCompleted → expect no orphan  
+   - `test_close_orphaned_run_empty_file`: empty events file → Ok, no events emitted
+   - `test_close_orphaned_run_already_closed`: RunCompleted is the most recent lifecycle event → Ok, no orphan
+
+Let me first build and run the existing tests to make sure they pass now, then make changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first run existing tests to make sure they pass before I make changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (13.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all 288 state tests pass. Now let me implement the fix and add tests.
+
+Let me now make the changes:
+
+1. Fix the function to scan all events instead of just the last 20
+2. Add unit tests
+
+Let me do the code changes now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, all 288 tests pass. Now let me make the changes. First the fix to `close_orphaned_run_if_needed`:
+    /// previous session that did not have its RunCompleted event recorded
+    /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
+    ///
+  - /// Scans the last 20 events in the state file for a dangling RunStarted
+  - /// that has no matching RunCompleted. If found, emits RunCompleted("error")
+  - /// with the orphaned run's run_id.
+  + /// Scans backward from the end of the events file for a dangling RunStarted
+  + /// that has no matching RunCompleted. The scan stops at the first lifecycle
+  + /// event (RunStarted or RunCompleted) encountered, so it is efficient
+  + /// regardless of how many non-lifecycle events intervene.
+    fn close_orphaned_run_if_needed(
+        events_path: &Path,
+        store_path: Option<&Path>,
+  ···
+            return Ok(());
+        }
+    
+  -     // Read only the last ~20 events
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (46 → 42 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (46 → 42 lines)
+    /// previous session that did not have its RunCompleted event recorded
+    /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
+    ///
+  - /// Scans the last 20 events in the state file for a dangling RunStarted
+  - /// that has no matching RunCompleted. If found, emits RunCompleted("error")
+  - /// with the orphaned run's run_id.
+  + /// Scans backward from the end of the events file for a dangling RunStarted
+  + /// that has no matching RunCompleted. The scan stops at the first lifecycle
+  + /// event (RunStarted or RunCompleted) encountered, so it is efficient
+  + /// regardless of how many non-lifecycle events intervene.
+    fn close_orphaned_run_if_needed(
+        events_path: &Path,
+        store_path: Option<&Path>,
+  ···
+            return Ok(());
+        }
+    
+  -     // Read only the last ~20 events
+  +     // Read the full events file
+        let raw = std::fs::read_to_string(events_path)
+  ... (23 more lines)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to also update the `has_completed` check — it currently searches `tail`, but now we should search the full events vec (or at least all events that come after the RunStarted). Let me read the current state of the function after the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:301..391 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that on line 361, there's still `tail.iter().any()` which references the old `tail` variable that no longer exists. I need to fix this to use `events` instead. Also, the `has_completed` check should search all events *after* the found RunStarted for a matching RunCompleted. Since we're scanning backward and stop at the first lifecycle event, and if we find RunStarted, we should check if there's a RunCompleted anywhere after it in the file. But actually, in the old code, `tail` was the last 20 events, and it checked if there's a RunCompleted for the found run_id anywhere in those 20. 
+
+Since the new code scans backward from the end, if we find a RunStarted, we need to check if there's a RunCompleted for the same run_id somewhere in the FULL events file. We could:
+
+1. Search all events that appear after the found RunStarted for a matching RunCompleted
+2. Simply search the full events vec (same result, just less efficient but still O(n))
+
+Actually, the simplest correct fix: search the full `events` vec for a matching RunCompleted. Since the scan is now over all events (not just a tail), and we stop at the first lifecycle event, a RunCompleted for the found run_id could only appear *after* the RunStarted position. So searching all events for a matching RunCompleted is correct.
+
+Let me fix line 361.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to fix the `tail` reference on line 361 — `tail` no longer exists. Let me fix that:
+  -             // Verify no RunCompleted exists for this run_id in the tail
+  -             let has_completed = tail.iter().any(|e| {
+  +             // Verify no RunCompleted exists for this run_id anywhere in the file
+  +             let has_completed = events.iter().any(|e| {
+                    let et = e.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+                    let r = e.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+                    et == "RunCompleted" && r == rid
+  ✓ Auto-approved: edit: src/state.rs (6 → 6 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 6 lines)
+  -             // Verify no RunCompleted exists for this run_id in the tail
+  -             let has_completed = tail.iter().any(|e| {
+  +             // Verify no RunCompleted exists for this run_id anywhere in the file
+  +             let has_completed = events.iter().any(|e| {
+                    let et = e.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+                    let r = e.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+                    et == "RunCompleted" && r == rid
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and run existing tests to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -10 ✓ (14.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run the existing state tests to make sure the existing orphan tests still pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (41.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 288 tests pass. Now let me add the unit tests. I'll add them in the test module near the existing orphan tests.
+
+Let me add the new tests. I need to add:
+
+1. `test_close_orphaned_run_detects_distant_runstarted`: RunStarted + 25 non-lifecycle events, no RunCompleted → expect orphan closure
+2. `test_close_orphaned_run_no_false_positive`: RunStarted + 5 non-lifecycle events + RunCompleted → expect no orphan
+3. `test_close_orphaned_run_empty_file`: empty events file → Ok, no events emitted
+4. `test_close_orphaned_run_already_closed`: RunCompleted is the most recent lifecycle event → Ok, no orphan
+
+Note that the function uses `kind` in the JSON lines (from the yoagent_state foundation format), while the StateEvent uses `event_type`. The conversion happens in `compatibility_event_json_line`. So when writing tests that manually write JSON lines, I need to use the `kind` field.
+
+Let me look at how the existing test writes events - it uses `append_event` which goes through the full StateEvent → append pipeline. But for the new tests that need 25 intervening events, I'll write JSON lines directly (using `kind` field) or use the `append_event` helper.
+
+Actually, looking at the test `init_global_closes_orphaned_run_from_previous_session`, it uses `append_event` with StateEvent. But for 25 events, I can just use a loop with append_event. Let me also consider the test that directly tests `close_orphaned_run_if_needed` (as a function call, not via `init_global`).
+
+Let me write the tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+All 288 tests pass. Now let me add the unit tests. Let me read the exact insertion point:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6934..6994 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the four new tests after the existing orphan tests and before the closing `}` of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(
+                run_completed_count, 1,
+                "should have exactly one RunCompleted (the original, already-closed): {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_detects_distant_runstarted() {
+  +         // RunStarted 25 non-lifecycle events ago, no RunCompleted -> orphan closure
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "run-distant-orphan";
+  +         // Write RunStarted first
+  +         let started = StateEvent {
+  +             event_id: "evt-distant-start".into(),
+  +             event_type: EventType::RunStarted,
+  +             schema_version: STATE_SQLITE_SCHEMA_VERSION,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (6 → 206 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 206 lines)
+            assert_eq!(
+                run_completed_count, 1,
+                "should have exactly one RunCompleted (the original, already-closed): {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_detects_distant_runstarted() {
+  +         // RunStarted 25 non-lifecycle events ago, no RunCompleted -> orphan closure
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "run-distant-orphan";
+  +         // Write RunStarted first
+  +         let started = StateEvent {
+  +             event_id: "evt-distant-start".into(),
+  +             event_type: EventType::RunStarted,
+  +             schema_version: STATE_SQLITE_SCHEMA_VERSION,
+  +             timestamp_ms: 1,
+  +             actor: Actor::Harness,
+  ... (186 more lines)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and run the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 ✓ (15.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (41.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 292 tests pass (288 original + 4 new). Let me now run the verification: cargo fmt check.
+────────────────────────────────────────────────────────────────────────────────
+
+All 292 tests pass (4 new). Let me run fmt check:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt check passes. Let me now confirm the diff looks correct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now verify that `git diff --name-only` shows only `src/state.rs` which is in the task's Edit Surface.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/state.rs` is changed, which matches the task's Edit Surface. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only `src/state.rs` — matches the task's Edit Surface. Let me commit:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me now provide a summary of what was done.
+
+Summary:
+- Changed `close_orphaned_run_if_needed` in `src/state.rs` to scan backward from the end of the file until the first lifecycle event (RunStarted or RunCompleted) is found, instead of limiting to the last 20 events
+- Removed the `tail_start` / slice logic
+- Changed `tail.iter().rev()` to `events.iter().rev()` 
+- Changed `tail.iter().any()` to `events.iter().any()` for the has_completed check
+- Updated doc comment to reflect new behavior
+- Added 4 unit tests:
+  1. `close_orphaned_run_detects_distant_runstarted` - RunStarted + 25 non-lifecycle events, no RunCompleted → orphan closure fires
+  2. `close_orphaned_run_no_false_positive_when_completed_in_tail` - RunStarted + 5 non-lifecycle events + RunCompleted → no false orphan
+  3. `close_orphaned_run_empty_file` - empty file → no error
+  4. `close_orphaned_run_already_closed_runcompleted_last` - RunCompleted is most recent lifecycle → no orphan
+- All 292 tests pass (288 existing + 4 new)
+- cargo fmt check passes
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed**: Fixed `close_orphaned_run_if_needed` in `src/state.rs` to scan all events backward from file end instead of only the last 20 events.
+
+**Specific changes**:
+
+1. **Removed the 20-event window limitation**: The old code sliced `events[tail_start..]` where `tail_start = events.len() - 20`, which meant sessions with >20 non-lifecycle events after `RunStarted` had their orphans silently missed.
+
+2. **Scan now iterates `events.iter().rev()`** — walks backward from file end until the first lifecycle event (`RunStarted` or `RunCompleted`) is found. This is still efficient (stops at first lifecycle event) but never misses orphans.
+
+3. **Updated `has_completed` check** from `tail.iter().any()` to `events.iter().any()` since `tail` no longer exists.
+
+4. **Updated doc comment** to describe the new behavior.
+
+5. **Added 4 unit tests**:
+   • `close_orphaned_run_detects_distant_runstarted` — RunStarted + 25 non-lifecycle events, no RunCompleted → orphan closure fires ✓
+   • `close_orphaned_run_no_false_positive_when_completed_in_tail` — RunStarted + 5 events + RunCompleted → no false orphan ✓
+   • `close_orphaned_run_empty_file` — empty file → no error ✓
+   • `close_orphaned_run_already_closed_runcompleted_last` — RunCompleted is most recent lifecycle → no orphan ✓
+
+**Verification**: `cargo build` passes, `cargo fmt -- --check` passes, `cargo test --lib state -- --test-threads=1` — 292 passed (288 existing + 4 new).
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

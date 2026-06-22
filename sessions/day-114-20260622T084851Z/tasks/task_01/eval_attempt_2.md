@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Both verifiers pass (`preseed --test` and `unittest scripts.test_state_graph_tools`). The preseed diff adds analysis-only pressure assertions (`_has_protected_files`, `_task_file_count`) triggered by `task_no_edit_revert_count=3`, and the state_graph_tools diff adds `test_task_artifact_metrics_count_no_edit_reverts` counting no-edit reverts — both directly matching the task's success criteria.
