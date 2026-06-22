@@ -855,18 +855,23 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
             f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
         )
 
+        # --- Analysis-only pressure: task_no_edit_revert_count alone triggers analysis-only task ---
         assessment = """# Assessment
 
-## Structured State Snapshot
-lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
-
-## Bugs / Friction Found
-State lifecycle unhealthy: runs incomplete 2; model calls incomplete 1.
-Tool failures: search_regex_error=57; search_binary_match=19
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Close yyds state and model lifecycle gaps", task
-        assert len(str(task["files"]).split(",")) <= 3, task
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+        )
+        assert not _has_protected_files(task), (
+            f"Analysis-only pressure from task_no_edit_revert_count should skip protected files, got: {task['files']}"
+        )
+        assert _task_file_count(task) <= 3, (
+            f"Analysis-only pressure should select task with ≤3 files, got {_task_file_count(task)}"
+        )
+
         assessment = """# Assessment
 
 ## Structured State Snapshot

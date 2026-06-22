@@ -1029,6 +1029,70 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_analysis_only_attempt_count"], 2)
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
 
+    def test_task_artifact_metrics_count_no_edit_reverts(self):
+        """task_no_edit_revert_count counts implementation attempts that reverted without file changes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Stale seed",
+                            "files": ["scripts/preseed_session_plan.py"],
+                            "expected_evidence": "task selected when pressure active",
+                            "quality": {
+                                "has_expected_evidence": True,
+                                "score": 0.9,
+                            },
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task reverted: no source files changed",
+                    "planned_files": ["scripts/preseed_session_plan.py"],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+            write_jsonl(
+                session / "tasks/task_01/attempts.jsonl",
+                [
+                    {
+                        "task_id": "task_01",
+                        "phase": "implementation",
+                        "attempt": 1,
+                        "status": "reverted_no_edit",
+                    },
+                ],
+            )
+            write_json(
+                session / "state/summary.json",
+                {
+                    "latest_gnomes": {
+                        "task_analysis_only_attempt_count": 0,
+                        "task_no_edit_revert_count": 1,
+                        "task_success_rate": 0.0,
+                        "task_verification_rate": 0.0,
+                    }
+                },
+            )
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+            gnomes = state_graph_tools.corrected_latest_gnomes(session)
+
+            self.assertEqual(metrics["task_no_edit_revert_count"], 1)
+            self.assertEqual(metrics["task_analysis_only_attempt_count"], 0)
+            self.assertEqual(gnomes["task_no_edit_revert_count"], 1)
+
     def test_evolution_suggestions_surface_contradicted_task_specs(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
