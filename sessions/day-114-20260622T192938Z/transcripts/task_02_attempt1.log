@@ -1,0 +1,272 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to close a transcript-only tool-failure state-capture gap. There's exactly 1 tool failure visible in transcripts but absent from state events. I need to investigate `src/tool_wrappers.rs` (ToolFailureTracker) and `src/state.rs` (StateRecorder) to find where the recording pipeline could drop one failure.
+
+Let me first read the evolve skill, then investigate the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tool_wrappers.rs:1..81 ✓ (21ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the ToolFailureTracker in src/tool_wrappers.rs and the state recording in src/state.rs. I need to search for ToolFailureTracker first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolFailureTracker' in src/tool_wrappers.rs  ▶ search 'struct StateRecorder' in src/state.rs ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the ToolFailureTracker struct and its implementation, and also the StateRecorder.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:958..1083  ▶ read src/state.rs:256..356 ✓ (21ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I can see ToolFailureTracker is a simple in-memory counter. It tracks failures by tool name but doesn't appear to write to the state recorder. Let me look at how it's used - the RecoveryHintTool seems to be the main integration point. Let me search for RecoveryHintTool.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RecoveryHintTool' in src/tool_wrappers.rs  ▶ search 'ToolFailureTracker' in src/tool_wrappers.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the RecoveryHintTool implementation to understand how ToolFailureTracker is integrated.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:949..1019 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the RecoveryHintTool struct and its execute method to see how ToolFailureTracker's record_failure is called and whether it also records to the state recorder.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1082..1202 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. `ToolFailureTracker` only records failure counts to its in-memory HashMap — it never writes to the state recorder (`StateRecorder`). This means tool failures that happen through the recovery hint wrapper are only tracked in-memory for escalation purposes but never persisted as state events.
+
+But wait — there's also the question of where the tool failures are actually being recorded. Let me search for where state events for tool failures are recorded. There might be another mechanism that records tool failures to state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolFailed' in src  ▶ search 'tool_failed' in src ✓ (16ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - there's no "ToolFailed" event type in the source. Let me look at how tool failures get recorded to state. Let me search for other tool-related event types.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Tool' in src/state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are two tool-call lifecycle events: `ToolCallStarted` and `ToolCallCompleted`. Tool failure is captured within `ToolCallCompleted` events but there's no specific "ToolFailed" event type. Let me look at how ToolCallCompleted events are recorded and how the dashboard tracks failures.
+
+Let me search for where ToolCallCompleted events are emitted in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolCallCompleted' in src ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how ToolCallCompleted events are recorded in prompt.rs, since that's likely where the main tool execution flow happens.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:840..900 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of this code — especially what happens when `is_error` is true.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:899..939 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so I see the state recording flow for tool failures. In `prompt.rs`, when a `ToolExecutionEnd` event fires:
+1. `ToolCallCompleted` is always recorded (line 858-867)
+2. If `is_error`, `FailureObserved` is recorded (line 900-909)
+3. If it's a bash tool, `CommandCompleted` is also recorded (line 882-886)
+
+So tool failures should already be recorded via `FailureObserved` events. The question is: is there a case where a tool failure happens but `ToolExecutionEnd` isn't emitted, or `is_error` is false but the tool actually failed?
+
+Let me think about what could cause the gap. The dashboard computes `transcript_only_failed_tool_count` by comparing transcript-failed tools against state-failed tools. The "transcript" here would be the agent session transcript (log), while "state" would be the state events.
+
+Let me look at the dashboard code to understand how it computes this gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'transcript_only_failed_tool' in scripts ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the dashboard code that computes transcript_only_failed_tool_count to understand how it derives the two sets.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2650..2730 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me trace back where `transcript_failed_tools_all` and `state_failed_tools_all` come from. Let me search for how these are built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'transcript_failed_tools_all' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more context around line 2640.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2625..2680 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where `event_data["failed_tools"]` (state's tool failures) and `transcript_actions["failed_tools"]` (transcript's tool failures) come from. The state-failed tools are derived from state events, and transcript-failed tools are derived from agent transcripts. Let me search for how these are computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def.*failed_tools.*event_data' in scripts/build_evolution_dashboard.py  ▶ search '\"failed_tools\"' in scripts/build_evolution_dashboard.py ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for "failed_tools" in the dashboard more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tools' in scripts/build_evolution_dashboard.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where failed_tools is built in the dashboard around line 645.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:635..695 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at how `transcript_action_failed` works and `transcript_failure_detail`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def transcript_action_failed' in scripts/build_evolution_dashboard.py  ▶ search 'def transcript_failure_detail' in scripts/build_evolution_dashboard.py ✓ (14ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:504..574 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the transcript failed_tools are detected by scanning agent transcript `.log` files for failure markers. The state's failed_tools come from the state events file. Let me look at where `event_data` is built to see how state's `failed_tools` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def build_action_evidence' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where event_data is built and where failed_tools is set for state events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'event_data\[.failed_tools.\]' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for event_data more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'event_data =' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `summarize_events_for_work` to understand how state failed_tools are computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def summarize_events_for_work' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2199..2299 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to find where failed_tools is populated from state events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2298..2378 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I understand the flow:
+
+**State side** (lines 2266-2326 in `summarize_events_for_work`): State scans `state/events.jsonl` for `ToolCallCompleted` events where `is_error` is true or `exit_code_failure` on result_preview.
+
+**Transcript side** (lines 640-674 in `summarize_transcript_actions`): The transcript scans `.log` files for action markers that are followed by `✗` failure markers.
+
+The gap is exactly 1 instance. The dashboard compares state-failed tools against transcript-failed tools. If transcript detects a failure that state doesn't, that's a `transcript_only` gap.
+
+Now let me think about WHY a tool failure could appear in transcripts but not in state events. The likely candidate is: a tool call that fails **before** `ToolExecutionEnd` is emitted, or a tool execution that returns `is_error=false` but where the transcript shows a failure (e.g., a bash command that returns exit code 0 but produces error output, or a tool that returns success via the AgentTool interface but the output looks like a failure to the transcript parser).
+
+But actually, the most likely cause is something else entirely. Let me think about what kind of tool failure might not go through the `ToolExecutionEnd` event path.
+
+Looking at the prompt.rs code: `AgentEvent::ToolExecutionEnd { tool_call_id, is_error, result, tool_name, .. }` - this event comes from yoagent. If yoagent's tool execution wrapper catches the error before it reaches `ToolExecutionEnd`, or if the tool fails in a way that bypasses the normal `AgentEvent::ToolExecutionEnd` path...
+
+Wait, let me look more carefully. The RecoveryHintTool wraps errors and re-wraps them as `ToolError::Failed(decorated)`. The question is: does the yoagent infrastructure see this `Err` return and still emit `ToolExecutionEnd` with `is_error=true`? 
+
+Actually, looking at the prompt.rs code again at lines 850-910, I see:
+- `AgentEvent::ToolExecutionEnd` fires and records `ToolCallCompleted` with `is_error` 
+- If `is_error`, it also records `FailureObserved`
+
+This seems like the normal path. But could there be an early-return before `ToolExecutionEnd` fires? Like a timeout or cancellation?
+
+Let me look more at the RecoveryHintTool. Line 1140-1145 handles "Other" errors (NotFound, InvalidArgs, Cancelled) - these pass through without being wrapped in ToolError::Failed. But they still count as failures for escalation purposes. The question is: does the yoagent infrastructure still emit `ToolExecutionEnd` with `is_error=true` for these?
+
+Actually, I think the issue might be different. Let me search for where tool execution errors are caught and how they're handled, particularly looking at the agent's event loop.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolExecutionEnd' in src ✓ (15ms)
+
+

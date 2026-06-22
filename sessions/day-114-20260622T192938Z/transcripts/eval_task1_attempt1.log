@@ -1,0 +1,169 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is about repairing evidence-backed planning after no-task sessions. Let me check the diff first - the prompt says "=== CHANGES MADE (git diff) ===" but it's empty. Let me check if there are any uncommitted changes.
+
+Wait, the task description says the diff section is empty. Let me check if there are actual changes. The build and tests are PASS. But if there's no diff, that means no changes were made. Let me check git status and look at the actual files to see if there's anything.
+
+Actually, let me re-read the task. The task says "=== CHANGES MADE (git diff) ===" followed by nothing - this means either no changes were made or the diff is empty. Let me check git status.
+
+But wait - the verdict should be based on whether the diff matches the task. If there's NO diff at all, that means nothing was implemented. The task requires changes to `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, and `scripts/test_task_manifest.py`. With an empty diff, nothing was changed.
+
+Let me verify by checking git status.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (12ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes to scripts/task_manifest.py and scripts/test_task_manifest.py. Let me look at the actual diff and verify the task requirements.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the full diff more carefully. The output was truncated. Let me get the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --no-color 2>&1 | hea… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated. Let me read the actual files at the relevant sections to see the full changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --no-color -U5 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is still truncated. Let me use a different approach to see the complete diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>/dev/null | cat -A … ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff output is being truncated by the tool. The `... (5 more similar lines)` is showing that some lines are being elided. Let me read the actual files to see the full changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/task_manifest.py:225..260  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/test_task_manifest.py:508..543 ✓ (22ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the changes clearly:
+
+1. In `task_manifest.py`, the `planning_failed` condition was changed from:
+   ```python
+   planning_failed = bool(args.planning_failed or failure_text or not tasks)
+   ```
+   to:
+   ```python
+   harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+   planning_failed = bool(
+       args.planning_failed
+       or failure_text
+       or not tasks
+       or (tasks and len(harness_seeded) == len(tasks))
+   )
+   ```
+   
+   This adds a condition: `planning_failed` is now also true when all tasks are harness-seeded (meaning the planner produced no real tasks).
+
+   Also, the `harness_seeded` computation was moved before the `planning_failed` line, and the `planner_produced_no_task_files` warning is now also added when planning_failed.
+
+2. In `test_task_manifest.py`, the test was updated:
+   - Changed `assertFalse` to `assertTrue` for `planning_failed` - this makes sense because with all harness-seeded tasks, planning should now be considered failed
+   - Added assertion for `planner_produced_no_task_files` warning
+   - Added assertions for `decision_payload` showing `planning_failed: true` and `decision: "planning_failed"`
+
+Now let me verify against the task's success criteria:
+
+1. "Fallback planning repair tasks avoid protected implementation files." - The diff doesn't directly show this. The task says to edit `scripts/preseed_session_plan.py` too, but it's not modified. Let me check if the existing preseed_session_plan.py already handles protected files.
+
+2. "Task manifest warnings make no-task planning failures visible." - YES, the change adds `planner_produced_no_task_files` warning and considers all-tasks-harness-seeded as `planning_failed`.
+
+3. "Future planning failures preserve enough evidence to select a landable repair task." - This is about the decision_payload now returning `planning_failed` true, which helps select the right task.
+
+The task mentions `scripts/preseed_session_plan.py` in the Edit Surface but it's not modified. Let me check if the preseed script already avoids protected files.
+
+Let me also run the verifiers:
+- python3 scripts/preseed_session_plan.py --test
+- python3 -m unittest scripts.test_task_manifest
+- python3 scripts/task_manifest.py --help
+
+Let me run these to verify.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+Now let me run the verifiers specified in the task:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (62ms)
+ ✓ (34ms)
+ ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three verifiers pass:
+1. `python3 scripts/preseed_session_plan.py --test` → "preseed_session_plan self-tests passed"
+2. `python3 -m unittest scripts.test_task_manifest` → 17 tests OK
+3. `python3 scripts/task_manifest.py --help` → shows help output
+
+Now let me evaluate against the task success criteria:
+
+1. **"Fallback planning repair tasks avoid protected implementation files."** - The `preseed_session_plan.py` already has self-tests that pass. The preseed script already has `PROTECTED_IMPLEMENTATION_FILES` defined. The task mentioned editing this file but it wasn't modified - let me check if the existing code already handles this.
+
+2. **"Task manifest warnings make no-task planning failures visible."** - YES. The diff adds `planner_produced_no_task_files` warning and considers all-tasks-harness-seeded as `planning_failed`.
+
+3. **"Future planning failures preserve enough evidence to select a landable repair task."** - YES. The `decision_payload` now correctly reports `planning_failed: true` and `decision: "planning_failed"`.
+
+The task mentions `scripts/preseed_session_plan.py` in the edit surface, but it wasn't modified. Let me check if the preseed script already has the necessary protection logic. Actually, the task says "Keep the change scoped to the listed files unless verification reveals a direct dependency." The preseed test passes, suggesting it already handles protected files.
+
+Let me verify that PROTECTED_IMPLEMENTATION_FILES is used in preseed_session_plan.py.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.9s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'PROTECTED_IMPLEMENTAT… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The preseed script already has protected file checks. It's working correctly and its self-tests pass. The task description says to edit preseed_session_plan.py, but the existing code already handles this. The key changes are in task_manifest.py (adding all-tasks-harness-seeded as planning_failed) and test_task_manifest.py (updating tests).
+
+The implementation:
+1. Makes `planning_failed` true when all tasks are harness-seeded (not just when there are zero tasks)
+2. Adds `planner_produced_no_task_files` warning
+3. Updates tests to match
+
+This satisfies:
+- "Task manifest warnings make no-task planning failures visible" ✓
+- "Future planning failures preserve enough evidence to select a landable repair task" ✓  
+- The decision_payload now correctly reports planning_failed status
+
+The preseed_session_plan.py already handles protected files (evidence above), so it didn't need changes.
+
+All three verifiers pass. The diff is minimal, focused, and correct.
+
+Verdict: PASS
+────────────────────────────────────────────────────────────────────────────────
+
+All three verifiers pass. The changes are focused and correct:
+
+• `task_manifest.py`: Now treats all-tasks-harness-seeded as `planning_failed`, and adds the `planner_produced_no_task_files` warning
+• `test_task_manifest.py`: Updated test to assert `planning_failed=True` and verify the new warning + decision payload
+• `preseed_session_plan.py`: Already has protected-file guards (lines 522-526, 854-905), self-tests pass
+
+The implementation satisfies all success criteria and doesn't touch protected files.
+  + Verdict: PASS
+  + Reason: All three verifiers pass (preseed self-tests, 17 manifest tests, --help). The diff correctly adds all-tasks-harness-seeded as a planning_failed condition and propagates the planner_produced_no_task_files warning, making no-task planning failures visible in manifests.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (7ms)

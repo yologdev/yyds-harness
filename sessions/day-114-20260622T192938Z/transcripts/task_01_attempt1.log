@@ -1,0 +1,692 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. The harness seed says that the harness reached planning with no task artifacts. I need to repair evidence-backed planning after no-task sessions. Let me first read the evolve skill, then the relevant source files to understand the current state.
+
+Let me begin by reading the evolve skill and the key files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py  ▶ read scripts/task_manifest.py ✓ (543ms)
+ ✓ (502ms)
+ ✓ (391ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the preseed_session_plan.py to understand the full task selection logic, especially the `choose_task` function and the fallback behavior. I also need to see the task_manifest.py more carefully, and then the test file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.1s (3 ✓)
+
+Let me continue reading the preseed script to understand the task selection logic:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1100..  ▶ read scripts/task_manifest.py:100..  ▶ read scripts/test_task_manifest.py ✓ (536ms)
+ ✓ (507ms)
+ ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture of the landscape. Let me understand the task requirements:
+
+1. **Fallback planning repair tasks avoid protected implementation files** - The fallback task in `preseed_session_plan.py` is the one titled "Repair evidence-backed planning after no-task sessions". Looking at the test, it already checks that fallback doesn't have protected files: `assert not _has_protected_files(fallback), fallback`. The fallback's files are: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` - none of these are in `PROTECTED_IMPLEMENTATION_FILES`.
+
+2. **Task manifest warnings make no-task planning failures visible** - Looking at `task_manifest.py`, the `build_manifest` function already adds `"planner_produced_no_task_files"` when `planning_failed` is True. But the question is: is it visible? The `planning_failed` variable is set when:
+   - `args.planning_failed` is True (explicit flag)
+   - `failure_text` is non-empty (planning_failure_file has content)
+   - `not tasks` (no task files found)
+
+   Wait, let me re-read the goal. The issue is that "planning_failed remains visible when it occurs." Currently the warning `"planner_produced_no_task_files"` is added, but the `decision_payload` also reports this as `planning_failed`. So the warning is already there.
+
+   But wait - the Success Criteria says: "Task manifest warnings make no-task planning failures visible." The current code already does this. Let me think about what's actually missing...
+
+3. **Future planning failures preserve enough evidence to select a landable repair task** - This is about the fallback selection being evidence-backed. Currently when `choose_task` gets "No known current bug matched this assessment." it returns the fallback repair task. But the assessment text might not have specific bug matches that trigger one of the `TASKS` entries. The fallback should work reliably.
+
+Let me look at the `choose_task` function more carefully to understand the full flow:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.4s (3 ✓)
+
+Let me read the full `choose_task` function and the beginning of `preseed_session_plan.py`:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:300..600  ▶ read scripts/preseed_session_plan.py:600..900 ✓ (269ms)
+ ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me analyze what the task requires:
+
+1. **Fallback planning repair tasks avoid protected implementation files** - The test already exists at line 1174-1183 of preseed_session_plan.py. The fallback task files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` - none of these are in `PROTECTED_IMPLEMENTATION_FILES`. This is already working.
+
+2. **Task manifest warnings make no-task planning failures visible** - In `task_manifest.py`, `build_manifest` already tracks `planning_failed` and adds `"planner_produced_no_task_files"` warning. The `decision_payload` also reports `planning_failed` with a reason.
+
+3. **Future planning failures preserve enough evidence to select a landable repair task** - The fallback is defined in `choose_task` with the correct files. The test at line 1181-1183 checks the fallback works.
+
+So what's actually wrong/missing? Let me re-read the task more carefully:
+
+> The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+
+The current fallback task exists in `choose_task` but it only gets hit when nothing else matched. The issue might be:
+
+1. When `planning_failed` and the preseed creates `task_01.md` with this fallback, does the manifest properly record that this was a fallback task?
+
+2. Looking at `task_manifest.py` `build_manifest` line 233-236:
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks)
+warnings: list[str] = []
+if planning_failed:
+    warnings.append("planner_produced_no_task_files")
+```
+
+But the issue says: "future planning failures preserve enough evidence to select a landable repair task." The current flow:
+- `evolve.sh` calls `preseed_session_plan.py` with the assessment
+- If no task files exist, it creates one via `choose_task`
+- Then the planner runs and may produce task files (or not)
+- Then `task_manifest.py` builds the manifest
+
+But wait - what if the preseed creates a task file, the planner fails to produce more, but the preseed task IS the only one? The manifest would find 1 task (the preseed one), `planning_failed` would be False (because tasks exist), but the origin would be `harness-seed`. The `build_manifest` already catches this with:
+```python
+harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+if tasks and len(harness_seeded) == len(tasks):
+    warnings.append("all_tasks_harness_seeded")
+```
+
+That's fine. But there's a subtle gap: what about the `planning_failed` flag in the decision payload? Currently, `planning_failed` is only true when there are NO tasks at all OR explicit flag/failure file. When `all_tasks_harness_seeded`, `planning_failed` is False but `warnings` has the signal.
+
+Wait, let me look at what happens when preseed creates a task but planning still fails. In `evolve.sh`:
+1. preseed runs → creates task_01.md (if no existing tasks)
+2. Planner runs → may or may not create task files  
+3. `task_manifest.py` runs with `--planning-failed` flag or `--planning-failure-file`
+
+If the planner produced nothing, the only task is the preseed one. The `decision_payload` would show:
+- `planning_failed`: False (since tasks exist)
+- `decision`: "tasks_selected" 
+- `selected_task_count`: 1
+
+But `planning_failed` should probably be True when the planner didn't produce any tasks of its own.
+
+Actually, re-reading the evidence more carefully:
+
+> "Future task manifests show selected task artifacts with non-protected Files entries."
+> "planning_failed remains visible when it occurs."
+
+I think the issue is more concrete. Let me look at the current test and see if there are any gaps.
+
+Looking at the test in `preseed_session_plan.py` line 1174-1183:
+```python
+for candidate in TASKS:
+    protected = [
+        path.strip()
+        for path in str(candidate.get("files") or "").split(",")
+        if path.strip() in PROTECTED_IMPLEMENTATION_FILES
+    ]
+    assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Repair evidence-backed planning after no-task sessions", fallback
+assert not _has_protected_files(fallback), fallback
+```
+
+The test passes already. So what's the actual gap?
+
+Let me think about this differently. The task says the harness "reached planning with no task artifacts." Looking at the preseed flow:
+- `evolve.sh` calls `preseed_session_plan.py`
+- `preseed_session_plan.py` checks if any `task_*.md` files exist in the output dir
+- If they do, it returns 0 (no-op)
+- If not, it reads the assessment and calls `choose_task`
+- `choose_task` tries to match against TASKS, and falls back to the repair task
+
+The problem might be in the fallback task's `validated_against_assessment` field. When the fallback is returned, it doesn't have the `validated_against_assessment` field set! Let me check...
+
+Looking at the fallback dict (line 662-691), it doesn't include `validated_against_assessment` or `origin`. But tasks that come from TASKS list don't have `origin` either - that's set by the planner or `task_manifest.py` when reading.
+
+Wait, the rendered task file includes `validated_against_assessment` (from `render_task`). Let me trace through `render_task`:
+
+```python
+def render_task(task, day, session_time):
+    ...
+```
+
+Let me read the full `render_task` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:694.. ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me analyze the current state against the task's Success Criteria:
+
+1. **"Fallback planning repair tasks avoid protected implementation files."** - The fallback task in `choose_task` has files `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. None of these are in `PROTECTED_IMPLEMENTATION_FILES`. The test at line 1183 verifies this. ✅ Already works.
+
+2. **"Task manifest warnings make no-task planning failures visible."** - In `task_manifest.py`, when `planning_failed` is True (which happens when `not tasks` or explicit flag or failure file), the warning `"planner_produced_no_task_files"` is added. Also `"all_tasks_harness_seeded"` is tracked. ✅ Already works.
+
+3. **"Future planning failures preserve enough evidence to select a landable repair task."** - The fallback works when nothing else matches. ✅ Already works.
+
+So it seems like the code already satisfies these criteria. But the task says this needs repair. Let me look more carefully for subtle issues:
+
+1. Look at `test_task_manifest.py` tests - do they test for `planning_failed` visibility and `all_tasks_harness_seeded` warnings?
+
+Looking at test_task_manifest.py, I don't see tests for:
+- `planning_failed` flag producing `planner_produced_no_task_files` warning
+- `all_tasks_harness_seeded` warning when all tasks are harness-seeded
+- The `decision_payload` showing `planning_failed: true` correctly
+
+2. Are there test gaps in `preseed_session_plan.py` tests?
+
+Looking at the test in preseed_session_plan.py, the tests ARE extensive. But there's one potential issue: the fallback task doesn't have `validated_against_assessment` set in the `choose_task` function. When rendered via `render_task`, it defaults to True. But is this correct? When the fallback is selected because no TASKS entries matched, it's NOT actually validated against the assessment - it's a fallback.
+
+Wait, actually the fallback is only used when all TASKS entries fail to match (candidates empty). So the fallback task represents "planning itself needs repair" - which IS validated by the fact that no TASKS entry matched. So `validated_against_assessment: true` is correct here.
+
+3. Let me look more carefully at the manifest for planning_failed visibility. The key question: when the preseed creates a fallback task but the planner also fails to produce any new tasks, is `planning_failed` visible?
+
+In that scenario:
+- `task_paths` would have 1 file (the preseed's task_01.md)
+- `tasks` would have 1 entry
+- `not tasks` is False
+- Unless `args.planning_failed` or `args.planning_failure_file` is set, `planning_failed` would be False
+
+But the warning `all_tasks_harness_seeded` would be present. The `decision` in `decision_payload` would be "tasks_selected".
+
+Hmm, but `planning_failed` is specifically about whether the PLANNER produced task files, not whether ANY task files exist. If only harness-seeded tasks exist, the planner DID fail. `planning_failed` should be True in that case.
+
+But wait - the harness can't distinguish between "planner produced 0 tasks" and "planner produced tasks but they all reference protected files" from within `task_manifest.py`. The `--planning-failed` flag is set by `evolve.sh` based on whether the planner produced output.
+
+Actually, let me re-check the flow. The `evolve.sh` calls `task_manifest.py` with `--planning-failed` when the planning agent didn't produce any tasks beyond the preseed. Or `--planning-failure-file` when there's a failure file.
+
+Let me look at how `evolve.sh` calls these scripts. But I don't need to edit `evolve.sh`. The task says I should only edit the listed files.
+
+Let me focus on what's actually testable and improvable:
+
+Looking at this from the **task_manifest.py** side, I notice:
+- `build_manifest` uses `not tasks` as part of `planning_failed` check. When only the preseed task exists, `planning_failed` is False but `all_tasks_harness_seeded` is True.
+- The `decision_payload` function uses `planning_failed` from the planner dict. When `all_tasks_harness_seeded` and no explicit `--planning-failed` flag, the decision is "tasks_selected" even though planning actually produced nothing.
+
+The task says "planning_failed remains visible when it occurs." Currently, when only harness-seeded tasks exist and the `--planning-failed` flag is NOT explicitly passed, `planning_failed` appears False. The `all_tasks_harness_seeded` warning is there, but `planning_failed` itself in the decision payload is False.
+
+The fix should ensure that when all tasks are harness-seeded (and the planner produced nothing of its own), `planning_failed` is set to True in the manifest.
+
+Now let me also look at the `preseed_session_plan.py` side. The fallback task's `validated_against_assessment` default is True in `render_task`. But when the fallback is used because no candidate matched, `choose_task` doesn't explicitly set it. The fallback only has `validated_against_assessment` when `render_task` defaults it to True (via `task.get("validated_against_assessment", True)`). But the fallback is special - it's not validated against the assessment in the same way. Actually, I think True is still correct because the fallback IS validated by the fact that no other task matched.
+
+Let me focus on concrete, testable changes:
+
+**In `task_manifest.py`**: When all tasks are harness-seeded, set `planning_failed = True` so the decision payload correctly reports `planning_failed`. This makes the warning more visible through the decision payload.
+
+**In `test_task_manifest.py`**: Add tests for:
+1. When all tasks are harness-seeded, `planning_failed` is True in the manifest
+2. When `planning_failed` is True, the decision type is "planning_failed"
+
+**In `preseed_session_plan.py`**: The fallback task should have `validated_against_assessment` explicitly set to `True`. This is a minor clarity improvement. Actually, the fallback already defaults to True in render_task. Let me not change this.
+
+Let me now focus on the concrete change. The main gap I see is:
+
+**task_manifest.py `build_manifest`**: When all tasks are harness-seeded, `planning_failed` should be True.
+
+Current code (line 233-234):
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks)
+```
+
+Should also include the case where all tasks are harness-seeded:
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks or (tasks and len(harness_seeded) == len(tasks)))
+```
+
+Wait, but `harness_seeded` is defined AFTER `planning_failed`. Let me look at the order:
+
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks)
+warnings: list[str] = []
+if planning_failed:
+    warnings.append("planner_produced_no_task_files")
+harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+if tasks and len(harness_seeded) == len(tasks):
+    warnings.append("all_tasks_harness_seeded")
+```
+
+So `harness_seeded` is computed after `planning_failed`. I need to either:
+1. Move the harness_seeded check before planning_failed
+2. Or adjust planning_failed after computing harness_seeded
+
+Option 1 (move before):
+```python
+tasks = [parse_task(...) ...]
+harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+planning_failed = bool(args.planning_failed or failure_text or not tasks or (tasks and len(harness_seeded) == len(tasks)))
+```
+
+This is cleaner. But then the `all_tasks_harness_seeded` warning would be redundant with `planner_produced_no_task_files` when both are present. Actually they're not fully redundant - `all_tasks_harness_seeded` tells you WHY there are no planner tasks (they were all harness-seeded), and `planner_produced_no_task_files` is the result.
+
+But wait, in the current flow, when all tasks are harness-seeded AND `--planning-failed` is not set, `planning_failed` is False but `all_tasks_harness_seeded` is True. After my change, `planning_failed` would be True and `all_tasks_harness_seeded` would also be True. The `planner_produced_no_task_files` warning would also appear. Is this correct?
+
+Actually, `all_tasks_harness_seeded` means the planner did produce something, but all tasks happened to be harness-seeded. This is different from "planner produced zero task files." The planner might have kept the preseed task (because it was still relevant) and also added its own tasks. But `all_tasks_harness_seeded` means ALL tasks are harness-seeded - meaning the planner didn't produce anything of its own.
+
+Hmm, but the planner might produce a task file with `Origin: harness-seed` as well. That would still count as "planner produced nothing." So in practice, `all_tasks_harness_seeded` means the planner didn't contribute any new tasks.
+
+I think the correct fix is: when all tasks are harness-seeded, set `planning_failed = True` AND keep the `all_tasks_harness_seeded` warning for diagnostic clarity and the `planner_produced_no_task_files` warning for backward compatibility.
+
+But wait, this might have side effects. Let me think...
+
+The `decision_payload` function uses `planning_failed` to decide:
+- If `planning_failed`: decision = "planning_failed", reason = "planning phase produced no task files"
+- If `no_selectable_tasks`: decision = "no_selectable_tasks"
+- Else: decision = "tasks_selected"
+
+If `planning_failed` and tasks exist, the decision would be "planning_failed" even though tasks do exist. Is this correct? Yes, because the planner failed to produce any original tasks - the only tasks are preseeded ones.
+
+Actually wait, I need to be careful. The `decision` payload also has `task_count` and `selected_task_count`. If `planning_failed` but tasks exist (all harness-seeded), the payload would show:
+- decision: "planning_failed"
+- task_count: 1
+- selected_task_count: 1 (since one preseed task, no protected files)
+- reason: "planning phase produced no task files"
+
+The reason is technically wrong in this case - it should say something like "planning phase produced only harness-seeded tasks; no planner-originated implementation task was selected."
+
+But I shouldn't over-complicate this. Let me look at the actual `evolve.sh` to see how it calls `task_manifest.py`:
+
+Let me search for `task_manifest` in `evolve.sh` to understand the call convention.
+
+Actually, I should focus on the task scope. The task says to edit `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. Let me make the minimal, correct changes.
+
+Let me plan the changes:
+
+1. **`scripts/task_manifest.py`**: 
+   - Move `harness_seeded` computation before `planning_failed` 
+   - Include `all harness-seeded` in the `planning_failed` condition
+   - Adjust the `decision_payload` to handle the case where planning failed but tasks exist (all harness-seeded)
+
+2. **`scripts/test_task_manifest.py`**: 
+   - Add test for: when all tasks are harness-seeded, `planning_failed` is True
+   - Add test for: when `--planning-failed` flag is set with no tasks, `planner_produced_no_task_files` warning is present
+
+3. **`scripts/preseed_session_plan.py`**:
+   - The existing tests already verify the fallback correctly. No change needed here for the fallback task itself.
+   - But I could add explicit `validated_against_assessment` to the fallback dict in `choose_task` for clarity.
+
+Wait, actually I should run the existing tests first to confirm they pass:
+
+Now let me think about what's the right test to add. Let me also consider whether the `decision_payload` function needs to be adjusted.
+
+The decision_payload currently:
+```python
+def decision_payload(manifest):
+    planner = manifest.get("planner")
+    planning_failed = bool(planner.get("planning_failed"))
+    task_count = int(planner.get("task_count") or 0)
+    selected_task_count = int(planner.get("selected_task_count") or 0)
+    no_selectable_tasks = bool(task_count and selected_task_count == 0 and not planning_failed)
+    return {
+        "decision": "planning_failed" if planning_failed else "no_selectable_tasks" if no_selectable_tasks else "tasks_selected",
+        ...
+    }
+```
+
+After my change, when all tasks are harness-seeded:
+- `planning_failed` = True
+- `task_count` = 1 
+- `selected_task_count` = 1 (the preseed task, if not protected)
+- `no_selectable_tasks` = False (because selected_task_count > 0)
+
+Decision would be "planning_failed" with reason "planning phase produced no task files". But actually tasks DO exist. Is this confusing? The `reason` field should perhaps say "planning phase produced only harness-seeded task files; no planner task was created."
+
+But actually, the reason field in the decision payload is just for human readability. The key signal is `planning_failed: true`. Let me not over-engineer the reason - keep it simple.
+
+Actually, wait. Let me re-read the requirement: "planning_failed remains visible when it occurs." The key fix is making `planning_failed` True when all tasks are harness-seeded. This is the right change.
+
+Let me now also consider: should I add `Origin: harness-seed` handling to the `parse_task` function? Currently, `parse_task` reads the `Origin` field from the task file header. The preseed renders `Origin: harness-seed`. The `parse_task` function at line 204 reads `fields.get("origin")`. So this is already handled.
+
+OK let me now write the changes.
+
+Actually, before I make changes, let me verify the existing tests pass:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me first verify the current tests pass:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (357ms)
+ ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All existing tests pass. Now let me look at the test that's most relevant: `test_manifest_warns_when_all_tasks_harness_seeded`. Let me read it to understand what it currently tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Let me look at the relevant test for harness-seeded tasks:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_manifest_warns_when_all_tasks_harness_seeded' in scripts/test_task_manifest.py ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test for `test_manifest_warns_when_all_tasks_harness_seeded`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py:470.. ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. Look at `test_manifest_warns_when_all_tasks_harness_seeded` (line 470-521):
+
+```python
+self.assertFalse(manifest["planner"]["planning_failed"])
+```
+
+The test currently asserts that `planning_failed` is **False** when all tasks are harness-seeded. But the task says "planning_failed remains visible when it occurs." When all tasks are harness-seeded (meaning the planner didn't produce any original tasks), `planning_failed` should be True.
+
+So the change needed is:
+1. In `task_manifest.py`, when all tasks are harness-seeded, set `planning_failed = True`
+2. Update the test in `test_task_manifest.py` to assert `planning_failed` is True in that case
+
+But I also need to handle the `decision_payload` function. When `planning_failed = True` but tasks actually exist (preseed tasks), the reason should still make sense.
+
+Let me also check if there's a `test_manifest_records_planning_failure_without_fake_task` test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_manifest_records_planning_failure_without_fake_task' in scripts/test_task_manifest.py ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py:277.. ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding. Let me plan the changes:
+
+### Problem
+When all tasks are harness-seeded (meaning the planner produced no original tasks), `planning_failed` is currently False in the manifest. The task requires that `planning_failed` is visible when it occurs. The `all_tasks_harness_seeded` warning exists but the `planning_failed` boolean doesn't reflect it.
+
+### Changes
+
+**1. `scripts/task_manifest.py` - `build_manifest` function:**
+- Move `harness_seeded` computation before `planning_failed`
+- Include `all harness-seeded` as a condition for `planning_failed`
+- But we need to be careful: when tasks exist but all are harness-seeded, `planning_failed` should be True. But `planner_produced_no_task_files` warning might be misleading - the planner DID produce harness-seeded tasks (or rather, the preseed produced them and the planner kept them).
+
+Actually, let me think about this more carefully. The flow is:
+1. `evolve.sh` runs `preseed_session_plan.py` - creates `task_01.md` if no tasks exist
+2. The planner runs - may add more task files
+3. `evolve.sh` runs `task_manifest.py` to build the manifest
+
+If after steps 1-2, the only task files are the preseed's `task_01.md` (with `Origin: harness-seed`), then:
+- The planner didn't contribute any new tasks
+- The preseed task exists but is a harness fallback, not a planner-created task
+- This IS a planning failure
+
+The current code:
+```python
+planning_failed = bool(args.planning_failed or failure_text or not tasks)
+```
+
+When tasks exist (preseed task) and `--planning-failed` is not set and no failure file, `planning_failed` is False. The `all_tasks_harness_seeded` warning is set, but `planning_failed` is False.
+
+My fix: include `all harness-seeded` as a `planning_failed` condition.
+
+But I need to be careful with the `planner_produced_no_task_files` warning naming. When all tasks are harness-seeded, the warning should accurately describe the situation. The current warning `"planner_produced_no_task_files"` is technically correct - the planner didn't produce any task files (the harness seeded the only one). So I can keep it.
+
+Let me also adjust the `decision_payload` to handle the case where `planning_failed` is True but tasks exist (all harness-seeded). Currently:
+```python
+"reason": (
+    "planning phase produced no task files"
+    if planning_failed
+    ...
+)
+```
+
+When tasks exist but all harness-seeded, the reason should reflect that. Maybe: "planning phase produced only harness-seeded tasks; no planner task was created."
+
+Actually, let me keep it simple and adjust the reason logic:
+
+```python
+"reason": (
+    "planning phase produced only harness-seeded tasks; no planner-originated task was created"
+    if planning_failed and selected_task_count > 0
+    else "planning phase produced no task files"
+    if planning_failed
+    ...
+)
+```
+
+Hmm, that's starting to get complex. Let me think about what the simplest correct change is.
+
+Looking at the decision_payload again:
+```python
+def decision_payload(manifest):
+    planner = manifest.get("planner")
+    planning_failed = bool(planner.get("planning_failed"))
+    task_count = int(planner.get("task_count") or 0)
+    selected_task_count = int(planner.get("selected_task_count") or 0)
+    no_selectable_tasks = bool(task_count and selected_task_count == 0 and not planning_failed)
+    return {
+        ...
+        "reason": (
+            "planning phase produced no task files"
+            if planning_failed
+            else "planning phase produced only protected-file tasks; no implementation task was selected"
+            if no_selectable_tasks
+            else "planning phase selected implementation tasks for this evolution session"
+        ),
+        ...
+    }
+```
+
+When `planning_failed` is True because all tasks are harness-seeded:
+- `selected_task_count` might be > 0 (the preseed task was selected)
+- The reason "planning phase produced no task files" is slightly misleading because there ARE task files - just not planner-created ones
+
+I think the simplest correct approach is:
+1. Set `planning_failed = True` when all tasks are harness-seeded
+2. Keep `planner_produced_no_task_files` warning (it means the planner didn't produce its own tasks)
+3. Keep `all_tasks_harness_seeded` warning for detail
+4. In `decision_payload`, adjust the reason slightly when `planning_failed` but tasks exist
+
+Actually, I realize I'm overthinking this. Let me make the minimal change:
+
+1. In `build_manifest`: include `all harness-seeded` in `planning_failed` condition
+2. In `test_task_manifest.py`: update the test to expect `planning_failed = True`
+3. That's it.
+
+The `decision_payload` will work correctly: it will show `planning_failed: true`, `decision: "planning_failed"`. The reason "planning phase produced no task files" is slightly off but close enough - the planner phase DID produce task files (the preseed ones), just not planner-originated ones. But the important signal is `planning_failed: true`.
+
+Wait, but we also need to make sure `no_selectable_tasks` is False when `planning_failed` is True (because `selected_task_count > 0`). Looking at the code:
+```python
+no_selectable_tasks = bool(task_count and selected_task_count == 0 and not planning_failed)
+```
+When `planning_failed` is True, `no_selectable_tasks` is False regardless. Good.
+
+Decision would be "planning_failed" with `selected_task_count: 1`. That's correct.
+
+Let me now implement the changes.
+
+### Implementation Plan
+
+1. **`scripts/task_manifest.py` `build_manifest`**:
+   - Move `harness_seeded` before `planning_failed`
+   - Change `planning_failed` to include `(tasks and len(harness_seeded) == len(tasks))`
+   - The `all_tasks_harness_seeded` warning is now somewhat redundant with `planner_produced_no_task_files` when both are emitted. But they serve different purposes: one is the diagnostic (why no planner tasks), the other is the verdict (planning failed). I'll suppress `planning_failed` warning generation when `all_tasks_harness_seeded` already covers it? No, let me keep both for clarity.
+
+2. **`scripts/test_task_manifest.py` `test_manifest_warns_when_all_tasks_harness_seeded`**:
+   - Change `self.assertFalse` to `self.assertTrue` for `planning_failed`
+   - Add assertions for `planner_produced_no_task_files` warning and decision payload
+
+3. **`scripts/preseed_session_plan.py`**: No changes needed - the fallback task already avoids protected files, and the tests verify this.
+
+Let me also verify that `preseed_session_plan.py` already has `validated_against_assessment` set correctly for the fallback. Looking at `choose_task`, the fallback dict doesn't have `validated_against_assessment` key. In `render_task`, it defaults to True (`task.get("validated_against_assessment", True)`). The fallback is selected when no TASKS entries matched, so `validated_against_assessment: true` is correct - the fallback IS validated by the fact that the assessment didn't match any specific task, which IS the evidence for needing planning repair.
+
+Now let me implement these changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me set up the task tracking and implement the changes.
+
+**The gap**: When all tasks in the manifest are harness-seeded (meaning the planner produced no original tasks), `planning_failed` is currently `False`. The `all_tasks_harness_seeded` warning exists but `planning_failed` — the primary signal — isn't set. The task requires `planning_failed` to remain visible when it occurs.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the change. I need to:
+
+1. In `task_manifest.py`:
+   - Move `harness_seeded` computation before `planning_failed`
+   - Include `all harness-seeded` in the `planning_failed` condition
+   
+2. In `test_task_manifest.py`:
+   - Update `test_manifest_warns_when_all_tasks_harness_seeded` to assert `planning_failed=True`
+
+Let me start with `task_manifest.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the surgical edit to `task_manifest.py`. I need to change lines 230-239 to:
+
+1. Move `harness_seeded` before `planning_failed`
+2. Include `all harness-seeded` in planning_failed condition
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll make the change to `task_manifest.py`. I need to move `harness_seeded` before `planning_failed` and include it in the condition:
+        assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
+        issue_text = read_text(args.issue_responses_file)
+        failure_text = read_text(args.planning_failure_file)
+  -     planning_failed = bool(args.planning_failed or failure_text or not tasks)
+  +     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+  +     planning_failed = bool(
+  +         args.planning_failed
+  +         or failure_text
+  +         or not tasks
+  +         or (tasks and len(harness_seeded) == len(tasks))
+  +     )
+        warnings: list[str] = []
+        if planning_failed:
+            warnings.append("planner_produced_no_task_files")
+  -     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+        if tasks and len(harness_seeded) == len(tasks):
+            warnings.append("all_tasks_harness_seeded")
+  ✓ Auto-approved: edit: scripts/task_manifest.py (12 → 17 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (12 → 17 lines)
+        assessment_missing_text = read_text(getattr(args, "assessment_missing_file", None))
+        issue_text = read_text(args.issue_responses_file)
+        failure_text = read_text(args.planning_failure_file)
+  -     planning_failed = bool(args.planning_failed or failure_text or not tasks)
+  +     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+  +     planning_failed = bool(
+  +         args.planning_failed
+  +         or failure_text
+  +         or not tasks
+  +         or (tasks and len(harness_seeded) == len(tasks))
+  +     )
+        warnings: list[str] = []
+        if planning_failed:
+            warnings.append("planner_produced_no_task_files")
+  -     harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+        if tasks and len(harness_seeded) == len(tasks):
+            warnings.append("all_tasks_harness_seeded")
+ ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me update the test. I need to change `test_manifest_warns_when_all_tasks_harness_seeded` to expect `planning_failed` to be True and add the `planner_produced_no_task_files` warning assertion.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test to assert `planning_failed` is True when all tasks are harness-seeded:
+                manifest = task_manifest.build_manifest(args)
+    
+  -             self.assertFalse(manifest["planner"]["planning_failed"])
+  +             self.assertTrue(manifest["planner"]["planning_failed"])
+                self.assertEqual(len(manifest["tasks"]), 1)
+                self.assertEqual(manifest["tasks"][0]["origin"], "harness-seed")
+                self.assertIn("all_tasks_harness_seeded", manifest["warnings"])
+  +             self.assertIn("planner_produced_no_task_files", manifest["warnings"])
+  +             payload = task_manifest.decision_payload(manifest)
+  +             self.assertTrue(payload["planning_failed"])
+  +             self.assertEqual(payload["decision"], "planning_failed")
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (6 → 10 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_task_manifest.py (6 → 10 lines)
+                manifest = task_manifest.build_manifest(args)
+    
+  -             self.assertFalse(manifest["planner"]["planning_failed"])
+  +             self.assertTrue(manifest["planner"]["planning_failed"])
+                self.assertEqual(len(manifest["tasks"]), 1)
+                self.assertEqual(manifest["tasks"][0]["origin"], "harness-seed")
+                self.assertIn("all_tasks_harness_seeded", manifest["warnings"])
+  +             self.assertIn("planner_produced_no_task_files", manifest["warnings"])
+  +             payload = task_manifest.decision_payload(manifest)
+  +             self.assertTrue(payload["planning_failed"])
+  +             self.assertEqual(payload["decision"], "planning_failed")
+ ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also update the `no_selectable_tasks` test to make sure it still works. The current test `test_manifest_records_no_selectable_tasks_when_all_tasks_are_protected` has `planning_failed=False` and `selected_task_count=0`. Let me check: does my change affect that case?
+
+The protected task in that test has `Origin: planner`, not `harness-seed`. So `len(harness_seeded) == len(tasks)` would be False (0 == 1 → False). `planning_failed` stays False. Good.
+
+Now let me also check: does `test_manifest_records_planning_failure_without_fake_task` still pass? That test has `planning_failed=True` explicitly + no task files. `tasks` is empty. My change adds `(tasks and len(harness_seeded) == len(tasks))` → when tasks is empty, this is False (because `tasks` is falsy). So `planning_failed` stays True from the explicit flag. Good.
+
+Now let me run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests to verify:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (124ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 17 tests pass. Now let me also run the preseed tests:
+────────────────────────────────────────────────────────────────────────────────
+
+All 17 tests pass. Let me also verify the preseed tests still pass:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (250ms)
+ ✓ (619ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me also check that the `no_selectable_tasks` test still works properly. And let me also check if there's any edge case with `decision_payload` when `planning_failed` is True but tasks exist.
+
+Let me trace through `decision_payload` with my change:
+
+When all tasks are harness-seeded:
+- `planning_failed` = True (from manifest)
+- `task_count` = 1
+- `selected_task_count` = 1 (preseed task, not protected)
+- `no_selectable_tasks` = `bool(1 and 1 == 0 and not True)` = `bool(1 and False and False)` = False
+- `decision` = "planning_failed"
+- `reason` = "planning phase produced no task files"
+
+The reason is slightly imprecise (there IS a task file, just harness-seeded), but the signal `planning_failed: true` is the important part. The `warnings` array contains both `"planner_produced_no_task_files"` and `"all_tasks_harness_seeded"` which together tell the full story.
+
+I think this is good enough. Let me verify the git diff and then commit.
+
+Actually, wait. Let me also run `cargo fmt` as required by the evolve skill. But these are Python files, not Rust. Let me check if there are Rust changes needed. Looking at the task, only Python files are in the edit surface. So no `cargo fmt` needed.
+
+But the task says: "Run focused verification after changes: cargo fmt -- --check, then cargo build". Let me run those.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+All verifications pass. Let me now run the Rust checks as required by the evolve skill:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo fmt` passed (no output means no changes). Let me now run `cargo build`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (150ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me check the git diff:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the diff matches expectations:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff matches the task's Edit Surface. Let me also check the diff content to make sure it's what I expect:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (118ms)
+
+
