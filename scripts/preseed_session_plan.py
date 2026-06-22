@@ -395,6 +395,7 @@ _RESOLUTION_SIGNALS = (
     "already fixed",
     "already addressed",
     "already resolved",
+    "already in place",
     "no longer",
     "has been fixed",
     "has been resolved",
@@ -405,6 +406,8 @@ _RESOLUTION_SIGNALS = (
     "landed ",
     "closed ",
     "addressed ",
+    "made landable",
+    "given enough standalone",
 )
 
 
@@ -413,6 +416,9 @@ def _line_shows_resolution(line: str, task_keys: tuple[str, ...]) -> bool:
     lower = line.lower()
     if not any(key in lower for key in task_keys):
         return False
+    # Session-date prefix (Day NNN) describing work already completed
+    if re.match(r"day\s+\d+", lower):
+        return True
     return any(signal in lower for signal in _RESOLUTION_SIGNALS)
 
 
@@ -1076,6 +1082,53 @@ resolved API keys to spawned workers. `api_key_present` now reports true.
         text = render_task(task, "105", "10:00")
         assert "validated_against_assessment: false" in text
         assert "contradiction:" in text
+        # Test 7: Stale seed — analysis-only task contradicted when assessment
+        # says it was "made landable" or "given enough standalone weight"
+        assessment = """# Assessment
+
+## Recent Changes
+**Analysis-only task pressure made landable** (`scripts/preseed_session_plan.py`): The `task_no_edit_revert_count` metric was given enough standalone weight to trigger recovery tasks by itself without requiring task_analysis_only_attempt_count > 0. The seed now prefers single-file src/*.rs candidates.
+
+## Bugs / Friction Found
+no-edit revert pressure from prior session.
+"""
+        # The analysis-only task keys ('no-edit revert') match the Bugs section,
+        # but Recent Changes says the fix was "made landable" — so it should
+        # be selected but contradicted (validated_against_assessment=False)
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"Expected analysis-only task, got {task['title']}"
+        )
+        assert task.get("validated_against_assessment") is False, (
+            f"Analysis-only task should be contradicted when made landable, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+        assert task.get("contradiction_reason"), "Expected contradiction_reason for stale seed"
+        assert "made landable" in str(task.get("contradiction_reason", "")).lower() or \
+            "given enough standalone" in str(task.get("contradiction_reason", "")).lower(), (
+            f"contradiction_reason should mention 'made landable' or 'given enough standalone', "
+            f"got: {task.get('contradiction_reason')}"
+        )
+        # Test 8: Session-date prefix (Day NNN) alone triggers resolution when
+        # task keys are present, even without explicit resolution verbs
+        assessment = """# Assessment
+
+## Recent Changes
+Day 114 adjusted the `task_no_edit_revert_count` weighting to ensure analysis-only
+tasks never select files that would risk protected-file reverts.
+
+## Bugs / Friction Found
+no-edit revert pressure from prior session.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"Expected analysis-only task, got {task['title']}"
+        )
+        assert task.get("validated_against_assessment") is False, (
+            f"Day-prefixed line with task key should be contradicted, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+        assert task.get("contradiction_reason"), "Expected contradiction_reason for Day-prefixed resolution"
         for candidate in TASKS:
             protected = [
                 path.strip()
