@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import extract_trajectory
+import gnome_fitness
 import state_graph_tools
 
 
@@ -287,6 +288,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
     stale_seed_obsolete = int_metric(gnomes, "task_stale_seed_obsolete_note_count")
     incomplete_terminal = int_metric(gnomes, "task_incomplete_terminal_count")
     terminal_marker_missing = int_metric(gnomes, "task_terminal_marker_missing_attempt_count")
+    fitness = gnome_fitness.fitness_summary(gnomes)
 
     issues: list[str] = []
     warnings: list[str] = []
@@ -360,6 +362,9 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "raw_task_attempt_count": int_metric(gnomes, "raw_task_attempt_count"),
             "graph_pressure_present": bool(graph_pressure),
             "dominant_task_failure_visible": task_success_pressure_visible(graph_pressure),
+            "fitness_score": fitness.get("fitness_score"),
+            "fitness_metric_count": fitness.get("fitness_metric_count"),
+            "diagnostic_gate_blockers": fitness.get("diagnostic_gate_blockers"),
         },
     }
 
@@ -429,6 +434,7 @@ def run_self_tests() -> int:
         report = readiness_report(root)
         check("verified success classified", report["classification"] == "verified_success", report)
         check("verified success ready", report["can_drive_evolution"] is True, report)
+        check("verified success includes fitness score", report["evidence"]["fitness_score"] == 1.0, report)
 
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

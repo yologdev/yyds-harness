@@ -166,6 +166,32 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("no selected or attempted task evidence", rendered)
             self.assertIn("repair planning/task selection", rendered)
 
+    def test_render_capability_fitness_uses_fitness_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            session = audit_dir / "day-1"
+            write_json(session / "outcome.json", {"day": 1, "ts": "2026-01-01T00:00:00Z"})
+            write_json(
+                session / "fitness.json",
+                {
+                    "fitness": {
+                        "goal": "improve yyds DeepSeek coding/general-agent capability",
+                        "fitness_gnomes": {"task_success_rate": 1.0, "coding_log_score": 0.8},
+                        "diagnostic_gnomes": {"planner_no_task_count": 0},
+                        "fitness_score": 0.9,
+                        "fitness_metric_count": 2,
+                        "diagnostic_gate_blockers": [],
+                        "primary_fitness": {"task_success_rate": 1.0, "coding_log_score": 0.8},
+                    }
+                },
+            )
+
+            rendered = extract_trajectory.render_capability_fitness(audit_dir)
+
+            self.assertIn("## Capability fitness feedback", rendered)
+            self.assertIn("fitness_score: 0.9", rendered)
+            self.assertIn("task_success_rate=1.0", rendered)
+
     def test_render_evo_readiness_reconciles_stale_task_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_dir = Path(tmp)

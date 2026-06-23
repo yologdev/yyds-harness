@@ -49,6 +49,11 @@ The important gen1 focus is not just "make commits automatically." The goal is
 to make each run leave enough evidence that the next run can make a better
 choice.
 
+The durable project goal is documented in
+[`docs/harness-evolution-goal.md`](docs/harness-evolution-goal.md): improve
+yyds as a DeepSeek coding/general-purpose agent. Diagnostic gnomes are gates;
+fitness gnomes are the objective.
+
 That evidence lives in three places:
 
 | Evidence | Where | Why it matters |
@@ -105,6 +110,18 @@ documented in
 Gnome metrics are the compact health signals that turn raw logs and state events
 into useful evolution feedback. They are written into `PatchEvaluated` events and
 summarized by `scripts/summarize_state_gnomes.py`.
+
+The harness separates **fitness gnomes** from **diagnostic gnomes**:
+
+- Fitness gnomes measure yyds capability: task success, verifier pass rate,
+  coding-log score, retry recovery, malformed-tool/JSON/context failures, cost,
+  and latency per successful task.
+- Diagnostic gnomes measure whether the loop can be trusted: provider errors,
+  planner no-task counts, artifact coverage, lineage coverage, state capture,
+  evaluator timeouts, and protected-file reverts.
+
+Evolution tasks should optimize diagnostics only when a diagnostic gap blocks
+fitness measurement or wastes DeepSeek attempts.
 
 They help yyds evolve the harness in four practical ways:
 

@@ -12,6 +12,7 @@ from pathlib import Path
 
 LIFECYCLE_TASK_TITLE = "Close yyds state and model lifecycle gaps"
 SEARCH_FRICTION_TASK_TITLE = "Reduce recurring search-tool friction before implementation"
+ANALYSIS_ONLY_TASK_TITLE = "Make analysis-only task pressure landable"
 ACTIONABLE_LIFECYCLE_METRICS = (
     "state_run_incomplete_count",
     "state_run_unmatched_non_validation_completed_count",
@@ -626,6 +627,27 @@ def _has_analysis_only_pressure(metrics: dict[str, int]) -> bool:
     return any(metrics.get(key, 0) > 0 for key in _ANALYSIS_ONLY_METRICS)
 
 
+def _analysis_only_seed_recently_blocked(text: str) -> bool:
+    """Return True when the recurring analysis-only seed just failed as analysis-only.
+
+    This prevents the preseed layer from reselecting the same self-referential
+    task after the harness already captured a blocked/no-progress artifact for
+    that exact title. The planner can still choose a stronger replacement task.
+    """
+    lower = text.lower()
+    if ANALYSIS_ONLY_TASK_TITLE.lower() not in lower:
+        return False
+    blocked_markers = (
+        "analysis_only_no_terminal_evidence",
+        "task blocked by analysis-only implementation attempt",
+        "task blocked by no-progress implementation attempts",
+        "no file progress",
+        "no-progress implementation",
+        "no implementation landed",
+    )
+    return any(marker in lower for marker in blocked_markers)
+
+
 def _task_file_count(task: dict[str, object]) -> int:
     """Return the number of files listed in a task's files field."""
     files_str = str(task.get("files") or "")
@@ -658,6 +680,8 @@ def choose_task(assessment: str) -> dict[str, object]:
         ):
             continue
         if any(key in lower for key in task.get("reject_keys", ())):
+            continue
+        if task["title"] == ANALYSIS_ONLY_TASK_TITLE and _analysis_only_seed_recently_blocked(lower):
             continue
         if _has_protected_files(task):
             continue
@@ -932,7 +956,7 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 - Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", task
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
         assert "scripts/evolve.sh" not in str(task["files"]), task
         text = render_task(task, "107", "21:55")
         assert "task_analysis_only_attempt_count" in text, text
@@ -951,7 +975,7 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but reverted without touching any source file.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", task
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
         assert task["title"] != "Improve cold-start state failure diagnostics", task
         text = render_task(task, "110", "18:26")
         assert "reverted_no_edit" in text, text
@@ -964,7 +988,7 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", (
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
             f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
         )
 
@@ -977,7 +1001,7 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", (
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
             f"reverted_no_edit + lifecycle should select analysis-only task, got {task['title']}"
         )
 
@@ -991,7 +1015,7 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - Force analysis-only attempts into action (task_analysis_only_attempt_count=3): Implementation ended without file progress.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", task
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
         files_count = _task_file_count(task)
         assert files_count <= 3, (
             f"Analysis-only pressure should select task with ≤3 files, got {files_count}: {task['files']}"
@@ -1032,7 +1056,7 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", (
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
             f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
         )
 
@@ -1043,7 +1067,7 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Make analysis-only task pressure landable", (
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
             f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
         )
         assert not _has_protected_files(task), (
@@ -1051,6 +1075,21 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
         )
         assert _task_file_count(task) <= 3, (
             f"Analysis-only pressure should select task with ≤3 files, got {_task_file_count(task)}"
+        )
+        assessment = """# Assessment
+
+## Recent session outcomes
+day-115: tasks 2/3; task states: analysis_only_no_terminal_evidence=1
+
+## Graph-derived Next-Task Pressure
+- Raise verified task success rate (task_success_rate=0.666): selected tasks did not all finish.
+
+## Bugs / Friction Found
+- Task 1 "Make analysis-only task pressure landable" was blocked by analysis-only implementation attempt with no file progress and no implementation landed.
+"""
+        task = choose_task(assessment)
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"recently blocked analysis-only seed should not be selected again, got {task['title']}"
         )
 
         assessment = """# Assessment

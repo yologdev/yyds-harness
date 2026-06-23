@@ -1551,6 +1551,9 @@ Use yoagent-state feedback proactively:
 - If you plan directly from YOUR TRAJECTORY because assessment is missing or thin, also use "recent tool failures" and "recent action evidence" as current task-selection evidence. Treat "historical unrecovered tool failures" as context only unless recent evidence shows the failure still reproduces.
 - Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality.
 - Raw code changes are implementation details. The important tracked states are the harness gnomes/KPIs and the state graph evidence that shows whether a change helped.
+- Capability fitness is the goal. Prefer tasks that raise yyds/DeepSeek coding-agent fitness gnomes such as task_success_rate, task_verification_rate, coding_log_score, retry_success_rate, json_parse_failure_rate, tool_call_malformed_rate, context_miss_rate, cost_per_successful_task_usd, or latency_per_successful_task_ms.
+- Diagnostic gnomes such as planner_no_task_count, provider_error_count, evaluator_timeout_count, task_artifact_coverage, task_lineage_capture_coverage, and state_capture_coverage are gates. Fix them when they block fitness measurement or waste DeepSeek turns; do not treat dashboard cleanliness as the final objective.
+- A task is preferred only when it names the fitness gnome it should improve, the verifier or held-out eval that proves the improvement, and the expected lineage/state/fitness.json evidence. If it only fixes diagnostics, say which fitness signal was blocked.
 - Product users of yoyo/yyds should not see this state layer. Keep state/evolution logic in harness workflows, eval/state commands, audit/dashboard scripts, and internal docs.
 - yoagent is an upstream foundation library. Do not vendor, fork, reimplement, or patch yoagent behavior inside this harness when the correct fix belongs upstream.
 - $YOAGENT_UPSTREAM_TARGET
@@ -3474,6 +3477,14 @@ PYEOF
     else
         rm -f "$READINESS_TMP"
         echo "  WARNING: evo_readiness.json write failed — continuing session-end cleanup anyway" >&2
+    fi
+
+    if python3 scripts/deepseek_fitness_eval.py \
+        --audit-dir "$SESSION_STAGING" \
+        --output "$SESSION_STAGING/fitness.json" >/dev/null 2>&1; then
+        echo "  DeepSeek fitness: wrote fitness.json"
+    else
+        echo "  WARNING: fitness.json write failed — continuing session-end cleanup anyway" >&2
     fi
 
     # Push to audit-log branch. Failures are non-fatal but tracked: after 3

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
+import gnome_fitness
 from state_graph_tools import corrected_latest_gnomes, evolution_suggestions, ordered_sessions, session_dirs
 
 # ── Configuration constants ──────────────────────────────────────────────
@@ -247,6 +248,20 @@ def render_evo_readiness(audit_dir: Path) -> str:
     elif classification in {"verified_success", "actionable"}:
         lines.append("- action: use this readiness evidence to select the next concrete, verifiable task")
     return "\n".join(lines)
+
+
+def render_capability_fitness(audit_dir: Path) -> str:
+    sessions = ordered_sessions(audit_dir)
+    if not sessions:
+        return ""
+    latest = sessions[-1]
+    fitness_artifact = load_json(latest / "fitness.json")
+    if isinstance(fitness_artifact, dict) and isinstance(fitness_artifact.get("fitness"), dict):
+        return gnome_fitness.render_markdown(fitness_artifact["fitness"])
+    gnomes = corrected_latest_gnomes(latest)
+    if not gnomes:
+        return ""
+    return gnome_fitness.render_markdown(gnome_fitness.fitness_summary(gnomes))
 
 
 def session_sort_time(session_dir: Path) -> float:
@@ -1945,6 +1960,9 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_evo_readiness(audit_dir)
+    if s:
+        sections.append(s)
+    s = render_capability_fitness(audit_dir)
     if s:
         sections.append(s)
     s = render_graph_suggestions(audit_dir)
