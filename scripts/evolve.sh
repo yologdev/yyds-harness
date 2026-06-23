@@ -1844,6 +1844,7 @@ echo "  Phase B: Implementation..."
 IMPL_TIMEOUT=1200
 TASK_SELECTED_COUNT=0
 TASK_FAILURES=0
+TASK_NUM=0
 for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     [ -f "$TASK_FILE" ] || continue
     TASK_ID=$(basename "$TASK_FILE" .md)
@@ -1853,13 +1854,13 @@ for TASK_FILE in session_plan/task_[0-9][0-9].md; do
         echo "    Skipping Task $TASK_NUM — not selected by manifest validation."
         continue
     fi
-    TASK_SELECTED_COUNT=$((TASK_SELECTED_COUNT + 1))
 
     # Cap at 3 tasks per session (fix loops can consume significant time)
-    if [ "$TASK_SELECTED_COUNT" -gt 3 ]; then
+    if [ "$TASK_SELECTED_COUNT" -ge 3 ]; then
         echo "    Skipping Task $TASK_NUM — max 3 selected tasks per session."
         break
     fi
+    TASK_SELECTED_COUNT=$((TASK_SELECTED_COUNT + 1))
 
     # Read task content directly — no parsing needed
     if [ ! -s "$TASK_FILE" ]; then
@@ -2908,14 +2909,18 @@ ${REVERT_DETAILS:-no details captured}" 2>/dev/null; then
 
 done
 
-if [ "$TASK_NUM" -eq 0 ]; then
-    echo "  WARNING: No task files found in session_plan/. Implementation phase did nothing."
+if [ "$TASK_SELECTED_COUNT" -eq 0 ]; then
+    if [ "$TASK_NUM" -eq 0 ]; then
+        echo "  WARNING: No task files found in session_plan/. Implementation phase did nothing."
+    else
+        echo "  WARNING: No manifest-selected task files found. Implementation phase did nothing."
+    fi
 fi
-echo "  Implementation complete. $TASK_FAILURES of $TASK_NUM tasks had issues."
+echo "  Implementation complete. $TASK_FAILURES of $TASK_SELECTED_COUNT selected tasks had issues."
 
 # File issue if ALL tasks were reverted (planning-only session)
-if [ "$TASK_FAILURES" -eq "$TASK_NUM" ] && [ "$TASK_NUM" -gt 0 ]; then
-    echo "  WARNING: All $TASK_NUM tasks were reverted — planning-only session."
+if [ "$TASK_FAILURES" -eq "$TASK_SELECTED_COUNT" ] && [ "$TASK_SELECTED_COUNT" -gt 0 ]; then
+    echo "  WARNING: All $TASK_SELECTED_COUNT selected tasks were reverted — planning-only session."
     if command -v gh &>/dev/null; then
         PLAN_TASK_LIST=""
         for f in session_plan/task_[0-9][0-9].md; do
@@ -2932,7 +2937,7 @@ ${PLAN_TASK_LIST:-none captured}
 **Action for next session:** Focus on smaller, more incremental changes. Consider breaking these tasks into sub-tasks that can each pass verification independently."
 
         gh issue create --repo "$REPO" \
-            --title "Planning-only session: all $TASK_NUM tasks reverted (Day $DAY)" \
+            --title "Planning-only session: all $TASK_SELECTED_COUNT selected tasks reverted (Day $DAY)" \
             --body "$PLAN_ISSUE_BODY" \
             --label "agent-self" 2>/dev/null || echo "    WARNING: Could not file planning-only session issue"
     fi
@@ -3320,8 +3325,8 @@ fi
 
 # ── Step 7c1: Bump skill-evolve session counter ──
 # The skill-evolve workflow reads .skill_evolve_counter and runs only when ≥ threshold.
-SESSION_TASKS_ATTEMPTED="${TASK_NUM:-0}"
-SESSION_TASKS_SUCCEEDED=$(( ${TASK_NUM:-0} - ${TASK_FAILURES:-0} ))
+SESSION_TASKS_ATTEMPTED="${TASK_SELECTED_COUNT:-0}"
+SESSION_TASKS_SUCCEEDED=$(( ${TASK_SELECTED_COUNT:-0} - ${TASK_FAILURES:-0} ))
 [ "$SESSION_TASKS_SUCCEEDED" -lt 0 ] && SESSION_TASKS_SUCCEEDED=0
 record_state_event "RunCompleted" "{\"phase\":\"session\",\"status\":\"completed\",\"tasks_attempted\":$SESSION_TASKS_ATTEMPTED,\"tasks_succeeded\":$SESSION_TASKS_SUCCEEDED,\"build_ok\":${SESSION_BUILD_OK:-false},\"test_ok\":${SESSION_TEST_OK:-false},\"reverted\":${SESSION_REVERTED:-false}}"
 
