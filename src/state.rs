@@ -3522,8 +3522,8 @@ mod tests {
             "expected 7 valid events, got {}",
             events.len()
         );
-        for i in 0..7 {
-            assert_eq!(events[i]["event_id"], format!("evt-{}", i + 1));
+        for (i, event) in events.iter().enumerate().take(7) {
+            assert_eq!(event["event_id"], format!("evt-{}", i + 1));
         }
     }
 
