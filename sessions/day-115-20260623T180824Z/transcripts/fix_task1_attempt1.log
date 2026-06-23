@@ -1,0 +1,833 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the evaluator feedback:
+
+1. The verifier `python3 scripts/preseed_session_plan.py --test` fails at line 1122.
+2. `_assessment_is_healthy_codebase()` returns True when the assessment contains both a health signal ("No clunky friction found") AND unresolved tool failure data (search_regex_error=57), which the existing test correctly expects to still hit the old fallback.
+3. The function only checks for health-signal substrings and ignores contradictory evidence (like unresolved bug indicators).
+
+I need to fix `_assessment_is_healthy_codebase()` to also check for unresolved bug indicators, not just health-signal substrings.
+
+Let me look at the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py:1100..1180  ▶ read scripts/preseed_session_plan.py:690..750 ✓ (234ms)
+ ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see the `_assessment_is_healthy_codebase` function and the `_healthy_codebase_fallback` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:738.. ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue. The evaluator says:
+
+1. The test at line 1122 asserts that when an assessment contains BOTH a health signal ("No clunky friction found") AND unresolved tool failure data (`search_regex_error=57`), the function should still hit the old fallback (not the healthy codebase fallback).
+
+2. But `_assessment_is_healthy_codebase()` currently returns True as soon as it finds a health signal substring, without checking for contradictory evidence like unresolved bug indicators.
+
+3. The docstring says it requires "the assessment does NOT contain explicit unresolved bug indicators" but this check is not implemented.
+
+So I need to add checks for contradictory evidence. What counts as "unresolved bug indicators"?
+
+Looking at the test case:
+```
+assessment = """# Assessment
+
+## Structured State Snapshot
+historical tool failures: search_regex_error=57 (recent verified task: Add regex-error recovery hint to search tool err...); search_binary_match=19 (recent verified task: Extend search tool with binary-match recovery hi...)
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+```
+
+The key evidence of unresolved bugs: `search_regex_error=57` with positive counts of tool failures. These are in the "Structured State Snapshot" section but with counts > 0.
+
+Wait, but the next test case at line 1123-1140 shows:
+```
+assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Structured State Snapshot
+Top tool-failure categories:
+- `search_regex_error` = 57
+- `search_binary_match` = 19
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+```
+
+This one has `search_regex_error=57` AND `HIGH - search_regex_error` in Bugs section, and it selects the SEARCH_FRICTION_TASK_TITLE task.
+
+And then the healthy codebase test at line 1141-1163:
+```
+assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Record honest stable-codebase journal entry", task
+```
+
+This one has "No clunky friction found" and NO tool failure data. It gets the healthy codebase fallback.
+
+So the issue is the middle case (line 1113-1122): it has health signal "No clunky friction found" BUT also has unresolved tool failure data `search_regex_error=57`. The evaluator says this should NOT trigger the healthy codebase fallback.
+
+What are "unresolved bug indicators"? Looking at the evidence:
+- `search_regex_error=57` — but this is in "historical tool failures" context and notes a "recent verified task" that addressed it
+- The test expects this to still hit the OLD fallback, not the healthy codebase fallback and not the SEARCH_FRICTION task
+
+Wait, actually the test says `task["title"] == "Repair evidence-backed planning after no-task sessions"` — which is the OLD fallback. This means when there are candidates that get contradicted AND the assessment has mixed signals (health + unresolved failures), it should fall through to the old pipeline-repair fallback.
+
+Hmm, but that's the wrong outcome per the task objective. The task says "when assessment evidence shows a healthy codebase, the fallback should produce an honest 'no src/ work needed' artifact".
+
+Actually wait — the evaluator is saying the test at line 1122 is the CORRECT expectation. The problem is that `_assessment_is_healthy_codebase()` returns True for this assessment when it shouldn't, which causes the test to fail because it returns the healthy codebase fallback instead of the old fallback.
+
+So the fix is: `_assessment_is_healthy_codebase()` needs to detect unresolved bug indicators and return False even when a health signal is present. The test at line 1122 is the existing expected behavior that we broke.
+
+Let me think about what "unresolved bug indicators" means concretely. The assessment at line 1113-1120 has:
+- "historical tool failures: search_regex_error=57 (recent verified task: ...)" — this has a count > 0 for tool failures
+- "No clunky friction found in quick tool checks." — health signal
+
+The contradiction is: there are tool failures (search_regex_error=57 > 0) but the Bugs section says nothing found. This means the assessment is contradictory or the tool failures are unresolved.
+
+What patterns indicate unresolved bugs? Let me think about what would appear in the assessment:
+- `search_regex_error=57` — a non-zero tool failure count
+- `search_binary_match=19` — another non-zero count
+- Any pattern like `\w+=\d+` where the number > 0 in the "Structured State Snapshot" or "Top tool-failure categories" sections
+
+But wait, the test at line 1123-1140 has `search_regex_error=57` too but it's explicitly called out as HIGH in Bugs section, and it selects the search friction task. That's different from the fallback path.
+
+The case at line 1113-1120 is specifically: the health signal says "no bugs" but there ARE unresolved tool failures in the snapshot. This is a contradiction in the assessment itself.
+
+So the function should detect when the assessment says "no bugs/no friction" but also contains evidence of bugs (like non-zero tool failure counts, or explicit bug mentions in the structured state snapshot).
+
+Let me think about what concrete patterns to check:
+
+1. `search_regex_error=\d+` where the number > 0
+2. `search_binary_match=\d+` where the number > 0
+3. `\w+_error=\d+` where the number > 0
+4. Keywords like "HIGH -", "MEDIUM -" in bugs/friction sections
+5. Tool failure counts > 0 in structured state snapshot
+
+Actually, let me re-read the test more carefully:
+
+```python
+assessment = """# Assessment
+
+## Structured State Snapshot
+historical tool failures: search_regex_error=57 (recent verified task: Add regex-error recovery hint to search tool err...); search_binary_match=19 (recent verified task: Extend search tool with binary-match recovery hi...)
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+```
+
+This hits the fallback path because:
+1. All TASKS candidates are contradicted (or none match)
+2. We reach line 733: `_assessment_is_healthy_codebase(lower, current)`
+3. Currently this returns True because "no clunky friction found" is in the text
+4. The test expects the OLD fallback (pipeline repair), not the healthy codebase fallback
+
+So I need `_assessment_is_healthy_codebase` to return False when there are contradictory signals like unresolved tool failures.
+
+What are the "unresolved bug indicators"? I think the patterns are:
+- Tool failure metrics with non-zero counts in the structured state snapshot
+- Explicit bug severity markers like "HIGH", "MEDIUM" followed by a bug description
+- `search_regex_error=\d+` with count > 0
+- `search_binary_match=\d+` with count > 0
+- Any `\w+_error=\d+` pattern with count > 0
+
+But I need to be careful not to make it too aggressive. Let me look at what patterns appear in assessments.
+
+Let me look at `_HEALTHY_CODEBASE_SIGNALS` — those are positive signals. I need to add negative signals too.
+
+Let me think about this more carefully. The test at line 1122 expects the old fallback. But wait, looking at the test flow:
+
+Lines 1113-1122: assessment with "No clunky friction found" + `search_regex_error=57` → expects OLD fallback
+Lines 1123-1140: assessment with explicit "HIGH - search_regex_error" → expects SEARCH_FRICTION task
+Lines 1141-1163: assessment with "No clunky friction found" and no tool failures → expects HEALTHY fallback
+
+So the distinguishing factor is: the healthy fallback should only trigger when there are truly no unresolved issues. The presence of `search_regex_error=57` (even if mentioned as "historical") indicates something unresolved.
+
+What patterns should I look for as "unresolved bug indicators"?
+
+I think the approach should be:
+1. Look for health signals (already done)
+2. Look for contrary evidence that indicates unresolved bugs
+
+Contrary evidence patterns:
+- `search_regex_error=\d+` — but only if count > 0
+- `search_binary_match=\d+` — but only if count > 0
+- Lines with `= \d+` in "Structured State Snapshot" or "Top tool-failure" sections that indicate non-zero failures
+- "HIGH -" or "MEDIUM -" in bugs/friction sections
+- Any `_error=\d+` pattern with positive count
+- "tool failure" with a count
+
+Actually wait, I need to look at this differently. The function already returns True when it finds a health signal. The bug is that it doesn't ALSO check for contradictory evidence.
+
+Let me think about what the simplest, most robust check would be:
+
+The evaluator specifically says: "The function's docstring says it requires 'the assessment does NOT contain explicit unresolved bug indicators' but this check is not implemented — it only checks for health-signal substrings and ignores contradictory evidence."
+
+So I need to add a check for "explicit unresolved bug indicators". What would those be?
+
+Looking at the test case:
+- `search_regex_error=57` — a metric with non-zero count in the structured state snapshot
+- `search_binary_match=19` — same
+
+These are tool failure metrics. If they're non-zero, they indicate unresolved issues.
+
+But in the test at lines 1123-1140, `search_regex_error=57` appears AND the task correctly resolves to SEARCH_FRICTION_TASK (not the fallback). So the contradiction detection in `check_task_contradiction` handles that case.
+
+The issue is specifically about the fallback path at line 733. When we reach the fallback, it means NO candidate matched (all were contradicted). And `_assessment_is_healthy_codebase` needs to distinguish between:
+- "Assessment says healthy, and there's genuinely no unresolved evidence" → healthy fallback
+- "Assessment says healthy, but there ARE unresolved issues (contradictory)" → old fallback
+
+So the check should look for evidence of unresolved bugs. What patterns?
+
+Let me look at what `current_evidence_text` does and what `current` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def current_evidence_text' in scripts/preseed_session_plan.py ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and also look at the test more carefully around the choose_task flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:388.. ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. `choose_task(assessment)` is called
+2. It gets `lower = assessment.lower()` and `current = current_evidence_text(assessment)`
+3. It tries to match candidates, all get contradicted
+4. Falls through to line 733: `_assessment_is_healthy_codebase(lower, current)`
+5. If True, returns `_healthy_codebase_fallback()` which writes to journals/
+6. If False, returns the old `fallback` which self-references preseed scripts
+
+The problem: `_assessment_is_healthy_codebase` only checks for health-signal substrings and ignores unresolved bug indicators.
+
+I need to add a check that looks for "unresolved bug indicators" — patterns that contradict the health signal.
+
+What patterns would indicate unresolved bugs? From the test case:
+- `search_regex_error=57` — tool failure count > 0
+- `search_binary_match=19` — tool failure count > 0
+- These appear in "Structured State Snapshot" section
+
+Other patterns that could indicate unresolved issues:
+- Lines with `search_regex_error=\d+` where count > 0
+- Lines with `search_binary_match=\d+` where count > 0
+- Any `_error=\d+` pattern with non-zero count
+- `HIGH - `, `MEDIUM - ` followed by bug descriptions in bugs/friction sections
+- Runs incomplete, model calls incomplete, etc.
+
+But I need to be careful — the test at line 1141 has NO tool failure data and correctly triggers healthy fallback. The test at line 1113 HAS tool failure data and should NOT trigger healthy fallback.
+
+Let me create a set of "unresolved bug indicator" patterns. The key insight is: if the assessment contains health signals BUT ALSO contains tool failure metrics with non-zero counts, it's contradictory and should use the old fallback.
+
+Let me think about what's the most robust approach. The simplest would be to check for patterns like:
+- `search_regex_error=\d+` with number > 0
+- `search_binary_match=\d+` with number > 0
+- Any pattern in the "Structured State Snapshot" or "Top tool-failure" sections with non-zero counts
+
+But actually, maybe an even simpler approach: check for lines that look like tool failure metrics with non-zero counts. Something like `\w+=\d+` where the number is > 0 and it appears in a context suggesting a failure/bug.
+
+Wait, let me re-examine the test cases:
+
+Test 1 (line 1113-1122): Has `search_regex_error=57` + health signal → old fallback (NOT healthy)
+Test 2 (line 1123-1140): Has `search_regex_error=57` + explicit HIGH bug → SEARCH_FRICTION task
+Test 3 (line 1141-1163): No tool failures + health signal → HEALTHY fallback
+
+For test 1, the assessment says "No clunky friction found" but has `search_regex_error=57`. The tool failures are in the "Structured State Snapshot" section. The health signal is in "Bugs / Friction Found".
+
+Let me look at what patterns the "Structured State Snapshot" section typically contains. I see patterns like:
+- `search_regex_error=57`
+- `search_binary_match=19`
+- `state_run_incomplete_count=1`
+
+These are key=value pairs with counts. If the count is > 0 and it's a failure-related metric, that's an unresolved bug indicator.
+
+Let me define a set of "unresolved bug indicator" regex patterns. The simplest approach:
+
+```python
+_UNRESOLVED_BUG_PATTERNS = (
+    # Tool failure metrics with non-zero counts
+    re.compile(r'search_regex_error=\d*[1-9]\d*'),
+    re.compile(r'search_binary_match=\d*[1-9]\d*'),
+    # Generic error metrics
+    re.compile(r'\w+_error=\d*[1-9]\d*'),
+    # Run/model lifecycle issues
+    re.compile(r'(?:runs?|model_calls?)_incomplete=\d*[1-9]\d*'),
+)
+```
+
+But this might be too aggressive. Let me just match the specific patterns from the test case. The evaluator specifically called out `search_regex_error=57`.
+
+Actually, looking more carefully at the assessment format, I think the right approach is to check for:
+1. Tool failure metrics with non-zero counts in the assessment
+2. Lifecycle issue metrics with non-zero counts
+
+Let me think about what constitutes an "explicit unresolved bug indicator":
+
+- A line like `search_regex_error=57` — this is a count of unresolved errors
+- A line like `search_binary_match=19` — same
+- Any metric that ends with `_error` and has a non-zero count
+- `runs incomplete`, `model calls incomplete` with non-zero counts
+
+But I should also consider that the test at line 1100-1112 shows:
+```python
+assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+
+## Structured State Snapshot
+state_run_incomplete_count=1
+"""
+task = choose_task(assessment)
+assert task["title"] != "Improve cold-start state failure diagnostics", (...)
+```
+
+This has `state_run_incomplete_count=1` and it hits the old fallback (not healthy, not cold-start). So `state_run_incomplete_count=1` should be an unresolved indicator.
+
+OK let me just write the function. I'll add a check for "unresolved bug indicators" — patterns in the assessment that indicate real bugs exist despite health-signal language.
+
+Here's my plan for `_assessment_is_healthy_codebase`:
+
+1. Check for health signals (already done)
+2. NEW: Check for unresolved bug indicators in the assessment
+3. If health signals present AND no unresolved bug indicators → return True
+4. Otherwise → return False
+
+For unresolved bug indicators, I'll check for:
+- Tool failure metrics: `search_regex_error=N` where N > 0
+- Tool failure metrics: `search_binary_match=N` where N > 0  
+- Generic error metrics: `_error=N` where N > 0
+- Lifecycle issues: `incomplete=N` where N > 0 (like `state_run_incomplete_count=1`)
+- Bug severity lines: `HIGH -`, `MEDIUM -` in bugs/friction context
+
+Actually, I need to be more careful. Let me look at what patterns would be false positives:
+
+- `state_run_incomplete_count=0` — zero count, not an issue
+- Lines that are in "Recent Changes" describing fixed things
+
+So the check should be positive-count failure metrics. Let me use a regex approach:
+
+```python
+_UNRESOLVED_BUG_INDICATOR_RE = re.compile(
+    r'(?:search_regex_error|search_binary_match|_\w*error|_incomplete)\s*=\s*[1-9]\d*',
+    re.IGNORECASE
+)
+```
+
+But wait, I need to also check that the health signal isn't negated by the bug indicators appearing in a "these were already fixed" context. But for simplicity and matching the test expectation at line 1122, I think the right approach is:
+
+If the assessment has both:
+- A health signal ("no clunky friction found" etc.)
+- Tool failure / error metrics with non-zero counts
+
+Then it's contradictory and should NOT return True.
+
+Let me write a helper function `_has_unresolved_bug_indicators(text)` and use it in `_assessment_is_healthy_codebase`.
+
+Actually, let me re-read the evaluator feedback more carefully:
+
+"_assessment_is_healthy_codebase() returns True when the assessment contains both a health signal ('No clunky friction found') AND unresolved tool failure data (search_regex_error=57), which the existing test correctly expects to still hit the old fallback. The function's docstring says it requires 'the assessment does NOT contain explicit unresolved bug indicators' but this check is not implemented — it only checks for health-signal substrings and ignores contradictory evidence."
+
+So the fix is clear: implement the "no unresolved bug indicators" check that the docstring promises.
+
+Let me now look at the `choose_task` function to see how `lower` and `current` flow in:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:662.. ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me read the `choose_task` function header to see what parameters it takes:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:580.. ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the fix:
+
+The `_assessment_is_healthy_codebase` function needs to check for "unresolved bug indicators" in addition to health signals. Even if a health signal is found, if there are unresolved bug indicators, the function should return False.
+
+The unresolved bug indicators from the test case are:
+- `search_regex_error=57` (non-zero count)
+- `search_binary_match=19` (non-zero count)
+
+More generally, these are tool failure metrics with non-zero counts. They appear in the "Structured State Snapshot" section.
+
+I need to define what constitutes an "unresolved bug indicator":
+1. Tool failure metrics like `search_regex_error=N` where N > 0
+2. `search_binary_match=N` where N > 0
+3. Any `_error=N` pattern with N > 0
+4. `_incomplete=N` or `incomplete_count=N` with N > 0 (lifecycle issues)
+
+But I also need to be careful about false positives. For instance, `state_run_incomplete_count=0` should NOT be flagged. Only non-zero counts matter.
+
+Let me write a helper function `_has_unresolved_bug_indicators(text)` and use a regex to find patterns like `\w+=\d+` that indicate non-zero failure metrics.
+
+Actually, let me think about this differently. The patterns I should check for are specific failure indicators. Let me look at what kinds of metrics appear in the assessment's "Structured State Snapshot":
+
+From the test cases:
+- `search_regex_error=57` 
+- `search_binary_match=19`
+- `state_run_incomplete_count=1`
+- `task_analysis_only_attempt_count=N`
+- `task_no_edit_revert_count=N`
+- `reverted_no_edit=N`
+- Tool failure categories with counts
+
+I think the best approach is to check for patterns like:
+- `search_regex_error=[1-9]` — tool failure with non-zero count
+- `search_binary_match=[1-9]` — same
+- `\w+_error=[1-9]` — generic error metric with non-zero count
+- `incomplete_count=[1-9]` — incomplete lifecycle count
+
+But wait, checking individual patterns is fragile. Let me think about what makes the test at line 1141 different from line 1113:
+
+Line 1113 (should NOT be healthy):
+```
+## Structured State Snapshot
+historical tool failures: search_regex_error=57 (...); search_binary_match=19 (...)
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+```
+
+Line 1141 (should BE healthy):
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+```
+
+The key difference: line 1113 has `search_regex_error=57` and `search_binary_match=19` in the "Structured State Snapshot". These are unresolved failure counts.
+
+So the check should be: look for lines in the "Structured State Snapshot" section that contain failure metrics with non-zero counts. Or more broadly: look for patterns like `search_regex_error=\d+` or `search_binary_match=\d+` or `_error=\d+` or `_incomplete=\d+` with non-zero counts anywhere in the assessment.
+
+Let me create a regex for this. The simplest approach:
+
+```python
+import re
+
+_UNRESOLVED_BUG_RE = re.compile(
+    r'(?:search_regex_error|search_binary_match|_\w*error|incomplete_count)\s*=\s*[1-9]\d*',
+    re.IGNORECASE
+)
+```
+
+But I need to exclude cases where the count is 0. The `[1-9]\d*` already handles that — it only matches numbers starting with 1-9.
+
+Also, I need to think about the `current` parameter. The function receives both `lower` (the current evidence subset) and `current` (the raw text). The health signals are checked against both. I should check for unresolved bug indicators in both as well, or at least in `lower` (which is the current evidence).
+
+Wait, let me re-read the function:
+
+```python
+def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
+    # Check for explicit health signals
+    for signal in _HEALTHY_CODEBASE_SIGNALS:
+        if signal in lower:
+            return True
+
+    # Also check the current-evidence subset for health signals
+    current_lower = current.lower()
+    for signal in _HEALTHY_CODEBASE_SIGNALS:
+        if signal in current_lower:
+            return True
+
+    return False
+```
+
+Both `lower` and `current` are checked for health signals. `lower` is `(current if current.strip() else assessment).lower()`. So it's the current evidence subset (lowercased) or the full assessment (lowercased).
+
+For the unresolved bug check, I should check in `lower` (which covers the current evidence) and perhaps also in the full assessment. But looking at the test case, the unresolved indicators (`search_regex_error=57`) appear in the "Structured State Snapshot" section, which is part of `current_evidence_text`, so they'd be in `lower`.
+
+Let me write the implementation. I'll modify `_assessment_is_healthy_codebase` to:
+1. First check for health signals (existing logic)
+2. If a health signal is found, ALSO check for unresolved bug indicators
+3. If unresolved bug indicators are found, return False
+
+Here's the code:
+
+```python
+def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
+    """Return True when the assessment describes a healthy codebase with no src/ bugs.
+
+    Checks both the full assessment (lower) and the current-evidence subset
+    for signals that no actionable bugs exist. Also requires that the assessment
+    does NOT contain explicit unresolved bug indicators.
+    """
+    # First, check for unresolved bug indicators — if present, the codebase
+    # is not healthy regardless of health-signal language.
+    if _has_unresolved_bug_indicators(lower):
+        return False
+    current_lower = current.lower()
+    if _has_unresolved_bug_indicators(current_lower):
+        return False
+
+    # Check for explicit health signals
+    for signal in _HEALTHY_CODEBASE_SIGNALS:
+        if signal in lower:
+            return True
+
+    # Also check the current-evidence subset for health signals
+    for signal in _HEALTHY_CODEBASE_SIGNALS:
+        if signal in current_lower:
+            return True
+
+    return False
+
+
+_UNRESOLVED_BUG_PATTERNS = (
+    re.compile(r'search_regex_error\s*=\s*[1-9]\d*', re.IGNORECASE),
+    re.compile(r'search_binary_match\s*=\s*[1-9]\d*', re.IGNORECASE),
+    re.compile(r'\w+_error\s*=\s*[1-9]\d*', re.IGNORECASE),
+    re.compile(r'incomplete_count\s*=\s*[1-9]\d*', re.IGNORECASE),
+    re.compile(r'runs?\s+incomplete\s*[=:]\s*[1-9]\d*', re.IGNORECASE),
+    re.compile(r'model\s+calls?\s+incomplete\s*[=:]\s*[1-9]\d*', re.IGNORECASE),
+)
+
+
+def _has_unresolved_bug_indicators(text: str) -> bool:
+    """Return True if the text contains explicit unresolved bug indicators."""
+    for pattern in _UNRESOLVED_BUG_PATTERNS:
+        if pattern.search(text):
+            return True
+    return False
+```
+
+Wait, but I need to be careful. The `\w+_error\s*=\s*[1-9]\d*` pattern might be too broad. It would match things like `parse_error=1` or `compile_error=1` which are genuine unresolved bugs. But could it also match false positives? Let me think...
+
+The `_error=\d+` pattern with non-zero count in a Structured State Snapshot context — these are tool failure counts. They indicate unresolved issues. I think this is safe.
+
+But wait, what about the patterns like `runs incomplete = 1`? These appear in different formats. Let me look at the test case at line 1100-1112:
+
+```python
+assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+
+## Structured State Snapshot
+state_run_incomplete_count=1
+"""
+task = choose_task(assessment)
+assert task["title"] != "Improve cold-start state failure diagnostics", (...)
+```
+
+This has `state_run_incomplete_count=1`. The test asserts it's NOT the cold-start task. It would hit the old fallback. So `state_run_incomplete_count=1` should prevent the healthy fallback. My `incomplete_count\s*=\s*[1-9]\d*` pattern would match this. Good.
+
+But wait, the `_error` pattern: does `\w+_error\s*=\s*[1-9]\d*` match `state_run_incomplete_count=1`? Let's see: `state_run_incomplete_count` doesn't end with `_error`. So no, it wouldn't match. But `incomplete_count\s*=\s*[1-9]\d*` would match `state_run_incomplete_count=1`. Good.
+
+Actually, let me reconsider. The `\w+_error` pattern: would it match `search_regex_error`? Yes: `search_regex_error` matches `\w+_error`. That's correct.
+
+But what about `search_binary_match`? That doesn't match `\w+_error`. I have a separate pattern for that. Good.
+
+What about false positives for `\w+_error`? Could there be a line like `no_error=1` which is actually positive? Unlikely, but the `\w+` is greedy and would match `no_error` as `no_error`. Hmm, but `no_error=1` doesn't make sense as a metric. Let me not worry about that edge case.
+
+But actually, I realize there might be a problem with my regex. `\w+_error\s*=\s*[1-9]\d*` — the `\w+` is one or more word characters. `_error` is literal. So it matches things like `search_regex_error=57`, `parse_error=5`, etc. But it would also match `no_error=1` if such a thing existed. Unlikely but possible. Let me not over-engineer.
+
+OK, let me also think about the `runs?\s+incomplete\s*[=:]\s*[1-9]\d*` pattern. Looking at the test case: `state_run_incomplete_count=1`. This matches `incomplete_count\s*=\s*[1-9]\d*`, which is good. The `runs?\s+incomplete` pattern would match things like `runs incomplete 2` or `run incomplete: 3`. This is also good for catching different formats.
+
+Actually, wait. Let me simplify. The evaluator's specific complaint is about `search_regex_error=57` being treated as healthy. Let me focus on the patterns that actually appear in assessments:
+
+1. `search_regex_error=N` where N > 0 — tool failure count
+2. `search_binary_match=N` where N > 0 — tool failure count
+3. `state_run_incomplete_count=N` where N > 0 — lifecycle issue
+4. Any `_error=N` where N > 0 — generic tool error count
+
+These should all be caught. Let me write the implementation now.
+
+One more thing: the `_has_unresolved_bug_indicators` function should check both `lower` and `current_lower`. Let me structure it so that the check happens before the health signal check, which means if unresolved bugs are found, we return False early regardless of health signals.
+
+Let me now write the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue clearly. The `_assessment_is_healthy_codebase` function finds a health signal substring ("No clunky friction found") and returns True, but it never checks whether the assessment also contains unresolved bug indicators (like `search_regex_error=57`) that contradict the health claim. The test at line 1122 expects the old pipeline-repair fallback when both exist.
+
+Let me run the failing test first to confirm:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (125ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed. The test fails because `_assessment_is_healthy_codebase` returns True for the assessment that has BOTH "No clunky friction found" AND `search_regex_error=57`. The function sees the health signal and returns True without checking for contradictory unresolved bug indicators.
+
+Now let me implement the fix. I need to:
+
+1. Add a regex-based check for unresolved bug indicators
+2. Modify `_assessment_is_healthy_codebase` to check for unresolved indicators before returning True for health signals
+
+The unresolved bug indicators are patterns like:
+- `search_regex_error=N` where N > 0
+- `search_binary_match=N` where N > 0
+- `_error=N` where N > 0 (generic error metric)
+- `incomplete_count=N` where N > 0
+- `runs incomplete = N` or `run incomplete: N`
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Confirmed — the test at line 1122 fails because `_assessment_is_healthy_codebase` returns True when it finds "No clunky friction found" without checking for the contradictory `search_regex_error=57`. The docstring promises this check but it's not implemented.
+
+Now let me implement the fix:
+  + _UNRESOLVED_BUG_RE = re.compile(
+  +     # Non-zero tool-failure / error / lifecycle-incomplete metrics.
+  +     # These contradict a health-signal claim of "no bugs" because they show
+  +     # unresolved failures in the structured state snapshot.
+  +     r'(?:search_regex_error|search_binary_match|_\w*error|incomplete_count)'
+  +     r'\s*=\s*[1-9]\d*',
+  +     re.IGNORECASE,
+  + )
+  + 
+  + 
+  + def _has_unresolved_bug_indicators(text: str) -> bool:
+  +     """Return True if *text* contains explicit non-zero unresolved-bug metrics."""
+  +     return bool(_UNRESOLVED_BUG_RE.search(text))
+  + 
+  + 
+    def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
+        """Return True when the assessment describes a healthy codebase with no src/ bugs.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (19 → 40 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (19 → 40 lines)
+  + _UNRESOLVED_BUG_RE = re.compile(
+  +     # Non-zero tool-failure / error / lifecycle-incomplete metrics.
+  +     # These contradict a health-signal claim of "no bugs" because they show
+  +     # unresolved failures in the structured state snapshot.
+  +     r'(?:search_regex_error|search_binary_match|_\w*error|incomplete_count)'
+  +     r'\s*=\s*[1-9]\d*',
+  +     re.IGNORECASE,
+  + )
+  + 
+  + 
+  + def _has_unresolved_bug_indicators(text: str) -> bool:
+  +     """Return True if *text* contains explicit non-zero unresolved-bug metrics."""
+  +     return bool(_UNRESOLVED_BUG_RE.search(text))
+  + 
+  + 
+    def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
+        """Return True when the assessment describes a healthy codebase with no src/ bugs.
+    
+  ···
+        for signals that no actionable bugs exist. Also requires that the assessment
+  ... (19 more lines)
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test to verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests pass. Now let me also make sure the unresolved bug indicator regex also catches `state_run_incomplete_count=1` (from the test at line 1100-1112) to ensure that assessment also doesn't incorrectly hit the healthy codebase fallback.
+
+Looking at the test at line 1100-1112:
+```python
+assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+
+## Structured State Snapshot
+state_run_incomplete_count=1
+"""
+task = choose_task(assessment)
+assert task["title"] != "Improve cold-start state failure diagnostics", (...)
+```
+
+This has `state_run_incomplete_count=1`. Let me check: `state_run_incomplete_count` — does my regex match it? The regex includes `incomplete_count` as an alternative: `(?:search_regex_error|search_binary_match|_\w*error|incomplete_count)`. So `incomplete_count` would match. And `state_run_incomplete_count=1` — the regex looks for `incomplete_count\s*=\s*[1-9]\d*`. Let me verify: `state_run_incomplete_count=1` — `run_incomplete_count` contains `incomplete_count` as a substring? No, `run_incomplete_count` ends with `incomplete_count` — yes, it does! `run_incomplete_count` ⊃ `incomplete_count`. So `re.compile(r'incomplete_count')` would match `run_incomplete_count=1`. Good.
+
+But wait, I should double-check. The regex is: `(?:search_regex_error|search_binary_match|_\w*error|incomplete_count)\s*=\s*[1-9]\d*`. For `state_run_incomplete_count=1`:
+- The regex tries `search_regex_error` — no match at the start
+- Tries `search_binary_match` — no
+- Tries `_\w*error` — does `state_run_incomplete_count` contain `_error`? No!
+- Tries `incomplete_count` — does `state_run_incomplete_count` contain `incomplete_count`? YES!
+
+So `incomplete_count` at position... wait, the regex uses `re.search` not `re.match`. So it searches for `incomplete_count` anywhere in the string, then `\s*=\s*[1-9]\d*` after it. For `state_run_incomplete_count=1`:
+- Find `incomplete_count` in the text — it's at the end: `state_run_incomplete_count`
+- After `incomplete_count`, we have `=1` — matches `\s*=\s*[1-9]\d*`
+
+Yes, this works.
+
+But wait, I should also check: does the test at line 1100 expect the healthy fallback or the old fallback? Let me re-read:
+
+```python
+assessment = """# Assessment
+
+## Self-Test Results
+- `yyds state why last-failure`: correctly reports "No completed failure sessions" + 1 incomplete run
+
+## Structured State Snapshot
+state_run_incomplete_count=1
+"""
+task = choose_task(assessment)
+assert task["title"] != "Improve cold-start state failure diagnostics", (
+    f"healthy last-failure output should not reactivate cold-start seed, got {task['title']}"
+)
+```
+
+This only asserts it's NOT the cold-start task. It doesn't assert which fallback it gets. So either old fallback or healthy fallback would be fine for this test. But since `state_run_incomplete_count=1` is an unresolved bug indicator, it would now prevent the healthy fallback (which is correct — there's an unresolved lifecycle issue).
+
+Actually wait, let me think about this more carefully. The `incomplete_count` pattern in my regex is quite broad — it matches ANY `incomplete_count=N` where N > 0. The test at line 1100 has `state_run_incomplete_count=1` which IS a lifecycle issue. But is it always a bug indicator?
+
+Looking at the assessment: `state_run_incomplete_count=1` — this means there's 1 incomplete run. That's a lifecycle issue. The assessment also says `correctly reports "No completed failure sessions" + 1 incomplete run`. So the assessment is saying: there's 1 incomplete run but the self-test correctly reports it.
+
+Is this an "unresolved bug"? It's a lifecycle issue — an incomplete run. The harness considers this something to address. But the assessment says the self-test for it is working correctly. So it's a KNOWN lifecycle issue, not necessarily a source-code bug.
+
+Hmm, but the task says the healthy fallback should only fire when "assessment evidence shows a healthy codebase". An incomplete run means the codebase is not perfectly healthy. So preventing the healthy fallback in this case is correct.
+
+But wait — will this prevent false negatives? What if the assessment says "state_run_incomplete_count=0"? My regex uses `[1-9]\d*` which only matches positive numbers, so `=0` would NOT match. Good.
+
+Let me also think about the test at line 1141-1163:
+```python
+assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Record honest stable-codebase journal entry", task
+```
+
+This has "No clunky friction found" and NO tool failure metrics. My `_has_unresolved_bug_indicators` would return False. Health signal found → healthy fallback. ✓
+
+And the test at line 1113-1122:
+```python
+assessment = """# Assessment
+
+## Structured State Snapshot
+historical tool failures: search_regex_error=57 (...); search_binary_match=19 (...)
+
+## Bugs / Friction Found
+No clunky friction found in quick tool checks.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+```
+
+My regex would find `search_regex_error=57` → True. Health signal found but unresolved indicators present → False (for healthy). Returns old fallback. ✓
+
+Good. The fix is correct. Let me now run the test to confirm it passes.
+
+Actually wait, I already ran it and it passed. Let me also run cargo fmt -- --check just as a sanity check (though this is a Python file, not Rust).
+
+Actually, the harness policy says to run `cargo fmt -- --check` but this is a Python file change. Let me just verify the test passes and check that no other tests are broken.
+
+Let me also check the test at line 1100-1112 to make sure it still passes — the assertion is `task["title"] != "Improve cold-start state failure diagnostics"`. Since `state_run_incomplete_count=1` now prevents the healthy fallback, it would get the old fallback "Repair evidence-backed planning after no-task sessions", which is NOT the cold-start task. So the assertion passes. ✓
+
+Let me also check if there are any other test cases I might have broken. Let me look at the full test section.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests pass. Let me also verify the specific test case that previously failed is now correctly hitting the old fallback, and that the healthy fallback still fires for genuinely clean assessments:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (80 lines) ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All targeted checks pass. Let me now run the full test suite one more time to be sure, then run `cargo fmt -- --check` as the harness requires.
+────────────────────────────────────────────────────────────────────────────────
+
+All targeted checks pass. Let me run the full test suite one final time and the required format check:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (388ms)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass. Let me verify the final state of the changed function to make sure it looks clean.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+Both pass. Let me verify the final state of the fix:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:757.. ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything looks clean. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+Everything is clean. Here's a summary of the fix:
+
+## What changed
+
+**File:** `scripts/preseed_session_plan.py` (lines 759–798)
+
+**Problem:** `_assessment_is_healthy_codebase()` returned `True` whenever it found a health-signal substring like "No clunky friction found", even when the same assessment contained unresolved tool failure metrics like `search_regex_error=57`. This caused assessments with contradictory evidence (health claim + non-zero failure counts) to route to the healthy-codebase fallback instead of the old pipeline-repair fallback.
+
+**Fix:** Added two things:
+
+1. **`_UNRESOLVED_BUG_RE`** — a compiled regex that matches non-zero failure metrics:
+   • `search_regex_error=N` (tool failures with count > 0)
+   • `search_binary_match=N` (same)
+   • `*_error=N` (any `_error` metric with count > 0)
+   • `incomplete_count=N` (lifecycle issues with count > 0)
+   • Only positive integers (`[1-9]\d*`) trigger — zero counts are fine.
+
+2. **`_has_unresolved_bug_indicators(text)`** — helper that runs the regex.
+
+3. **Updated `_assessment_is_healthy_codebase`** — now checks for unresolved bug indicators in both `lower` and `current` *before* checking health signals. If unresolved indicators are found, returns `False` immediately, implementing the promise already stated in the docstring.
+
+**Verification:**
+• `python3 scripts/preseed_session_plan.py --test` — passes (all existing assertions satisfied)
+• `cargo fmt -- --check` — passes
+• Manual targeted checks confirm the function correctly distinguishes:
+  • Health signal + unresolved errors → `False` (old fallback)
+  • Health signal + no errors → `True` (healthy fallback)
+  • Lifecycle issue → `False`
+  • Zero-count errors + health signal → `True`
+  • No health signal → `False`
+
+
