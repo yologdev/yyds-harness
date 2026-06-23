@@ -51,6 +51,12 @@ pub fn install_panic_hook() {
             // fail-soft: the global recorder might not be initialized yet
             RUN_HAD_ERROR.with(|c| c.set(true));
             record(EventType::FailureObserved, Actor::Harness, payload);
+            // Emit RunCompleted so the run lifecycle is properly closed.
+            // Wrapped in catch_unwind so a double-panic does not prevent
+            // prev_hook from running and the process from terminating.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mark_run_completed_with_error("rust_panic");
+            }));
             prev_hook(info);
         }));
     });
@@ -6691,6 +6697,39 @@ mod tests {
         assert!(
             raw.contains("FailureObserved"),
             "should be FailureObserved: {raw}"
+        );
+    }
+
+    #[test]
+    fn panic_hook_emits_run_completed() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        install_panic_hook();
+
+        let result = std::panic::catch_unwind(|| {
+            panic!("verification panic");
+        });
+
+        assert!(result.is_err());
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunCompleted"),
+            "should contain RunCompleted: {raw}"
+        );
+        assert!(
+            raw.contains("rust_panic"),
+            "should contain rust_panic: {raw}"
         );
     }
 
