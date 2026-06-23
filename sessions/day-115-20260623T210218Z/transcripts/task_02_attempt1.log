@@ -1,0 +1,431 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **Objective**: Make `install_panic_hook()` in `src/state.rs` emit a `RunCompleted` event when a Rust panic occurs during an agent session, so the run lifecycle is properly closed.
+
+2. **Key points**:
+   - The panic hook currently records `FailureObserved` but doesn't emit `RunCompleted`
+   - `mark_run_completed_with_error()` already exists and is callable
+   - Need to be fail-soft (guard against double-panic, uninitialized recorder)
+   - Need a unit test
+
+Let me start by reading the relevant code sections.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:1..81 ✓ (318ms)
+ ✓ (238ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `mark_run_completed_with_error` function and also see where `record` is defined, plus the existing test for the panic hook.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now let me read the `mark_run_completed_with_error` function and the existing panic hook test:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn mark_run_completed_with_error' in src/state.rs  ▶ search 'panic_hook_records' in src/state.rs ✓ (131ms)
+ ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:486..526  ▶ read src/state.rs:6650..6730 ✓ (141ms)
+ ✓ (433ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the approach:
+
+1. **Current state**: `install_panic_hook()` (line 31-57) records `FailureObserved` but does NOT emit `RunCompleted`. 
+2. **What needs to change**: Add `mark_run_completed_with_error("rust_panic")` inside the panic hook closure, AFTER the existing `FailureObserved` record and BEFORE `prev_hook(info)`.
+3. **Fail-soft**: Wrap in a guard so a double-panic doesn't prevent `prev_hook` from running.
+4. **Test**: Add a test that verifies `RunCompleted` appears in the events file after a panic.
+
+Let me look at `mark_run_completed_with_error` again - it calls `store_run_error(msg)` which sets the thread-local `LAST_RUN_ERROR`. Since the panic hook runs in the panicking thread, the thread-local should be accessible. Then it calls `take_diagnostic_error()` which also uses a thread-local. Then it calls `record()`. 
+
+The key question: is the global recorder initialized at the time a panic occurs? The task says "fail-soft: if the global recorder isn't initialized, the panic hook still calls prev_hook." 
+
+Looking at the existing `record()` call on line 53 inside `install_panic_hook`, we can see that `record()` already handles the case where the global recorder isn't initialized - it's fail-soft. So we can use `mark_run_completed_with_error` safely since it uses the same `record()` path.
+
+But wait - the task says to wrap it in `std::panic::catch_unwind` to guard against double panic. That's because `mark_run_completed_with_error` could itself panic. Let me use `catch_unwind` (or `AssertUnwindSafe`).
+
+Actually, `std::panic::catch_unwind` requires `UnwindSafe` and calling `record()` involves mutexes, etc. So we'd need `AssertUnwindSafe`. But actually, a simpler approach: just call `mark_run_completed_with_error` and if the recorder isn't initialized, `record()` is already fail-soft (it returns without panicking). The only risk is if `mark_run_completed_with_error` itself panics for some other reason.
+
+Let me check what `record` does when the global recorder isn't initialized:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\(' in src/state.rs ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `record` function with different pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record' in src/state.rs ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:433..473 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `record()` function at line 433-445 is fail-soft when `fail_soft` is true (it just prints a warning to stderr), but if the recorder isn't initialized at all (`guard.as_ref()` returns `None`), it returns silently - also fine.
+
+However, there's a risk: `record` calls `GLOBAL_RECORDER.lock()` which might already be poisoned if we're panicking. But it uses `unwrap_or_else(|e| e.into_inner())` which recovers from poisoned mutexes.
+
+But there's another subtle risk: if we're in the middle of a panic unwinding and `mark_run_completed_with_error` panics too (e.g., because of a double panic or some issue with the lock), we'd abort the process without calling `prev_hook`. The task suggests wrapping in `catch_unwind`.
+
+However, `std::panic::catch_unwind` in a panic hook is tricky - if we're already unwinding, calling `catch_unwind` might not work as expected. Actually, `catch_unwind` works fine during unwinding - it catches panics even during unwinding. But if `catch_unwind` itself panics... that could be a problem.
+
+Actually, let me think about this more carefully. In Rust, if a panic occurs while another panic is being unwound, the process aborts immediately (double panic = abort). So we need to be careful.
+
+The safest approach is:
+```rust
+let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    mark_run_completed_with_error("rust_panic");
+}));
+```
+
+This catches any panic inside `mark_run_completed_with_error` and discards it. `AssertUnwindSafe` is needed because `mark_run_completed_with_error` uses thread-locals and mutexes.
+
+Now let me plan the implementation:
+
+1. Modify `install_panic_hook` to call `mark_run_completed_with_error("rust_panic")` before `prev_hook(info)`, wrapped in `catch_unwind` for fail-soft behavior.
+
+2. Add a test that verifies `RunCompleted` appears in the events file after a panic.
+
+Let me also check: since `mark_run_completed_with_error` calls `store_run_error`, `take_diagnostic_error`, `RUN_HAD_ERROR.with`, and `record` - these are all thread-local and global operations. During a panic, thread-locals should still be accessible since we're in the same thread. And the global mutex should also be available (unless poisoned, which is handled).
+
+Now let me implement this.
+
+First, let me write the test. I'll add it right after the existing `panic_hook_records_to_state` test. Then I'll modify the `install_panic_hook` function.
+
+Wait, let me also check: is there any issue with the panic hook being called outside the context of a session? If `RunStarted` was never called, then `RunCompleted` would be spurious. But the task says the global recorder might not be initialized yet, which `record()` already handles. And if the recorder IS initialized but no `RunStarted` was emitted, a `RunCompleted` without a preceding `RunStarted` is arguably still better than a dangling `RunStarted` without `RunCompleted`. But the main concern in the task is: "If a Rust panic terminates a session, the run stays open forever." So the common case is that a session WAS started but the panic hook doesn't close it.
+
+Actually, looking at the `record()` function more carefully - it's idempotent/fail-soft, so if there's no recorder, it just returns. And if there's no `RunStarted`, the `RunCompleted` event would be harmless - it'd just be an orphan in the other direction, which the state tools should handle.
+
+Let me proceed with the implementation.
+
+Actually, wait - let me also check whether there's a `mark_run_completed` function without error:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:471..486 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have all the context I need. Let me proceed with the implementation:
+
+1. Modify `install_panic_hook` to add `mark_run_completed_with_error("rust_panic")` after the FailureObserved record and before prev_hook.
+2. Add a test that verifies RunCompleted appears.
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me set up my todo and implement:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (57ms)
+  ▶ todo ✓ (105ms)
+  ▶ todo ✓ (94ms)
+  ▶ todo ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, edit the panic hook to add the RunCompleted emission.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.7s (4 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit to `install_panic_hook`. I need to add the `mark_run_completed_with_error` call after the `FailureObserved` record and before `prev_hook(info)`, wrapped in `catch_unwind` for fail-soft behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                // fail-soft: the global recorder might not be initialized yet
+                RUN_HAD_ERROR.with(|c| c.set(true));
+                record(EventType::FailureObserved, Actor::Harness, payload);
+  +             // Emit RunCompleted so the run lifecycle is properly closed.
+  +             // Wrapped in catch_unwind so a double-panic does not prevent
+  +             // prev_hook from running and the process from terminating.
+  +             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+  +                 mark_run_completed_with_error("rust_panic");
+  +             }));
+                prev_hook(info);
+  ✓ Auto-approved: edit: src/state.rs (4 → 10 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 10 lines)
+                // fail-soft: the global recorder might not be initialized yet
+                RUN_HAD_ERROR.with(|c| c.set(true));
+                record(EventType::FailureObserved, Actor::Harness, payload);
+  +             // Emit RunCompleted so the run lifecycle is properly closed.
+  +             // Wrapped in catch_unwind so a double-panic does not prevent
+  +             // prev_hook from running and the process from terminating.
+  +             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+  +                 mark_run_completed_with_error("rust_panic");
+  +             }));
+                prev_hook(info);
+ ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me add the test. I'll add it right after the existing `panic_hook_records_to_state` test. Let me read the area around line 6695 to see the exact insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (58ms)
+  ▶ todo ✓ (106ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the unit test. I'll insert it right after the `panic_hook_records_to_state` test (which ends at line 6695).
+
+The test should:
+1. Initialize state
+2. Spawn a thread that panics
+3. Read back the events file
+4. Assert RunCompleted is present
+
+Let me look at the exact end of the existing test to get the insertion point right.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6690..6700 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a bit more to see the full test closure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6697..6712 ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the new test after the existing `panic_hook_records_to_state` test. I'll insert it between line 6701 and 6703 (after the closing `}` of `panic_hook_records_to_state` and before `run_completed_payload_includes_error_context`).
+
+The test:
+```rust
+    #[test]
+    fn panic_hook_emits_run_completed() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        install_panic_hook();
+
+        let result = std::panic::catch_unwind(|| {
+            panic!("verification panic");
+        });
+
+        assert!(result.is_err());
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunCompleted"),
+            "should contain RunCompleted: {raw}"
+        );
+        assert!(
+            raw.contains("rust_panic"),
+            "should contain rust_panic: {raw}"
+        );
+    }
+```
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[test]
+  +     fn panic_hook_emits_run_completed() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  + 
+  +         install_panic_hook();
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 37 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 37 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn panic_hook_emits_run_completed() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  + 
+  +         install_panic_hook();
+  + 
+  +         let result = std::panic::catch_unwind(|| {
+  +             panic!("verification panic");
+  ... (16 more lines)
+ ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo fmt, build, and the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (66ms)
+  ▶ todo ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run fmt, build, and tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Let me build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (16.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeded. Now let me run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- test_panic_hook_… ✓ (30.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test name doesn't match - it's likely because after formatting the test name differs. Let me check: the test function is `panic_hook_emits_run_completed` but it might be in a different test binary. Let me look at the test module structure - the test module in state.rs might be gated with #[cfg(test)] and named something. Let me search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --list 2>&1 | gr… ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The full test name is `state::tests::panic_hook_emits_run_completed`. Let me run it with the full path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- state::tests::pa… ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me run the broader `state` test suite to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Now the broader `state` tests:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- state -- --test-… ✓ (25.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 293 state tests + 2 integration tests pass. Let me now verify the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 293 state tests pass. Let me verify the diff:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `src/state.rs` which is in the task's Edit Surface. Let me look at the actual diff to confirm the changes look right:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (166ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct. Let me commit now.
+
+But first, let me check if there's a CLAUDE.md or docs update needed. The task didn't mention any docs changes specific to this feature, and it's an internal state lifecycle fix. I don't think any docs need updating - this is a harness-internal change that doesn't affect user-facing behavior, commands, or architecture. The CLAUDE.md architecture section doesn't describe `install_panic_hook` in detail.
+
+Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (59ms)
+  ▶ todo ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (146ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me mark the task done and provide the summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Change**: `src/state.rs` — `install_panic_hook()` now emits `RunCompleted("rust_panic")` after `FailureObserved` and before `prev_hook`, closing the state lifecycle gap where Rust panics left runs permanently open.
+
+### What changed
+
+1. **`install_panic_hook` (line ~54)**: Added a `catch_unwind`-wrapped call to `mark_run_completed_with_error("rust_panic")` after the `FailureObserved` record and before `prev_hook(info)`. The `catch_unwind` guard ensures a double-panic doesn't prevent the previous hook from running or the process from terminating.
+
+2. **New test `panic_hook_emits_run_completed`**: Initializes state, triggers a panic via `catch_unwind`, then asserts both `RunCompleted` and `rust_panic` appear in the events file.
+
+### Verification
+
+• `cargo fmt -- --check` — passed
+• `cargo build` — passed
+• `cargo test -- state::tests::panic_hook` — 2/2 passed (existing + new)
+• `cargo test -- state` — 293/293 passed (full state suite, +2 integration)
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

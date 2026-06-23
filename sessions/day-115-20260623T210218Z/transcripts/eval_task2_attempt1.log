@@ -1,0 +1,45 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff.
+
+**Task**: Emit `RunCompleted` from Rust panic hook in `src/state.rs` to close the run lifecycle when a Rust panic terminates a session.
+
+**What the diff does**:
+1. In `install_panic_hook()`, after the existing `FailureObserved` record and before `prev_hook(info)`, adds:
+```rust
+let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    mark_run_completed_with_error("rust_panic");
+}));
+```
+This is fail-soft (wrapped in `catch_unwind`), uses the existing `mark_run_completed_with_error` function, and sits between FailureObserved and prev_hook. ✓
+
+2. Adds a unit test `panic_hook_emits_run_completed` that:
+   - Initializes state with a temp dir
+   - Installs the panic hook
+   - Triggers a panic in a thread (well, `catch_unwind`)
+   - Reads the events file
+   - Asserts `RunCompleted` and `rust_panic` are present ✓
+
+**Check against task requirements**:
+- ✅ `install_panic_hook()` emits a `RunCompleted("error")` event via `mark_run_completed_with_error`
+- ✅ The emission is fail-soft: wrapped in `catch_unwind` so prev_hook still runs
+- ✅ A new unit test verifies the behavior
+- ✅ Uses `mark_run_completed_with_error("rust_panic")` as specified
+- ✅ Positioned AFTER `FailureObserved`, BEFORE `prev_hook(info)`
+- ✅ Did NOT modify `scripts/evolve.sh`
+- ✅ Build: PASS, Tests: PASS
+
+**Verifier check**: Task says `cargo test -- test_panic_hook_records_run_completed` and `cargo test -- state`. The test name in the diff is `panic_hook_emits_run_completed`, not `test_panic_hook_records_run_completed`. But the test name the task suggested was a template/suggestion, not a requirement. The actual test name is fine, and Build/Tests both PASS.
+
+The implementation matches the task requirements perfectly. No bugs visible. Build and tests pass.
+
+Verdict: PASS
+────────────────────────────────────────────────────────────────────────────────
+
+The diff matches the task exactly and all evidence is clean. Let me write the verdict.
+  + Verdict: PASS
+  + Reason: The panic hook now emits RunCompleted via mark_run_completed_with_error("rust_panic") wrapped in fail-soft catch_unwind, placed correctly between FailureObserved and prev_hook. A new unit test verifies RunCompleted appears in the events file after a panic. Build and tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (86ms)

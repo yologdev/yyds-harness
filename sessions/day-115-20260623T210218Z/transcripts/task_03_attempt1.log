@@ -1,0 +1,386 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is clear: modify `read_compatibility_events()` in `src/state.rs` to skip corrupted JSON lines instead of failing-fast. Let me read the evolve skill first, then the current code, then implement.
+
+Let me start by reading the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read src/state.rs:3140..3180 ✓ (302ms)
+ ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full function and also find where `read_compatibility_events` is called to understand the callers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_compatibility_events' in src ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the callers to understand how the result is used, then I can decide between option (a) and (b).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/context.rs:1675..1685  ▶ read src/commands_evolve.rs:1370..1380  ▶ read src/commands_deepseek.rs:1903..1913  ▶ read src/commands_state.rs:1296..1306  ▶ read src/commands_eval.rs:1522..1532 ✓ (902ms)
+ ✓ (494ms)
+ ✓ (1.4s)
+ ✓ (1.0s)
+ ✓ (665ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting — I see `commands_state.rs` already has a comment about a "Lenient event reader" at line 1304. Let me check if there's already a lossy version or if this is a todo.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.0s (5 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1300..1330 ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's already a `read_events_lenient` in `commands_state.rs` that does the lossy reading. But the core issue is that `read_compatibility_events()` in `src/state.rs` is the public function that all callers use, and it fail-fasts.
+
+The task says to fix `read_compatibility_events()` itself. With option (a): make it skip bad lines and eprintln! a warning. That's the simplest approach that makes all callers resilient.
+
+But wait — I need to check the self-test in `src/state.rs` at line 3423 to see the existing test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3415..3455 ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also look at the existing self-test function name to know what to add.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test_read_compatibility' in src/state.rs ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test function that contains the `read_compatibility_events` call:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_compatibility_events' in src/state.rs ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test that uses it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3385..3435 ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Here's the plan:
+
+1. Change `read_compatibility_events()` to use a loop that collects valid lines, increments a skip counter, and eprintln! a warning with line numbers.
+2. Add a test that verifies the lossy behavior (mixed valid/invalid lines).
+3. Keep the function signature the same: `Result<Vec<Value>, String>` — Option (a). The error return is only for when the file can't be read at all.
+
+Let me now look at what imports/helper functions are available around the function for the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. Let me implement the change. I'll use **option (a)**: change `read_compatibility_events` to loop and skip bad lines with `eprintln!` warnings, keeping the same return type. All callers already handle `Result<Vec<Value>, String>`.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (58ms)
+  ▶ todo ✓ (80ms)
+  ▶ todo ✓ (157ms)
+  ▶ todo ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first, then the implementation. That way I can validate the approach.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.0s (4 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first. I need to create a temp directory, write a JSONL file with mixed valid/invalid lines, and verify the behavior.
+
+I'll add the test right after the existing `compatibility_reader_projects_canonical_yoagent_state_events` test.
+
+First let me understand how `append_event` works so I can create valid events.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at `append_event` to understand how to create valid event lines for the test:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event' in src/state.rs ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can use `append_event` to write valid lines, and then manually append invalid lines to the file. Let me write the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the test right after the existing compatibility test. Let me first see the exact end of that test function and what follows:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3430..3440 ✓ (58ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the test and then modify the function. Let me write the test first.
+────────────────────────────────────────────────────────────────────────────────
+
+Add the test after the existing compatibility test:
+            assert!(events[0]["payload"].get("_yoyo").is_none());
+  +     }
+  + 
+  +     #[test]
+  +     fn compatibility_reader_skips_corrupted_lines_and_returns_valid_events() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let path = dir.path().join("events.jsonl");
+  + 
+  +         // Write 5 valid events
+  +         for i in 1..=5 {
+  +             let event = StateEvent {
+  +                 event_id: format!("evt-{i}"),
+  +                 event_type: EventType::PatchEvaluated,
+  +                 schema_version: 1,
+  +                 timestamp_ms: i as u128,
+  +                 actor: Actor::Harness,
+  +                 run_id: Some(format!("run-{i}")),
+  +                 session_id: None,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (5 → 60 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 60 lines)
+            assert!(events[0]["payload"].get("_yoyo").is_none());
+  +     }
+  + 
+  +     #[test]
+  +     fn compatibility_reader_skips_corrupted_lines_and_returns_valid_events() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let path = dir.path().join("events.jsonl");
+  + 
+  +         // Write 5 valid events
+  +         for i in 1..=5 {
+  +             let event = StateEvent {
+  +                 event_id: format!("evt-{i}"),
+  +                 event_type: EventType::PatchEvaluated,
+  +                 schema_version: 1,
+  +                 timestamp_ms: i as u128,
+  +                 actor: Actor::Harness,
+  +                 run_id: Some(format!("run-{i}")),
+  +                 session_id: None,
+  +                 trace_id: format!("trace-{i}"),
+  +                 parent_event_ids: Vec::new(),
+  ... (39 more lines)
+ ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify the `read_compatibility_events` function to skip corrupted lines.
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `read_compatibility_events` to be lossy:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (59ms)
+  ▶ todo ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+  + /// Reads state events from a legacy compatibility JSONL file.
+  + ///
+  + /// Parses each line individually and skips any that cannot be parsed as a valid
+  + /// state event (corrupted JSON, truncated write, etc.). Skipped lines are
+  + /// reported via `eprintln!` with their line number. Only returns `Err` when the
+  + /// file itself cannot be read.
+    pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+  -     raw.lines()
+  -         .enumerate()
+  -         .filter(|(_, line)| !line.trim().is_empty())
+  -         .map(|(idx, line)| {
+  -             let normalized = compatibility_event_json_line(line)
+  -                 .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+  -             serde_json::from_str::<Value>(&normalized)
+  -                 .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
+  -         })
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (14 → 48 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (14 → 48 lines)
+  + /// Reads state events from a legacy compatibility JSONL file.
+  + ///
+  + /// Parses each line individually and skips any that cannot be parsed as a valid
+  + /// state event (corrupted JSON, truncated write, etc.). Skipped lines are
+  + /// reported via `eprintln!` with their line number. Only returns `Err` when the
+  + /// file itself cannot be read.
+    pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+  -     raw.lines()
+  -         .enumerate()
+  -         .filter(|(_, line)| !line.trim().is_empty())
+  -         .map(|(idx, line)| {
+  -             let normalized = compatibility_event_json_line(line)
+  -                 .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+  -             serde_json::from_str::<Value>(&normalized)
+  -                 .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
+  -         })
+  -         .collect()
+  +     let mut events = Vec::new();
+  ... (38 more lines)
+ ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build and run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me build and run the state tests:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (58ms)
+  ▶ todo ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first run the specific test, then do cargo fmt check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- compatibility_re… ✓ (34.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+New test passes. Now let me run the existing compatibility test and format check:
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Let me verify the existing compatibility test still works and run fmt check:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- compatibility_re…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.2s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Formatting issue. Let me just run `cargo fmt` to fix it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Format issue — let me auto-fix:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && e… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run both tests again to make sure they pass after formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now re-run both tests after formatting:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- compatibility_re… ✓ (33.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me also check that `cargo check` passes and verify the broader `cargo test -- state` set.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Let me now run the broader state module tests to make sure nothing is broken:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- state:: --test-t… ✓ (5.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 235 state tests pass. Let me verify the diff shows only the expected changes, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 235 state tests pass. Let me verify the diff:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/state.rs` is changed, which matches the task's Edit Surface. Let me see the diff to confirm the nature of the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs ✓ (162ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows:
+
+1. The `read_compatibility_events` function changed from fail-fast `collect()` to a loop that skips corrupted lines with `eprintln!` warnings
+2. A new test `compatibility_reader_skips_corrupted_lines_and_returns_valid_events` was added
+
+Only `src/state.rs` is changed, matching the task's Edit Surface.
+
+Let me now commit this.
+────────────────────────────────────────────────────────────────────────────────
+
+Todo — commit:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (57ms)
+  ▶ todo ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the CLAUDE.md to see if I need to update docs — the task description says to update docs if behavior changed. This is an internal state function change (lossy parsing instead of fail-fast). The return type is the same. The behavior is different but it's purely defensive — it now returns more data than before (skips bad lines instead of failing entirely). No user-facing command changes, no new CLI flags, no API changes. The docs don't mention this specific function. I think this is safe to skip doc updates.
+
+Let me just commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+The change is internal to `read_compatibility_events` — same return type, purely defensive behavior (skips bad lines instead of failing). No CLI/docs surface change. Let me commit:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify the commit exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --oneline  ▶ todo ✓ (91ms)
+ ✓ (403ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tasks done. Let me summarize.
+
+## Summary
+
+**What changed:** `src/state.rs` — `read_compatibility_events()` function (lines 3158-3210) was rewritten from a fail-fast `Iterator::collect()` to a loop that skips individual corrupted JSON lines with `eprintln!` warnings, returning only valid events.
+
+**Test added:** `compatibility_reader_skips_corrupted_lines_and_returns_valid_events` — creates a temp file with 5 valid events, one corrupted line, then 2 more valid events; verifies all 7 valid events are returned.
+
+**Verification:**
+- `cargo fmt -- --check` — passed
+- `cargo test -- compatibility_reader` — 2 tests passed (existing + new)
+- `cargo test -- state::` — all 235 state tests passed
+
+**Diff:** Only `src/state.rs` changed (104 insertions, 10 deletions), matching the task's Edit Surface.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+## Summary
+
+**Changed:** `src/state.rs` — `read_compatibility_events()` (lines 3158-3210)
+
+**What:** Rewrote the function from fail-fast `Iterator::collect()` to a loop that:
+1. Parses each line individually
+2. Skips corrupted lines with `eprintln!` warnings showing line number and error
+3. Reports total skip count after reading
+4. Returns only valid events; only fails if the file itself can't be read
+
+**Test added:** `compatibility_reader_skips_corrupted_lines_and_returns_valid_events` — 5 valid events + 1 corrupted line + 2 valid events = all 7 returned.
+
+**Verification:**
+• `cargo fmt -- --check` ✅
+• `cargo test -- compatibility_reader` (2 tests) ✅
+• `cargo test -- state::` (235 tests) ✅
+• `git diff --name-only` → only `src/state.rs` ✅
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
