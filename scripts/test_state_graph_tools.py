@@ -1029,6 +1029,46 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_analysis_only_attempt_count"], 2)
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
 
+    def test_task_artifact_metrics_preserve_explicit_empty_selected_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": True, "task_count": 1, "selected_task_count": 0},
+                    "tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "Unselected fallback seed",
+                            "origin": "harness-seed",
+                            "files": ["scripts/preseed_session_plan.py"],
+                        }
+                    ],
+                    "selected_tasks": [],
+                    "warnings": ["planner_produced_no_task_files", "all_tasks_harness_seeded"],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "reverted",
+                    "revert_reason": "Task blocked by agent; no implementation landed",
+                    "planned_files": ["scripts/preseed_session_plan.py"],
+                    "source_files": [],
+                    "commit_shas": [],
+                },
+            )
+
+            self.assertEqual(state_graph_tools.selected_tasks(state_graph_tools.task_manifest(session)), [])
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+            replay = state_graph_tools.replay_check_session(session)
+
+            self.assertEqual(metrics, {})
+            self.assertEqual(replay["task_count"], 0)
+            self.assertNotIn("manifest_selected_task_count_mismatch", replay["mismatches"])
+
     def test_task_artifact_metrics_count_no_edit_reverts(self):
         """task_no_edit_revert_count counts implementation attempts that reverted without file changes."""
         with tempfile.TemporaryDirectory() as tmp:

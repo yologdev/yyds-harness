@@ -235,7 +235,12 @@ def assessment_artifact_gap(session_dir: Path, manifest: dict[str, Any]) -> dict
 
 
 def selected_tasks(manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    tasks = manifest.get("selected_tasks") or manifest.get("tasks") or []
+    if "selected_tasks" in manifest:
+        tasks = manifest.get("selected_tasks")
+    else:
+        tasks = manifest.get("tasks")
+    if not isinstance(tasks, list):
+        return []
     return [task for task in tasks if isinstance(task, dict)]
 
 
