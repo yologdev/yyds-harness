@@ -3155,19 +3155,53 @@ pub fn compatibility_event_json_line(line: &str) -> Result<String, String> {
         .map_err(|e| format!("serialize compatibility state event: {e}"))
 }
 
+/// Reads state events from a legacy compatibility JSONL file.
+///
+/// Parses each line individually and skips any that cannot be parsed as a valid
+/// state event (corrupted JSON, truncated write, etc.). Skipped lines are
+/// reported via `eprintln!` with their line number. Only returns `Err` when the
+/// file itself cannot be read.
 pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
-    raw.lines()
-        .enumerate()
-        .filter(|(_, line)| !line.trim().is_empty())
-        .map(|(idx, line)| {
-            let normalized = compatibility_event_json_line(line)
-                .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
-            serde_json::from_str::<Value>(&normalized)
-                .map_err(|e| format!("decode compatibility event line {}: {e}", idx + 1))
-        })
-        .collect()
+    let mut events = Vec::new();
+    let mut skipped = 0u64;
+    for (idx, line) in raw.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let normalized = match compatibility_event_json_line(line) {
+            Ok(n) => n,
+            Err(e) => {
+                skipped += 1;
+                eprintln!(
+                    "warning: skipping corrupted event at line {} of '{}': {e}",
+                    idx + 1,
+                    path.display()
+                );
+                continue;
+            }
+        };
+        match serde_json::from_str::<Value>(&normalized) {
+            Ok(v) => events.push(v),
+            Err(e) => {
+                skipped += 1;
+                eprintln!(
+                    "warning: skipping corrupted event at line {} of '{}': {e}",
+                    idx + 1,
+                    path.display()
+                );
+            }
+        }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "note: skipped {skipped} unparseable line(s) in '{}'",
+            path.display()
+        );
+    }
+    Ok(events)
 }
 
 fn compatibility_event_value(event: &StateEvent) -> Value {
@@ -3431,6 +3465,66 @@ mod tests {
         assert_eq!(events[0]["parent_event_ids"][0], "evt-parent");
         assert_eq!(events[0]["payload"]["eval_id"], "eval-1");
         assert!(events[0]["payload"].get("_yoyo").is_none());
+    }
+
+    #[test]
+    fn compatibility_reader_skips_corrupted_lines_and_returns_valid_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+
+        // Write 5 valid events
+        for i in 1..=5 {
+            let event = StateEvent {
+                event_id: format!("evt-{i}"),
+                event_type: EventType::PatchEvaluated,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some(format!("run-{i}")),
+                session_id: None,
+                trace_id: format!("trace-{i}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"step": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+
+        // Append one corrupted line (truncated JSON)
+        std::fs::write(
+            &path,
+            std::fs::read_to_string(&path).unwrap() + "{\"broken\": true\n",
+        )
+        .unwrap();
+
+        // Append 2 more valid events after the corrupted line
+        for i in 6..=7 {
+            let event = StateEvent {
+                event_id: format!("evt-{i}"),
+                event_type: EventType::PatchEvaluated,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some(format!("run-{i}")),
+                session_id: None,
+                trace_id: format!("trace-{i}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"step": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+
+        let events = read_compatibility_events(&path).unwrap();
+
+        // Should return all 7 valid events (5 before + 2 after the corrupted line)
+        assert_eq!(
+            events.len(),
+            7,
+            "expected 7 valid events, got {}",
+            events.len()
+        );
+        for i in 0..7 {
+            assert_eq!(events[i]["event_id"], format!("evt-{}", i + 1));
+        }
     }
 
     #[test]
