@@ -303,6 +303,55 @@ Expected Evidence:
             self.assertTrue(payload["planning_failed"])
             self.assertEqual(payload["decision"], "planning_failed")
 
+    def test_manifest_planning_failure_selects_no_tasks_even_if_task_files_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "planning_failure.md").write_text("planner gave up after analysis\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Planner task that must not run
+Files: scripts/task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+This task would be valid only if planning succeeded.
+
+Success Criteria:
+- Planning failure does not leak selected tasks.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- selected_tasks is empty when planning_failed is true.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+
+            self.assertTrue(manifest["planner"]["planning_failed"])
+            self.assertEqual(manifest["planner"]["task_count"], 1)
+            self.assertEqual(manifest["planner"]["selected_task_count"], 0)
+            self.assertEqual(manifest["selected_tasks"], [])
+            self.assertEqual(payload["decision"], "planning_failed")
+            self.assertEqual(payload["tasks"], [])
+
     def test_manifest_flags_assessment_contradicted_seed_task(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -350,7 +399,7 @@ Verification:
             )()
 
             manifest = task_manifest.build_manifest(args)
-            quality = manifest["selected_tasks"][0]["quality"]
+            quality = manifest["tasks"][0]["quality"]
 
             self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
             self.assertLess(quality["score"], 0.75)
@@ -406,7 +455,7 @@ Verification:
             )()
 
             manifest = task_manifest.build_manifest(args)
-            quality = manifest["selected_tasks"][0]["quality"]
+            quality = manifest["tasks"][0]["quality"]
 
             self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
             self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
@@ -516,13 +565,17 @@ Expected Evidence:
             manifest = task_manifest.build_manifest(args)
 
             self.assertTrue(manifest["planner"]["planning_failed"])
+            self.assertEqual(manifest["planner"]["selected_task_count"], 0)
             self.assertEqual(len(manifest["tasks"]), 1)
+            self.assertEqual(manifest["selected_tasks"], [])
             self.assertEqual(manifest["tasks"][0]["origin"], "harness-seed")
             self.assertIn("all_tasks_harness_seeded", manifest["warnings"])
             self.assertIn("planner_produced_no_task_files", manifest["warnings"])
             payload = task_manifest.decision_payload(manifest)
             self.assertTrue(payload["planning_failed"])
             self.assertEqual(payload["decision"], "planning_failed")
+            self.assertEqual(payload["selected_task_count"], 0)
+            self.assertEqual(payload["tasks"], [])
 
     def test_manifest_no_warning_when_planner_tasks_exist(self):
         with tempfile.TemporaryDirectory() as tmp:

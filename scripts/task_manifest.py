@@ -294,8 +294,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             and task["quality"].get("analysis_only_escape")
         )
     ]
-    selected = selectable[: args.selected_limit]
-    if tasks and not selected:
+    selected = [] if planning_failed else selectable[: args.selected_limit]
+    if tasks and not selected and not planning_failed:
         warnings.append("no_selectable_tasks")
 
     return {
