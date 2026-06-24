@@ -1,0 +1,571 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The planning phase requires me to create task files in `session_plan/`. Let me first check if any task files already exist, and read the ISSUES_TODAY.md file for trusted owner issues.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null  ▶ $ cat ISSUES_TODAY.md 2>/dev/null || echo "NO ISSUES_TODAY.md" ✓ (252ms)
+ ✓ (794ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `session_plan/task_01.md` already exists from the preseed pipeline. Let me read it and the assessment to understand the seed task, then decide on additional tasks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md:1..51 ✓ (346ms)
+ ✓ (238ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. **Task 01 exists** — seeded by the harness (analysis-only task pressure). I need to validate it against the assessment and decide whether to keep, refine, or obsolete it.
+
+2. **No trusted issues** — so no issue responses needed beyond stating that.
+
+3. **Assessment shows clean state** — build passes, 125/125 tests, stable evolution loop, no CI failures.
+
+Key evidence from assessment/trajectory for task selection:
+- Graph-derived next-task pressure:
+  1. **Close yyds state and model lifecycle gaps** (state_run_incomplete_count=2)
+  2. **Reconcile transcript-only tool failures** (transcript_only_failed_tool_count=3)
+  3. **Reconcile state-only tool failures** (state_only_failed_tool_count=32)
+  4. **Recover failed tool actions before scoring** (tool_error_count=1)
+
+The seed task (task_01.md) is about making analysis-only task pressure landable — this is about preseed selection logic. Let me check if this aligns with current evidence.
+
+The assessment says the preseed fallback was recently taught (Day 115) to produce honest journal entries instead of pipeline busywork. Also, the trajectory shows 0 failed sessions in window, 0 API errors. The analysis-only/no-edit pressure mentioned in the seed task references historical evidence (reverted_no_edit), but the most recent session (Day 116, 10:51) was a success (1/1 strict verified).
+
+Let me check whether the seed task is still live evidence or stale. The assessment notes that Day 116 (10:51) had a success, and the last sessions were productive. The last reverted_no_edit was from day-116 (01:01:36) — "tasks 1/3, reverted_no_edit=1, reverted_unlanded_source_edits=1". So there IS recent evidence of no-edit attempts.
+
+Now let me think about task allocation:
+- Task 1: The seed task about analysis-only task pressure. This is in the scripts layer, safe files. Let me keep it but may need to validate it's still relevant.
+- Task 2: Should come from graph-derived pressure. The top one is "Close yyds state and model lifecycle gaps (state_run_incomplete_count=2)". This is a real, concrete harness improvement. Let me figure out which files this touches.
+- Task 3: Could be another graph pressure item or a trusted owner issue.
+
+Actually, let me re-read the seed task more carefully. It says "Recent evo evidence showed implementation attempts ending with no file progress, reverted_no_edit, and no terminal evidence." The trajectory confirms day-116 (01:01) had reverted_no_edit=1 and reverted_unlanded_source_edits=1. So the evidence is still live.
+
+Now, for task 2, I should look at the state lifecycle gap. The trajectory says `state_run_incomplete_count=2` with lifecycle causes: `state_incomplete/open_after_RunStarted=1; state_inc...`. The assessment mentions this and says "The `mark_run_completed_with_error` path exists but has edge cases (truncated writes, mid-crash cleanup)." Day 116 already hardened the panic hook's `mark_run_completed_with_error`.
+
+Let me check what files relate to the run lifecycle completeness. The state lifecycle is in `src/state.rs` (7,320 lines) — that's the state recording module. The panic hook is likely there too.
+
+For the transcript/state reconciliation gap (32 state-only failures, 3 transcript-only failures), that's more of a dashboard/evidence quality issue, spanning `scripts/build_evolution_dashboard.py` and possibly `src/state.rs`.
+
+Let me think about what makes a good task 2:
+
+The top graph pressure is "Close yyds state and model lifecycle gaps". The log feedback lesson says: "state run lifecycle was incomplete: state_incomplete/open_after_RunStarted=1, state_incomplete/open_after_SessionStarted -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+This is about ensuring every RunStarted event has a matching RunCompleted. The fix would be in `src/state.rs` — ensuring the `mark_run_completed` / `mark_run_completed_with_error` are always called.
+
+But the assessment says the panic hook was "recently hardened (Day 116)". Let me verify this quickly with git log.
+
+Actually, let me focus. The planning instruction says: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." Task 01 exists. But I should still be targeted.
+
+Let me check ownership for the state lifecycle gap quickly with git grep, then write the task files.
+
+For task 2: State lifecycle completeness. Files would be `src/state.rs` and possibly `src/main.rs` (where the panic hook might be installed). Let me check.
+
+For task 3: Transcript/state reconciliation. This is a data-quality gap (32 state-only, 3 transcript-only). The dashboard computes these. Files: `scripts/build_evolution_dashboard.py`, possibly `src/state.rs` if there's a bug causing state events to not be written when transcripts capture them.
+
+Actually, let me prioritize. The graph pressure says:
+1. Close state lifecycle gaps (state_run_incomplete_count=2) — this is concrete, fixable, and directly impacts harness reliability
+2. Reconcile transcript-only tool failures (3) — small gap
+3. Reconcile state-only tool failures (32) — larger gap but historical
+4. Recover failed tool actions before scoring (1)
+
+I'll plan:
+- Task 01: Keep the seed (analysis-only task pressure landable) — it's already written and valid
+- Task 02: Close state run lifecycle gaps — ensure every RunStarted has a RunCompleted
+- Task 03: Maybe transcript/state reconciliation, or skip if 2 tasks are enough
+
+Actually the policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." Task 01 is from harness seed (scripts layer). Task 02 from graph pressure. That's 2 slots from state evidence.
+
+Let me now check ownership for the state lifecycle gap and write task 02.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.2s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n 'mark_run_completed' src/ --include '*.rs' -l  ▶ $ rg -n 'RunStarted\|RunCompleted\|install_panic_hook\|store_run_error' src/ --inc…  ▶ $ rg -n 'state_run_incomplete\|state_incomplete\|open_after_RunStarted' scripts/ -… ✓ (552ms)
+ ✓ (1.1s)
+ ✓ (853ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`rg` is not available. Let me use `grep` instead.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'mark_run_completed' src/ --include='*.rs' -l  ▶ $ grep -rn 'install_panic_hook\|store_run_error\|RunCompleted\|RunStarted' src/ --…  ▶ $ grep -rn 'state_run_incomplete\|state_incomplete\|open_after_RunStarted' scripts… ✓ (300ms)
+ ✓ (1.0s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Key files for state lifecycle:
+- `src/state.rs` — core state recording including `mark_run_completed`, panic hook
+- `src/lib.rs` — where `mark_run_completed` may be called/exported
+- `src/commands_state_crashes.rs` — crash-related state commands
+
+For the transcript/state reconciliation gap:
+- `scripts/build_evolution_dashboard.py` — computes `action_evidence_summary_for_sessions`
+- `scripts/state_graph_tools.py` — graph tools
+- `scripts/extract_trajectory.py` — trajectory extraction
+
+Now let me check what the preseed seed task is about. It's in `scripts/preseed_session_plan.py` and `scripts/state_graph_tools.py`. Let me check if the seed task (analysis-only task pressure) is still valid given the assessment says the preseed fallback was recently fixed (Day 115).
+
+Let me also quickly verify what the Day 116 (10:51) session changed regarding `mark_run_completed_with_error` — the assessment says it was "recently hardened."
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 --all  ▶ $ git diff HEAD~3..HEAD -- src/state.rs | head -80 ✓ (300ms)
+ ✓ (809ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is empty — the last 3 commits didn't touch `src/state.rs`. Let me check the assessment's claim about "The panic hook's mark_run_completed_with_error was recently hardened (Day 116)."
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -20 -- src/state.rs  ▶ $ grep -n 'mark_run_completed_with_error\|panic_hook\|store_run_error' src/state.r… ✓ (252ms)
+ ✓ (773ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the panic hook hardening was already done on Day 115, not Day 116. The assessment may have slightly misstated the timeline, but the fix (emit RunCompleted from panic hook + store_run_error) is in place since Day 115.
+
+Now let me evaluate what's left for the state lifecycle gap. The trajectory says `state_run_incomplete_count=2` with lifecycle causes including `state_incomplete/open_after_RunStarted=1`. The panic hook fix addresses crashes, but there may be other code paths where RunStarted is emitted but RunCompleted is not — for example, timeout exits, SIGTERM, or API-error exits that don't go through the panic hook.
+
+Let me check what `mark_run_completed` vs `mark_run_completed_with_error` looks like and where RunStarted is emitted without a corresponding RunCompleted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'mark_run_completed\|RunStarted\|RunCompleted\|record_run_started\|fn.*r…  ▶ $ grep -n 'mark_run_completed\|record.*run.*start\|run_completed_payload' src/lib.… ✓ (253ms)
+ ✓ (785ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the gap. The `mark_run_completed` is called from `src/lib.rs` (lines 988-990) — this is the normal shutdown path. The panic hook also calls `mark_run_completed_with_error`. 
+
+But what about:
+1. SIGTERM/timeout kills (process killed without running cleanup)
+2. API errors that cause early exit without reaching the normal shutdown path
+3. The `exit_with_state` function mentioned at line 66
+
+Let me check the exit paths more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..85  ▶ read src/state.rs:300..400 ✓ (96ms)
+ ✓ (466ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The orphan detection already exists! `close_orphaned_run_if_needed` scans for dangling RunStarted events and retroactively adds RunCompleted. This was likely added Day 115. So the state lifecycle gap might already be partially addressed.
+
+But the trajectory still shows `state_run_incomplete_count=2`. Let me check the timestamp of this trajectory and whether the fix is actually in place yet. The trajectory was computed "2026-06-24T17:59Z" — after the Day 115 fixes. So there might still be a gap somewhere.
+
+Let me check: the `close_orphaned_run_if_needed` function scans the events file. But what if the RunStarted was never written to disk (e.g., the process was killed between calling `record` and the actual file write)? Or what if the recency check is too strict?
+
+Let me check the `extract_trajectory.py` to understand how `state_run_incomplete_count` is computed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_run_incomplete\|state_incomplete\|incomplete' scripts/extract_tra…  ▶ $ grep -n 'state_run_incomplete\|state_incomplete\|open_after' scripts/state_graph… ✓ (254ms)
+ ✓ (801ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the state lifecycle gap better. The trajectory shows `state_run_incomplete_count=2`. Let me look at how this is computed in `state_graph_tools.py`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:880..940 ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clearer picture. The `state_run_incomplete_count` comes from the dashboard's lifecycle analysis, specifically `runs.get("incomplete_runs")`. This detects runs where RunStarted exists but RunCompleted does not.
+
+The orphan detection in `close_orphaned_run_if_needed` (in `src/state.rs`) handles this retroactively at the start of each new run. But the trajectory shows there are still 2 incomplete runs. These could be from before the fix was deployed, or the fix might not cover all cases.
+
+Looking at the trajectory more carefully: "Lifecycle causes: state_incomplete/open_after_RunStarted=1; state_inc..." (truncated). So one incomplete run is `open_after_RunStarted`.
+
+The fact that the trajectory still shows these means they're historical — the orphan detection fix was deployed, but the historical incomplete runs still appear in the state file because:
+1. The retroactive fix only fires when a NEW session starts (it closes the previous orphan)
+2. The two incomplete runs are from before the fix
+
+Actually wait, let me re-read. The `close_orphaned_run_if_needed` should have fired when the current session started and closed any orphan from before. But the trajectory shows `state_run_incomplete_count=2`. This could mean:
+- The fix hasn't been deployed long enough to clear all historical orphans
+- Or the detection has a bug (e.g., the orphaned RunStarted event is corrupted)
+- Or the incompletes are from a different session dir (the dashboard scans all sessions)
+
+Given that the assessment says "the panic hook's mark_run_completed_with_error was recently hardened (Day 116)" — actually Day 115 according to git — and the orphan detection was already added, the gap might be:
+1. Historical orphans that haven't been cleaned up yet
+2. A case not covered: what if RunStarted was written but the process crashes before any other events? The orphan detection would find it. But if the events file itself is corrupted (truncated mid-write), it might fail.
+
+Let me think about what a good task would be. The assessment mentions "one corrupted event line (line 49789, truncated write)" — this is a different issue from state lifecycle completeness.
+
+Actually, let me step back. The trajectory's graph pressure is computed from ALL historical sessions in the audit-log, not just current state. The `state_run_incomplete_count=2` may be from sessions before the fix was applied. The fix is already in place (Day 115), so writing another task for it would be redundant.
+
+Let me verify by checking when the orphan detection + panic hook fixes landed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline --all -- src/state.rs | head -10  ▶ $ git show 305f393 --stat 2>/dev/null | head -10 ✓ (238ms)
+ ✓ (759ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The orphan detection and panic hook fixes landed on Day 115 (June 23, 21:02). The trajectory was computed on Day 116 (June 24, 17:59), which is AFTER these fixes. So the `state_run_incomplete_count=2` in the trajectory may still be present because:
+
+1. The fixes prevent FUTURE orphans but don't clean up historical ones in old session directories
+2. The trajectory extracts from audit-log which has historical data
+
+Let me think about what's actually actionable here. If the fixes for state lifecycle are already in place (panic hook RunCompleted + orphan detection), then the remaining `state_run_incomplete_count=2` is historical data that will naturally age out. A task to "fix state lifecycle" would be redundant.
+
+However, there might still be gaps:
+1. What about SIGTERM/timeout? The panic hook only catches panics. If the process receives SIGKILL, no cleanup runs.
+2. What about `exit_with_state`? Let me check if this properly calls mark_run_completed.
+
+Actually, the orphan detection at session start is the right pattern for SIGKILL — you can't prevent that, but you can detect and close it next time. The question is whether it's working correctly.
+
+Let me now focus on what to plan. Given:
+- Task 01 exists (seed: analysis-only task pressure landable in preseed)
+- No trusted issues
+- Graph pressure items 1 and 2 might already be addressed (state lifecycle fixes landed Day 115, transcript/state reconciliation is dashboard-only historical)
+
+I should:
+1. Validate task 01 — it seems still relevant since preseed selection logic could use improvement around analysis-only/no-edit pressure
+2. Add a task 02 from the remaining graph pressure — perhaps the transcript/state reconciliation gap, or the model lifecycle gap (`deepseek_model_call_incomplete_count`)
+
+Wait, let me re-read the trajectory more carefully:
+
+```
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle causes: state_incomplete/open_after_RunStarted=1; state_inc...
+```
+
+There's also `deepseek_model_call_incomplete_count` — let me check if that's still a live issue or if it was also fixed.
+
+Actually, let me re-read the graph pressure items:
+
+1. Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle causes include state_incomplete/open_after_RunStarted=1
+2. Reconcile transcript-only tool failures (transcript_only_failed_tool_count=3)
+3. Reconcile state-only tool failures (state_only_failed_tool_count=32)
+4. Recover failed tool actions before scoring (tool_error_count=1)
+
+These are all described as "historical" in the assessment. The assessment says: "These are historical discrepancies between transcript and state event logging — the state/transcript reconciliation gap. Not currently blocking sessions."
+
+Given that the state lifecycle fixes are already in place and the remaining issues are historical/dashboard-level, I should pick tasks that actually move the needle on harness reliability.
+
+Let me think about what would actually help:
+
+1. **Task 01 (seed)**: Analysis-only task pressure → preseed selection logic. This is good — it improves the planning pipeline to produce landable tasks instead of dead-end ones. This is a real improvement to the evolution loop.
+
+2. **Task 02**: Close model lifecycle gaps. The trajectory mentions `deepseek_model_call_incomplete_count`. Model calls (MessageStart/MessageEnd) also have a lifecycle. If ModelCallStarted events don't have matching ModelCallCompleted events, the dashboard can't compute accurate token usage, costs, or cache metrics. This is in `src/state.rs` and `src/commands_deepseek.rs`.
+
+3. **Task 03**: Could skip — 2 tasks is fine for a healthy codebase. The policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence."
+
+Actually let me check: is `deepseek_model_call_incomplete_count` still a live issue? Let me look at the trajectory number.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.9s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'model_call_incomplete\|model_incomplete\|ModelCallStarted\|ModelCallCom…  ▶ $ grep -n 'model_call_incomplete\|deepseek_model_call' scripts/extract_trajectory.… ✓ (489ms)
+ ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Model call lifecycle events exist in `src/state.rs` (ModelCallStarted, ModelCallCompleted). Let me check if there's already orphan detection for model calls similar to what exists for runs.
+
+Let me check if the model call lifecycle has the same retroactive close mechanism.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallStarted\|model_call.*orphan\|model.*incomplete\|close.*model' …  ▶ $ grep -n 'abnormal.*model\|model.*abnormal\|stopped_after\|completion_file' src/s… ✓ (465ms)
+ ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ModelCallStarted/ModelCallCompleted exist but there's no orphan detection for model calls. The `close_orphaned_run_if_needed` only handles RunStarted/RunCompleted. ModelCallStarted without ModelCallCompleted would leave incomplete model calls in the state.
+
+But is this actually a problem? Model calls are nested within runs. If a run is orphaned (killed mid-session), the retroactive RunCompleted closes the run, but the individual model calls within that run might not have their ModelCallCompleted events. However, since the run is closed as "error"/"orphaned", maybe that's sufficient.
+
+Let me think about what would make a good task 02:
+
+Given:
+- State lifecycle (run) is already handled by orphan detection + panic hook
+- Model call lifecycle might have gaps but these are less critical
+- Transcript/state reconciliation is a dashboard data-quality issue (32 state-only, 3 transcript-only)
+- The seed task (analysis-only task pressure) is in scripts layer
+
+I think the best task 02 is: **Reconcile state-only tool failures** — investigate why 32 tool failures appear in state events but not in transcripts. This is a data-quality issue that affects dashboard accuracy and could mask real problems. The fix might be:
+1. A bug in how tool failures are recorded in state vs transcript
+2. Transcript parsing missing certain failure patterns
+3. State events being emitted without corresponding tool calls
+
+But wait, this is "historical" — the assessment says "Not currently blocking sessions." And it's 32 state-only failures. That's a lot to investigate in one task.
+
+Actually, let me re-read the graph pressure more carefully. It says "Reconcile transcript-only tool failures (transcript_only_failed_tool_count=3): Recent transcripts contained failed tool actions absent from state events" and "Reconcile state-only tool failures (state_only_failed_tool_count=32): State events contained failed tool actions without matching transcripts."
+
+Both of these point at the same underlying issue: transcript and state event logging don't agree on what constitutes a "tool failure." The state events are the source of truth for the dashboard, so fixing this would improve dashboard accuracy.
+
+But this is a big task that might require understanding the full audit pipeline. Let me think smaller.
+
+Actually, let me look at this from a different angle. The assessment says the build is clean, tests pass, evolution loop is stable. The remaining graph pressure items are all historical/dashboard quality issues. Perhaps the best task 02 is something concrete and verifiable like:
+
+**Close model call lifecycle gaps**: Add orphan detection for ModelCallStarted/ModelCallCompleted (parallel to the existing RunStarted/RunCompleted orphan detection). This would reduce `deepseek_model_call_incomplete_count`.
+
+But I don't know what the current `deepseek_model_call_incomplete_count` value is. Let me check if it's shown in the trajectory.
+
+The trajectory only shows `state_run_incomplete_count=2` explicitly. The model call incomplete count might be part of the truncated text.
+
+Let me take a different approach. Let me look at what the preseed script chose and why.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.6s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (245ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the preseed needs the assessment file. The seed task was already generated. Let me verify that the seed task's evidence is still live by checking relevant recent session outcomes.
+
+The seed task says: "Recent evo evidence showed implementation attempts ending with no file progress, reverted_no_edit, and no terminal evidence."
+
+From the trajectory:
+- day-116 (01:01:36): tasks 1/3 ⚠️ — 1/3 strict verified; task states: reverted_no_edit=1, reverted_unlanded_source_edits=1
+- day-115 (21:40:56): tasks 2/3 ⚠️ — 2/3 strict verified; task states: reverted_no_edit=1
+
+So yes, there are recent reverted_no_edit events. The seed task about making analysis-only task pressure landable is still valid.
+
+Now let me plan task 02. I need it to be from yoagent-state/trajectory evidence. Let me look at what's actually actionable:
+
+Graph pressure items:
+1. State lifecycle gaps — FIX ALREADY DEPLOYED (Day 115). The remaining count is historical.
+2. Transcript-only tool failures (3) — small, could be investigated
+3. State-only tool failures (32) — larger, but historical
+4. Failed tool actions before scoring (1) — tiny
+
+The log feedback says: "state run lifecycle was incomplete: state_incomplete/open_after_RunStarted=1, state_incomplete/open_after_SessionStarted -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+This is still being flagged by the log feedback system even though the fix is deployed. This means the log feedback is analyzing data from before the fix, OR the fix has a bug.
+
+Let me check: does the fix actually work? The fix closes orphaned runs at session start. But maybe the log feedback system is still seeing old session data. The log feedback score is 0.8438 — not perfect.
+
+OK, let me make a decision. I'll write:
+
+**Task 02**: Close model call lifecycle gaps — add the same orphan-detection pattern for ModelCallStarted/ModelCallCompleted events that was recently added for RunStarted/RunCompleted. This directly addresses the "model lifecycle gaps" part of graph pressure item 1.
+
+Files would be: `src/state.rs` (add model call orphan detection, mirroring the existing `close_orphaned_run_if_needed`).
+
+Wait, let me verify the model call lifecycle is actually incomplete. Let me check if ModelCallStarted always has a matching ModelCallCompleted in the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallStarted\|ModelCallCompleted' src/state.rs | grep -v 'test\|=>\…  ▶ $ grep -n 'ModelCallStarted\|ModelCallCompleted' src/lib.rs src/commands_deepseek.… ✓ (254ms)
+ ✓ (757ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ModelCallStarted and ModelCallCompleted are defined in `src/state.rs` but I don't see where they're actually emitted. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'ModelCallStarted\|ModelCallCompleted' src/ --include='*.rs' | grep -v … ✓ (244ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `src/commands_state.rs` to see how ModelCallStarted/ModelCallCompleted are emitted — this seems to be the state dashboard code that groups events, not the emission code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record.*ModelCall\|emit.*ModelCall\|ModelCallStarted\|ModelCallComplete…  ▶ $ grep -rn 'fn.*model.*call\|fn.*record_model\|model_call_start\|model_call_comple… ✓ (491ms)
+ ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `src/prompt.rs` for model call lifecycle handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:30..70 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where ModelCallStarted/ModelCallCompleted events are actually emitted in the prompt execution flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_model_call\|record.*ModelCall\|model_call_started\|model_call_co… ✓ (212ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:765..805 ✓ (84ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me see where ModelCallCompleted is emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:930..1050 ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the model call lifecycle is well-handled in `src/prompt.rs`:
+- ModelCallStarted is emitted at line 777 (before the event loop)
+- ModelCallCompleted is emitted at line 940-955 (on AgentEnd)
+- Ctrl+C also emits ModelCallCompleted at line 1012-1027 (with "interrupted" status)
+- There's a `model_call_terminal_recorded` flag (line 769, 955) to prevent double-recording
+
+Let me check what happens after the event loop ends (channel closed without AgentEnd).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1048..1078 ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The model call lifecycle is well-handled:
+1. ModelCallStarted at the beginning
+2. ModelCallCompleted on normal AgentEnd
+3. ModelCallCompleted on Ctrl+C interrupt
+4. ModelCallCompleted on channel close without AgentEnd (line 1054-1068)
+5. The `model_call_terminal_recorded` flag prevents double-recording
+
+So the model call lifecycle is already robust. The `deepseek_model_call_incomplete_count` in the trajectory is likely historical data from before these fixes (or from edge cases like SIGKILL that can't be caught).
+
+OK let me now decide on task 02. Given:
+
+1. Task 01 (seed): Analysis-only task pressure landable in preseed — VALID, live evidence
+2. State lifecycle (RunStarted/RunCompleted): Fixed Day 115, remaining count is historical
+3. Model call lifecycle (ModelCallStarted/ModelCallCompleted): Already robust in prompt.rs
+4. Transcript/state reconciliation: Historical, large, not blocking
+5. Failed tool actions: Historical, 1 count
+
+The graph pressure items are all either already fixed or historical. The codebase is healthy. 
+
+Let me think about what would actually improve the harness. Looking at the trajectory's "Graph-derived next-task pressure":
+- Item 1 (state lifecycle): partially addressed, might need a verification/followup
+- Items 2-4 (transcript/state reconciliation, failed tools): historical data quality
+
+Given the healthy state, I should pick a task that:
+- Is small, verifiable
+- Improves harness reliability or observability  
+- Comes from state/trajectory evidence
+
+One idea: **Add orphan detection for ModelCallStarted/ModelCallCompleted** (parallel to the existing RunStarted/RunCompleted orphan detection in `close_orphaned_run_if_needed`). Even though the model call lifecycle is robust for normal exits, SIGKILL/CI cancellation could leave orphaned ModelCallStarted events. This would parallel the existing run-level orphan detection.
+
+But wait, is this actually useful? ModelCallStarted events within an orphaned run are already "explained" by the retroactive RunCompleted("error") that's emitted for the run. Adding model-level orphan detection would just close those model calls too, making the dashboard cleaner.
+
+Let me check what happens right now with orphaned model calls — does the dashboard already handle them gracefully?
+
+Actually, let me just check if the dashboard even treats incomplete model calls as a problem or just reports them. Looking at the trajectory, `deepseek_model_call_incomplete_count` appears in the "Graph-derived next-task pressure" but is part of the same item as state lifecycle gaps.
+
+I think the most impactful task 02 would be to actually verify and close the state lifecycle gap — make sure the orphan detection from Day 115 is actually catching the 2 remaining incomplete runs, and if not, fix the detection. This is directly actionable and measurable.
+
+Let me check: the orphan detection scans "backward from the end" of the events file. But what if there are corrupted/truncated lines? The corrupted event at line 49789 might be causing the scan to fail.
+
+Let me look at the `close_orphaned_run_if_needed` function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:315..345 ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see how the orphan detection works. It reads the entire events file, parses each line as JSON, and scans backward for a RunStarted without a matching RunCompleted. This uses `filter_map` with `compatibility_event_json_line` — if a line is corrupted, it's silently skipped. So the corrupted event at line 49789 would be skipped, and the scan would continue to the next line.
+
+But there might be a subtle bug: what if the corrupted line is the RunStarted itself? Then the scan would never find it and the orphan wouldn't be closed. However, the corrupted event is from "a past crashed session" (per assessment), so it's unlikely to be the most recent RunStarted.
+
+OK, I'll stop overanalyzing. Let me decide on tasks:
+
+**Task 01**: Keep the seed task (analysis-only task pressure). It's valid, live evidence (recent reverted_no_edit), and in the scripts layer.
+
+**Task 02**: The state lifecycle orphan detection is deployed but the trajectory still shows `state_run_incomplete_count=2`. The log feedback also says "emit RunCompleted events for every started run, including timeout and API-error exits." Let me write a task to extend the orphan detection to also handle model call lifecycle (ModelCallStarted/ModelCallCompleted), mirroring the existing run-level pattern. This would close one of the two lifecycle gap categories.
+
+Actually wait, let me think about this differently. The trajectory shows `state_run_incomplete_count=2` and `deepseek_model_call_incomplete_count` (count not shown, part of truncated text). The model call lifecycle already has robust terminal recording in `prompt.rs`. The run lifecycle has orphan detection in `state.rs`. 
+
+Maybe the remaining gaps are from sessions that had multiple model calls within one run, and some model calls were completed but the run wasn't? Or runs that were started but the process crashed before any model calls?
+
+I think the most practical task 02 is to add model-call-level orphan detection in `close_orphaned_run_if_needed` — when closing an orphaned run, also close any orphaned ModelCallStarted events within that run. This is a small, contained change to `src/state.rs`.
+
+Actually, let me reconsider. The trajectory's graph pressure item says "Close yyds state and model lifecycle gaps". The run lifecycle gap was addressed in Day 115. The model lifecycle might benefit from similar orphan detection.
+
+But I want to make sure this is a good task. Let me check: is there actually a `deepseek_model_call_incomplete_count` value in the trajectory that's non-zero? The trajectory says "(truncated to fit token budget)" — so the full trajectory might have more data.
+
+Let me just write the task 02 for model call orphan detection. It's a small, verifiable change to `src/state.rs` that extends the existing pattern.
+
+Actually, I realize I should think about whether model-call orphan detection is even the right approach. Model calls are ephemeral within a run — if the run is marked as "error"/"orphaned", that already explains the incomplete model calls. The dashboard could compute this from the run status instead of counting individual incomplete model calls.
+
+But the dashboard currently DOES count them separately (as shown in `extract_trajectory.py` line 1383: `deepseek_model_call_incomplete_count`). So adding model-level orphan detection would clean up the dashboard numbers.
+
+OK, let me write the plan. Two tasks:
+
+1. **Task 01 (seed)**: Make analysis-only task pressure landable — improve preseed to select concrete, landable tasks when analysis-only/no-edit pressure exists
+2. **Task 02**: Add model-call lifecycle orphan detection — extend `close_orphaned_run_if_needed` in `src/state.rs` to also retroactively close orphaned ModelCallStarted events within the orphaned run
+
+And issue_responses.md with "No trusted issues today."
+
+Let me now write the task files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. The seed task (task_01.md) is valid — recent sessions still show `reverted_no_edit` events. For task_02, the top graph pressure is "Close yyds state and model lifecycle gaps." The run-level orphan detection was added Day 115, but model-call-level orphan detection (ModelCallStarted/ModelCallCompleted) doesn't exist yet. Let me write both task files.
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'close_orphaned_run\|orphan' src/state.rs | head -15  ▶ $ grep -n 'fn close_orphaned' src/state.rs ✓ (496ms)
+ ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I have a good understanding now. Let me write the task files. The orphan detection function `close_orphaned_run_if_needed` currently:
+1. Scans backward for a dangling RunStarted
+2. Checks no RunCompleted exists for that run_id
+3. Emits a retroactive RunCompleted
+
+But it doesn't close orphaned ModelCallStarted events within that run. Adding that would be a small extension.
+
+Let me now write both task files and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+Now I'll write the session plan files. Task 01 (seed) stays with minor refinements. Task 02 addresses the model-call lifecycle gap.
+    validated_against_assessment: true
+    
+    Evidence:
+  - - Current assessment matched this harness seed: Recent evo evidence showed implementation attempts ending with no file progress, `reverted_no_edit`, and no terminal evidence. The next seed must target landable task-selection logic so DeepSeek can improve the loop without touching protected evolution files.
+  + - Trajectory shows reverted_no_edit=1 in day-116 (01:01) and reverted_no_edit=1 in day-115 (21:40) — implementation attempts that produced no file progress
+  + - Assessment confirms preseed fallback was taught to produce honest journal entries (Day 115), but analysis-only/no-edit pressure still needs to select concrete landable tasks
+  + - Graph pressure item "Close yyds state and model lifecycle gaps" shows state_incomplete/open_after_RunStarted=1 — analysis-only sessions still fail to produce terminal evidence
+    
+    Edit Surface:
+    - scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py
+    
+    Verifier:
+    - python3 scripts/preseed_session_plan.py --test
+  + - python3 -m unittest scripts.test_state_graph_tools
+    
+    Fallback:
+  - - If current assessment, source, or recent changes show this failure class is already fixed or no longer live, write an obsolete-task note instead of editing.
+  + - If preseed self-tests pass and the analysis-only pressure path already produces landable Files entries (no protected files, at least one concrete source file), mark this task as already-resolved and write a brief note.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (46 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (46 lines) ✓ (155ms)
+
+
