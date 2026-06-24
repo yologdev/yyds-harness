@@ -13,7 +13,18 @@ FITNESS_GNOMES = {
     "task_verification_rate",
     "task_mechanical_verification_rate",
     "coding_log_score",
+    # session_success_rate (below) is a raw crash metric: 0.0 = session failure
+    # (build/test break, API error, timeout). It does not distinguish a clean
+    # no-op session that landed no code changes from a real crash.
     "session_success_rate",
+    # session_productivity_rate is the companion metric that tracks sessions
+    # that landed *verified code changes* (not just "didn't crash").
+    # Computation (to be wired in build_evolution_dashboard.py):
+    #   sessions_with_verified_changes / total_sessions
+    # A clean no-op session that found nothing to fix is counted in the
+    # denominator but not the numerator, so it lowers productivity without
+    # flagging a crash.
+    "session_productivity_rate",
     "workflow_success_rate",
     "retry_success_rate",
     "json_parse_failure_rate",
@@ -57,6 +68,7 @@ PRIMARY_FITNESS = (
     "task_verification_rate",
     "coding_log_score",
     "session_success_rate",
+    "session_productivity_rate",
 )
 
 
@@ -178,18 +190,22 @@ def run_self_tests() -> int:
         "task_success_rate": 2 / 3,
         "task_verification_rate": 2 / 3,
         "coding_log_score": 0.8,
+        "session_productivity_rate": 0.5,
         "planner_no_task_count": 0,
         "task_artifact_coverage": 1.0,
     }
     summary = fitness_summary(gnomes)
-    assert summary["fitness_metric_count"] == 3, summary
+    assert summary["fitness_metric_count"] == 4, summary
     assert summary["diagnostic_gate_blockers"] == [], summary
-    assert summary["fitness_score"] == round(((2 / 3) + (2 / 3) + 0.8) / 3, 4), summary
+    assert summary["fitness_score"] == round(((2 / 3) + (2 / 3) + 0.8 + 0.5) / 4, 4), summary
     rendered = render_markdown(summary)
     assert "Capability fitness feedback" in rendered, rendered
     assert "task_success_rate" in rendered, rendered
+    assert "session_productivity_rate" in rendered, rendered
     assert classify_gnome("provider_error_count") == "diagnostic"
     assert classify_gnome("tool_call_malformed_rate") == "fitness"
+    assert classify_gnome("session_productivity_rate") == "fitness"
+    assert "session_productivity_rate" in summary["primary_fitness"], summary
     print("gnome_fitness self-tests passed")
     return 0
 
