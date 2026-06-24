@@ -404,6 +404,7 @@ Verification:
             self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
             self.assertLess(quality["score"], 0.75)
             self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
+            self.assertEqual(manifest["selected_tasks"], [])
 
     def test_manifest_flags_cold_start_seed_when_no_completed_failure_sessions_is_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -459,6 +460,66 @@ Verification:
 
             self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
             self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
+            self.assertEqual(manifest["selected_tasks"], [])
+
+    def test_manifest_rejects_recently_failed_analysis_only_seed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text(
+                """# Assessment
+
+## Recent session outcomes
+- Task 1: Make analysis-only task pressure landable was reverted.
+
+## Bugs / Friction Found
+- Make analysis-only task pressure landable timed out without a verifier verdict after no file progress.
+""",
+                encoding="utf-8",
+            )
+            (plan / "task_01.md").write_text(
+                """Title: Make analysis-only task pressure landable
+Files: scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py
+Issue: none
+Origin: harness-seed (refined by planner)
+
+Objective:
+Make analysis-only pressure produce a landable task.
+
+Success Criteria:
+- No analysis-only pressure task is selected after it just failed.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- selected_tasks excludes this stale task.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+            payload = task_manifest.decision_payload(manifest)
+            alignment = manifest["tasks"][0]["quality"]["assessment_alignment"]
+
+            self.assertTrue(alignment["contradicted_by_assessment"], alignment)
+            self.assertIn("task_01:assessment_contradiction", manifest["warnings"])
+            self.assertIn("no_selectable_tasks", manifest["warnings"])
+            self.assertEqual(manifest["selected_tasks"], [])
+            self.assertEqual(payload["decision"], "no_selectable_tasks")
 
     def test_manifest_ignores_obsolete_note_files_as_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:

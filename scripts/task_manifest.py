@@ -30,6 +30,17 @@ ANALYSIS_ONLY_ESCAPE_RE = re.compile(
     r"document\s+(?:the\s+)?(?:finding|findings)\s+and\s+mark",
     re.IGNORECASE,
 )
+ANALYSIS_ONLY_TASK_TITLE = "make analysis-only task pressure landable"
+ANALYSIS_ONLY_STALE_MARKERS = (
+    "analysis_only_no_terminal_evidence",
+    "task blocked by analysis-only implementation attempt",
+    "task blocked by no-progress implementation attempts",
+    "evaluator timed out without",
+    "timed out without a verifier verdict",
+    "no file progress",
+    "no implementation landed",
+    "status: reverted",
+)
 PROTECTED_IMPLEMENTATION_SURFACES = (
     ".github/workflows/",
     "IDENTITY.md",
@@ -73,6 +84,17 @@ def assessment_alignment(task_text: str, assessment_text: str) -> dict[str, Any]
         contradicted = True
         evidence.append(
             "task says state why last-failure returns no state event, but assessment reports healthy diagnostic output"
+        )
+
+    analysis_only_task = ANALYSIS_ONLY_TASK_TITLE in task_lower
+    analysis_only_recently_failed = (
+        ANALYSIS_ONLY_TASK_TITLE in assessment_lower
+        and any(marker in assessment_lower for marker in ANALYSIS_ONLY_STALE_MARKERS)
+    )
+    if analysis_only_task and analysis_only_recently_failed:
+        contradicted = True
+        evidence.append(
+            "fresh assessment says the analysis-only pressure task recently blocked, reverted, or timed out without useful implementation evidence"
         )
 
     return {
@@ -292,6 +314,11 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         and not (
             isinstance(task.get("quality"), dict)
             and task["quality"].get("analysis_only_escape")
+        )
+        and not (
+            isinstance(task.get("quality"), dict)
+            and isinstance(task["quality"].get("assessment_alignment"), dict)
+            and task["quality"]["assessment_alignment"].get("contradicted_by_assessment")
         )
     ]
     selected = [] if planning_failed else selectable[: args.selected_limit]
