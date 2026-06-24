@@ -1,0 +1,372 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to surface tool failure mismatch labels in the trajectory output
+2. Currently `state_only_failed_tool_count` and `transcript_only_failed_tool_count` only show counts
+3. I need to add the specific failure labels so the mismatch can be diagnosed
+4. Edit surface: `scripts/extract_trajectory.py` and `scripts/test_extract_trajectory.py`
+5. I need to first read the evolve skill, then implement
+
+Let me start by reading the evolve skill and understanding the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ todo ✓ (148ms)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the evolve skill, and also look at the relevant code files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md:81..196  ▶ todo ✓ (121ms)
+ ✓ (324ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I've read the evolve skill. Now let me look at the relevant code. I need to find where `state_only_failed_tool_count` and `transcript_only_failed_tool_count` are computed in `scripts/extract_trajectory.py`, and also look at `scripts/build_evolution_dashboard.py` for the label computation functions referenced in the task.
+
+Let me first search for the relevant parts in `extract_trajectory.py`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_only_failed_tool_count' in scripts/extract_trajectory.py  ▶ search 'transcript_only_failed_tool_count' in scripts/extract_trajectory.py  ▶ search 'failed_tool_category' in scripts/build_evolution_dashboard.py ✓ (273ms)
+ ✓ (368ms)
+ ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the relevant parts of extract_trajectory.py - particularly the areas around the mismatched counts.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1480..1530  ▶ read scripts/extract_trajectory.py:1715..1775 ✓ (348ms)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand what information is available. Let me look at the `recent_action_evidence_summary` to see if there are already label-level details available in the evidence, or if I need to compute them.
+
+Let me look at the function that loads the `recent_action_evidence_summary` and what keys are available.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'recent_action_evidence_summary' in scripts/extract_trajectory.py  ▶ search 'state_only_failed_tool_labels' in scripts/build_evolution_dashboard.py ✓ (126ms)
+ ✓ (193ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `scripts/build_evolution_dashboard.py` already computes `state_only_failed_tool_labels` and uses them in dashboard rendering. Let me look at how it computes these, and also look at whether the trajectory extractor already has access to similar data or needs to compute it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2650..2710  ▶ read scripts/build_evolution_dashboard.py:7270..7300 ✓ (346ms)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation:
+
+1. `scripts/build_evolution_dashboard.py` already computes `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` using `unique_delta_labels()` and renders them in the dashboard HTML.
+
+2. `scripts/extract_trajectory.py` takes the `recent_action_evidence_summary` which already has these label fields (since it's built by `scripts/build_evolution_dashboard.py`'s `action_evidence_summary_for_sessions()` function), but it only renders counts, not labels.
+
+I need to:
+1. Find where `unique_delta_labels` is defined in `build_evolution_dashboard.py` (to understand its format)
+2. Find how `recent_action_evidence_summary` is loaded in `extract_trajectory.py`
+3. Add label rendering to the trajectory output when counts > 0
+4. Add test cases
+
+Let me look at `unique_delta_labels` and also the function that loads `recent_action_evidence_summary` in the trajectory extractor.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def unique_delta_labels' in scripts/build_evolution_dashboard.py  ▶ read scripts/extract_trajectory.py:1215..1275 ✓ (132ms)
+ ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `unique_delta_labels` to understand its return type:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:482..512  ▶ search 'def unique_delta_count' in scripts/build_evolution_dashboard.py ✓ (191ms)
+ ✓ (272ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. `unique_delta_labels` returns a sorted list of labels that are in `left` but not in `right`, capped at 20 items. These are the specific tool failure labels that exist only in one source but not the other.
+
+Now let me see how `recent_action_evidence_summary` is structured - does it already include `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`? Let me check by searching what keys are set on it in build_evolution_dashboard.py, specifically in the `action_evidence_summary_for_sessions` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def action_evidence_summary_for_sessions' in scripts/build_evolution_dashboard.py ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5015..5095 ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The `action_evidence_summary_for_sessions` function aggregates counts but NOT the labels. The labels (`state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`) are computed per-session in `build_evolution_dashboard.py` at line 2672-2673, but they're not aggregated into `recent_action_evidence_summary`.
+
+However, the task says: "Look at `scripts/build_evolution_dashboard.py` for `failed_tool_category()` and `transcript_only_failed_tool_labels` — these already compute the labels but the trajectory extractor only renders counts."
+
+Hmm, so the task wants me to surface labels in the trajectory extractor output. I have two options:
+
+1. Add label aggregation to `action_evidence_summary_for_sessions` in `build_evolution_dashboard.py` and render it in `extract_trajectory.py`
+2. Compute labels directly in `extract_trajectory.py` from the per-session data
+
+But the task says "Do not change the reconciliation logic itself — only add diagnostic output." And the edit surface is only `extract_trajectory.py` and `test_extract_trajectory.py`.
+
+Wait, but the task says to find where the counts are computed and add label-level detail. The trajectory extractor gets `recent_action_evidence_summary` which already comes from the dashboard build. But that summary doesn't include labels...
+
+Let me think about this differently. The `recent_action_evidence_summary` is already available in the extract trajectory data. But it only has counts, not labels. The labels are computed per-session level.
+
+However, I can compute the labels in the trajectory extractor itself by looking at the per-session action evidence. The `state_summary` already contains the per-session data. Let me look at how `states_projection` is built to see what per-session data is available.
+
+Actually wait, let me re-read the task more carefully. The trajectory extractor's `render_graph_suggestions` function produces the graph pressure lines that show counts. The task wants me to add labels alongside counts.
+
+Looking at the code again, the `recent_action_evidence_summary` is built by `action_evidence_summary_for_sessions()` which aggregates from per-session data. But per-session data also has `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`.
+
+So I need to also aggregate those labels in `action_evidence_summary_for_sessions()`. But the task says the edit surface is only `extract_trajectory.py` and `test_extract_trajectory.py`...
+
+Wait, rethinking. The task says: "Edit Surface: scripts/extract_trajectory.py, scripts/test_extract_trajectory.py". And it also says: "Do not change the reconciliation logic itself — only add diagnostic output."
+
+Let me look more carefully at how the trajectory extractor gets its data. It calls `load_sessions()` which eventually builds a `states_projection` by calling `load_states_projection()` (from `build_evolution_dashboard.py`). And it gets `recent_action_evidence_summary` from the `state_summary`.
+
+So maybe I need to:
+1. Modify `action_evidence_summary_for_sessions` in `build_evolution_dashboard.py` to also aggregate labels
+2. Modify `extract_trajectory.py` to render labels
+3. Add tests
+
+But the edit surface says only `extract_trajectory.py` and `test_extract_trajectory.py`. Hmm.
+
+Wait, let me re-read the task: "Edit Surface: scripts/extract_trajectory.py, scripts/test_extract_trajectory.py"
+
+And: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task."
+
+So I need to check if I can do this entirely within the trajectory extractor. Let me see how much per-session data is available to the trajectory extractor.
+
+Let me look at how the trajectory extractor loads its data and what per-session fields it has access to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1172..1222  ▶ search 'def load_sessions' in scripts/extract_trajectory.py ✓ (202ms)
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `build_states_projection` is defined and what `recent_action_evidence_summary` contains. Also let me look at the `render_graph_suggestions` function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def build_states_projection' in scripts/build_evolution_dashboard.py  ▶ search 'recent_action_evidence_summary' in scripts/build_evolution_dashboard.py ✓ (123ms)
+ ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `build_states_projection` to understand how `recent_action_evidence_summary` is set, and if I can also get per-session labels aggregated there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5225..5285 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see now. `action_evidence_summary_for_sessions` is what generates the `recent_action_evidence_summary`. This function aggregates counts but NOT labels. To surface labels, I have two approaches:
+
+1. Modify `action_evidence_summary_for_sessions` to also aggregate labels — but this is in `build_evolution_dashboard.py` which is not in the edit surface.
+2. Compute labels directly in the trajectory extractor by iterating the per-session data that's already available in `states["sessions"]`.
+
+Looking at the trajectory extractor, it already has access to `states["sessions"]` (the per-session state projections). Each session has `action_evidence` which includes `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` (computed per-session by `session_state_projection`).
+
+So I can:
+1. In `render_graph_suggestions` (or the function that calls it), iterate the recent sessions from `states["sessions"]` and collect/aggregate the `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` across sessions.
+2. Pass those labels to `render_graph_suggestions`.
+3. Render the labels alongside counts.
+
+Let me look at where `render_graph_suggestions` is called and what data is available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'render_graph_suggestions' in scripts/extract_trajectory.py ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `render_graph_suggestions` function and the calling context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1814..1934  ▶ read scripts/extract_trajectory.py:1940..1980 ✓ (341ms)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `render_structured_state_snapshot` uses `recent_action_evidence_summary` and renders the action evidence section with the counts. Let me also look at where the action evidence is rendered in the trajectory output.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1460..1560 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The trajectory extractor has two places where counts are rendered:
+
+1. `render_structured_state_snapshot` (line 1509-1512): `state_only_failed_tools={state_only_failed_tools}` and `transcript_only_failed_tools={transcript_only_failed_tools}` - just counts
+2. `action_evidence_graph_suggestions` (line 1686+): graph pressure suggestions with `state_only_failed_tool_count` and `transcript_only_failed_tool_count` metrics
+
+Now I need to:
+1. Collect the per-session labels from `states["sessions"]` (which contains per-session `action_evidence` with `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`)
+2. Aggregate them across recent sessions
+3. Render alongside the counts
+
+Let me check what data is available in `states["sessions"]` - specifically the per-session `action_evidence` from `session_state_projection`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def session_state_projection' in scripts/build_evolution_dashboard.py ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `session_state_projection` to see what fields are available on each session.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:4945..5025 ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Each `session_state` has an `action_evidence` dict that includes `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` (computed at lines 2672-2673 of `build_evolution_dashboard.py`). 
+
+The `action_evidence_summary_for_sessions` function aggregates counts but NOT labels. The trajectory extractor's `render_structured_state_snapshot` has access to the `recent_action_evidence_summary` (counts only) and also to the `states["sessions"]` list (which has per-session labels).
+
+My plan:
+1. In `render_structured_state_snapshot` (in `extract_trajectory.py`), I'll collect per-session labels from the `state_sessions` that are already available in that function's scope, aggregate them with a Counter, and render the top labels alongside the counts.
+2. Add test cases in `test_extract_trajectory.py`.
+
+Let me verify the scope of `render_structured_state_snapshot` function. Let me check what variables it has access to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1360..1440 ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the full `render_structured_state_snapshot` function signature and the variables it has access to:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def render_structured_state_snapshot' in scripts/extract_trajectory.py ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`render_structured_state_snapshot` takes only `audit_dir`. It gets `states` from `build_states_projection` and `recent_action_evidence_summary` from `states["summary"]`. It also gets `state_sessions = states.get("sessions")` which are the per-session state projections.
+
+Now let me look at what's in per-session `action_evidence` for labels. From `build_evolution_dashboard.py` line 2672-2673, each session's `action_evidence` dict has:
+- `state_only_failed_tool_labels`: list[str] 
+- `transcript_only_failed_tool_labels`: list[str]
+
+But wait - I need to check that `session_state_projection` includes these. Looking at line 4983-4985:
+```python
+"action_evidence": work.get("action_evidence")
+    if isinstance(work.get("action_evidence"), dict)
+    else {},
+```
+
+Yes! The `work_summary.action_evidence` includes these labels since they were set in `build_evolution_dashboard.py` lines 2672-2673.
+
+So my plan is:
+1. In `render_structured_state_snapshot`, after getting `state_sessions`, collect and aggregate the `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` from the recent sessions.
+2. Render the top labels alongside the counts.
+
+Let me also check how `state_sessions` are accessed in that function. Looking at lines 1259-1260:
+```python
+state_sessions = states.get("sessions") if isinstance(states.get("sessions"), list) else []
+recent_window_size = int(state_summary.get("recent_window_size") or 5)
+recent_state_sessions = state_sessions[-recent_window_size:] if recent_window_size > 0 else []
+```
+
+Good. Now let me look at what the `action_evidence_summary_for_sessions` returns and understand that the `recent_action_evidence_summary` at line 1223 is built from recent sessions. I need to collect labels from the same recent sessions.
+
+Let me now plan the implementation:
+
+1. In `render_structured_state_snapshot`, after the current location where `recent_action_evidence_summary` is used (or at the beginning), collect per-session labels from `recent_state_sessions`.
+2. Aggregate the labels using `Counter`.
+3. Add label info to the output when counts > 0.
+
+Actually, looking more carefully at the code structure, the `recent_action_evidence_summary` is obtained from states summary (line 1223-1227). The labels should be collected from the per-session `action_evidence` in `recent_state_sessions`.
+
+Let me write the implementation now. I need to:
+
+1. Add label collection logic in `render_structured_state_snapshot`
+2. Modify the rendering at lines 1509-1512 to include labels
+3. Add test cases
+
+Let me also look at where `action_evidence_graph_suggestions` function is and update it too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def action_evidence_graph_suggestions' in scripts/extract_trajectory.py ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1658..1718 ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me also look at the test file to understand the testing patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py (80 lines) ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how the tests work with the structured state snapshot to understand the testing patterns better:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'render_structured_state' in scripts/test_extract_trajectory.py ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test at line 1326 for `render_structured_state_snapshot`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:1280..1400 ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also look at the end of the test file to see the test runner pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:2150..2170 ✓ (61ms)
+
+
