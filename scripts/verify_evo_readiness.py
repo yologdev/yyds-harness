@@ -270,6 +270,7 @@ def readiness_report(audit_dir: Path) -> dict[str, Any]:
             "can_drive_evolution": False,
             "session_id": None,
             "issues": ["no audit sessions found"],
+            "warnings": [],
             "evidence": {},
         }
 
