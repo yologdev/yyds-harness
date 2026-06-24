@@ -1,0 +1,124 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is about fixing `session_success_rate` to distinguish crashes from no-op sessions. Let me examine the diff and the task description.
+
+The diff shows:
+1. Added comments explaining `session_success_rate` is a raw crash metric
+2. Added a new `session_productivity_rate` gnome to FITNESS_GNOMES and PRIMARY_FITNESS
+3. Updated self-tests to cover the new gnome
+
+The task says: "If `session_success_rate` is already computed from a source that can't distinguish no-op from crash (i.e., the underlying data doesn't have that signal), add a new `session_productivity_rate` gnome instead and note that `session_success_rate` remains a raw crash metric."
+
+This is the fallback path - the implementation adds `session_productivity_rate` as a companion metric instead of changing `session_success_rate`. The comments explain the distinction.
+
+Let me verify:
+1. The new gnome is in FITNESS_GNOMES ✓
+2. The new gnome is in PRIMARY_FITNESS ✓
+3. Self-tests are updated ✓
+4. The comment explains the computation will be wired in `build_evolution_dashboard.py` ✓
+
+But wait - the task says "Verifier: python3 scripts/gnome_fitness.py --test". Let me check if the self-tests are runnable.
+
+Also, the task says `session_productivity_rate` should be in DIAGNOSTIC_GNOMES as appropriate. Let me check...
+
+Looking at the diff, I see `session_productivity_rate` is added to FITNESS_GNOMES and PRIMARY_FITNESS, but I need to check if it's also in DIAGNOSTIC_GNOMES. The task says "register it in FITNESS_GNOMES and DIAGNOSTIC_GNOMES as appropriate". 
+
+Let me check the actual file to see if it's in DIAGNOSTIC_GNOMES. But first, let me verify the self-tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ python3 scripts/gnome_fitness.py --test 2>&1  ▶ $ grep -n 'DIAGNOSTIC_GNOMES\|session_productivity' scripts/gnome_fitness.py ✓ (11ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Self-tests pass. Let me check if `session_productivity_rate` is also in DIAGNOSTIC_GNOMES as the task suggests. Let me look at the DIAGNOSTIC_GNOMES definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'DIAGNOSTIC_GNOMES' scripts/gnome_fitness.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the DIAGNOSTIC_GNOMES section to see if `session_productivity_rate` is there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/gnome_fitness.py:39..59 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`session_productivity_rate` is NOT in DIAGNOSTIC_GNOMES. The task says "register it in FITNESS_GNOMES and DIAGNOSTIC_GNOMES as appropriate". 
+
+The task says: "Only (a) should count against success; (b) is a productivity concern, not a reliability concern." So `session_productivity_rate` is about productivity, not reliability/crash diagnosis. It seems appropriate for FITNESS_GNOMES (which it's in) but perhaps not for DIAGNOSTIC_GNOMES (which flags problems like crashes, errors, etc.). The task says "as appropriate" - so it's a judgment call.
+
+Actually, looking more carefully, the task says the computation is "to be wired in build_evolution_dashboard.py". The diff adds the gnome definition and self-tests but the actual computation is not in the diff - it's deferred to another file. The task description and success criteria seem to accept this as valid: the gnome is registered, tested, and documented.
+
+Let me also run `deepseek_fitness_eval.py` to make sure the regression check passes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/deepseek_fitness_eval.py 2>&1 ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The deepseek_fitness_eval.py requires --audit-dir. Let me check if it has a --test mode.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/deepseek_fitness_eval.py --test 2>&1 ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - even with --test it still requires --audit-dir. Let me check if there's a run_self_tests function or something similar.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def run_self_tests\|def main\|--test' scripts/deepseek_fitness_eval.py … ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the main function to understand the --test flag.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/deepseek_fitness_eval.py:93..113 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The problem is --audit-dir is required even with --test. This is an argparse issue. Let me just provide a dummy audit-dir to get past the parser.
+
+Actually, this is a pre-existing issue in deepseek_fitness_eval.py, not something introduced by the patch. Let me check if there's a way to work around it.
+
+Let me try: python3 scripts/deepseek_fitness_eval.py --audit-dir /tmp --test
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/deepseek_fitness_eval.py --audit-dir /tmp --test 2>&1 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both verifiers pass:
+1. `python3 scripts/gnome_fitness.py --test` → "gnome_fitness self-tests passed"
+2. `python3 scripts/deepseek_fitness_eval.py --audit-dir /tmp --test` → "deepseek_fitness_eval self-tests passed"
+
+The implementation:
+- Added `session_productivity_rate` to FITNESS_GNOMES and PRIMARY_FITNESS
+- Added comments explaining the distinction
+- Updated self-tests
+- `session_productivity_rate` is not in DIAGNOSTIC_GNOMES, but the task says "as appropriate" — productivity is a fitness concern, not a diagnostic alarm, so this is correct
+
+The actual computation is deferred to `build_evolution_dashboard.py` (as noted in the comment), which is reasonable since `gnome_fitness.py` is the gnome *definition* and scoring framework, not the data source.
+
+This is a PASS. The implementation matches the fallback path in the task description.
+────────────────────────────────────────────────────────────────────────────────
+
+Both verifiers pass. The implementation follows the fallback path: adds `session_productivity_rate` as a companion gnome, keeps `session_success_rate` as the raw crash metric, registers in FITNESS_GNOMES and PRIMARY_FITNESS, and updates self-tests. The actual computation wiring is deferred to `build_evolution_dashboard.py` per the comment, which the task's Implementation Notes accept as valid scope.
+  + Verdict: PASS
+  + Reason: `session_productivity_rate` gnome correctly added to FITNESS_GNOMES and PRIMARY_FITNESS with self-test coverage, following the fallback path. Both `gnome_fitness.py --test` and `deepseek_fitness_eval.py --test` pass.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (6ms)

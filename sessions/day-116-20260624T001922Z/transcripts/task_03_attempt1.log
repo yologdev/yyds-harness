@@ -1,0 +1,434 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. **Problem**: `extract_trajectory.py` reports tool failures (specifically `failed_tool_summary.bash_tool_error=4`) while `yyds state failures tools` says "no tool failures found" - they disagree on whether tool failures exist.
+
+2. **Goal**: Reconcile these two diagnostic surfaces.
+
+3. **Evidence**: The two queries disagree on whether tool failures exist in the current session window.
+
+Let me first read the evolve skill, then investigate both files to understand the discrepancy.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/extract_trajectory.py:1..101 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `failed_tool_summary` computation in extract_trajectory.py and the `commands_state.rs` file to understand the discrepancy.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tool_summary' in scripts/extract_trajectory.py  ▶ ls src (*state*) ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `failed_tool_summary` computation around line 1719 in extract_trajectory.py, and also look at the `commands_state.rs` for the tool failures report.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1690..1770  ▶ search 'tool_failure' in src/commands_state.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `build_tool_failures_report` function and `handle_tool_failures` in commands_state.rs, and the `tool_failure_summary` / `recent_tool_failure_summary` in the dashboard data to understand where the data comes from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2075..2195  ▶ read src/commands_state.rs:780..810 ✓ (19ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the `handle_tool_failures` function to see how it reads events. Let me also look at how the trajectory finds the audit data. The key question is: does `state failures tools` look at the current run's events, while the trajectory extractor looks at audit data across multiple sessions?
+
+Let me look at the `handle_tool_failures` function more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tool_failures' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `handle_tool_failures` and the default events path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:834..894  ▶ search 'fn default_events_path' in src/commands_state.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `default_events_path` and understand where the state events are stored vs where the audit data lives.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:11..31  ▶ search 'tool_failure_summary' in scripts/extract_trajectory.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'm getting a clearer picture. The trajectory extractor uses `state_graph_tools` which reads from audit data (multi-session). The `state failures tools` command reads from `default_events_path()` which is the current events.jsonl file (single run).
+
+Let me look at how `tool_failure_summary` is computed in `state_graph_tools.py` to understand what data the trajectory uses.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_failure_summary' in scripts/state_graph_tools.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `tool_failure_summary` might be coming from the dashboard build script. Let me look at where the trajectory extractor consumes it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1230..1280 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the picture. The `tool_failure_summary` and `recent_tool_failure_summary` come from `state_summary` which is loaded from the dashboard build. The trajectory extractor uses dashboard data (multi-session, processed from audit logs), while `state failures tools` reads directly from the current events.jsonl file.
+
+Let me now look at the `build_tool_failures_report` more carefully - specifically, what event types it looks for. It filters for `ToolCallCompleted` events with error/status=error/success=false. But what if the problem is that the state CLI filters by `ToolCallCompleted` only, while the dashboard/trajectory counts failures from different event types?
+
+Let me also look at the `failure_summary` on the dashboard side to see how `build_evolution_dashboard.py` computes tool failure counts.
+
+Actually, wait - let me first understand the basic issue more concretely. Let me rerun the two queries.
+
+But first, let me look at `build_evolution_dashboard.py` to see how it computes `tool_failure_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_failure_summary' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `tool_failure_summary_for_sessions` function to understand how dashboard computes tool failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5169..5269 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the dashboard `tool_failure_summary` aggregates data from `session_states` which are built from audit data. Each session has a `tool_failures` dict with `failed_tool_count`, `recovered_failed_tool_count`, `unrecovered_failed_tool_count`, etc. This is based on the audit log data.
+
+Now, the state CLI `handle_tool_failures` → `build_tool_failures_report` reads from the raw events file (`.yoyo/state/events.jsonl`) and filters for `ToolCallCompleted` events with error/status=failed/success=false.
+
+The key differences could be:
+1. **Scope**: Trajectory uses multi-session dashboard/audit data; state CLI reads from single run's events
+2. **Event source**: Trajectory uses dashboard's processed data; state CLI reads raw events
+3. **Definition of failure**: Different filters
+
+Let me understand this more concretely. Let me look at the `session_state_projection` in the dashboard to see how it computes per-session `tool_failures`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def session_state_projection' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to see how tool failures are computed per session.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:4945..5065 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the dashboard's `tool_failures` for each session comes from `work_summary` which comes from `summarize_events_for_work` or similar. Let me trace how this is built: the dashboard loads sessions from `load_sessions()` which reads audit data. Each session's `work_summary` includes `failed_tool_count`, `recovered_failed_tool_count`, etc.
+
+Now the key issue: The trajectory says `failed_tool_summary.bash_tool_error=4` but `yyds state failures tools` says "no tool failures found". 
+
+The trajectory uses dashboard data (from audit log, multi-session). The state CLI reads from `.yoyo/state/events.jsonl` (current run only).
+
+Let me check if the current run has a state events file and see what's in it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/events.jsonl 2>/dev/null && wc -l .yoyo/state/events.jsonl 2>…  ▶ $ ls -la .yoyo/session_staging/ 2>/dev/null || echo "no session staging" ✓ (11ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there are any ToolCallCompleted events with errors or failures in the state events file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c 'ToolCallCompleted' .yoyo/state/events.jsonl 2>/dev/null  ▶ $ grep 'ToolCallCompleted' .yoyo/state/events.jsonl | python3 … (15 lines) ✓ (22ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 85 ToolCallCompleted events but none with error/status=failed/success=false. So the state CLI reporting "no tool failures found" is correct based on its filtering criteria.
+
+Now the issue is that the dashboard from audit log reports 4 bash_tool_error failures. The discrepancy is between:
+1. **State events** (events.jsonl from current run) - reports no tool failures 
+2. **Audit log / dashboard** (multi-session audit data) - reports 4 bash_tool_error failures
+
+This IS a scope difference - the state CLI looks at one run's events.jsonl, while the trajectory looks at multi-session audit data. But they should still be consistent for the SAME session window.
+
+Let me dig deeper. Let me look at how the dashboard computes tool failures from audit logs. The dashboard looks at `work_summary.failed_tool_count` etc. Let me search for how these are computed from audit data.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tool_count' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where `failed_tool_count` is first computed in the dashboard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:690..770 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `failed_tools` is built. Let me search for where `summarize_transcript_actions` or where `failed_tools` list is populated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search '\"failed_tools\"' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tools' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the function that builds `failed_tools` - the transcript summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:630..690 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The dashboard computes `failed_tools` from **transcript log files** (from the audit-log session transcripts stored in `sessions/day-N-<ts>/transcripts/*.log`). It looks for action patterns in transcript lines and checks if they failed.
+
+The state CLI reads from **state events** (`.yoyo/state/events.jsonl`), looking for `ToolCallCompleted` events with error/status=failed/success=false.
+
+These are fundamentally different sources:
+- Dashboard/trajectory: transcript logs from audit (multi-session)
+- State CLI: state events (current run only)
+
+They SHOULD agree for the same session if both the state events and transcripts are correctly capturing failures. But they can diverge if:
+1. Transcripts capture failures that state events don't (transcript-only failures)
+2. State events capture failures that transcripts don't (state-only failures)
+
+Now, the task says `yyds state failures tools` says "no tool failures found" for the current run. But the trajectory graph pressure says `bash_tool_error=4`. 
+
+Let me check: is the trajectory running in this environment? The task says the trajectory reports 4 bash_tool_error failures. But those are from the audit log, which would be from past sessions. The current run's events have no tool failures. So the discrepancy is legitimate: the trajectory is reporting historical failures while the state CLI shows current run has no failures.
+
+But the task objective says: "Make tool-failure diagnostics consistent so the trajectory and state CLI agree on whether tool failures exist."
+
+The real question is: does the state CLI have a way to look at historical sessions (like the trajectory does)? Let me re-read the code...
+
+Looking at `handle_tool_failures`:
+- By default, it reads tail events from `.yoyo/state/events.jsonl` (current run only)
+- With `--all` it reads all events
+- There is no option to query audit logs
+
+The trajectory only reads from dashboard/audit logs (multi-session), never from the state events file.
+
+So we have:
+- `yyds state failures tools` → reads from events.jsonl (single run)
+- trajectory `failed_tool_summary` → reads from dashboard (multi-session audit)
+
+The fix should make the state CLI ALSO able to read from audit data when flag is provided. Or, alternatively, document the scope difference clearly.
+
+The Fallback says: "If investigation reveals the discrepancy is a legitimate scope difference (trajectory intentionally counts differently from state CLI), document the difference in a code comment and add a note to the trajectory output explaining the scope."
+
+But let me think about this more. The task says to make them consistent. Let me look at whether there's a `--source` or `--audit` flag on the state CLI.
+
+Actually, let me re-read the `handle_tool_failures` function more carefully - maybe there's already logic I missed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tool_failures' in src/commands_state.rs  ▶ read src/commands_state.rs:834..904 ✓ (5ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+
+1. **State events** (`.yoyo/state/events.jsonl`) → `yyds state failures tools` reads from this, looking for `ToolCallCompleted` events with error/status=failed/success=false. This is a **single-run** view.
+
+2. **Dashboard/audit** → trajectory `failed_tool_summary` reads from dashboard data (built from audit logs). This is a **multi-session** view.
+
+The core question: Are they supposed to be looking at the same data, or is this a legitimate scope difference?
+
+Looking at the task evidence:
+- Trajectory "Graph-derived next-task pressure" says `failed_tool_summary.bash_tool_error=4`
+- `yyds state failures tools` says "no tool failures found"
+- The assessment says: "This mismatch could hide real tool-call problems"
+
+But this IS a legitimate scope difference! The trajectory looks at multi-session history while the state CLI looks at the current run. They're answering different questions.
+
+However, the task asks to reconcile them. Let me think about the right approach:
+
+**Option A**: Add an `--audit` flag to `yyds state failures tools` that reads from audit data (multi-session) instead of state events. This way the user can run `yyds state failures tools --audit` and see the same data the trajectory sees.
+
+**Option B**: Document the scope difference clearly.
+
+**Option C**: Add the state-event-based tool failure count into the trajectory output for the current session.
+
+Actually, let me re-read the task more carefully. The Success Criteria says:
+- "`state failures tools` and trajectory `failed_tool_summary` counts are consistent for the same session window"
+- "If they intentionally count different things, the difference is documented and the trajectory graph-pressure rows quote the right diagnostic surface"
+
+So the key action is: either make them consistent, or document the difference.
+
+Let me now check: what's the actual situation? Does the trajectory's `failed_tool_summary.bash_tool_error=4` come from transcripts of PAST sessions? If so, the state CLI would naturally say "no failures" for the current run's events. The mismatch is expected and legitimate.
+
+But the problem is: if the trajectory says "there are 4 bash tool errors" and suggests fixing them, but the state CLI says "no errors," the agent gets confused. The trajectory graph-pressure rows should be clear about their scope.
+
+Let me look at how the graph-pressure rows are generated to understand what message is sent to the agent.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.2s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1700..1730 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at `failed_tool_category_lesson` and `failed_tool_graph_title` to understand what the trajectory tells the agent.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def failed_tool_category_lesson' in scripts/extract_trajectory.py  ▶ search 'def failed_tool_graph_title' in scripts/extract_trajectory.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`failed_tool_category_lesson` might be imported from `build_evolution_dashboard.py`. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tool_category_lesson' in scripts/extract_trajectory.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's imported from `build_evolution_dashboard`. Let me look at the imports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'from build_evolution_dashboard import' in scripts/extract_trajectory.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK. Now let me think about the approach more carefully.
+
+The fundamental issue is:
+1. **trajectory** uses dashboard data (transcript-based tool failures from audit logs, multi-session)
+2. **state CLI** uses state events (`ToolCallCompleted` with error/status=failed/success=false, single-run from events.jsonl)
+
+These are two DIFFERENT data sources measuring DIFFERENT things. They can and will disagree. The task says to reconcile them.
+
+Let me now think about what the right solution is. The Fallback says: "If investigation reveals the discrepancy is a legitimate scope difference (trajectory intentionally counts differently from state CLI), document the difference in a code comment and add a note to the trajectory output explaining the scope. Do not force them to agree if they answer different questions."
+
+I think that's the right approach here. The trajectory and state CLI have fundamentally different data sources. But we should make the scope clear:
+
+1. In the trajectory's graph-pressure rows, note that the data comes from audit/transcript analysis
+2. In the state CLI output, note that it reads from state events only
+3. Make the state CLI able to ALSO query audit data if the user wants the dashboard-consistent view
+
+Actually wait, let me re-read the Evidence section more carefully: "These two queries disagree on whether tool failures exist in the current session window"
+
+The "current session window" - that's key. The trajectory looks at *multi-session* history for graph pressure, but it also has a "recent_tool_failure_summary" with `recent_window_size = 5`. If the current session has no failures but the past 5 do, it's accurate that they disagree.
+
+Now, the implementor says: "This mismatch could hide real tool-call problems. If the trajectory extractor sees failures the state CLI doesn't, the diagnostics are incomplete."
+
+I think the right fix is:
+1. Document the scope difference in a code comment in `commands_state.rs`  
+2. Add a note in the trajectory output explaining scope
+3. Add a `--source audit` flag to the state CLI so users can query both sources
+
+Actually, let me reconsider. The task says to make them "consistent for the same session window." The most useful change would be to:
+
+1. Add the state-events-based tool failure count to the trajectory too (so the trajectory reports both: what the dashboard sees AND what the state events see)
+2. Document the scope difference in both places
+
+But wait, let me look at the trajectory more carefully. It already computes `transcript_only_failed_tool_count` and `state_only_failed_tool_count`. That's reconciling the two sources! Let me look at how these are computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5056..5106 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the dashboard already reconciles state vs transcript tool failures with `state_only_failed_tool_count` and `transcript_only_failed_tool_count`. And the trajectory already surfaces those as graph-pressure suggestions (lines 1725-1753).
+
+But the dashboard's `tool_failure_summary` (which the trajectory uses for the `failed_tool_summary.bash_tool_error` metric) is ENTIRELY based on transcript analysis (from audit logs). It never reads state events. The `state_only_failed_tool_count` tracks how many failures appear in state but not transcripts, but the main `tool_failure_summary` categories are transcript-based.
+
+So the issue is: 
+- Trajectory's `failed_tool_summary.bash_tool_error=4` comes from AUDIT TRANSCRIPTS (multi-session)
+- State CLI's `yyds state failures tools` reads from STATE EVENTS (single-run)
+
+They disagree because they're different data sources covering different time windows.
+
+The right approach per the task's fallback: document this clearly.
+
+But let me also consider: can I make the trajectory ALSO report what the state CLI would see? The trajectory already knows about `state_only_failed_tool_count`. But it doesn't include state-events-based tool failure counts.
+
+Actually, re-reading the task more carefully: "Make tool-failure diagnostics consistent so the trajectory and state CLI agree on whether tool failures exist."
+
+I think the most useful approach is:
+1. Add a `--source audit` / `--from-audit` flag to `yyds state failures tools` so it can read from the audit log (same source as trajectory)
+2. In the trajectory graph pressure output, note that the counts come from audit/transcript analysis
+3. Document the scope difference in code comments
+
+But wait, I need to check if audit data is even available in this repo. Let me check.
+
+Actually, let me step back and think about what change would be minimal and meet the task's objectives.
+
+The task says: "Start by comparing the failure-counting logic: how does `extract_trajectory.py` define a "tool failure" vs how does `commands_state.rs` define one?"
+
+Let me do that comparison:
+
+**extract_trajectory.py**: 
+- Gets data from dashboard's `tool_failure_summary` and `recent_tool_failure_summary`
+- Dashboard computes `tool_failure_summary` from `session_states` → each session's `tool_failures` comes from `work_summary.failed_tool_count`, `work_summary.failed_tool_summary` (category_counts)
+- `work_summary` is computed from transcript logs (audit data), NOT from state events
+- Definition: any tool action that `transcript_action_failed()` returns true for, specifically for read/edit/write/search actions. Also bash commands with ✗ marker.
+
+**commands_state.rs**:
+- Reads from `.yoyo/state/events.jsonl` (state events)
+- Filters for `ToolCallCompleted` events
+- Definition: payload has `error` field, `status == "error"` or `"failed"`, or `success == false`
+
+These are fundamentally different:
+1. Different event sources (transcripts vs state events)
+2. Different time windows (multi-session audit vs single-run events)
+3. Different failure definitions
+
+Given the fallback says to document the difference, I think the right move is:
+1. Add documentation in both places about the scope difference
+2. Add a note to the trajectory output explaining that tool failure counts come from audit transcripts
+3. Add the state-events-based tool failure count to the trajectory for comparison
+
+But actually, let me re-check whether the trajectory's `failed_tool_summary` could be matching state event data. Let me look more carefully at what goes into the dashboard's `work_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def work_summary' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+

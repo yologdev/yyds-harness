@@ -1,0 +1,169 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 4012 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 89
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task description says there's a diff but the CHANGES MADE section is empty. Let me check what's actually in the repo - maybe there were changes made but the diff wasn't provided in the prompt. Let me look at the current state of the files mentioned.
+
+The task is about making analysis-only task pressure landable. Let me check git status and the actual files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short 2>/dev/null…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD --stat 2>/dev/nu… ✓ (15ms)
+ ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes to `scripts/preseed_session_plan.py`. Let me see the diff and check the task description more carefully. The task mentions changes to three files but only one seems modified. Let me check the diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- scripts/prese…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- scripts/state… ✓ (16ms)
+ ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff and also check the files mentioned in the task. The diff shows changes only to `scripts/preseed_session_plan.py`. The task mentions changes to three files: `scripts/preseed_session_plan.py`, `scripts/state_graph_tools.py`, and `scripts/test_state_graph_tools.py`. But only `preseed_session_plan.py` was changed.
+
+Let me read the full diff to understand what was implemented.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- scripts/prese… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff output is truncated by the `...` lines. Let me read the full file to see the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:664..784 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now check if the `_has_analysis_only_pressure` function exists and what it checks for. Also need to check if there are tests covering this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_has_analysis_only_pressure' in /home/runner/work/yyds-harness/yyds-harness/scripts  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (25ms)
+ ✓ (103ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is failing because the analysis-only pressure test case expects the ANALYSIS_ONLY_TASK_TITLE to be selected, but now the analysis-only pressure is causing a _forced_landable_src_task() to be returned instead. The test was written expecting the old behavior where analysis-only pressure would still select the analysis-only task. The implementation changed this to force a landable src task.
+
+Let me look at the test case to understand what's going on.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:990..1050 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test at line 1016 expects that when analysis-only pressure is active (task_analysis_only_attempt_count=2, task_no_edit_revert_count=1) WITH lifecycle metrics (state_run_incomplete_count=2), the ANALYSIS_ONLY_TASK_TITLE is selected. But the new implementation now forces a landable src task instead when analysis_only_active is true.
+
+The test at line 1016 is failing because:
+1. The assessment has analysis-only pressure (task_analysis_only_attempt_count=2, task_no_edit_revert_count=1)
+2. AND it has lifecycle metrics (state_run_incomplete_count=2)
+3. The old behavior: ANALYSIS_ONLY_TASK_TITLE was selected
+4. New behavior: _forced_landable_src_task() is returned because when analysis_only_active=True and no candidates survived, we force a src task
+
+Wait, let me re-read the logic. The analysis is:
+- analysis_only_active is True (task_analysis_only_attempt_count=2)
+- The ANALYSIS_ONLY_TASK_TITLE task is skipped because analysis_only_active is True (line 731-734)
+- The LIFECYCLE_TASK_TITLE task is skipped because analysis_only_active is True (line 742-744)
+- Other tasks might match based on keywords
+
+But the test at line 1016 expects ANALYSIS_ONLY_TASK_TITLE. However, the new code at line 731-734 skips the analysis-only task when analysis_only_active is True. So the test assertion is now wrong relative to the new behavior.
+
+This is an inconsistent state. The implementation changed the behavior (skip analysis-only task when pressure active, force a landable task instead), but the test was not updated to match.
+
+Let me check if there are keyword matches for other tasks in that assessment text at line 1008-1014.
+
+The assessment text has:
+- "task_analysis_only_attempt_count" 
+- "task_no_edit_revert_count"
+- "state_run_incomplete_count"
+- "lifecycle"
+
+The "lifecycle" keyword would match the LIFECYCLE_TASK, but it's skipped because analysis_only_active is True. 
+
+Other tasks... let me check what keywords exist in TASKS.
+
+Actually, the test failure shows the forced task "Stabilize run completion guard panic test" was selected, which is from _forced_landable_src_task(). This means no candidate survived the keyword matching + filtering. So the code fell through to the forced landable path.
+
+This is a real bug: the task description says the implementation should work, and the test should be updated to expect the new behavior. But the test wasn't updated.
+
+Let me look at the test more carefully - there are actually TWO tests at lines 1015-1019 and at lines 1040-1048 that expect ANALYSIS_ONLY_TASK_TITLE. Both need updating.
+
+But wait - the task description says:
+> Fallback:
+> - If `preseed_session_plan.py --test` already passes and no new test case for analysis-only pressure is needed (i.e., current tests already cover the path), write an obsolete note explaining coverage already exists. Do not add tests for already-covered behavior.
+
+The task says: if tests already pass, write an obsolete note. But the tests DON'T pass - they fail because the implementation changed behavior but the tests weren't updated.
+
+This is a FAIL situation: the implementation changed the behavior (which matches the task intent), but the existing tests weren't updated to match, causing test failures. The build/test status in the prompt says "PASS" but the actual tests fail.
+
+Let me verify once more...
+
+Actually, let me run the tests again to be absolutely sure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (116ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test fails. Let me re-read the task description's Fallback section more carefully:
+
+> Fallback:
+> - If `preseed_session_plan.py --test` already passes and no new test case for analysis-only pressure is needed (i.e., current tests already cover the path), write an obsolete note explaining coverage already exists. Do not add tests for already-covered behavior.
+
+This says: IF the tests pass AND no new test case is needed, write an obsolete note. But the tests DON'T pass. So this fallback doesn't apply.
+
+The task says the edit surface includes:
+- scripts/preseed_session_plan.py (task selection logic, analysis-only pressure handling)
+- scripts/state_graph_tools.py (analysis-only detection helpers)
+- scripts/test_state_graph_tools.py (coverage for the new pressure path)
+
+But only `scripts/preseed_session_plan.py` was changed, and the tests weren't updated. The verifier says:
+- `python3 scripts/preseed_session_plan.py --test` - this FAILS
+- `python3 -m unittest scripts.test_state_graph_tools` - let me check this
+
+The implementation is incomplete: it changed the behavior but didn't update the tests to match. This is a FAIL.
+
+Actually wait, let me re-read more carefully. The test at line 1016 expects ANALYSIS_ONLY_TASK_TITLE. But the new behavior is: when analysis_only_active is True, skip ANALYSIS_ONLY_TASK and force a landable task. The test should have been updated to expect the new forced task behavior.
+
+But the tests at lines 1040-1048 also expect ANALYSIS_ONLY_TASK_TITLE. These also need updates.
+
+The implementation work is incomplete. The tests weren't updated. FAIL.
+
+Let me also check state_graph_tools.py and test_state_graph_tools.py to see if changes were expected there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD -- scripts/state…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (35ms)
+ ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`state_graph_tools.py` tests pass, but those files weren't changed. The only change is in `preseed_session_plan.py`, and its `--test` flag fails.
+
+The verdict is clear: FAIL. The implementation changed the behavior (when analysis-only pressure is active, the analysis-only task is skipped and a forced landable task is selected instead), but the existing tests in `preseed_session_plan.py --test` were not updated to match this new behavior. The test at line 1016 still expects the old behavior where `ANALYSIS_ONLY_TASK_TITLE` is returned.
+
+The build status claimed "Tests: PASS" but the verifier command `python3 scripts/preseed_session_plan.py --test` actually fails with an AssertionError. The implementation is incomplete.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+The implementation changes `choose_task()` to skip the analysis-only task and force a landable src task when analysis-only pressure is active — matching the task intent. However, the existing self-tests in `preseed_session_plan.py --test` were not updated and now fail with an `AssertionError` at line 1016 (the test expects `ANALYSIS_ONLY_TASK_TITLE` but gets the forced result). The claimed "Tests: PASS" is wrong.
+  + Verdict: FAIL
+  + Reason: The verifier `python3 scripts/preseed_session_plan.py --test` fails — the implementation correctly skips the analysis-only meta-task when pressure is active, but did not update the existing self-tests (line 1016) that still assert ANALYSIS_ONLY_TASK_TITLE is returned, causing an AssertionError.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (9ms)

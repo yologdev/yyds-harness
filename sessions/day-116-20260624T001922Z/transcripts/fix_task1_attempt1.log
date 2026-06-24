@@ -1,0 +1,888 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 32300 of '.yoyo/state/events.jsonl': EOF while parsing an object at line 1 column 10455
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task. The evaluator says `python3 scripts/preseed_session_plan.py --test` fails because the analysis-only pressure path skips `ANALYSIS_ONLY_TASK_TITLE` but never calls `_forced_landable_src_task()` (dead code), so it falls through to the generic fallback instead of selecting a concrete landable src/ task.
+
+Let me start by reading the relevant files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py  ▶ read scripts/state_graph_tools.py ✓ (128ms)
+ ✓ (117ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The files are truncated. Let me read the key functions related to the analysis-only pressure handling. I need to see the `choose_task` function, the `check_task_contradiction` function, and the `ANALYSIS_ONLY_TASK_TITLE` handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Let me read the critical sections - the `choose_task` function and the analysis-only pressure handling:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'ANALYSIS_ONLY' in scripts/preseed_session_plan.py  ▶ search 'analysis_only' in scripts/preseed_session_plan.py ✓ (127ms)
+ ✓ (129ms)
+ ✓ (193ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `choose_task` function and the surrounding area to understand the current logic.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:711..911 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. Let me trace through the logic:
+
+1. At line 716: `analysis_only_active = _has_analysis_only_pressure(metrics)`
+2. The loop at lines 718-754 iterates through TASKS:
+   - At line 728-734, when `task["title"] == ANALYSIS_ONLY_TASK_TITLE` and `analysis_only_active` is True, it skips the self-referential meta-task.
+   - At line 741-744, when a LIFECYCLE_TASK_TITLE is encountered and `analysis_only_active` is True, it skips lifecycle cleanup too.
+   - Other tasks go through the normal filter (protected files, file existence, file count > 2).
+3. At line 759-761: If `analysis_only_active`, sort candidates with src-file tasks first.
+4. At lines 763-767: Return the first non-contradicted candidate.
+5. If all contradicted, lines 770-774: Return the first candidate with annotation.
+6. If no candidates at all (line 776): Return the generic fallback.
+
+The evaluator says: "the analysis-only pressure path now skips `ANALYSIS_ONLY_TASK_TITLE` but never calls `_forced_landable_src_task()` (dead code), so the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+So the issue is: when `analysis_only_active` is True and we skip the ANALYSIS_ONLY_TASK_TITLE, and we also skip the LIFECYCLE_TASK_TITLE, and other tasks might be filtered out by protected files check or not match keys... we could end up with an empty candidates list. The evaluator says there was supposed to be a `_forced_landable_src_task()` function that would be called to produce a concrete landable src/ task, but it's dead code / never called.
+
+Let me look for `_forced_landable_src_task`:
+
+Also, I should look at `_has_analysis_only_pressure` to understand the metrics involved.
+
+Let me also check what happens when `--test` is run and understand the failure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_forced_landable' in scripts/preseed_session_plan.py  ▶ search '_has_analysis_only_pressure' in scripts/preseed_session_plan.py  ▶ search '_analysis_only_seed_recently_blocked' in scripts/preseed_session_plan.py ✓ (130ms)
+ ✓ (135ms)
+ ✓ (168ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:625..715 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. `_forced_landable_src_task()` is defined but never called. In `choose_task`, when `analysis_only_active` is True:
+
+1. The ANALYSIS_ONLY_TASK_TITLE is skipped (line 728-734)
+2. LIFECYCLE_TASK_TITLE is skipped (line 741-744)
+3. Other candidates that match keys go through protected files check, file existence check, file count > 2 check
+
+The problem: IF after all these filters, `candidates` is empty, the code falls through to the generic fallback at line 776. But it should instead call `_forced_landable_src_task()` to produce a concrete landable task.
+
+The fix should be: when `analysis_only_active` is True and candidates is empty, call `_forced_landable_src_task()`. If that returns something, use it. If not, fall through to the generic fallback.
+
+Let me also check the `--test` code to understand what assertion fires.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1360..1560 ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the tests earlier to find the one that tests the analysis-only pressure path:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only_pressure|analysis.only.*test|task_analysis_onl…' in scripts/preseed_session_plan.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the actual metric name:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at lines around 618:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:616..626 ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also read the full section of the test to understand the exact issue. Let me read the `--test` section more carefully, especially around where it tests analysis-only pressure.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the test to see the actual error:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (124ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test at line 1008 fails. The test expects `ANALYSIS_ONLY_TASK_TITLE` ("Make analysis-only task pressure landable") but gets the fallback "Repair evidence-backed planning after no-task sessions". Let me see what test is at line 1008.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:990..1040 ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue. Let me trace through what happens with the test at line 1000-1011:
+
+```python
+assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress or terminal evidence.
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): Implementation task reverted without touching files.
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
+"""
+task = choose_task(assessment)
+assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+```
+
+Let me trace through `choose_task`:
+
+1. `numeric_metrics` will parse metrics:
+   - `task_analysis_only_attempt_count` = 2
+   - `task_no_edit_revert_count` = 1
+   - `state_run_incomplete_count` = 2
+
+2. `has_lifecycle_metrics` will be True (state_run_incomplete_count > 0)
+
+3. `_has_analysis_only_pressure` will be True (task_analysis_only_attempt_count=2 > 0)
+
+4. In the loop:
+   - First candidate task probably matches some keys like "analysis" or "no-edit revert" or similar.
+   - When we hit `ANALYSIS_ONLY_TASK_TITLE` task: `analysis_only_active` is True → skip it
+   - LIFECYCLE_TASK_TITLE: `analysis_only_active` is True → skip it (line 741-744)
+   - Other tasks... some may match keys from the assessment text
+
+But wait - the test expects `ANALYSIS_ONLY_TASK_TITLE` to be returned. But with the current code, when `analysis_only_active` is True, the ANALYSIS_ONLY_TASK_TITLE is skipped. So the test expects the analysis-only task to be selected, but the code now skips it.
+
+The evaluator says: "the analysis-only pressure path now skips ANALYSIS_ONLY_TASK_TITLE but never calls _forced_landable_src_task() (dead code), so the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+So the fix needs to:
+1. When `analysis_only_active` is True and we've skipped the ANALYSIS_ONLY_TASK_TITLE, and we end up with no (or insufficient) candidates, we should call `_forced_landable_src_task()`.
+
+But wait, the test expects the ANALYSIS_ONLY_TASK_TITLE to be returned. Let me re-read the task more carefully.
+
+Actually, the evaluator says the test fails because `_forced_landable_src_task()` is dead code (never called). But looking at the test at line 1000-1011, it expects `ANALYSIS_ONLY_TASK_TITLE` to be returned, not a forced src task.
+
+Hmm, but the test at line 1007 creates an assessment with `task_analysis_only_attempt_count=2` and expects `ANALYSIS_ONLY_TASK_TITLE` to be returned. With the current code where analysis-only task is skipped when `analysis_only_active` is True, this will fail.
+
+But the evo readiness and task say: "Make analysis-only task pressure landable" - meaning the meta-task itself should become a landable task. The task says to make sure the analysis-only pressure produces landable task selections... not that it should return the meta-task itself.
+
+Wait, I think I misread the evaluator feedback. Let me re-read: "the analysis-only pressure path now skips ANALYSIS_ONLY_TASK_TITLE but never calls _forced_landable_src_task() (dead code), so the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+So when `analysis_only_active` is True:
+- ANALYSIS_ONLY_TASK_TITLE is skipped (self-referential meta-task)
+- LIFECYCLE_TASK_TITLE is skipped 
+- Other tasks might not match keys or be filtered
+- If no candidates remain, falls through to the fallback
+
+The fix: when `analysis_only_active` is True and candidates is empty (or we want to prefer a landable src task), call `_forced_landable_src_task()` instead of falling through to the generic fallback.
+
+But the test at line 1000-1011 expects ANALYSIS_ONLY_TASK_TITLE to be returned... Let me re-read the test.
+
+Actually, wait. The test at line 1000-1011 has `analysis_only_active` as True. But the assessment text also contains keys like "analysis-only attempts" and "no-edit" and "reverted". These might match keys in the ANALYSIS_ONLY_TASK_TITLE task itself...
+
+Let me look at the TASKS list to find the ANALYSIS_ONLY_TASK_TITLE entry:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '"Make analysis-only task pressure landable"' in scripts/preseed_session_plan.py ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where the TASKS list contains this title.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '"title": ANALYSIS_ONLY_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where the ANALYSIS_ONLY_TASK_TITLE constant is used as a value in TASKS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ANALYSIS_ONLY_TASK_TITLE,' in scripts/preseed_session_plan.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The title values in TASKS probably just use the string literal. Let me search for the exact string in the TASKS list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "Make analysis-only ta… ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the TASKS entry for this title at line 253:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:248..298 ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Let me trace through the failing test case step by step.
+
+The test at lines 1000-1011:
+```python
+assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress or terminal evidence.
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): Implementation task reverted without touching files.
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
+"""
+task = choose_task(assessment)
+assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+```
+
+Metrics parsed:
+- task_analysis_only_attempt_count = 2
+- task_no_edit_revert_count = 1
+- state_run_incomplete_count = 2
+
+`analysis_only_active` = True
+
+Now the loop through TASKS:
+- The ANALYSIS_ONLY_TASK_TITLE has keys that match: "reverted_no_edit", "no-edit", etc. But at line 728-734, since `analysis_only_active` is True, it's skipped.
+- LIFECYCLE_TASK_TITLE: has `state_run_incomplete` matching. But at line 741-744, since `analysis_only_active` is True, it's skipped.
+- Other tasks... let me think about what other tasks could match.
+
+Other TASK keys in the assessment: "no-edit revert", "reverted no edit", "no file progress", "no terminal evidence", "implementation ended", "analysis-only attempt"
+
+Let me look at the other tasks' keys to see if any match.
+
+Actually, the issue is clear now. The ANALYSIS_ONLY_TASK_TITLE is skipped when analysis_only_active is True, but the test expects it to be returned. Previously, the test expected the analysis-only task itself to be selected (the meta-task about "Make analysis-only task pressure landable"). But now the code skips it and falls through to the fallback.
+
+The fix needs to:
+1. When `analysis_only_active` is True and the ANALYSIS_ONLY_TASK_TITLE is skipped, IF no other non-protected, non-lifecycle candidate remains, call `_forced_landable_src_task()` to get a landable src/ task
+2. If `_forced_landable_src_task()` returns None, fall through to the generic fallback
+
+But the test at line 1008 expects ANALYSIS_ONLY_TASK_TITLE to be returned. The evaluator says the function should call `_forced_landable_src_task()` instead...
+
+Wait, but the test expects `ANALYSIS_ONLY_TASK_TITLE`. If we call `_forced_landable_src_task()`, we won't get `ANALYSIS_ONLY_TASK_TITLE`. So the test needs to be updated too, OR the test shouldn't be asserting that.
+
+Let me re-read the evaluator feedback more carefully:
+
+"the analysis-only pressure path now skips `ANALYSIS_ONLY_TASK_TITLE` but never calls `_forced_landable_src_task()` (dead code), so the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+And: "Fix the issues the evaluator identified. The build and tests already pass — focus on completing the missing functionality, not on refactoring what works."
+
+So the evaluator is saying:
+1. The current code skips ANALYSIS_ONLY_TASK_TITLE when analysis_only_active is True (good - avoids self-referential meta-task)
+2. But it doesn't call `_forced_landable_src_task()` to get a concrete landable src/ task
+3. So it falls through to the generic fallback
+
+The fix: When analysis_only_active is True and candidates list doesn't have good results, use `_forced_landable_src_task()`. If that returns a task, use it; otherwise fall through to the existing fallback.
+
+The test at line 1008 expects ANALYSIS_ONLY_TASK_TITLE, but that's the old behavior. Since we're changing the logic to skip the self-referential task, the test should also be updated to expect the forced landable task result.
+
+Wait, I realize I should look at what all tests reference the analysis-only pressure and figure out which tests need updating. Let me check all the test assertions around analysis-only.
+
+Actually, let me re-read the test at lines 1000-1011. This test creates an assessment that triggers analysis_only_active=True with lifecycle_metrics also present. The test currently expects ANALYSIS_ONLY_TASK_TITLE. But with the new logic, ANALYSIS_ONLY_TASK_TITLE is skipped, and since LIFECYCLE_TASK_TITLE is also skipped (because analysis_only_active takes priority), we need to land a forced src task.
+
+The fix should be in `choose_task`:
+- After the candidate loop, if `analysis_only_active` is True and candidates is empty, call `_forced_landable_src_task()`.
+- If that returns a task, use it.
+- If it returns None, fall through to the generic fallback.
+
+And the test at 1008 should be updated to expect whatever `_forced_landable_src_task()` returns.
+
+Let me also check what task `_forced_landable_src_task()` would return. It scans TASKS for src/*.rs tasks with ≤2 files and no protected files. Let me check what src tasks exist.
+
+Let me look at the TASKS list to see which ones have src/ files:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see what src tasks are available for the forced landable path:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"files"' scripts/pres… ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The src/ tasks with ≤2 files (and no protected files):
+- Line 171: "files": "src/state.rs" — 1 file
+- Line 210: "files": "src/tool_wrappers.rs" — 1 file
+- Line 361: "files": "src/commands_state.rs, src/commands_state_graph.rs" — 2 files
+
+Let me look at what task is at line 171 and 210 to understand their titles:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:160..210  ▶ read scripts/preseed_session_plan.py:200..250 ✓ (133ms)
+ ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me trace through what happens with the failing test case.
+
+Test assessment (lines 1000-1011):
+```
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): ...
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): ...
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): ...
+```
+
+Metrics:
+- task_analysis_only_attempt_count = 2
+- task_no_edit_revert_count = 1  
+- state_run_incomplete_count = 2
+
+`analysis_only_active` = True (because task_analysis_only_attempt_count > 0)
+`lifecycle_metrics_present` = True (because state_run_incomplete_count > 0)
+
+Now loop through TASKS:
+
+1. First task (sub-agent API key): Keys don't match any text in the assessment. Skip.
+2. Second task (cache metrics): Keys don't match. Skip.
+3. Third task (state.rs): Keys are "run_completion_guard", "test lifecycle error", "flaky test", "state::tests::run_completion_guard". None match the assessment text. Skip.
+4. Fourth task (tool_wrappers.rs): Keys are "tool-path recovery", etc. None match. Skip.
+5. ANALYSIS_ONLY_TASK_TITLE: Keys include "force analysis-only attempts into action", "task_analysis_only_attempt_count", "reverted_no_edit", etc. These all match the assessment text. But at line 728-734:
+   ```python
+   if task["title"] == ANALYSIS_ONLY_TASK_TITLE:
+       if _analysis_only_seed_recently_blocked(lower):
+           continue
+       if analysis_only_active:
+           continue  # SKIPPED!
+   ```
+   So this task is skipped because `analysis_only_active` is True.
+
+6. LIFECYCLE_TASK_TITLE: Keys include "state_run_incomplete", etc. These match. But at line 741-744:
+   ```python
+   if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+       if analysis_only_active:
+           continue  # SKIPPED!
+   ```
+   So this task is also skipped.
+
+7. Any other tasks? Let me check...
+
+Actually wait, I need to look more carefully. Let me check if there are other tasks that might match the assessment's keywords. The assessment has:
+- "analysis-only attempts into action"
+- "reverted tasks to leave concrete evidence"
+- "state and model lifecycle gaps"
+
+Other tasks... The SEARCH_FRICTION_TASK_TITLE has keys like "search regex error" etc. None match.
+
+So no candidates end up in the list. Then `choose_task` falls through to the fallback at line 776, which returns "Repair evidence-backed planning after no-task sessions".
+
+The fix needed:
+1. After the loop, check if `analysis_only_active` is True and candidates is empty
+2. If so, call `_forced_landable_src_task()`
+3. If it returns a valid task, use it
+4. Otherwise, fall through
+
+And the test at line 1008 needs to be updated. Instead of expecting `ANALYSIS_ONLY_TASK_TITLE`, it should expect the result of `_forced_landable_src_task()`, which would be the smallest src/ task.
+
+Let me figure out which src/ task `_forced_landable_src_task()` would return:
+- "Stabilize run completion guard panic test" — files: "src/state.rs" (1 file, not protected)
+- "Add recovery hints for common tool-path and permission errors" — files: "src/tool_wrappers.rs" (1 file, not protected)
+- Other src tasks with more files would be filtered by the ≤2 file count
+
+The first one (by order in TASKS) with the smallest file count would be "Stabilize run completion guard panic test" (index 0, 1 file).
+
+Wait, the sort is: `candidates.sort(key=lambda t: (_task_file_count(t), TASKS.index(t)))`. Both have 1 file, so the one that appears first in TASKS would be selected. That's "Stabilize run completion guard panic test" (line 170, index in TASKS).
+
+So the test at line 1008 should expect "Stabilize run completion guard panic test" instead of ANALYSIS_ONLY_TASK_TITLE.
+
+But wait, the test also has line 1011:
+```python
+assert "task_analysis_only_attempt_count" in text, text
+```
+This checks that the rendered task text contains "task_analysis_only_attempt_count". The forced task's `why` field includes this string (line 695-696):
+```python
+"Analysis-only pressure is active (task_analysis_only_attempt_count > 0 "
+```
+
+So that assertion would still pass.
+
+Now let me plan the changes:
+
+1. In `choose_task`, after the candidate loop (after line 754), add logic: if `analysis_only_active` and `candidates` is empty, try `_forced_landable_src_task()`.
+
+2. Update the test at line 1008 to expect the forced src task instead of ANALYSIS_ONLY_TASK_TITLE.
+
+Let me also check if there are other tests that need updating:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.4s (2 ✓)
+
+Let me look at all the analysis-only related tests:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1000..1120 ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. There are multiple tests that expect ANALYSIS_ONLY_TASK_TITLE to be returned when `analysis_only_active` is True. Let me look at how `_has_analysis_only_pressure` works — it checks if ANY of the analysis-only metrics are > 0. The metrics are:
+- task_analysis_only_attempt_count
+- task_no_edit_revert_count
+- reverted_no_edit
+
+So if any of these > 0, `analysis_only_active` = True, and the ANALYSIS_ONLY_TASK_TITLE will be skipped.
+
+Test at line 1000-1011: `task_analysis_only_attempt_count=2` → analysis_only_active=True → ANALYSIS_ONLY_TASK_TITLE skipped, lifecycle skipped → no candidates → falls to fallback. Expects ANALYSIS_ONLY_TASK_TITLE but gets fallback. FAILS.
+
+Test at line 1013-1030: `reverted_no_edit=1`. `_has_analysis_only_pressure` would check metrics. Let me think... The text has `reverted_no_edit=1` which should be parsed as a metric. So `analysis_only_active` = True. ANALYSIS_ONLY_TASK_TITLE skipped. But also lifecycle metrics are not present (no state_run_incomplete_count, etc.) so LIFECYCLE_TASK_TITLE wouldn't be selected anyway. Other tasks don't match the keys. So no candidates → falls to fallback. Expects ANALYSIS_ONLY_TASK_TITLE. WOULD FAIL.
+
+Test at lines 1032-1042: `reverted_no_edit=4` → analysis_only_active=True → ANALYSIS_ONLY_TASK_TITLE skipped. No candidates → fallback. Expects ANALYSIS_ONLY_TASK_TITLE. WOULD FAIL.
+
+Test at lines 1044-1055: `reverted_no_edit=4` AND `state_run_incomplete_count=2`. analysis_only_active=True → both ANALYSIS_ONLY_TASK_TITLE and LIFECYCLE_TASK_TITLE skipped. No candidates → fallback. Expects ANALYSIS_ONLY_TASK_TITLE. WOULD FAIL.
+
+Test at lines 1057-1074: `task_analysis_only_attempt_count=3` → analysis_only_active=True → ANALYSIS_ONLY_TASK_TITLE skipped. No candidates → fallback. Expects ANALYSIS_ONLY_TASK_TITLE. WOULD FAIL.
+
+Test at lines 1076-1097: `reverted_no_edit=2` AND additional keys for sub-agent task. analysis_only_active=True. Sub-agent task has keys that match "api_key_present" and "sub-agent". The sub-agent task has "files": "src/tools.rs, src/agent_builder.rs, src/lib.rs" — 3 files. At line 739: `if analysis_only_active and _task_file_count(task) > 2: continue`. So the sub-agent task is skipped (3 > 2). No other candidates. Fallback. But expects "Verify and fix sub-agent API key propagation". WOULD FAIL.
+
+Wait actually, 3 > 2 is true... so the sub-agent task IS skipped. But the file count check threshold is `> 2` not `> 3`. Let me re-check: line 739: `if analysis_only_active and _task_file_count(task) > 2: continue`. The sub-agent task has files: "src/tools.rs, src/agent_builder.rs, src/lib.rs" — that's 3 files. 3 > 2, so it's skipped. But the test expects it to win...
+
+Actually hold on. The test says it should win over scripts-only. But with the file count guard, it would be skipped. Hmm, this is contradictory. Let me re-read the code flow more carefully.
+
+Actually, wait — the `_task_file_count` at line 739 says `> 2` not `> 3`. The sub-agent task has 3 files. So `_task_file_count(task)` = 3, and 3 > 2 is true, so the task is skipped. But the test expects it to be selected...
+
+Hmm, but the task at line 1067 says `assert file_count <= 3` — these tasks have ≤3 files. Let me look more carefully at the sub-agent task.
+
+Files: "src/tools.rs, src/agent_builder.rs, src/lib.rs" — 3 files. 3 > 2 is true. So in the implementation, line 739 `> 2` would skip this task.
+
+But the test at line 1057-1074 says "All current TASKS have ≤3 files, so this guard is future-proofing. Verify the guard works by checking _task_file_count on the selected task." And it asserts `files_count <= 3`.
+
+There's a mismatch. The guard at line 739 uses `> 2` (≤2 files), but the test expects tasks with 3 files to still be selected. This looks like a bug or an inconsistency in the current code, but the evaluator says the build and tests pass for the code that already works. The primary issue is that `_forced_landable_src_task()` is dead code.
+
+Actually wait, let me re-read the test at 1076-1097 more carefully. It has `reverted_no_edit=2`, which means `analysis_only_active` = True. The sub-agent task has keys that match "api_key_present" and "sub-agent". But with `_task_file_count` of 3 > 2, it would be skipped. So this test would fail too.
+
+But the evaluator says only ONE assertion fails (the one at line 1008). That means the other tests are passing. Let me re-check...
+
+Actually, maybe the test at line 1076-1097 does match and get selected because the ANALYSIS_ONLY_TASK_TITLE's keys include "reverted_no_edit" AND "no-edit", which are shorter patterns that match the assessment text. And since the analysis-only task has 3 files (scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py — 3 files), 3 > 2... so it would also be skipped. But the ANALYSIS_ONLY_TASK_TITLE is skipped earlier at line 728-734.
+
+Let me think about this differently. The current code (before this task's changes) probably didn't have the `analysis_only_active` skip for ANALYSIS_ONLY_TASK_TITLE. That skip was added as part of this task but without the corresponding call to `_forced_landable_src_task()`.
+
+So the changes that were made (that the evaluator rejected) included:
+1. Adding the `analysis_only_active` skip for ANALYSIS_ONLY_TASK_TITLE at line 728-734
+2. Adding the file count guard at line 739
+3. Adding `_forced_landable_src_task()` function
+
+But the tests were NOT updated to match the new behavior, and `_forced_landable_src_task()` is never called.
+
+The tests that assert ANALYSIS_ONLY_TASK_TITLE is selected are ALL now failing because the task is skipped. But the evaluator says only the one at line 1008 fails. Let me run the test to confirm...
+
+Actually, `python3 scripts/preseed_session_plan.py --test` stops at the first assertion error. So only the first failing test is reported. All subsequent tests that also fail aren't reported because execution stops.
+
+So the fix is:
+1. In `choose_task`, when `analysis_only_active` is True and after the candidate loop, if candidates is empty, call `_forced_landable_src_task()`.
+2. Update all the tests that expect ANALYSIS_ONLY_TASK_TITLE to expect the forced landable task instead.
+
+Actually wait, let me think about this more carefully. Some of those tests might have other candidates that match. Let me check which tests have NO matching candidates vs which have matching candidates.
+
+Test at line 1000-1011: assessment has text "Force analysis-only attempts into action", "Force reverted tasks", "Close yyds state and model lifecycle gaps". No other task keys match except ANALYSIS_ONLY_TASK_TITLE and LIFECYCLE_TASK_TITLE. Both are skipped. candidates is empty. → fallback.
+
+Test at line 1013-1030: "Force reverted tasks to leave concrete evidence (reverted_no_edit=1)", "Raise verified task success rate", "reverted_no_edit pattern". No other task keys match. Both ANALYSIS_ONLY_TASK_TITLE and (no lifecycle) → ANALYSIS_ONLY_TASK_TITLE skipped. Empty candidates. → fallback.
+
+Test at line 1034-1042: "reverted_no_edit=4". Only ANALYSIS_ONLY_TASK_TITLE matches. Skipped. Empty. → fallback.
+
+Test at line 1046-1055: "reverted_no_edit=4" + "state_run_incomplete_count=2". ANALYSIS_ONLY_TASK_TITLE and LIFECYCLE_TASK_TITLE both skipped. Empty. → fallback.
+
+Test at line 1061-1074: "task_analysis_only_attempt_count=3". Only ANALYSIS_ONLY_TASK_TITLE matches. Skipped. Empty. → fallback.
+
+Test at line 1079-1097: "reverted_no_edit=2" + "api_key_present" + "Sub-agent". The sub-agent task matches keys "sub-agent" and "api_key_present" but has 3 files, and `_task_file_count` 3 > 2 → skipped. But wait, let me re-check: the guard at line 739 is `_task_file_count(task) > 2`. So the sub-agent task has 3 files > 2 → it IS skipped. But the test expects it to be selected...
+
+Hmm, but maybe the ANALYSIS_ONLY_TASK_TITLE is also considered, and since the assessment has "reverted_no_edit=2", `analysis_only_active` is True. ANALYSIS_ONLY_TASK_TITLE is skipped. Sub-agent task has 3 files > 2 → skipped. So candidates is empty. → fallback. Test expects sub-agent task. FAILS.
+
+OK so all these tests would fail. But only the first assertion failure is reported because `--test` stops at the first one.
+
+Now I need to understand what the right fix is. Let me re-read the evaluator feedback:
+
+"the analysis-only pressure path now skips `ANALYSIS_ONLY_TASK_TITLE` but never calls `_forced_landable_src_task()` (dead code), so the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+And the task says:
+"When `task_analysis_only_attempt_count >= 1`, the preseed picker selects a concrete task whose Files list excludes protected implementation files (those in PROTECTED_IMPLEMENTATION_FILES)"
+"The analysis-only pressure trigger should prefer a small, non-protected src/ change over lifecycle/diagnostic tasks"
+
+So the fix should make `_forced_landable_src_task()` actually get called when analysis_only_active AND no good candidates.
+
+The approach:
+1. After the main loop, if `analysis_only_active` and candidates is empty, try `_forced_landable_src_task()`.
+2. If it returns a task, verify it against the assessment and use it.
+3. If it returns None, fall through to the fallback.
+
+And all the tests need to be updated to expect the forced src task instead of ANALYSIS_ONLY_TASK_TITLE.
+
+But wait, the test at lines 1076-1097 has a matching non-analysis-only candidate (sub-agent task). In the current broken code, the sub-agent task is skipped due to the `_task_file_count > 2` guard, but the test expects it to be selected. So either:
+a) The file count guard should be `> 3` not `> 2`, OR
+b) The test needs to be updated
+
+Given the task says "The selected task is small enough to complete in one implementation session (≤2 source files)", the guard should stay at `> 2`. So the sub-agent task with 3 files SHOULD be skipped when analysis_only_active. The test needs to be updated.
+
+But then, when analysis_only_active is True and we have matching candidates with ≤2 files, they should still be preferred over the forced src task. The forced src task is only for when NO candidate matches.
+
+Actually, let me re-read the task success criteria:
+"The selected task is small enough to complete in one implementation session (≤2 source files)"
+
+So the file count guard at line 739 `> 2` is correct. The test at line 1076-1097 needs to be updated.
+
+For the test at line 1076-1097: when `reverted_no_edit=2` (analysis_only_active=True) AND "api_key_present" AND "Sub-agent", the sub-agent task has 3 files and gets skipped by the file count guard. Then ANALYSIS_ONLY_TASK_TITLE is also skipped (analysis_only_active). So candidates is empty. → `_forced_landable_src_task()` → returns "Stabilize run completion guard panic test" (src/state.rs, 1 file). Test should expect this instead.
+
+OK actually wait, I realize I might need to think about this differently. Maybe the sub-agent task has 3 files but the `_has_src_files` check and the file-existence check all pass. Let me count: "src/tools.rs, src/agent_builder.rs, src/lib.rs" — that's 3 comma-separated paths. `_task_file_count` would return 3. And 3 > 2, so it would be skipped. But the test currently expects it to win.
+
+Let me just verify this by checking what happens in the current code, then plan my fix:
+
+Current behavior (before the changes that added the skip):
+- When analysis_only_active is True, ANALYSIS_ONLY_TASK_TITLE is NOT skipped
+- So it gets selected (it matches the analysis-only keywords)
+- The test expects it to be returned
+
+Desired behavior (after fix):
+- When analysis_only_active is True, ANALYSIS_ONLY_TASK_TITLE IS skipped (don't self-reference)
+- When analysis_only_active is True and NO good candidates remain, call `_forced_landable_src_task()`
+- Tests need to expect the forced src task instead
+
+For test at 1076-1097: the sub-agent task should still be preferred if it passes all guards. But it has 3 files and the guard skips > 2 files. So either:
+1. Lower the guard threshold, or
+2. Update the test
+
+The task says ≤2 source files. So the guard is correct. The test needs updating.
+
+Let me now plan the exact code changes:
+
+1. In `choose_task`, after the loop (after line 754), add:
+```python
+    if analysis_only_active and not candidates:
+        forced = _forced_landable_src_task()
+        if forced is not None:
+            return forced
+```
+
+2. Update the tests that expected ANALYSIS_ONLY_TASK_TITLE when analysis_only_active was triggered WITHOUT any other matching src candidates.
+
+But actually, some tests have matching src candidates, like the test at 1076-1097. In that case, the sub-agent task has keys that match, but it has 3 files so it's skipped. Should I relax the file count guard? No — the task says ≤2 files.
+
+Let me also check the test at 1076-1097 more carefully — it has both `reverted_no_edit=2` and "api_key_present" AND "Sub-agent" in the assessment. The sub-agent task keys include "sub-agent" and "api_key_present". So it matches. But 3 > 2 files, so it's skipped. 
+
+Hmm, but maybe I should also consider: when analysis_only_active AND the assessment has OTHER matchers besides analysis-only ones (like "api_key_present"), should we still prefer the forced src task? Or should we allow the other task to be selected even with > 2 files? The task says ≤2 source files, so the guard is correct.
+
+Actually, I think the test at 1076-1097 might still work if I relax the file count guard from `> 2` to `> 3`. But the task says ≤2... Let me re-read: "The selected task is small enough to complete in one implementation session (≤2 source files)". OK, so ≤2 is the target.
+
+But wait — the sub-agent task has 3 files but maybe one isn't a "source file" in the sense of src/. Let me count: src/tools.rs, src/agent_builder.rs, src/lib.rs — all 3 are src/*.rs files. So 3 source files.
+
+Hmm, but then the test expectation is wrong for the new behavior. Let me just focus on what needs to change:
+
+1. Make `_forced_landable_src_task()` get called
+2. Update tests that break
+
+Let me now code this up.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me run the test to confirm the current failure and check what other tests also need updating:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (12 lines) ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `_forced_landable_src_task()` returns "Stabilize run completion guard panic test" with files "src/state.rs". This is a 1-file src task.
+
+Now I need to:
+
+1. Fix `choose_task` to call `_forced_landable_src_task()` when `analysis_only_active` is True and candidates is empty.
+2. Update all the tests that now break.
+
+Let me plan the exact edits:
+
+### Edit 1: Fix `choose_task` to use `_forced_landable_src_task()`
+
+After the candidate loop (after line 754, before line 756), add a check: if `analysis_only_active` and `candidates` is empty, try `_forced_landable_src_task()`.
+
+The current code after the loop:
+```python
+    # When analysis-only/no-edit pressure is active, prefer candidates with
+    # verifiable source files (src/*.rs) over script-only candidates, since
+    # src edits produce cargo-testable commits and reduce reverted_no_edit risk.
+    if analysis_only_active:
+        # Stable sort: preserve relative order, src-file tasks first
+        candidates.sort(key=lambda c: not _has_src_files(c))
+```
+
+I need to add AFTER the sort but BEFORE iterating candidates for contradiction check:
+
+```python
+    # When analysis-only/no-edit pressure is active and no keyword-matched
+    # candidate survived filtering, force a small non-protected src/ task
+    # instead of falling through to the generic planning-repair fallback.
+    if analysis_only_active and not candidates:
+        forced = _forced_landable_src_task()
+        if forced is not None:
+            return forced
+```
+
+### Edit 2: Update tests
+
+Now I need to update the tests that expect ANALYSIS_ONLY_TASK_TITLE. Let me identify them:
+
+1. **Line 1000-1011**: `task_analysis_only_attempt_count=2` + lifecycle → expects ANALYSIS_ONLY_TASK_TITLE → should expect "Stabilize run completion guard panic test"
+2. **Line 1013-1030**: `reverted_no_edit=1` → expects ANALYSIS_ONLY_TASK_TITLE → should expect "Stabilize run completion guard panic test"  
+3. **Line 1032-1042**: `reverted_no_edit=4` → expects ANALYSIS_ONLY_TASK_TITLE → should expect "Stabilize run completion guard panic test"
+4. **Line 1044-1055**: `reverted_no_edit=4` + lifecycle → expects ANALYSIS_ONLY_TASK_TITLE → should expect "Stabilize run completion guard panic test"
+5. **Line 1057-1074**: `task_analysis_only_attempt_count=3` → expects ANALYSIS_ONLY_TASK_TITLE → should expect "Stabilize run completion guard panic test"
+6. **Line 1076-1097**: `reverted_no_edit=2` + api_key_present → expects "Verify and fix sub-agent API key propagation" → hmm, this one has a matching candidate but it gets filtered by file count. 
+
+Wait, let me reconsider #6. The sub-agent task has 3 files. With `_task_file_count > 2`, it's skipped. Then ANALYSIS_ONLY_TASK_TITLE is also skipped. No candidates. → forced landable → "Stabilize run completion guard panic test". The test expects "Verify and fix sub-agent API key propagation". This test needs to be updated too.
+
+But actually, let me think about whether the file count guard at line 739 should be `> 3` instead of `> 2`. The task says ≤2 source files. But the sub-agent task has 3 files... Hmm, the file count guard should probably be `> 2` to match the task spec. Let me re-read the success criteria:
+
+"The selected task is small enough to complete in one implementation session (≤2 source files)"
+
+OK so ≤2. The guard at `> 2` correctly filters out 3-file tasks. The test at line 1076-1097 needs updating.
+
+But wait — I should also check: does the test at line 1076-1097 even have `analysis_only_active`? Yes, `reverted_no_edit=2` makes it True.
+
+Let me also check lines 1099-1111 and 1112-1119:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1099..1199 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I have a complete picture. Let me identify all the tests that need updating:
+
+1. Lines 1000-1011: `analysis_only_active=True`, no other matching candidates → forced src task
+2. Lines 1013-1030: `analysis_only_active=True`, no other matching candidates → forced src task
+3. Lines 1032-1042: `analysis_only_active=True`, no other matching candidates → forced src task
+4. Lines 1044-1055: `analysis_only_active=True`, no other matching candidates → forced src task
+5. Lines 1057-1074: `analysis_only_active=True`, no other matching candidates → forced src task
+6. Lines 1076-1097: `analysis_only_active=True`, sub-agent task matches but has 3 files (>2) → skipped. No other candidates → forced src task
+7. Lines 1099-1110: `analysis_only_active=True`, no other matching candidates → forced src task
+8. Lines 1112-1127: `analysis_only_active=True`, no other matching candidates → forced src task
+
+For test 6 (1076-1097), the sub-agent task has 3 files and is filtered by the `> 2` guard. So it would also get the forced src task. This test needs to be updated to expect the forced src task, OR the file count guard should be relaxed.
+
+Wait, the test at 1076-1097 currently expects the sub-agent task ("Verify and fix sub-agent API key propagation") because the test was written before the `> 2` file count guard existed. The guard was added as part of this very change. So the test's expectation is outdated for the new behavior.
+
+Hmm but actually, let me reconsider. Maybe I should NOT add the `> 2` file count guard at line 739 when the candidate IS a src/ task and has additional evidence support. The point is: when analysis-only pressure is active AND assessment evidence matches a src/ task, we should prefer it even if it has 3 files. The `> 2` guard was meant to filter out large non-src tasks.
+
+Actually, re-reading line 739 more carefully:
+```python
+if analysis_only_active and _task_file_count(task) > 2:
+    continue
+```
+
+This applies to ALL tasks when analysis-only pressure is active. But the sub-agent task has 3 src/ files - it's a src task! The test explicitly tests "Evidence-aware re-ranking: prefer src-file candidates".
+
+I think the fix should be: when analysis_only_active, prefer src/ tasks even if they have 3 files, but filter script-only tasks to ≤2. Or just remove the file count guard entirely and rely on `_forced_landable_src_task()` as the fallback.
+
+Actually, the task says "≤2 source files". For the sub-agent task, it has 3 files, which exceeds this. But the test specifically says "With reverted_no_edit pressure, src-file candidate should win over scripts-only". So the test expects 3-file src tasks to still be selected.
+
+I think the right approach is:
+- The file count guard at `> 2` is too restrictive for src/ tasks
+- When analysis_only_active, allow src/ tasks with ≤3 files (or just don't apply the file count guard to src/ tasks at all)
+- The `_forced_landable_src_task()` function already enforces ≤2 files, so it would return a smaller task
+- But when the assessment has specific evidence for a larger src/ task, it should still be preferred
+
+Actually, I think the simplest and most correct approach is to just remove the file count guard. The `_forced_landable_src_task()` already enforces ≤2 for forced tasks. For keyword-matched tasks, if they match the assessment evidence, they should be selected regardless of file count.
+
+Wait, but that contradicts the success criteria: "The selected task is small enough to complete in one implementation session (≤2 source files)"
+
+Hmm, let me re-read the task more carefully:
+"When `task_analysis_only_attempt_count >= 1`, the preseed picker selects a concrete task whose Files list excludes protected implementation files"
+
+"The selected task is small enough to complete in one implementation session (≤2 source files)"
+
+OK so the ≤2 constraint is a success criteria for the task. The sub-agent task has 3 files, so it wouldn't meet this criteria. So the file count guard should stay, and the test at 1076-1097 needs to be updated.
+
+But wait — if I update test 1076-1097 to expect the forced src task, it changes the semantics of that test case. The test was specifically designed to test "when api_key_present evidence exists alongside analysis-only pressure, prefer the src/ task over analysis-only". Now both the analysis-only task and the sub-agent task would be filtered out (analysis-only skipped, sub-agent too many files), and the forced src task would be selected. The test's purpose is no longer being tested.
+
+Actually, I think there's a better approach. Let me rethink.
+
+The key insight from the evaluator is: `_forced_landable_src_task()` is dead code. The fix should make it alive. But which path triggers it?
+
+Looking at the test cases:
+- Tests where ONLY analysis-only keywords match → no candidates → `_forced_landable_src_task()` should fire
+- Test where analysis-only + another task's keywords match → that other task should still be selected (if it passes all guards)
+
+The problem with test 1076-1097 is that the sub-agent task has 3 files. The file count guard skips it. If I change the guard from `> 2` to `> 3`, the sub-agent task would pass (3 files is not > 3). But the task says ≤2.
+
+Alternatively, the guard could be more nuanced: only apply the file count guard to script-only candidates, not src/ candidates. This way, src/ tasks with 3 files are still selectable.
+
+But the task success criteria says "≤2 source files". So maybe the file count guard should stay and the test should be rewritten.
+
+OK, I think the right thing to do is:
+1. Keep the file count guard at `> 2` 
+2. Update test 1076-1097 to expect the forced src task
+3. The other tests also get updated
+
+But wait — I should reconsider whether `_forced_landable_src_task()` should be called BEFORE falling through to the fallback, or whether it should be called after the candidate loop but before checking contradictions.
+
+Let me think about what makes the most sense:
+
+Current flow for analysis_only_active:
+1. Loop through TASKS, skip ANALYSIS_ONLY_TASK_TITLE and LIFECYCLE_TASK_TITLE
+2. Apply other filters (protected files, file existence, file count)
+3. If candidates remain, sort with src first, check contradictions, return first non-contradicted
+4. If no candidates, fallback
+
+The fix should be: at step 4, instead of (or before) the fallback, try `_forced_landable_src_task()`.
+
+Actually, I realize I should look at this from the perspective of what the evaluator tells us: "the function falls through to the generic fallback instead of selecting a concrete landable src/ task as the task requires."
+
+So the fix is: when `analysis_only_active` and no candidates → use `_forced_landable_src_task()`. Only fall through to the generic fallback if `_forced_landable_src_task()` returns None.
+
+And update ALL the tests. Let me now do the implementation.
+
+Let me also look at lines 1099-1110 and 1112-1127 more carefully - these have `reverted_no_edit=3` and `task_no_edit_revert_count=3` respectively. Both trigger `_has_analysis_only_pressure` → analysis_only_active=True. The ANALYSIS_ONLY_TASK_TITLE matches these keywords but is skipped. No other candidates. → forced src task.
+
+Now let me implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a full understanding. Let me implement the fix. The issue is that `_forced_landable_src_task()` is defined but never called, causing the function to fall through to the generic fallback when analysis-only pressure is active.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (44ms)
+  ▶ todo ✓ (43ms)
+  ▶ todo ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the fix. First, the code change in `choose_task`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. The critical change is in `choose_task`, after the candidate loop and sort, before iterating candidates for contradiction check. I need to add the forced landable task call when analysis_only_active and candidates is empty.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When analysis-only pressure is active and no keyword-matched candidate
+  +     # survived filtering, force a small non-protected src/ task instead of
+  +     # falling through to the generic planning-repair fallback.
+  +     if analysis_only_active and not candidates:
+  +         forced = _forced_landable_src_task()
+  +         if forced is not None:
+  +             return forced
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (6 → 14 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (6 → 14 lines)
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When analysis-only pressure is active and no keyword-matched candidate
+  +     # survived filtering, force a small non-protected src/ task instead of
+  +     # falling through to the generic planning-repair fallback.
+  +     if analysis_only_active and not candidates:
+  +         forced = _forced_landable_src_task()
+  +         if forced is not None:
+  +             return forced
+ ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test to see which tests fail:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Progress! Now the forced task is being returned ("Stabilize run completion guard panic test") instead of the fallback. But the test at line 1016 expects `ANALYSIS_ONLY_TASK_TITLE`. I need to update all the tests that now return the forced task.
+
+Let me update the failing test. The assessment has `task_analysis_only_attempt_count=2` and `task_no_edit_revert_count=1`. It triggers analysis-only pressure. The forced task is "Stabilize run completion guard panic test" with files "src/state.rs".
+
+Let me update the test at line 1000-1011 (now shifted by a few lines due to my edit).
+────────────────────────────────────────────────────────────────────────────────
+
+Good progress! The forced task is now being returned. Now I need to update the tests. Let me find the exact line numbers of each test that needs updating:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "ANALYSIS_ONLY_TASK_TI… ✓ (95ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lines with assertions that need updating are: 1016, 1035, 1048, 1061, 1075, 1116, 1127. Line 1148 is `assert task["title"] != ANALYSIS_ONLY_TASK_TITLE` which should still pass.
+
+Also, at line 1097 (which was the sub-agent test), the test expects "Verify and fix sub-agent API key propagation" but the forced task will be returned. Let me check that line too.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1087..1117 ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update all these tests. The forced task title is "Stabilize run completion guard panic test". Let me update each test:
+
+1. Line 1016: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task` → `assert task["title"] == "Stabilize run completion guard panic test", task`
+2. Line 1035: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task` → same
+3. Line 1048: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (` → same
+4. Line 1061: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (` → same
+5. Line 1075: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task` → same
+6. Line 1097: `assert task["title"] == "Verify and fix sub-agent API key propagation"` → same
+7. Line 1116: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (` → same
+8. Line 1127: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (` → same
+
+Wait, but some of these tests also have additional assertions like:
+- `assert "task_analysis_only_attempt_count" in text` (line 1011) - the forced task's `why` field includes this, so it still passes
+- `assert "reverted_no_edit" in text` (line 1030) - the forced task's `why` might not include this... let me check
+
+The forced task's why from _forced_landable_src_task():
+```python
+"why": (
+    "Analysis-only pressure is active (task_analysis_only_attempt_count > 0 "
+    "or task_no_edit_revert_count > 0). This concrete src/ task was forced as "
+    "a landable alternative to a self-referential script-only meta-task. "
+    "Reason from original seed: " + str(chosen.get("why", "")),
+),
+```
+
+It mentions `task_analysis_only_attempt_count` and `task_no_edit_revert_count` but NOT `reverted_no_edit`. So the assertion at line 1030 `assert "reverted_no_edit" in text` would fail.
+
+Let me update the `why` field in `_forced_landable_src_task()` to also mention `reverted_no_edit`, OR update the tests to not check for specific strings.
+
+Actually, looking at this more carefully, I think the simplest fix is to update the tests' expected task title and adjust any specific string checks.
+
+But there's also the assertion about "contradiction_reason" in test 7 (around line 1383). Let me check that.
+
+Let me take a different approach - let me update ALL the tests at once. The forced task that will be returned is "Stabilize run completion guard panic test" with files "src/state.rs".
+
+Let me map out all the tests that need changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the full test section around each assertion to understand what additional checks exist:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1008..1018  ▶ read scripts/preseed_session_plan.py:1027..1037  ▶ read scripts/preseed_session_plan.py:1040..1050 ✓ (245ms)
+ ✓ (379ms)
+ ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update all the tests. There are many. Let me make them all at once using edit_file for each change. The forced task is always "Stabilize run completion guard panic test" with files "src/state.rs".
+
+The tests and their additional assertions:
+1. Lines 1015-1019: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, then `assert "scripts/evolve.sh" not in str(task["files"])` and `assert "task_analysis_only_attempt_count" in text`
+2. Lines 1034-1038: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, then `assert task["title"] != "Improve cold-start state failure diagnostics"` and `assert "reverted_no_edit" in text`
+3. Lines 1047-1051: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, with message about reverted_no_edit
+4. Lines 1059-1063: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, with message
+5. Lines 1073-1082: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, then `assert files_count <= 3` and `assert not _has_protected_files`
+6. Lines 1096-1103: `task["title"] == "Verify and fix sub-agent API key propagation"`, then `assert "src/" in str(task["files"])` and `assert not _has_protected_files`
+7. Lines 1115-1119: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, with message
+8. Lines 1126-1133: `task["title"] == ANALYSIS_ONLY_TASK_TITLE`, then `assert not _has_protected_files` and `assert _task_file_count(task) <= 3`
+
+All these tests will now get the forced task "Stabilize run completion guard panic test" with files "src/state.rs".
+
+For the "reverted_no_edit" assertion at line 1038: the forced task's `why` field says "Analysis-only pressure is active (task_analysis_only_attempt_count > 0 or task_no_edit_revert_count > 0)." — it mentions `task_analysis_only_attempt_count` and `task_no_edit_revert_count` but NOT `reverted_no_edit`. So the assertion `assert "reverted_no_edit" in text` will fail.
+
+I should update the `_forced_landable_src_task()` to also mention `reverted_no_edit` in the why, since `reverted_no_edit` is one of the metrics in `_ANALYSIS_ONLY_METRICS`. Or better, I should make the why more generic.
+
+Actually, let me update the `why` field in `_forced_landable_src_task()` to mention all three metrics:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.0s (3 ✓)
+
+I need to also update `_forced_landable_src_task()` to mention `reverted_no_edit` in the `why` field since some tests check for it, and update all the test assertions. Let me fix `_forced_landable_src_task` first:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:688..698 ✓ (42ms)
+
+
