@@ -37,6 +37,7 @@ MAX_FAILED_RUNS = 5            # cap on `gh run view --log-failed` calls
 GH_RUN_VIEW_TIMEOUT = 10       # seconds per gh run view
 GH_RUN_LIST_TIMEOUT = 10       # seconds for gh run list
 STUCK_ON_THRESHOLD = 3         # ≥N attempts AND 0 successes → flag
+EMPTY_STREAK_WARN = 3         # ≥N consecutive sessions with zero landed tasks → diagnostic
 TOTAL_LINE_CAP = 100
 TOTAL_BYTE_CAP = 3072
 TOOL_FAILURE_RECENT_TASK_PATTERNS: dict[str, tuple[str, ...]] = {
@@ -813,6 +814,56 @@ def render_outcomes(
     omitted = len(normalized) - len(display)
     if omitted > 0:
         lines.append(f"... {omitted} older session outcome(s) omitted")
+    return "\n".join(lines)
+def compute_empty_streak(session_outcomes):
+    """Count consecutive newest sessions with zero landed tasks.
+
+    A session is "empty" when tasks_attempted == 0 or tasks_succeeded == 0.
+    Counts from the tip (newest) backwards; stops at the first session with
+    landed tasks. Returns the streak length (0 means no empty-streak signal).
+    """
+    streak = 0
+    for _session_dir, outcome in session_outcomes:
+        attempted = outcome.get("tasks_attempted", 0)
+        succeeded = outcome.get("tasks_succeeded", 0)
+        if isinstance(attempted, (int, float)) and isinstance(succeeded, (int, float)):
+            if attempted == 0 or succeeded == 0:
+                streak += 1
+            else:
+                break
+        else:
+            # Malformed outcome — treat as empty to be conservative
+            streak += 1
+    return streak
+
+
+def render_empty_streak(streak):
+    """Render a diagnostic when consecutive sessions land zero tasks.
+
+    Returns empty string when streak < EMPTY_STREAK_WARN.
+    When streak >= 3, includes guidance about the "nothing to fix vs can't
+    find things to fix" distinction and suggests filing agent-self issues.
+    """
+    if streak < EMPTY_STREAK_WARN:
+        return ""
+    plural = "s" if streak != 1 else ""
+    lines = [
+        "## Consecutive empty sessions",
+        f"- **{streak}** consecutive session{plural} with zero landed tasks",
+    ]
+    if streak >= 5:
+        lines.append(
+            "- \u26a0\ufe0f Prolonged empty streak \u2014 may indicate systemic inability to find work "
+            "rather than absence of work. Consider filing agent-self issues, "
+            "researching new capability gaps, or changing task-selection strategy."
+        )
+    else:
+        lines.append(
+            "- \u26a0\ufe0f 3+ consecutive sessions with zero landed tasks \u2014 may indicate "
+            "inability to find work rather than absence of work. Consider "
+            "filing agent-self issues, researching new capability gaps, "
+            "or changing task-selection strategy."
+        )
     return "\n".join(lines)
 
 
@@ -1986,6 +2037,9 @@ def main() -> int:
     if s:
         sections.append(s)
     s = render_provider_health(sessions_audited, provider_hits)
+    if s:
+        sections.append(s)
+    s = render_empty_streak(compute_empty_streak(outcomes))
     if s:
         sections.append(s)
 

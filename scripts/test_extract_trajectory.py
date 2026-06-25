@@ -2165,5 +2165,139 @@ class ExtractTrajectoryTests(unittest.TestCase):
             self.assertIn("assessment_artifact_missing_count=1", rendered)
 
 
+class EmptyStreakTests(unittest.TestCase):
+    """Tests for consecutive-empty-session streak diagnostic."""
+
+    def _make_session(self, audit_dir: Path, day: int, ts: str,
+                      attempted: int, succeeded: int) -> Path:
+        session = audit_dir / f"day-{day}"
+        write_json(session / "outcome.json", {
+            "day": day, "ts": ts,
+            "tasks_attempted": attempted, "tasks_succeeded": succeeded,
+        })
+        return session
+
+    def _make_verify_session(self, audit_dir: Path, day: int, ts: str,
+                             verified: int) -> Path:
+        """Session with strict_task_verification data."""
+        session = audit_dir / f"day-{day}"
+        write_json(session / "outcome.json", {
+            "day": day, "ts": ts,
+            "tasks_attempted": verified, "tasks_succeeded": verified,
+        })
+        tasks_dir = session / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        for idx in range(1, verified + 1):
+            tid = f"task_{idx:02d}"
+            (tasks_dir / tid).mkdir(parents=True, exist_ok=True)
+            write_json(tasks_dir / tid / "outcome.json", {
+                "status": "landed",
+                "source_files": [f"src/{tid}.rs"],
+                "planned_files": [f"src/{tid}.rs"],
+            })
+        write_json(tasks_dir / "manifest.json", {
+            "tasks": [{"task_id": f"task_{idx:02d}"} for idx in range(1, verified + 1)],
+        })
+        return session
+
+    def test_compute_empty_streak_all_landed(self) -> None:
+        """When all sessions have landed tasks, streak is 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 6):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=1, succeeded=1)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            streak = extract_trajectory.compute_empty_streak(outcomes)
+            self.assertEqual(streak, 0)
+
+    def test_compute_empty_streak_one_empty(self) -> None:
+        """Single empty session at tip, streak=1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 5):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=1, succeeded=1)
+            # newest (day=5) has zero attempts
+            self._make_session(audit_dir, 5, "2026-06-25T00:00:00Z", attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            streak = extract_trajectory.compute_empty_streak(outcomes)
+            self.assertEqual(streak, 1)
+
+    def test_compute_empty_streak_three_empty(self) -> None:
+        """Three consecutive empty sessions at tip, streak=3."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 3):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=1, succeeded=1)
+            # days 3,4,5 are empty
+            for day in range(3, 6):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            streak = extract_trajectory.compute_empty_streak(outcomes)
+            self.assertEqual(streak, 3)
+
+    def test_compute_empty_streak_five_empty(self) -> None:
+        """Five consecutive empty sessions, streak=5."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 6):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            streak = extract_trajectory.compute_empty_streak(outcomes)
+            self.assertEqual(streak, 5)
+
+    def test_compute_empty_streak_interrupted(self) -> None:
+        """After one landed session, streak resets to 0."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            # empty, empty, landed, empty, empty — newest-first
+            self._make_session(audit_dir, 5, "2026-06-25T00:00:00Z", attempted=0, succeeded=0)
+            self._make_session(audit_dir, 4, "2026-06-24T00:00:00Z", attempted=0, succeeded=0)
+            self._make_session(audit_dir, 3, "2026-06-23T00:00:00Z", attempted=1, succeeded=1)
+            self._make_session(audit_dir, 2, "2026-06-22T00:00:00Z", attempted=0, succeeded=0)
+            self._make_session(audit_dir, 1, "2026-06-21T00:00:00Z", attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            streak = extract_trajectory.compute_empty_streak(outcomes)
+            # Tip: day-5(empty) + day-4(empty) = 2, then day-3(landed) breaks
+            self.assertEqual(streak, 2)
+
+    def test_render_empty_streak_no_warning_below_threshold(self) -> None:
+        """Streak 0 or 1 produces no warning section."""
+        # streak=0
+        result0 = extract_trajectory.render_empty_streak(0)
+        self.assertEqual(result0, "")
+        # streak=1
+        result1 = extract_trajectory.render_empty_streak(1)
+        self.assertEqual(result1, "")
+        # streak=2
+        result2 = extract_trajectory.render_empty_streak(2)
+        self.assertEqual(result2, "")
+
+    def test_render_empty_streak_warning_at_threshold(self) -> None:
+        """Streak >= 3 produces warning with diagnostic text."""
+        result3 = extract_trajectory.render_empty_streak(3)
+        self.assertIn("3+ consecutive sessions", result3)
+        self.assertIn("inability to find work", result3)
+        # No "agent-self" specific mention since we can't detect it from streak alone
+        self.assertIn("may indicate inability", result3)
+
+    def test_render_empty_streak_warning_prolonged(self) -> None:
+        """Streak >= 5 produces stronger warning."""
+        result5 = extract_trajectory.render_empty_streak(5)
+        self.assertIn("**5** consecutive session", result5)
+        self.assertIn("inability to find work", result5)
+        self.assertIn("filing agent-self issues", result5)
+
+    def test_render_empty_streak_section_truncation(self) -> None:
+        """Diagnostic section is concise (fits within budget)."""
+        result = extract_trajectory.render_empty_streak(7)
+        self.assertTrue(len(result) <= 400, f"diagnostic too long: {len(result)} chars")
+        self.assertIn("**7** consecutive session", result)
+
+
 if __name__ == "__main__":
     unittest.main()
