@@ -203,8 +203,7 @@ fn handle_doctor(limit: usize) {
                     if status == "failed" {
                         failures += 1;
                         let ts = ev.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
-                        let run_id =
-                            ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("?");
+                        let run_id = ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("?");
                         fail_list.push((ts.to_string(), run_id.to_string()));
                     }
                 }
@@ -24716,6 +24715,10 @@ mod tests {
         write_jsonl(&path, &events);
 
         let tail = read_tail_events(&path, 100).unwrap();
-        assert_eq!(tail.len(), 5, "should return all 5 events when limit > file size");
+        assert_eq!(
+            tail.len(),
+            5,
+            "should return all 5 events when limit > file size"
+        );
     }
 }
