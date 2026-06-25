@@ -1,0 +1,476 @@
+warning: skipping corrupted event at line 2361 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 448
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then understanding the codebase to implement this task properly.
+
+The task is to wire bash tool failures into state events so that ToolCallFailed events are recorded when bash commands fail. This will close the "transcript-only gap" where tool failures are visible in transcripts but absent from state events.
+
+Let me begin by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/tool_wrappers.rs (100 lines)  ▶ read src/tools.rs (100 lines) ✓ (30ms)
+ ✓ (25ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the key parts. I need to understand:
+1. How ToolFailureTracker is already defined/used in tool_wrappers.rs
+2. How state recording works in state.rs
+3. The existing GuardedTool's approach to recording events
+4. How StreamingBashTool executes and returns results
+
+Let me search for ToolFailureTracker and state recording patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ToolFailureTracker' in src/  ▶ search 'ToolCallFailed' in src/  ▶ search 'fn record' in src/state.rs ✓ (7ms)
+ ✓ (30ms)
+ ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `ToolFailureTracker` already exists in `tool_wrappers.rs`. `ToolCallFailed` doesn't exist yet as a state event type. Let me look at:
+1. The existing `ToolFailureTracker` implementation
+2. The `state::record` function and EventType enum
+3. The `GuardedTool` to see if it already records state events for directory violations
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:950..1100  ▶ read src/state.rs:400..600  ▶ read src/tools.rs:1290..1350 ✓ (32ms)
+ ✓ (26ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the EventType enum to understand what event types exist, and verify that ToolCallFailed doesn't exist yet.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'enum EventType' in src/state.rs  ▶ search 'ToolCall' in src/state.rs ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full EventType enum to understand its structure, and also see how ToolCallStarted/ToolCallCompleted events are used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:116..176  ▶ read src/state.rs:3020..3090 ✓ (18ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. There's no `ToolCallFailed` event type. The plan is:
+
+1. Add `ToolCallFailed` to the `EventType` enum in `src/state.rs`
+2. Add the label mappings for `ToolCallFailed` in the event_type_label and parse_event_type_label functions
+3. Add a `record_tool_call_failed` function in `src/state.rs` that records the event
+4. Add a wrapper tool `ToolFailureTrackerWrapper` (or add failure recording to the existing `RecoveryHintTool`) in `src/tool_wrappers.rs` that records ToolCallFailed state events when a tool fails
+5. Wire it into the tool chain in `src/tools.rs`
+
+But wait - let me look more carefully at the existing `RecoveryHintTool` to see if it already wraps tool execution and can be extended.
+
+Actually, let me re-read the task more carefully. The task says:
+- "Add ToolFailureTracker or wrapper that records ToolCallFailed events"
+- "Wire failure recording into StreamingBashTool or its wrapper chain"
+- The `RecoveryHintTool` is already wrapping tools and has access to the failure tracker. Let me look at it.
+
+Let me also check how `ToolCallCompleted` events are currently recorded - is it from the prompt layer or the tool layer?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+Let me now understand the current recording pattern for ToolCallCompleted and see how RecoveryHintTool works:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1087..1237  ▶ search 'record_tool_call' in src/ ✓ (12ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where ToolCallStarted/ToolCallCompleted events are currently recorded in the codebase - they're likely in prompt.rs or prompt_retry.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::ToolCallCompleted' in src/  ▶ search 'EventType::ToolCallStarted' in src/ ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at prompt.rs where ToolCallCompleted and ToolCallStarted are recorded, to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:785..885 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is very informative. The state recording happens in `prompt.rs` when yoagent emits `ToolExecutionStart` and `ToolExecutionEnd` events. The `is_error` flag in `ToolExecutionEnd` does indicate errors, and for bash commands, it records exit codes and success/failure.
+
+But I see - `is_error` is already being recorded. The task says "transcript_only_failed_tool_count=2" — meaning the tool failures are in the transcript but missing from state events. Let me look more carefully at what `is_error` represents. Is it possible that for some kinds of tool failures, `is_error` is false even though the command failed?
+
+Let me look at how StreamingBashTool returns results to understand the error flow better:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:855..1005  ▶ read src/tools.rs:100..300 ✓ (21ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the StreamingBashTool's execute method works, specifically how it returns results (including error cases with exit codes):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:300..550 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the StreamingBashTool::execute to see how it returns results:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:549..749 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive picture. Here's what I've learned:
+
+1. **Current state**: `ToolCallStarted` and `ToolCallCompleted` events are recorded in `prompt.rs` when yoagent emits `ToolExecutionStart` and `ToolExecutionEnd` events. The `is_error` flag is already set, and for bash commands, a `FailureObserved` event is also recorded when `is_error=true`.
+
+2. **The gap**: The task says "transcript_only_failed_tool_count=2" — bash tool failures visible in transcripts but absent from state events. Looking at the code in `prompt.rs` lines 850-911:
+   - `ToolCallCompleted` records `is_error` (line 864)
+   - `CommandCompleted` records `exit_code` and `success` 
+   - `FailureObserved` records the error (line 899-909)
+   
+   These all look correct at face value. But wait — the issue might be that when the bash tool **returns a non-zero exit code but wraps it as `Ok(TR {...})`** (see lines 661-664 of tools.rs), yoagent may set `is_error=false` in the `ToolExecutionEnd` event because the tool itself didn't return a `ToolError`. Let me check — in `tools.rs` line 661-664, even on non-zero exit, the tool returns `Ok(TR {...})` with the exit_code in details. So `is_error` would be `false` because the tool didn't fail — it executed and returned a result. The `FailureObserved` at line 899-909 only fires when `is_error` is true.
+
+   That's the gap! When bash returns a non-zero exit code, it's `Ok(TR)` not `Err(ToolError)`, so `is_error=false` and no `FailureObserved` event is created. The transcript would show "Exit code: 1" but state events would just show a successful `ToolCallCompleted` and `CommandCompleted`.
+
+3. **The fix needed**: We need a dedicated `ToolCallFailed` state event that fires when a bash command returns non-zero exit code. The best place to add this is in the `prompt.rs` event handler where we already have the bash-specific logic (lines 868-898). We should check `exit_code != 0` and record a `ToolCallFailed` event.
+
+4. Or alternatively, we could add it at the tool wrapper level. But the exit_code information is in the ToolResult details, not easily accessible from a generic wrapper.
+
+Actually, let me re-read the task more carefully. It says to add it in `tool_wrappers.rs` and `tools.rs`. But the state recording in `prompt.rs` seems like the most natural place because that's where ToolExecutionEnd events are processed and the bash-specific exit_code is already extracted.
+
+Wait - the task says "If the state recorder isn't accessible from the tool layer without a major refactor, record a state event from the prompt retry layer instead". The prompt layer (prompt.rs) already records ToolCallCompleted, CommandCompleted, and FailureObserved. It's the natural place to add ToolCallFailed.
+
+But the task's Edit Surface says `src/tool_wrappers.rs, src/tools.rs`. Hmm. Let me re-read the task to understand the intent.
+
+Looking at the task again: "Add ToolFailureTracker or wrapper that records ToolCallFailed events" and "Wire failure recording into StreamingBashTool or its wrapper chain". The task seems to want a wrapper-level solution.
+
+However, looking at the actual code flow:
+1. `StreamingBashTool::execute()` returns `Ok(TR { details: {"exit_code": 1, "success": false}, ...})` for non-zero exits
+2. The recovery hint tool (`RecoveryHintTool`) only fires on `Err(...)` — it doesn't see the ToolResult details
+3. The prompt layer (`prompt.rs`) has access to ToolResult details via the ToolExecutionEnd event
+
+The cleanest approach that follows the existing pattern would be to:
+1. Add `ToolCallFailed` to the EventType enum in `state.rs`
+2. Add the label mappings and a `record_tool_call_failed` helper
+3. In `prompt.rs`, check if exit_code is non-zero and record a ToolCallFailed event
+
+But the task explicitly says the Edit Surface is `src/tool_wrappers.rs, src/tools.rs`. Let me think about whether a wrapper-based approach can work.
+
+Actually, looking at this more carefully:
+- The `RecoveryHintTool` wrapper already intercepts failures (Err paths) 
+- For the bash case, non-zero exit is an Ok result, not an Err
+- We could add a new wrapper specifically for bash that checks exit_code in ToolResult details
+
+Or maybe the task is guiding us to a simpler approach: use the pattern already in `RecoveryHintTool` to record state events, but also extend it to detect bash non-zero exits.
+
+Actually, let me take a step back. The task says:
+- "The StreamingBashTool returns stdout/stderr/exit_code via a ToolOutput"
+- "Add failure recording at the wrapper level rather than inside the tool itself"
+- "Use state::record(StateEvent::tool_call_failed(...))"
+
+Maybe the approach is:
+1. Add `ToolCallFailed` event type to `state.rs`
+2. Create a small wrapper (or extend RecoveryHintTool) that inspects ToolResult details for non-zero exit_code and records a state event
+3. Wire it into the tool chain
+
+But this creates a design tension — the RecoveryHintTool wraps ALL tools, not just bash. We'd need a bash-specific wrapper of some sort.
+
+Let me look at how the tool chain is built in `tools.rs` to see where bash gets wrapped:
+
+Looking at line 1319-1326:
+```rust
+maybe_hook(
+    with_recovery_hints(
+        with_truncation(Box::new(bash), max_tool_output),
+        &failure_tracker,
+    ),
+    &hooks,
+),
+```
+
+So bash goes through: StreamingBashTool → TruncatingTool → RecoveryHintTool → HookedTool.
+
+The simplest approach would be to:
+1. Add `ToolCallFailed` to `EventType` enum
+2. Add a `record_tool_call_failed` function to `state.rs`
+3. Modify the `RecoveryHintTool` (or create a new wrapper) that, on Ok, checks if this is a bash tool with non-zero exit_code and records a ToolCallFailed event
+4. Wire it into the tool chain
+
+But RecoveryHintTool is generic and doesn't know about bash specifics. We'd need to make it inspect ToolResult details for exit_code.
+
+Actually, let me reconsider. The task says the surface is `src/tool_wrappers.rs` and `src/tools.rs`. Maybe the approach should be:
+
+1. Add `ToolCallFailed` event type to `state.rs` (minor change)
+2. Create a wrapper in `tool_wrappers.rs` that records ToolCallFailed events when bash returns non-zero exit
+3. Apply it in `tools.rs`
+
+Wait, but I can't avoid editing `state.rs` — the `EventType` enum needs the new variant. Let me check if the task's Edit Surface is exhaustive or illustrative...
+
+The task says "Edit Surface: src/tool_wrappers.rs, src/tools.rs" — but adding a new EventType variant requires editing `state.rs` too. I think the task's surface is the primary files but recognizes that state.rs may also need changes.
+
+Let me look at the `state.rs` modifications needed to understand the full scope:
+
+1. `EventType::ToolCallFailed` variant addition
+2. Label in `event_type_label`
+3. Parse in `parse_event_type_label`
+
+And the `state.rs` has 7320 lines — I need to add the variant in several places.
+
+Let me now plan the full implementation:
+
+### Plan
+1. Add `ToolCallFailed` to `EventType` enum in `state.rs`
+2. Add label/parse mappings in `state.rs`
+3. Create a `BashFailureRecordingTool` wrapper in `tool_wrappers.rs` that intercepts Ok results from bash, checks exit_code in ToolResult details, and records a ToolCallFailed state event when exit_code != 0
+4. Wire it in `tools.rs` around the bash tool
+
+Actually wait, let me look at the RecoveryHintTool more carefully. It already wraps all tools and has access to ToolResult on the Ok path. We could modify RecoveryHintTool to also check for bash non-zero exits and record state events. But that couples the generic wrapper to bash specifics.
+
+Better approach: Create a dedicated wrapper for bash that records ToolCallFailed events. Let me call it `ToolFailureRecordingTool` or just add the recording to the `RecoveryHintTool` since it already traps failures.
+
+Actually, the simplest approach that follows the existing pattern is:
+- The `RecoveryHintTool` already intercepts both Ok and Err paths
+- On the Ok path, it resets the failure counter
+- We can extend it: on the Ok path, check if tool_name == "bash" and if the ToolResult details have exit_code != 0, then record a ToolCallFailed state event
+
+But that's mixing concerns. The recovery hint tool is about recovery hints, not state recording.
+
+Let me go with a clean separate wrapper. The wrapper will:
+- Pass through name, label, description, schema from inner tool
+- On execute: call inner, and if it's the bash tool and result is Ok with non-zero exit_code, record a state event
+- Be transparent to errors
+
+Let me also check what functions exist in `state.rs` that I should use for the recording:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me look at the `state.rs` to understand the exact places where I'll add `ToolCallFailed`, and check the `redact` pattern used for command text:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn redact' in src/  ▶ read src/state.rs:1640..1690 ✓ (6ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the redact_state_payload function to understand how command text redaction works:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:631..751 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a complete understanding. The `redact_state_string` function automatically redacts API keys and secrets from any strings in state payloads, so I don't need to worry about my own redaction — the state layer handles it.
+
+Now let me design the implementation:
+
+1. **`src/state.rs`**: Add `ToolCallFailed` variant to `EventType` enum, add label/parse mappings
+2. **`src/tool_wrappers.rs`**: Add a `BashFailureRecorder` wrapper that records `ToolCallFailed` state events when bash returns non-zero exit_code in Ok results
+3. **`src/tools.rs`**: Wire the wrapper around the bash tool in `build_tools`
+
+Let me also think about what the wrapper should look like. The key insight is:
+
+- Bash tool returns `Ok(TR { details: {"exit_code": N, ...}, ...})` for both success and non-zero exit
+- The prompt layer already records `ToolCallCompleted`, `CommandCompleted`, and `FailureObserved` (only when `is_error=true`, which never happens for non-zero exit Ok results)
+- We need a wrapper that checks the ToolResult details for `exit_code != 0` and records a `ToolCallFailed` state event
+
+Actually, I realize I should look more closely at what `is_error` means in the ToolExecutionEnd event. In yoagent, does `is_error` ever get set to true for bash commands? Let me check by looking at how the ToolExecutionEnd event is generated in yoagent... but I don't have direct access to yoagent source. Let me search the yyds codebase for any use of `is_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'is_error' in src/ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me trace the flow more closely. When bash returns `Ok(TR { details: {"exit_code": 1, "success": false}, ...})`, yoagent will:
+1. Convert this to a successful `ToolResult` in the agent message
+2. Emit `ToolExecutionEnd { is_error: false, ... }` 
+
+So `is_error` will be `false`, and the `FailureObserved` won't fire. The `ToolCallCompleted` event will have `is_error: false`, and `CommandCompleted` will have `success: false`. But there's no dedicated `ToolCallFailed` event.
+
+Now I see the gap clearly. The dashboard/log_feedback analysis looks for explicit "ToolCallFailed" events to track tool failures, but bash non-zero exits produce no such event because they're wrapped as successful tool results with non-zero exit codes.
+
+OK, now let me implement. Here's my plan:
+
+1. **`src/state.rs`**: 
+   - Add `ToolCallFailed` variant to `EventType`
+   - Add label in `event_type_label`
+   - Add parse mapping in `parse_event_type_label`
+
+2. **`src/tool_wrappers.rs`**: 
+   - Add a `ToolFailureRecordingTool` wrapper that:
+     - Wraps any `AgentTool`
+     - On execute, calls inner, then if the result is Ok and has a non-zero exit_code in details, records a `ToolCallFailed` state event
+     - Also records `ToolCallFailed` for actual errors (Err path)
+
+3. **`src/tools.rs`**: 
+   - Wire `with_tool_failure_recording` around the bash tool (and potentially others)
+
+Wait, but the task says "The StreamingBashTool returns stdout/stderr/exit_code via a ToolOutput. The wrapper chain (GuardedTool, TruncatingTool, etc.) processes this output. Add failure recording at the wrapper level rather than inside the tool itself."
+
+And: "Use state::record(StateEvent::tool_call_failed(...)) or the existing StateRecorder pattern."
+
+And: "Redact the command text to remove any API keys or secrets (use the existing redaction in src/prompt_retry.rs as a guide)."
+
+And: "Keep stderr summaries short (≤500 chars) to avoid bloating state events."
+
+Let me now implement step by step.
+
+Actually, I realize I should also think about where exactly in the wrapper chain to place this. The tool chain for bash in `build_tools` is:
+```
+bash → with_truncation → with_recovery_hints → maybe_hook
+```
+
+But `with_truncation` replaces stdout/stderr with truncated versions, so if I want access to the raw output for stderr summaries, I should place the failure recording BEFORE truncation, or extract the needed info (exit_code) which is in the ToolResult details.
+
+Actually, the exit_code is in the `ToolResult.details` JSON, not in the content text. And `with_truncation` truncates the `content` text, not the `details`. So I can place the failure recording wrapper after truncation — I just need access to `result.details.get("exit_code")`.
+
+Let me implement the wrapper. It should be a generic wrapper (not bash-specific in its interface), but it knows to look for bash-specific fields in the result details.
+
+Let me now code this up.
+
+Actually, let me reconsider the approach. Instead of creating a new wrapper, I could simply add the ToolCallFailed state recording in the existing `RecoveryHintTool` wrapper. The RecoveryHintTool already:
+- Intercepts both Ok and Err paths
+- Has access to the tool name
+- Is already in the wrapper chain
+
+On the Ok path, I can add a check: if tool_name == "bash" && result has exit_code != 0, record ToolCallFailed. On the Err path, always record ToolCallFailed.
+
+But the task specifically mentions creating a `ToolFailureTracker` or wrapper. Let me go with a dedicated wrapper — it's cleaner and keeps concerns separated.
+
+Actually, looking at this more pragmatically, the simplest approach that works with the existing codebase is to modify the `RecoveryHintTool` to also record ToolCallFailed state events. The RecoveryHintTool already wraps all tools and has the same intercept pattern we need.
+
+But wait — the task says "Use state::record(StateEvent::tool_call_failed(...)) or the existing StateRecorder pattern. Check how GuardedTool already records directory violations — follow the same pattern."
+
+Let me check if GuardedTool records state events for directory violations:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state::record' in src/tool_wrappers.rs  ▶ search 'crate::state' in src/tool_wrappers.rs ✓ (18ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the GuardedTool's state recording pattern:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:720..780 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have the full picture. Let me now implement the solution. I'll also check that the existing `state.rs` tests are comprehensive.
+
+Let me now switch to implementation mode. Here's my task list:
+
+1. Add `ToolCallFailed` to `EventType` enum in `src/state.rs`
+2. Add label/parse mappings in `src/state.rs`
+3. Create a `ToolFailureRecordingTool` wrapper in `src/tool_wrappers.rs`
+4. Create a `with_tool_failure_recording` helper function
+5. Wire it around bash tool in `src/tools.rs`
+6. Write tests in `src/tool_wrappers.rs`
+7. Build and test
+
+Let me start coding.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a comprehensive understanding. Let me implement the solution. The key insight is: bash returns `Ok(ToolResult)` even for non-zero exit codes, so `is_error` is `false` in the ToolExecutionEnd event, and no `FailureObserved` fires. We need a dedicated state event for bash non-zero exits.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with step 1: Add `ToolCallFailed` to the `EventType` enum in `src/state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.5s (5 ✓)
+
+Step 1: Add `ToolCallFailed` to the `EventType` enum in `src/state.rs`:
+        ToolCallStarted,
+        ToolCallCompleted,
+  +     ToolCallFailed,
+        FileRead,
+  ✓ Auto-approved: edit: src/state.rs (3 → 4 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (15ms)
+  ▶ edit src/state.rs (3 → 4 lines)
+        ToolCallStarted,
+        ToolCallCompleted,
+  +     ToolCallFailed,
+        FileRead,
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add the label and parse mappings.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now add the label mapping:
+            EventType::ToolCallStarted => "ToolCallStarted",
+            EventType::ToolCallCompleted => "ToolCallCompleted",
+  +         EventType::ToolCallFailed => "ToolCallFailed",
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+            EventType::ToolCallStarted => "ToolCallStarted",
+            EventType::ToolCallCompleted => "ToolCallCompleted",
+  +         EventType::ToolCallFailed => "ToolCallFailed",
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the parse mapping.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the parse mapping:
+            "ToolCallStarted" | "tool.called" => EventType::ToolCallStarted,
+            "ToolCallCompleted" | "tool.finished" => EventType::ToolCallCompleted,
+  +         "ToolCallFailed" | "tool.failed" => EventType::ToolCallFailed,
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+            "ToolCallStarted" | "tool.called" => EventType::ToolCallStarted,
+            "ToolCallCompleted" | "tool.finished" => EventType::ToolCallCompleted,
+  +         "ToolCallFailed" | "tool.failed" => EventType::ToolCallFailed,
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check if there are any exhaustive match arms on `EventType` that would need updating. Let me search for `match` on EventType:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::CommitCreated' in src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there are any match blocks that would need to handle the new variant. The `event_type_label` function already covers all variants as we just added the mapping. Let me check the SQLite projection code to see if it handles event types generically:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1595..1625 ✓ (7ms)
+
+
