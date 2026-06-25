@@ -24,6 +24,9 @@ pub(crate) fn default_store_path(events_path: &Path) -> PathBuf {
         .unwrap_or_else(|| crate::state::sqlite_projection_path(events_path))
 }
 
+/// Default event scan limit for `state doctor` to prevent timeout with 50k+ events.
+const DEFAULT_DOCTOR_LIMIT: usize = 20_000;
+
 pub fn handle_state_subcommand(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
     match sub {
@@ -110,7 +113,12 @@ pub fn handle_state_subcommand(args: &[String]) {
                 .unwrap_or(200);
             handle_state_summary(args, limit);
         }
-        "doctor" => handle_doctor(),
+        "doctor" => {
+            let limit = flag_value(args, "--limit")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(DEFAULT_DOCTOR_LIMIT);
+            handle_doctor(limit);
+        }
         _ => print_usage(),
     }
 }
@@ -134,63 +142,86 @@ fn handle_init() {
     println!("{GREEN}  initialized state log:{RESET} {}", path.display());
 }
 
-fn handle_doctor() {
+fn handle_doctor(limit: usize) {
     println!("{BOLD}State Doctor{RESET}");
 
     let events_path = default_events_path();
     let store_path = default_store_path(&events_path);
 
-    // --- Events: count, runs, failures, type distribution ---
-    let (total_events, runs, run_failures, type_counts, recent_failures) =
-        match read_events(&events_path) {
+    // Count total events (fast, without JSON parsing)
+    let total_events = match std::fs::read_to_string(&events_path) {
+        Ok(raw) => raw.lines().filter(|l| !l.trim().is_empty()).count(),
+        Err(_) => 0,
+    };
+
+    let (sampled_events, sample_note) = if limit > 0 && total_events > limit {
+        match read_tail_events(&events_path, limit) {
             Ok(events) => {
-                let total = events.len();
-                let mut runs_count = 0u64;
-                let mut failures = 0u64;
-                let mut types: BTreeMap<String, u64> = BTreeMap::new();
-                let mut fail_list: Vec<(String, String)> = Vec::new();
-
-                for ev in &events {
-                    let typ = ev
-                        .get("event_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    *types.entry(typ.to_string()).or_default() += 1;
-
-                    match typ {
-                        "RunStarted" => runs_count += 1,
-                        "RunCompleted" => {
-                            let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
-                            if status == "failed" {
-                                failures += 1;
-                                let ts = ev.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
-                                let run_id =
-                                    ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("?");
-                                fail_list.push((ts.to_string(), run_id.to_string()));
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Sort by ts descending, keep last 5
-                fail_list.sort_by(|a, b| b.0.cmp(&a.0));
-                fail_list.truncate(5);
-
-                (total, runs_count, failures, types, fail_list)
+                let note = format!(" (sampled from last {limit} of {total_events} total)");
+                (events, note)
             }
+            Err(e) => {
+                eprintln!(
+                    "{RED}  Events: error reading tail of {} — {e}{RESET}",
+                    events_path.display()
+                );
+                (Vec::new(), String::new())
+            }
+        }
+    } else {
+        // File is small enough to read entirely
+        match read_events(&events_path) {
+            Ok(events) => (events, String::new()),
             Err(e) => {
                 eprintln!(
                     "{RED}  Events: error reading {} — {e}{RESET}",
                     events_path.display()
                 );
-                (0, 0, 0, BTreeMap::new(), Vec::new())
+                (Vec::new(), String::new())
             }
-        };
+        }
+    };
+
+    // --- Events: runs, failures, type distribution ---
+    let (runs, run_failures, type_counts, recent_failures) = {
+        let mut runs_count = 0u64;
+        let mut failures = 0u64;
+        let mut types: BTreeMap<String, u64> = BTreeMap::new();
+        let mut fail_list: Vec<(String, String)> = Vec::new();
+
+        for ev in &sampled_events {
+            let typ = ev
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            *types.entry(typ.to_string()).or_default() += 1;
+
+            match typ {
+                "RunStarted" => runs_count += 1,
+                "RunCompleted" => {
+                    let status = ev.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                    if status == "failed" {
+                        failures += 1;
+                        let ts = ev.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
+                        let run_id =
+                            ev.get("run_id").and_then(|v| v.as_str()).unwrap_or("?");
+                        fail_list.push((ts.to_string(), run_id.to_string()));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Sort by ts descending, keep last 5
+        fail_list.sort_by(|a, b| b.0.cmp(&a.0));
+        fail_list.truncate(5);
+
+        (runs_count, failures, types, fail_list)
+    };
 
     let events_color = if total_events > 0 { &GREEN } else { &YELLOW };
     println!(
-        "  {events_color}Events:{RESET}    {total_events} total ({runs} runs, {run_failures} failures)"
+        "  {events_color}Events:{RESET}    {total_events} total ({runs} runs, {run_failures} failures){sample_note}"
     );
 
     // --- Store (SQLite) ---
@@ -24654,5 +24685,37 @@ mod tests {
             result["balanced"], false,
             "expected lifecycle to be unbalanced"
         );
+    }
+
+    #[test]
+    fn read_tail_events_respects_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let events: Vec<Value> = (1..=100)
+            .map(|i| {
+                json!({"event_id": format!("evt-{i}"), "event_type": "RunStarted", "timestamp_ms": i * 10, "run_id": format!("run-{i}")})
+            })
+            .collect();
+        write_jsonl(&path, &events);
+
+        let tail = read_tail_events(&path, 10).unwrap();
+        assert_eq!(tail.len(), 10, "should return exactly 10 events");
+        assert_eq!(tail[0]["event_id"], "evt-91");
+        assert_eq!(tail[9]["event_id"], "evt-100");
+    }
+
+    #[test]
+    fn read_tail_events_limit_larger_than_file_returns_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let events: Vec<Value> = (1..=5)
+            .map(|i| {
+                json!({"event_id": format!("evt-{i}"), "event_type": "RunStarted", "timestamp_ms": i * 10, "run_id": format!("run-{i}")})
+            })
+            .collect();
+        write_jsonl(&path, &events);
+
+        let tail = read_tail_events(&path, 100).unwrap();
+        assert_eq!(tail.len(), 5, "should return all 5 events when limit > file size");
     }
 }
