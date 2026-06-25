@@ -24687,7 +24687,7 @@ mod tests {
     }
 
     #[test]
-    fn read_tail_events_respects_limit() {
+    fn doctor_event_tail_scanning_limit() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let events: Vec<Value> = (1..=100)
@@ -24704,7 +24704,7 @@ mod tests {
     }
 
     #[test]
-    fn read_tail_events_limit_larger_than_file_returns_all() {
+    fn doctor_event_tail_limit_larger_than_file_returns_all() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
         let events: Vec<Value> = (1..=5)
