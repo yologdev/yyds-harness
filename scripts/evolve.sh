@@ -2210,27 +2210,33 @@ marker."
         elif [ "$INTERRUPTED" = true ] \
             && [ "$TASK_ATTEMPT_STATUS" = "analysis_only_no_terminal_evidence" ] \
             && [ "$ATTEMPT" -eq 1 ]; then
-            echo "    Analysis-only attempt made no file progress — writing blocked evidence instead of spending a second attempt."
+            echo "    Analysis-only attempt made no file progress — retrying once with action-first checkpoint."
             TASK_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
-            if [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ] && [ ! -s "$TASK_BLOCKED_NOTE" ]; then
-                cat > "$TASK_BLOCKED_NOTE" <<BLOCKEDEOF
-# Task blocked by analysis-only implementation attempt
+            CHECKPOINT_SECTION="=== CHECKPOINT: ANALYSIS-ONLY ATTEMPT MADE NO FILE PROGRESS ===
 
-The implementation agent exited without landing file progress or emitting
-TASK_TERMINAL_EVIDENCE on the first attempt. The harness stopped the task
-instead of spending a second attempt on more analysis.
+The previous implementation attempt exited cleanly but did not edit files,
+write session_plan/${TASK_ID}_obsolete.md, write session_plan/${TASK_ID}_blocked.md,
+or emit TASK_TERMINAL_EVIDENCE. This is the final implementation attempt for
+this task. Treat it as patch-or-fail recovery, not a fresh investigation.
 
-This task should be replanned with narrower scope, clearer owning files, or
-stronger pre-confirmed evidence before another implementation attempt.
+By your third tool turn in this retry, do exactly one of:
+- write or edit a focused regression test in the listed task surface,
+- edit one listed task-scope source file,
+- write session_plan/${TASK_ID}_obsolete.md with exact evidence that the task is already satisfied,
+- write session_plan/${TASK_ID}_blocked.md with the concrete blocker and missing evidence.
 
-Recent transcript tail:
+Prefer the smallest honest scoped proof change over more diagnosis. If one
+path/symbol lookup is not enough to identify an edit, write the blocked note
+instead of continuing analysis. Do not give a final answer until \`git diff
+--name-only\` is non-empty or one of the two note files above exists.
+
+Previous transcript tail:
 \`\`\`
 ${TASK_TRANSCRIPT_TAIL:-no transcript tail captured}
-\`\`\`
-BLOCKEDEOF
-            fi
+\`\`\`"
+            echo "    Retrying Task $TASK_NUM with action-first checkpoint (attempt 2)..."
             rm -f "$TASK_LOG"
-            break
+            continue
         elif [ "$INTERRUPTED" = true ] && [ "$ATTEMPT" -eq 1 ]; then
             echo "    No file progress detected — retrying once with action-first checkpoint..."
             TASK_TRANSCRIPT_TAIL=$(tail -80 "$TASK_LOG" 2>/dev/null || true)
