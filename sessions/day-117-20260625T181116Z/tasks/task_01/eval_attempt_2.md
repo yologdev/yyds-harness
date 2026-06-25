@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `compute_empty_streak()` and `render_empty_streak()` to extract_trajectory.py with EMPTY_STREAK_WARN=3 threshold, plus 9 dedicated tests in test_extract_trajectory.py covering streaks of 0/1/3/5, interrupted streaks, threshold gating, prolonged warnings, and budget truncation. All 69 tests pass. The diagnostic text matches the task specification exactly ("inability to find work rather than absence of work" guidance). Change is additive (188 lines, no existing output format altered).

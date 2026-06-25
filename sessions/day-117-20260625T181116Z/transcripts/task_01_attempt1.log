@@ -1,0 +1,422 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then examining the current state of `scripts/extract_trajectory.py` and `scripts/test_extract_trajectory.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'consecutive|streak|empty.session|no.op' in scripts/extract_trajectory.py ✓ (221ms)
+ ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - no streak tracking exists yet. Let me now read the relevant files to understand the current code structure before making changes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Good — no streak tracking exists yet. Let me read the current source files.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py  ▶ read scripts/test_extract_trajectory.py ✓ (337ms)
+ ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I now have a good understanding of both files. Let me plan the changes:
+
+1. **`scripts/extract_trajectory.py`**: Add:
+   - A new constant for empty-session streak threshold (e.g., `EMPTY_STREAK_WARN = 3`)
+   - A helper function `compute_empty_streak()` that iterates session outcomes and counts consecutive terminal sessions with zero landed tasks
+   - A render function `render_empty_streak()` that produces a diagnostic section
+   - Integration into `main()` to include the new section
+
+2. **`scripts/test_extract_trajectory.py`**: Add test cases for:
+   - streak=0 (all sessions have tasks)
+   - streak=1 (one empty session)
+   - streak=3 (warning fires)
+   - streak=5 (prolonged streak)
+
+Let me look more carefully at the key functions I need to understand:
+- `load_recent_session_outcomes()` - what does it return?
+- `render_outcomes()` - how does it render outcomes?
+- `main()` - where to insert the new section
+
+Let me read those specific sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+Let me read the key functions I need to integrate with:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def load_recent_session_outcomes' in scripts/extract_trajectory.py  ▶ search 'def render_outcomes' in scripts/extract_trajectory.py  ▶ search 'def main' in scripts/extract_trajectory.py ✓ (350ms)
+ ✓ (351ms)
+ ✓ (427ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these three key functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:150..250  ▶ read scripts/extract_trajectory.py:726..846  ▶ read scripts/extract_trajectory.py:1919..2019 ✓ (156ms)
+ ✓ (812ms)
+ ✓ (754ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a solid understanding of the codebase. Let me also look at how `outcome.json` is structured and what fields indicate "zero landed tasks", and at the `strict_task_verification` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+Let me understand the outcome structure and `strict_task_verification`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def strict_task_verification' in scripts/extract_trajectory.py  ▶ search 'def outcome_sort_time' in scripts/extract_trajectory.py ✓ (135ms)
+ ✓ (193ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the strict_task_verification function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:566..626 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. The key function `load_recent_session_outcomes` returns `[(session_dir, outcome_dict), ...]` sorted newest-first. The outcomes have fields like `tasks_attempted`, `tasks_succeeded`, `tasks_landed`. Let me check for `tasks_landed`.
+
+I also need to check what `strict_task_verification` returns — specifically `verified_task_count` which was used in `render_outcomes` at line 755.
+
+Now let me plan my changes:
+
+1. Add a constant `EMPTY_STREAK_WARN = 3` 
+2. Add a function `compute_empty_streak()` that takes session outcomes and computes consecutive empty sessions
+3. Add a function `render_empty_streak()` that renders the diagnostic
+
+The function should:
+- Look at the most recent sessions
+- Count consecutive sessions with zero landed tasks (tasks_succeeded == 0 or tasks_landed == 0 or verified_task_count == 0)
+- If streak >= EMPTY_STREAK_WARN, produce a warning
+- Include "nothing to fix vs can't find things to fix" language when streak >= 3 and no agent-self issues filed
+
+Let me also look at what `tasks_landed` looks like — let me check.
+
+Actually, looking at the outcome display in `render_outcomes`, the fields are:
+- `tasks_attempted`: number of tasks attempted
+- `tasks_succeeded`: number that succeeded
+
+A session with `tasks_attempted == 0` is clearly empty. And with `tasks_succeeded == 0`, it's also empty in terms of landed work.
+
+Let me now implement this. I'll:
+1. Add helper function `compute_empty_streak()`
+2. Add render function `render_empty_streak()`
+3. Wire into `main()`
+4. Add tests
+
+Let me write a test first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me write the test first, then implement.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:2160..2170 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the test before modifying extract_trajectory.py.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test class. I'll insert tests right before the `if __name__ == "__main__":` block:
+  + class EmptyStreakTests(unittest.TestCase):
+  +     """Tests for consecutive-empty-session streak diagnostic."""
+  + 
+  +     def _make_session(self, audit_dir: Path, day: int, ts: str,
+  +                       attempted: int, succeeded: int) -> Path:
+  +         session = audit_dir / f"day-{day}"
+  +         write_json(session / "outcome.json", {
+  +             "day": day, "ts": ts,
+  +             "tasks_attempted": attempted, "tasks_succeeded": succeeded,
+  +         })
+  +         return session
+  + 
+  +     def _make_verify_session(self, audit_dir: Path, day: int, ts: str,
+  +                              verified: int) -> Path:
+  +         """Session with strict_task_verification data."""
+  +         session = audit_dir / f"day-{day}"
+  +         write_json(session / "outcome.json", {
+  +             "day": day, "ts": ts,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_extract_trajectory.py (2 → 136 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_extract_trajectory.py (2 → 136 lines)
+  + class EmptyStreakTests(unittest.TestCase):
+  +     """Tests for consecutive-empty-session streak diagnostic."""
+  + 
+  +     def _make_session(self, audit_dir: Path, day: int, ts: str,
+  +                       attempted: int, succeeded: int) -> Path:
+  +         session = audit_dir / f"day-{day}"
+  +         write_json(session / "outcome.json", {
+  +             "day": day, "ts": ts,
+  +             "tasks_attempted": attempted, "tasks_succeeded": succeeded,
+  +         })
+  +         return session
+  + 
+  +     def _make_verify_session(self, audit_dir: Path, day: int, ts: str,
+  +                              verified: int) -> Path:
+  +         """Session with strict_task_verification data."""
+  +         session = audit_dir / f"day-{day}"
+  +         write_json(session / "outcome.json", {
+  +             "day": day, "ts": ts,
+  +             "tasks_attempted": verified, "tasks_succeeded": verified,
+  +         })
+  ... (116 more lines)
+ ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the functions in `extract_trajectory.py`. I need to add:
+
+1. A constant `EMPTY_STREAK_WARN = 3`
+2. `compute_empty_streak()` function
+3. `render_empty_streak()` function
+4. Wire into `main()`
+
+Let me add `EMPTY_STREAK_WARN` after the existing constants, then add the two new functions, and finally wire into `main()`.
+
+For `compute_empty_streak`: it should consume the list of outcome tuples (from `load_recent_session_outcomes`) and count consecutive newest sessions with zero landed tasks. "Zero landed tasks" means `tasks_attempted == 0` or `tasks_succeeded == 0`.
+
+For `render_empty_streak`: produce a concise warning section when streak >= EMPTY_STREAK_WARN.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the constant and functions to `extract_trajectory.py`. First, the constant near the others:
+    STUCK_ON_THRESHOLD = 3         # ≥N attempts AND 0 successes → flag
+  + EMPTY_STREAK_WARN = 3         # ≥N consecutive sessions with zero landed tasks → diagnostic
+    TOTAL_LINE_CAP = 100
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (2 → 3 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (2 → 3 lines)
+    STUCK_ON_THRESHOLD = 3         # ≥N attempts AND 0 successes → flag
+  + EMPTY_STREAK_WARN = 3         # ≥N consecutive sessions with zero landed tasks → diagnostic
+    TOTAL_LINE_CAP = 100
+ ✓ (155ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the two new functions. I'll put them right after the `render_outcomes` function. Let me find a good insertion point.
+
+I'll add them after `render_outcomes` (after line 816, before the blank line before TASK_COMMIT_RE).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the two new functions. I'll insert them after `render_outcomes`:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:816..821 ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, the line count may have shifted from 2105 to 2106 because I added a line. Let me verify. The original file was 2105 lines. I inserted 1 line (the EMPTY_STREAK_WARN constant) at line 40, so now it should be 2106 lines. Let me use the search tool to find the exact position of the gap after `render_outcomes`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'return "\n".join(lines)
+' in scripts/extract_trajectory.py ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The regex was interpreted with special chars. Let me use a literal search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'return "\\n".join(lines)$' scripts/extract_trajectory.py ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are multiple matches. Let me find the specific one near `render_outcomes`. I know `render_outcomes` is around line 726-817, and the `return "\n".join(lines)` for that function should be around line 817. Let me read that area.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:814..824 ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see there's line 820 which is empty, then line 821 blank, then line 822 blank. Let me insert after line 820 (ending of the render_outcomes function).
+
+I'll insert between line 819 and 823 (the TASK_COMMIT_RE).
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if omitted > 0:
+            lines.append(f"... {omitted} older session outcome(s) omitted")
+        return "\n".join(lines)
+  + 
+  + 
+  + def compute_empty_streak(session_outcomes: list[tuple[Path, dict[str, Any]]]) -> int:
+  +     """Count consecutive newest sessions with zero landed tasks.
+  + 
+  +     A session is "empty" when tasks_attempted == 0 or tasks_succeeded == 0.
+  +     Counts from the tip (newest) backwards; stops at the first session with
+  +     landed tasks. Returns the streak length (0 means no empty-streak signal).
+  +     """
+  +     streak = 0
+  +     for _session_dir, outcome in session_outcomes:
+  +         attempted = outcome.get("tasks_attempted", 0)
+  +         succeeded = outcome.get("tasks_succeeded", 0)
+  +         if isinstance(attempted, (int, float)) and isinstance(succeeded, (int, float)):
+  +             if attempted == 0 or succeeded == 0:
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (8 → 59 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (8 → 59 lines)
+        if omitted > 0:
+            lines.append(f"... {omitted} older session outcome(s) omitted")
+        return "\n".join(lines)
+  + 
+  + 
+  + def compute_empty_streak(session_outcomes: list[tuple[Path, dict[str, Any]]]) -> int:
+  +     """Count consecutive newest sessions with zero landed tasks.
+  + 
+  +     A session is "empty" when tasks_attempted == 0 or tasks_succeeded == 0.
+  +     Counts from the tip (newest) backwards; stops at the first session with
+  +     landed tasks. Returns the streak length (0 means no empty-streak signal).
+  +     """
+  +     streak = 0
+  +     for _session_dir, outcome in session_outcomes:
+  +         attempted = outcome.get("tasks_attempted", 0)
+  +         succeeded = outcome.get("tasks_succeeded", 0)
+  +         if isinstance(attempted, (int, float)) and isinstance(succeeded, (int, float)):
+  +             if attempted == 0 or succeeded == 0:
+  +                 streak += 1
+  +             else:
+  ... (38 more lines)
+ ✗ (284ms)
+    │ old_text not found in scripts/extract_trajectory.py.
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ah, I see - there's a section comment between lines 819 and 823: `# ── Section 2: Per-task success rate from git log ────────────────────────`. Let me use the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:814..826 ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 820 seems to be whitespace only or non-printing. Let me check lines 820-822 more carefully. There seems to be non-printing content on those lines. Let me use bash to see the actual bytes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '818,826p' scripts/extract_trajectory.py | cat -A ✓ (211ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 820 is `# ── Section 2: Per-task success rate from git log ────────────────────────`. It has em dashes as box-drawing characters. The `read_file` doesn't show it — probably a rendering issue. Let me use the exact pattern for my edit.
+
+I'll use the exact text matching the output. The old_text should match exactly:
+```
+    return "\n".join(lines)
+
+
+# ── Section 2: Per-task success rate from git log ────────────────────────
+
+
+```
+But this has Unicode characters that may be hard to represent. Let me try a different approach — use a smaller, more unique match.
+
+Let me use `bash` to grab the actual bytes for the section header.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '820,820p' scripts/extract_trajectory.py | xxd | head -5 ✓ (199ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The em dashes are the UTF-8 sequence `e2 94 80` (U+2500, BOX DRAWINGS LIGHT HORIZONTAL). Let me try to match with a shorter anchor. Let me use a different approach — I'll match the exact text using `read_file` output but with the section header included.
+
+Actually, let me try a different approach. Let me use the `bash` tool to make the insertion with Python itself, or I can try to match a smaller unique string. 
+
+Let me try matching just:
+```
+    return "\n".join(lines)
+
+
+# ── Section 2
+```
+
+Actually, the problem is that `read_file` is stripping the section header entirely because of Unicode rendering. Let me try passing it through another tool. Or let me try the edit with careful Unicode.
+
+Let me use Python to insert the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (87 lines) ✓ (194ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search for "return \"\n\".join(lines)\n\n\n#" failed. The issue is there's a section comment with em dashes between the blank lines and the `#`. Let me look at the actual content around that area.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (8 lines) ✓ (211ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, empty output. Let me try a different approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (11 lines) ✓ (201ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty output again. Let me try without the repr escaping.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 << 'PYEOF' (9 lines) ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact content around line 817-823. The section header at line 820 is:
+`'# \u2500\u2500 Section 2: Per-task success rate from git log \u2500\u2500\u2500...\n'`
+
+Now let me do the insertion with Python directly, which will be more reliable than the edit_file tool for Unicode content.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I can see the exact text. Let me insert the new functions using Python:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 << 'PYEOF' (72 lines) ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me wire the new functions into `main()`. I need to:
+1. Call `compute_empty_streak(outcomes)` after loading outcomes
+2. Call `render_empty_streak(streak)` and add it to sections
+
+Let me look at the main() function again to find the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+Now wire into `main()`:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'render_provider_health\|render_ci_errors\|render_reverts\|render_task_s… ✓ (187ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me read around line 2000-2040 to find the exact insertion point in main().
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1995..2055 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the empty streak diagnostic after render_provider_health. Let me insert it right after the provider_health section, before `if not sections:`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        s = render_provider_health(sessions_audited, provider_hits)
+  +     if s:
+  +         sections.append(s)
+  +     s = render_empty_streak(compute_empty_streak(outcomes))
+        if s:
+            sections.append(s)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (3 → 6 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (3 → 6 lines)
+        s = render_provider_health(sessions_audited, provider_hits)
+  +     if s:
+  +         sections.append(s)
+  +     s = render_empty_streak(compute_empty_streak(outcomes))
+        if s:
+            sections.append(s)
+ ✓ (148ms)
+
+

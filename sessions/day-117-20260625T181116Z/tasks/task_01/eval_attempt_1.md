@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: 3 of 9 new EmptyStreakTests fail. The tests assert `"cannot find work"` (not present) but implementation uses `"inability to find work"`; tests assert plain `"5 consecutive sessions"` but implementation renders markdown `"**5** consecutive sessions"`. The implementation logic matches the task spec, but the test assertions are misaligned with the actual render output, so the verifier (`python3 -m unittest scripts.test_extract_trajectory`) does not pass.

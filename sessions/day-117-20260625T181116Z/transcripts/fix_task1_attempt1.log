@@ -1,0 +1,211 @@
+warning: skipping corrupted event at line 52674 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 7113
+warning: skipping corrupted event at line 52678 of '.yoyo/state/events.jsonl': key must be a string at line 1 column 4205
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task and the evaluator feedback:
+
+1. I need to fix 3 failing tests in `scripts/test_extract_trajectory.py`
+2. The issue is that test assertions use `"cannot find work"` but the implementation uses `"inability to find work"`
+3. Tests assert plain `"5 consecutive sessions"` but implementation renders markdown `"**5** consecutive sessions"`
+
+The task says "Fix the issues the evaluator identified" and to run focused verification. Let me look at the test file and the implementation to understand the exact mismatches and fix them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test file and the implementation to understand the exact mismatches.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EmptyStreakTests' in scripts/test_extract_trajectory.py  ▶ search 'consecutive empty' in scripts/extract_trajectory.py ✓ (133ms)
+ ✓ (193ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test class and the implementation function to understand the mismatches.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:2168..  ▶ read scripts/extract_trajectory.py:820..920 ✓ (370ms)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. Let me compare the test assertions with the actual implementation:
+
+1. **`test_render_empty_streak_warning_at_threshold`** (line 2280-2286):
+   - `self.assertIn("3+ consecutive sessions", result3)` — ✓ matches line 862 `"3+ consecutive sessions"`
+   - `self.assertIn("cannot find work", result3)` — ✗ implementation at line 863 says `"inability to find work"`, not `"cannot find work"`
+   - `self.assertIn("may indicate inability", result3)` — ✓ matches line 862-863
+
+2. **`test_render_empty_streak_warning_prolonged`** (line 2288-2293):
+   - `self.assertIn("5 consecutive sessions", result5)` — ✗ implementation at line 852 says `"**5** consecutive session"` (with markdown bold)
+   - `self.assertIn("cannot find work", result5)` — ✗ implementation at line 856 says `"inability to find work"`, not `"cannot find work"`
+   - `self.assertIn("filing agent-self issues", result5)` — ✓ matches line 858
+
+3. **`test_render_empty_streak_section_truncation`** (line 2295-2299):
+   - `self.assertIn("7 consecutive sessions", result7)` — ✗ implementation at line 852 says `"**7** consecutive session"` (with markdown bold)
+
+So the evaluator correctly identified 3 tests that fail:
+- `test_render_empty_streak_warning_at_threshold`: `"cannot find work"` doesn't match `"inability to find work"`
+- `test_render_empty_streak_warning_prolonged`: `"5 consecutive sessions"` doesn't match `"**5** consecutive session"`; AND `"cannot find work"` doesn't match `"inability to find work"`
+- `test_render_empty_streak_section_truncation`: `"7 consecutive sessions"` doesn't match `"**7** consecutive session"`
+
+Wait, that's actually more than 3 assertions failing. Let me re-count. The evaluator says "3 of 9 new EmptyStreakTests fail". The test class has 9 tests. Let me identify which 3 fail:
+
+Looking at the assertions:
+- `test_render_empty_streak_warning_at_threshold`: `"cannot find work"` fails → 1 test failing
+- `test_render_empty_streak_warning_prolonged`: both `"5 consecutive sessions"` and `"cannot find work"` fail → 1 test failing  
+- `test_render_empty_streak_section_truncation`: `"7 consecutive sessions"` fails → 1 test failing
+
+That's 3 failing tests. The others (compute-streak tests and the no-warning-below-threshold test) pass because they don't assert on the render text.
+
+The task says "Fix the issues the evaluator identified." The evaluator says the test assertions are misaligned with the actual render output. I should fix the tests to match the implementation render output, since the implementation matches the task spec.
+
+Actually wait - the evaluator says "the test assertions are misaligned with the actual render output." The implementation logic matches the task spec. So I should fix the test assertions to match the implementation. Let me update the test assertions:
+
+1. `test_render_empty_streak_warning_at_threshold`: Change `"cannot find work"` to `"inability to find work"`
+2. `test_render_empty_streak_warning_prolonged`: Change `"5 consecutive sessions"` to `"**5** consecutive session"` and `"cannot find work"` to `"inability to find work"`
+3. `test_render_empty_streak_section_truncation`: Change `"7 consecutive sessions"` to `"**7** consecutive session"`
+
+Wait, let me re-read. The test at line 2291 says `self.assertIn("5 consecutive sessions", result5)`. The implementation at line 852 says `f"- **{streak}** consecutive session{plural} with zero landed tasks"`. So for streak=5, plural is "s" (streak != 1), so it's `"**5** consecutive sessions with zero landed tasks"`. The test asserts "5 consecutive sessions" which would be a substring... but wait, "5 consecutive sessions" is NOT a substring of "**5** consecutive sessions" because there's `**` before `5`. So this test fails.
+
+Similarly, line 2299: `self.assertIn("7 consecutive sessions", result7)` but the actual text is `**7** consecutive sessions`. Not a substring match.
+
+And `"cannot find work"` is not a substring of `"inability to find work"`.
+
+So I need to update the test assertions. Let me fix all three tests.
+
+Let me also verify that `compute_empty_streak` exists in `extract_trajectory.py` to make sure all the referenced functions are there.
+
+Actually, the tests also call `extract_trajectory.load_recent_session_outcomes` and `extract_trajectory.compute_empty_streak` and `extract_trajectory.render_empty_streak`. Let me verify those exist in the implementation.
+
+From what I read:
+- `compute_empty_streak` — I see the function starting around line 825. Let me verify.
+- `render_empty_streak` — I see it at line 840.
+- `load_recent_session_outcomes` — I need to verify this exists. Let me search for it.
+
+Actually, looking at the code I read, line 826 says `for _session_dir, outcome in session_outcomes:` which means `session_outcomes` is an iterable of `(session_dir, outcome)` pairs. Let me search for `load_recent_session_outcomes` in extract_trajectory.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.8s (2 ✓)
+
+Now I can see the mismatches clearly. Let me verify what functions exist in the implementation:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'load_recent_session_outcomes' in scripts/extract_trajectory.py  ▶ search 'compute_empty_streak' in scripts/extract_trajectory.py ✓ (130ms)
+ ✓ (183ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all functions exist. Now let me fix the 3 failing tests. The mismatches are:
+
+1. `test_render_empty_streak_warning_at_threshold` line 2284: `"cannot find work"` → should be `"inability to find work"` (matches line 863)
+2. `test_render_empty_streak_warning_prolonged` line 2291: `"5 consecutive sessions"` → should be `"**5** consecutive session"` (matches line 852)  
+3. `test_render_empty_streak_warning_prolonged` line 2292: `"cannot find work"` → should be `"inability to find work"` (matches line 856)
+4. `test_render_empty_streak_section_truncation` line 2299: `"7 consecutive sessions"` → should be `"**7** consecutive session"` (matches line 852)
+
+Let me fix these assertions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+All functions exist. Now let me fix the 3 failing tests by aligning test assertions with the actual render output:
+  -         self.assertIn("cannot find work", result3)
+  +         self.assertIn("inability to find work", result3)
+            # No "agent-self" specific mention since we can't detect it from streak alone
+            self.assertIn("may indicate inability", result3)
+  ✓ Auto-approved: edit: scripts/test_extract_trajectory.py (3 → 3 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_extract_trajectory.py (3 → 3 lines)
+  -         self.assertIn("cannot find work", result3)
+  +         self.assertIn("inability to find work", result3)
+            # No "agent-self" specific mention since we can't detect it from streak alone
+            self.assertIn("may indicate inability", result3)
+ ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, first fix applied. Now fix test_render_empty_streak_warning_prolonged assertions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         self.assertIn("5 consecutive sessions", result5)
+  -         self.assertIn("cannot find work", result5)
+  +         self.assertIn("**5** consecutive session", result5)
+  +         self.assertIn("inability to find work", result5)
+  ✓ Auto-approved: edit: scripts/test_extract_trajectory.py (2 → 2 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_extract_trajectory.py (2 → 2 lines)
+  -         self.assertIn("5 consecutive sessions", result5)
+  -         self.assertIn("cannot find work", result5)
+  +         self.assertIn("**5** consecutive session", result5)
+  +         self.assertIn("inability to find work", result5)
+ ✓ (107ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix test_render_empty_streak_section_truncation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         self.assertIn("7 consecutive sessions", result)
+  +         self.assertIn("**7** consecutive session", result)
+  ✓ Auto-approved: edit: scripts/test_extract_trajectory.py (1 → 1 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_extract_trajectory.py (1 → 1 lines)
+  -         self.assertIn("7 consecutive sessions", result)
+  +         self.assertIn("**7** consecutive session", result)
+ ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4 assertions fixed across 3 tests. Now let me verify by running the specific test class.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the fix by running the EmptyStreakTests:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (211ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 EmptyStreakTests pass now. Let me also verify the full test suite still passes and check formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+All 9 tests pass. Let me also verify nothing else broke in the broader test file:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (307ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 69 tests pass. Now let me check cargo fmt.
+────────────────────────────────────────────────────────────────────────────────
+
+All 69 tests pass. Let me run the required gate check:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passes too. Let me mark the task as done and summarize.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+**Fixed.** The 3 failing EmptyStreakTests now pass. The issue was misaligned test assertions vs. the actual render output from `render_empty_streak()`:
+
+| Test | Old (broken) assertion | New (matching) assertion |
+|------|----------------------|------------------------|
+| test_render_empty_streak_warning_at_threshold | "cannot find work" | "inability to find work" |
+| test_render_empty_streak_warning_prolonged | "5 consecutive sessions" | "**5** consecutive session" |
+| test_render_empty_streak_warning_prolonged | "cannot find work" | "inability to find work" |
+| test_render_empty_streak_section_truncation | "7 consecutive sessions" | "**7** consecutive session" |
+
+**Verification:**
+• `python3 -m unittest scripts.test_extract_trajectory.EmptyStreakTests` → 9/9 OK
+• `python3 -m unittest scripts.test_extract_trajectory` → 69/69 OK
+• `cargo fmt -- --check` → clean
+
+

@@ -1,0 +1,380 @@
+warning: skipping corrupted event at line 9195 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 9828
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. `state doctor` was recently added with a 20K event scanning limit
+2. The test for this limit exists but isn't discoverable via `cargo test -- doctor`
+3. I need to make the test discoverable by `cargo test -- doctor`
+
+Let me start by reading the evolve skill, then examine the current state of the code and tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ $ cargo test -- doctor 2>&1 | head -20 ✓ (58ms)
+ ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo test -- doctor` finds 9 tests but these are likely not doctor-related — they might just match "doctor" in some other test name. Let me check what tests it found. The output says "running 9 tests" but doesn't show which ones. Let me check more carefully.
+
+Let me also look at the existing test structure in `src/commands_state.rs` to find the `read_tail_events_respects_limit` test and the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 | grep -E "^test |^running|^test result"  ▶ search 'read_tail_events_respects_limit' in src/commands_state.rs  ▶ search 'handle_doctor' in src/commands_state.rs ✓ (30ms)
+ ✓ (27ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `handle_doctor` is at line 145, and `read_tail_events_respects_limit` is at line 24690. The test module starts around line 14420. Let me look at the doctor handler and the test to understand what's happening.
+
+Also, the `cargo test -- doctor` output shows 9 tests matching — these are likely tests in other crates (like `yoyo_ds_harness` lib) that happen to have "doctor" in their name. The `yyds` binary has 0 tests matching. Let me check what tests matched.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.9s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 | grep "^test " | head -20  ▶ read src/commands_state.rs:110..190 ✓ (13ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the 9 tests from the doc-tests matching "doctor" — those are likely documentation tests that contain "doctor" in code snippets or comments. Let me check what tests actually matched. Also, let me look at `read_tail_events` and its test, plus the test module structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 | grep "test " | grep -v "test result" | grep -v "Runn…  ▶ read src/commands_state.rs:24680..24730  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (26ms)
+ ✓ (27ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the test module structure - where does `mod tests` begin, and how are the tests organized?
+
+Also, let me check what `DEFAULT_DOCTOR_LIMIT` is to understand the 20K limit.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'DEFAULT_DOCTOR_LIMIT' in src/commands_state.rs  ▶ read src/commands_state.rs:14410..14440  ▶ read src/commands_state.rs:1360..1440 ✓ (14ms)
+ ✓ (83ms)
+ ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. Let me look at where `read_tail` is defined and also look at `default_events_path` and `default_store_path` since `handle_doctor` uses `default_events_path()` and `default_store_path(&events_path)`.
+
+The issue is:
+1. `handle_doctor` at line 145 uses `read_tail_events` when total events > limit (20K default)
+2. The test `read_tail_events_respects_limit` at line 24690 tests `read_tail_events` directly with 100 events and limit=10
+3. But there's no test with "doctor" in the name, so `cargo test -- doctor` doesn't find it
+
+I need to add a test that includes "doctor" in its name that verifies the scanning limit behavior. The simplest approach is to add a test named something like `doctor_event_scanning_limit` that creates a temp events file with > 20K lines (or a smaller number that still triggers the limit path) and verifies the limit is respected.
+
+But wait — `handle_doctor` calls `default_events_path()` which returns the real path, not a temp path. I can't easily mock it without modifying production code. Let me check how other tests in this module handle this.
+
+Actually, let me look at how existing tests handle the path issue. Maybe I need to test at the `read_tail_events` level but name the test with "doctor" in it.
+
+Let me re-read the task: 
+> The simplest approach: add a thin test in the existing `mod tests` (line ~14420) that calls `handle_doctor` or exercises the doctor code path with a known event count. Name it `doctor_respects_event_scanning_limit` or similar.
+> Alternative: rename the existing `read_tail_events_respects_limit` test to include "doctor" in its name, since `handle_doctor` is the only caller of the tail-limiting path. But check if `read_tail_events` is also used by `handle_tail` — if so, keep the helper-level test and add a doctor-level test.
+
+Let me check if `read_tail_events` is used by `handle_tail` or only by `handle_doctor`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.5s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail_events' in src/commands_state.rs  ▶ search 'fn handle_tail' in src/commands_state.rs ✓ (26ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `handle_tail` to see if it uses `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:482..542 ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `handle_tail` uses `read_tail` (the raw line reader), not `read_tail_events` (which parses JSON). So `read_tail_events` is only used by `handle_doctor`. That means the existing test `read_tail_events_respects_limit` indeed tests the doctor code path indirectly.
+
+Now, `handle_doctor` uses `default_events_path()` which returns the real events path. I can't easily test it without either:
+1. Adding environment variable overrides
+2. Testing at the `read_tail_events` level but with a "doctor" name
+
+The task's fallback says:
+> If the test module structure makes a doctor-named test impractical (e.g., doctor tests would need different fixtures), document the discoverability gap in a code comment above the existing test and skip.
+
+But the task's primary recommendation is:
+> Alternative: rename the existing `read_tail_events_respects_limit` test to include "doctor" in its name, since `handle_doctor` is the only caller of the tail-limiting path.
+
+But the task also says: "Do NOT modify the production code (handle_doctor, read_tail_events, etc.) — only add or rename tests."
+
+Let me think about the simplest approach. Since `handle_doctor` hardcodes the path via `default_events_path()`, I could:
+
+1. Add a test named `doctor_event_scanning_limit` that creates a temp events file, but to call `handle_doctor` directly I'd need to override the path. Let me check if `default_events_path` can be overridden by env var.
+
+Actually wait, let me check `default_events_path`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_events_path' in src/commands_state.rs ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:11..36 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `default_events_path()` reads from config, which could have a `state_events` key. In tests, I could set that config... but that's complex. 
+
+The cleanest approach is to add a test that directly exercises the doctor code path at the `read_tail_events` level (since that's the only caller of `read_tail_events` in production), and name it with "doctor" in the name.
+
+But actually, the task says the test should make `cargo test -- doctor` find it. Let me check - does `cargo test` filter match substrings? Yes, it does. So if I name a test `doctor_event_scanning_limit`, `cargo test -- doctor` will find it.
+
+The simplest approach: add a test in the `mod tests` section that:
+1. Creates a temp events file with, say, 100 events
+2. Calls `read_tail_events` with limit=20 (or the default 20000 scaled down)  
+3. Verifies the limit is respected
+4. Name it with "doctor" in the name
+
+But actually the existing test `read_tail_events_respects_limit` at line 24690 already does exactly this with 100 events and limit=10. It just doesn't have "doctor" in the name.
+
+The simplest fix per the task guidance: rename `read_tail_events_respects_limit` to `doctor_read_tail_events_respects_limit` or `doctor_event_scanning_limit`. But the task says "But check if `read_tail_events` is also used by `handle_tail` — if so, keep the helper-level test and add a doctor-level test." We confirmed `handle_tail` uses `read_tail` not `read_tail_events`, so `read_tail_events` is doctor-only. So renaming is safe.
+
+But wait - the task says "Do NOT modify the production code". Renaming a test name doesn't modify production code. That's fine.
+
+Let me go with the simplest approach: add a new test `doctor_event_scanning_limit` that's like `read_tail_events_respects_limit` but with a larger event count (maybe 25K to match the real 20K scale... but actually, creating 25K events in a test would be slow and unnecessary). The test should verify the limit behavior at the `read_tail_events` level since that's the doctor code path.
+
+Actually, the simplest and most honest approach: add a test `doctor_respects_event_scanning_limit` that creates a modest number of events and uses `read_tail_events` with a smaller limit. The test verifies the tail-limiting behavior. Since `read_tail_events` is only called by `handle_doctor`, testing it IS testing the doctor code path.
+
+But duplicating the existing test just to change the name seems wasteful. Let me just rename `read_tail_events_respects_limit` to `doctor_event_tail_scanning_limit` or similar.
+
+Wait, but the task says: "But check if `read_tail_events` is also used by `handle_tail` — if so, keep the helper-level test and add a doctor-level test."
+
+We checked: `handle_tail` uses `read_tail` (raw line reader), not `read_tail_events` (JSON parser). So `read_tail_events` is only used by `handle_doctor`. Therefore renaming the test to include "doctor" is safe.
+
+Let me just rename the test. That's the simplest surgical change. But wait, I should also check: are there other tests that call `read_tail_events`?
+
+From the search results:
+```
+src/commands_state.rs:1367:fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+src/commands_state.rs:24690:    fn read_tail_events_respects_limit() {
+src/commands_state.rs:24707:    fn read_tail_events_limit_larger_than_file_returns_all() {
+```
+
+So there are two tests that test `read_tail_events`. Both are helper-level tests. Both could include "doctor" in their names.
+
+Let me go with: rename both tests to include "doctor". 
+
+Test 1: `read_tail_events_respects_limit` → `doctor_event_tail_scanning_limit`
+Test 2: `read_tail_events_limit_larger_than_file_returns_all` → `doctor_event_tail_limit_larger_than_file_returns_all`
+
+This way `cargo test -- doctor` finds both tests.
+
+Actually, I want to be minimal. Let me just rename the first test (the limit-respecting one) since that's what the task is about. The second test is about the edge case where limit > file size, which is also relevant but maybe less core.
+
+Let me do both for completeness.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the situation. `read_tail_events` is only called by `handle_doctor` (confirmed: `handle_tail` uses `read_tail`, not `read_tail_events`). Two tests exist for this function but neither has "doctor" in its name, so `cargo test -- doctor` finds nothing.
+
+The simplest fix: rename the existing tests to include "doctor".
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24688..24728 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the surgical edit. I'll rename both tests to include "doctor":
+
+1. `read_tail_events_respects_limit` → `doctor_event_tail_scanning_limit`
+2. `read_tail_events_limit_larger_than_file_returns_all` → `doctor_event_tail_limit_larger_than_file_returns_all`
+
+These are the only callers of `read_tail_events`, which is only called by `handle_doctor`. So these tests are effectively doctor tests.
+
+Let me do the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        #[test]
+  -     fn read_tail_events_respects_limit() {
+  +     fn doctor_event_tail_scanning_limit() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.jsonl");
+            let events: Vec<Value> = (1..=100)
+  ···
+        }
+    
+        #[test]
+  -     fn read_tail_events_limit_larger_than_file_returns_all() {
+  +     fn doctor_event_tail_limit_larger_than_file_returns_all() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.jsonl");
+            let events: Vec<Value> = (1..=5)
+  ✓ Auto-approved: edit: src/commands_state.rs (35 → 35 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (35 → 35 lines)
+        #[test]
+  -     fn read_tail_events_respects_limit() {
+  +     fn doctor_event_tail_scanning_limit() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.jsonl");
+            let events: Vec<Value> = (1..=100)
+  ···
+        }
+    
+        #[test]
+  -     fn read_tail_events_limit_larger_than_file_returns_all() {
+  +     fn doctor_event_tail_limit_larger_than_file_returns_all() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.jsonl");
+            let events: Vec<Value> = (1..=5)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me run `cargo fmt -- --check`, then `cargo test -- doctor` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let's run `cargo test -- doctor`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 ✓ (32.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now 11 tests match "doctor" (was 9 before, now 11 — the 2 newly renamed tests are found). Let me confirm it found my renamed tests specifically:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 | grep "^test " | head -20 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output is elided. Let me try to see the specific test names:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor 2>&1 | grep -E "^test " | cat ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output is being summarized/hidden. Let me use `-- --show-output` or run with `--nocapture`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor -- --list 2>&1 | head -30 ✓ (155ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, `--list` doesn't seem to work with `-- doctor` filter. Let me try a different approach: run the test binary directly to list tests.
+
+Actually, let me just verify by running a more targeted test that includes "doctor_event":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor_event 2>&1 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. `cargo test -- doctor_event` finds 2 tests:
+- `commands_state::tests::doctor_event_tail_scanning_limit` ✓
+- `commands_state::tests::doctor_event_tail_limit_larger_than_file_returns_all` ✓
+
+And `cargo test -- doctor` finds 11 tests (these 2 plus 9 others that have "doctor" somewhere). Let me check what those other 9 tests are:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor --list 2>&1 || true; find target/debug/deps/yoyo_ds_harness… ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 11 tests matching "doctor" now. The 2 I renamed are listed:
+- `commands_state::tests::doctor_event_tail_limit_larger_than_file_returns_all`
+- `commands_state::tests::doctor_event_tail_scanning_limit`
+
+Plus 9 other tests from `commands_deepseek` and `commands_dev` that already had "doctor" in their names. Good.
+
+Now let me run the full test suite to make sure nothing is broken. Actually, per the evolve skill rules: "Run focused verification after changes: cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface. Do not run full cargo test or full clippy inside the implementation turn."
+
+But the task is only about renaming tests, which can't break anything. The format check passed, and the focused test (`cargo test -- doctor_event`) passed. Let me also run the broader state tests to be safe.
+
+Actually, let me do a quick build check too:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo build 2>&1 ✓ (133ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me check git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff --name-only ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The diff touches `src/commands_state.rs` which is exactly the task's Edit Surface. Let me commit now.
+
+Wait — let me also look at the actual diff to confirm the change is clean.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is clean: 2 lines changed (test function name changes only). This is exactly the edit surface. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Clean diff — 2 test function renames only. Commit:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ git add -A && git commit -m "Day 117 (18:11): Fix state doctor test discoverabil… ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify one more time that `cargo test -- doctor` finds the tests, and summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me do a final verification:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- doctor --list 2>&1 | grep commands_state ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** Renamed two existing test functions in `src/commands_state.rs` to include "doctor" in their names, making them discoverable by `cargo test -- doctor`:
+
+• `read_tail_events_respects_limit` → `doctor_event_tail_scanning_limit`
+• `read_tail_events_limit_larger_than_file_returns_all` → `doctor_event_tail_limit_larger_than_file_returns_all`
+
+**Why this works:** `read_tail_events` is only called by `handle_doctor` (confirmed: `handle_tail` uses `read_tail`, not `read_tail_events`). These tests were already testing the doctor code path — they just weren't named in a way that `cargo test -- doctor` could find them.
+
+**Verification:**
+• `cargo fmt -- --check` — passed
+• `cargo build` — passed
+• `cargo test -- doctor_event` — 2 tests pass
+• `cargo test -- doctor` — 11 tests found (2 state doctor + 9 other doctor-named tests)
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
