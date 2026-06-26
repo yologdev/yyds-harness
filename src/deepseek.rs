@@ -2637,6 +2637,14 @@ mod tests {
     }
 
     #[test]
+    fn stable_system_contract_is_nonempty() {
+        let contract = stable_system_contract();
+        assert!(!contract.is_empty());
+        assert!(contract.contains("DeepSeek Native Harness Contract"));
+        assert!(contract.contains("deterministic prompt layout"));
+    }
+
+    #[test]
     fn cache_ratio_handles_missing_and_zero_totals() {
         assert_eq!(DeepSeekUsage::default().cache_hit_ratio(), None);
         let usage = DeepSeekUsage {
