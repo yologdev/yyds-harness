@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All 16 EmptyStreakTests pass (8 new classification tests + 8 existing). The implementation adds `classify_empty_session_reasons` with 4 distinct reason labels (assessment_empty, reverted_no_edit, implementation_failed, unknown), integrates it into `main()` alongside the existing `compute_empty_streak`, and extends `render_empty_streak` with a backward-compatible `reasons` parameter. All success criteria met.

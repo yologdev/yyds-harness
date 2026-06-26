@@ -1,0 +1,447 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill for the canonical implementation contract, then examine the task's evidence and source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read scripts/preseed_session_plan.py (100 lines) ✓ (372ms)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the preseed_session_plan.py to understand the task selection logic, particularly around the analysis-only task.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:100..300 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to find the `choose_task` function and understand the analysis-only task selection logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'analysis_only_active' in scripts/preseed_session_plan.py ✓ (131ms)
+ ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `choose_task` function and surrounding logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:667..887 ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `_has_analysis_only_pressure` function and the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py  ▶ search 'def _analysis_only_seed_recently_blocked' in scripts/preseed_session_plan.py  ▶ search 'def _task_file_count' in scripts/preseed_session_plan.py ✓ (260ms)
+ ✓ (335ms)
+ ✓ (431ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Read those functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:620..665 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how this task gets to the analysis-only fallback. The current logic at line 684-685 rejects the analysis-only task when it was recently blocked. But there's a problem: when `analysis_only_active` is True and the analysis-only task is the only candidate that matches, the system selects the analysis-only task. But the task itself is the analysis-only task - this creates a circular self-reference where the implementation agent gets a task about making the analysis-only task pressure landable, and it might not know what to do because it doesn't know what files to edit.
+
+Let me also read the `_ANALYSIS_ONLY_METRICS` to understand the full picture:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:608..628 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the tests for this logic and understand the full picture. Let me also look at `check_task_contradiction` to understand what contradiction checking does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:1000..1140 ✓ (142ms)
+ ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the task better. The problem is:
+
+When `analysis_only_active` is True and the only matching candidate is the analysis-only task itself, the system selects it. But the implementation agent gets a task about "Make analysis-only task pressure landable" which is a meta-task. The agent might not know what specific files to edit or what behavior to change, leading to analysis-only/no-edit attempts.
+
+Looking at the code flow more carefully:
+
+1. `analysis_only_active` is True when `_ANALYSIS_ONLY_METRICS` are positive (e.g., `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`)
+2. When `analysis_only_active` is True AND lifecycle metrics are present, the lifecycle task is skipped (lines 692-695)
+3. The analysis-only task itself matches its own keys ("task_analysis_only_attempt_count", "reverted_no_edit", etc.)
+4. If the analysis-only task hasn't been recently blocked, it passes through all filters
+5. It becomes the selected task
+
+Now, the checkpoint says: "Previous implementation attempt exited cleanly but did not edit files"
+
+The checkpoint also says: "By your third tool turn in this retry, do exactly one of: write or edit a focused regression test, add one edit, write obsolete, or write blocked."
+
+Let me think about what needs to change. Let me look at the task's success criteria:
+
+1. "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." - YES, already works
+2. "The selected seed Files list contains no protected implementation files." - YES, already checked
+3. "Preseed self-tests cover the analysis-only/no-edit pressure path." - YES, already have tests
+
+But there's a real problem: when `analysis_only_active` is True and the analysis-only task is the ONLY matching candidate, the implementation agent gets a circular self-referential task. The task's files are all Python scripts (`scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`) - no src/*.rs files. And the task is about making the task-selection logic itself better, which is confusing.
+
+However, the task's own verification says: `python3 scripts/preseed_session_plan.py --test` and `python3 -m unittest scripts.test_state_graph_tools`. These tests pass. The code already satisfies the task's success criteria.
+
+Per the evolve skill rule 6:
+> "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+So I can either:
+a) Add a stronger regression test
+b) Write an obsolete-task note
+
+Let me look for gaps in the test coverage. The task says "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." Let me check if there's a test for the lifecycle-skip-when-analysis-only-active behavior.
+
+Looking at the tests:
+- Lines 985-1006: lifecycle metrics with analysis-only pressure -> analysis-only task selected, lifecycle skipped
+- Lines 1008-1025: Analysis-only pressure file-count guard
+- Lines 1027-1048: Evidence-aware re-ranking (src/*.rs preferred)
+- Lines 1050-1061: When only analysis-only task matches, it's still selected
+- Lines 1063-1078: task_no_edit_revert_count alone -> analysis-only task
+- Lines 1079-1093: Recently blocked analysis-only seed not re-selected
+
+What's missing: 
+1. A test confirming that when `analysis_only_active` and lifecycle metrics are both present, lifecycle is explicitly skipped (not just that analysis-only is selected). The test at line 985 includes both and shows analysis-only is selected, but doesn't explicitly verify lifecycle was skipped while being actionable.
+2. A test for the edge case where `analysis_only_active` is True and another non-analysis-only candidate also matches (not a src/*.rs one) - but the analysis-only one should still be preferred since there's no src candidate.
+
+Actually, I think the real issue the task is pointing at is more subtle. Let me look at the state_graph_tools.py to see what graph signals produce these metrics.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.3s (2 ✓)
+
+Let me look at the state_graph_tools.py to understand the graph-derived pressure signals, and check if there's something actionable missing.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only|task_no_edit|reverted_no_edit' in scripts/state_graph_tools.py  ▶ search 'analysis_only|task_no_edit|reverted_no_edit' in scripts/test_state_graph_tools.py ✓ (149ms)
+ ✓ (181ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the state_graph_tools.py and test_state_graph_tools.py don't contain any references to `analysis_only`, `task_no_edit`, or `reverted_no_edit`. Let me look at the full test file for preseed and see what tests exist.
+
+Wait, let me re-read the task. The task's files are:
+- scripts/preseed_session_plan.py
+- scripts/state_graph_tools.py
+- scripts/test_state_graph_tools.py
+
+But the analysis-only pressure metrics might come from graph-derived signals. Let me check the test_task_lineage_feedback.py and test_extract_trajectory.py since those are related.
+
+Actually, let me focus. The checkpoint says the previous attempt "exited cleanly but did not edit files." The task's success criteria appear already satisfied by the existing code. Let me look at what might be missing that would improve the situation without being circular.
+
+Looking at the task more carefully, the core issue is: **when `analysis_only_active` is True and the analysis-only task is the only match, the implementation agent gets a circular task about fixing the task-selection system**. The implementation agent's previous attempt tail shows it recognized this problem but couldn't figure out what to edit.
+
+Now, there are two approaches:
+1. **Fix preseed**: When `analysis_only_active` is True and only the analysis-only task matches, fall back to the "Repair evidence-backed planning" fallback instead.
+2. **Add a stronger regression test**: Add a test that explicitly verifies behavior when analysis-only is the only candidate and lifecycle is also present.
+
+Actually, looking more carefully at the code, I think the fix should be in `choose_task`: when `analysis_only_active` is True and after filtering, if the only candidate is the analysis-only task itself, we should try to find another task or fall back. But this is what the previous attempt realized and couldn't figure out how to implement.
+
+Wait, let me re-read. The previous transcript tail says:
+> "OK, I think I've been overthinking this. Let me re-read the task one more time..."
+> "So the code already satisfies the task. According to the evolve skill..."
+
+So the previous implementation attempt concluded the code already satisfied the task. It then had to choose between adding a regression test, docs, state evidence, or an obsolete-task note. But it didn't do any of those - it just exited without editing files.
+
+The checkpoint says:
+> "By your third tool turn in this retry, do exactly one of: write or edit a focused regression test in the listed task surface, edit one listed task-scope source file, write session_plan/task_01_obsolete.md, or write session_plan/task_01_blocked.md"
+
+Let me focus on the most honest thing: the code already satisfies the task's success criteria. Let me look for an edge case that could be strengthened.
+
+Actually, let me re-read the task success criteria:
+1. "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup." ✅ Already true (line 692-695)
+2. "The selected seed Files list contains no protected implementation files." ✅ Already true (line 686-687)
+3. "Preseed self-tests cover the analysis-only/no-edit pressure path." ✅ Already true
+
+But there's a real operational issue: when the analysis-only task is selected and the implementation agent gets it, the agent has a circular task about fixing task selection. This is a meta-cognitive problem.
+
+Let me think about what concrete change would make sense:
+
+**Option A**: In `choose_task`, when `analysis_only_active` is True, after all filtering, if the only candidate is the analysis-only task, generate a task that points at the actual files that need fixing rather than the meta-task. But what files need fixing? The evidence is about task-success rate, no-edit reverts. The fix should target the implementation agent's behavior, not the task selection.
+
+**Option B**: Add a test that explicitly verifies the lifecycle-is-skipped behavior when analysis_only_active is True. This strengthens the existing coverage.
+
+**Option C**: Write an obsolete-task note since the code already meets the success criteria.
+
+Let me go with **Option B** - add a focused regression test that explicitly verifies the lifecycle skip + analysis-only priority behavior. This is a real test improvement that makes the satisfied behavior mechanically verifiable.
+
+But first, let me also quickly check test_task_lineage_feedback.py since it might have related tests about analysis-only behavior.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.5s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only' in scripts ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at what specifically `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, and `reverted_no_edit` mean in the state_graph_tools.py context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:55..105  ▶ read scripts/state_graph_tools.py:490..540 ✓ (342ms)
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The state_graph_tools.py computes `task_analysis_only_attempt_count` and `task_no_edit_revert_count` based on task evaluation evidence. These metrics feed into the preseed_session_plan.py which checks if `_has_analysis_only_pressure(metrics)` is True.
+
+The problem is: when these metrics are positive, the preseed selects the "Make analysis-only task pressure landable" task. But this is a meta-task that the implementation agent struggles to implement (as shown by the previous attempt).
+
+Let me look at what the actual structural problem is and what could make this more landable.
+
+The real fix would be: when `analysis_only_active` is True, instead of selecting the analysis-only task itself, select a **different** landable task that deals with the underlying problem. But the analysis-only task IS the one designed to fix this exact problem...
+
+Actually, let me re-read the task's objective:
+> "Ensure task-success pressure from analysis-only/no-edit attempts produces a small, landable follow-up task instead of selecting broad or protected-file harness work."
+
+So the task is about making the task-selection better. The success criteria say:
+1. Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup. ✅
+2. The selected seed Files list contains no protected implementation files. ✅
+3. Preseed self-tests cover the analysis-only/no-edit pressure path. ✅
+
+These are all satisfied by the current code. The problem is that the agent who gets this task doesn't know what specific edit to make because the task is self-referential.
+
+Let me now check what happens when I run the preseed test:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests pass. Now let me think about what to do. The task says:
+
+> "By your third tool turn in this retry, do exactly one of: write or edit a focused regression test in the listed task surface, edit one listed task-scope source file, write session_plan/task_01_obsolete.md, or write session_plan/task_01_blocked.md"
+
+I'm on my 3rd tool turn now. Let me decide.
+
+The code already satisfies the task's success criteria. Per the evolve skill, I should either add a regression test or write an obsolete note.
+
+I'll add a focused regression test that covers an edge case I see missing: when `analysis_only_active` is True AND lifecycle metrics are present AND no other non-analysis-only candidate matches - it should verify that lifecycle is explicitly skipped and the analysis-only task is selected with proper file constraints.
+
+Wait, but this already has a test at line 985. Let me look at that specific test more carefully.
+
+Actually, let me look at what the test at line 985 does:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:970..1030 ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The tests are quite comprehensive. But there's a real operational gap: when `analysis_only_active` is True and the analysis-only task is the only match, the implementation agent gets a circular task.
+
+Let me look at this from a different angle. The task's success criteria are all met by the current code. But the harness keeps selecting this task and the implementation agent can't land it. This is exactly the problem the task describes! The task is self-referential.
+
+I think the right approach is to write an obsolete-task note that clearly explains:
+1. The current code already satisfies the success criteria
+2. The actual problem (circular self-reference when this task is the only match) requires a different approach
+3. The evidence that the code is already sufficient
+
+But wait, the evolve skill says:
+> "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+I need to pick ONE of these. Let me add a focused regression test. What edge case is NOT covered?
+
+Looking at the tests, one case I see missing: when `analysis_only_active` is True and the only candidate is the analysis-only task, but it's been recently blocked (so it should be skipped), AND there's NO fallback task that matches any keys - the fallback to "Repair evidence-backed planning" should kick in.
+
+But that's already covered by the test at lines 1079-1093 (recently blocked → different task).
+
+Let me think about what else could strengthen the coverage. How about: when `analysis_only_active` is True and all candidates are filtered out (protected files, etc.), the fallback should still be landable. But this is already tested.
+
+OK, let me look at this from a different perspective. The real gap might be in the implementation, not the tests. Let me look at the `choose_task` function again more carefully for a practical issue.
+
+When `analysis_only_active` is True:
+1. Lifecycle task is skipped (even if lifecycle_metrics_present) - line 692-695
+2. Tasks with >3 files are skipped - line 690-691
+3. Candidates are sorted to prefer src/*.rs files - line 712
+
+But what if the ONLY candidate after all filtering is the analysis-only task itself, and it hasn't been recently blocked? The agent gets a meta-task about fixing task selection. This is the circular problem.
+
+A concrete fix: when `analysis_only_active` is True and after filtering the only candidate is the analysis-only task, try the "Repair evidence-backed planning" fallback instead. This would break the cycle.
+
+But wait, the task says the files are: `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`. Adding logic to skip the analysis-only task when it's the only candidate and use the fallback would be in `preseed_session_plan.py`.
+
+Actually, let me reconsider. Maybe I should just write the obsolete-task note. The code already satisfies the success criteria. The tests pass. The task is about making analysis-only pressure produce landable tasks, and the code already does that. The fact that the implementation agent struggles with this specific circular task is a different problem entirely (about the harness's implementation loop, not about task selection).
+
+Let me write an obsolete note with clear evidence. But wait - the checkpoint says "Prefer the smallest honest scoped proof change over more diagnosis." So a regression test is preferred over an obsolete note.
+
+Let me add a focused regression test. What test would be truly valuable?
+
+How about: a test that verifies the analysis-only task's Files field itself contains no protected implementation files and has ≤3 files? This would be a mechanical verification that the task itself is landable (not just that the selection logic skips protected files for OTHER tasks).
+
+Actually, looking at lines 1023 and 1073, these tests already check `not _has_protected_files(task)` on the selected analysis-only task. And line 1020 checks `files_count <= 3`.
+
+Let me look for a genuinely uncovered edge case. How about:
+
+**When `analysis_only_active` is True and there are multiple matching candidates (including the analysis-only task and another non-analysis-only task), the non-analysis-only task should be preferred if it has src/*.rs files.**
+
+Wait, this is already tested at lines 1027-1048 (sub-agent task with src/*.rs wins over analysis-only task).
+
+And at lines 1050-1061: when only the analysis-only task matches, it's still selected.
+
+What about: **when `analysis_only_active` is True and there are two non-analysis-only candidates, one with src/*.rs and one without, the src/*.rs one should win.** This is tested implicitly by the sort at line 712, but let me check if there's a specific test for it.
+
+Actually, I think the most valuable test I can add is one that explicitly verifies the analysis-only task itself is "landable" - meaning its files, objective, and verifiers are all internally consistent and verifiable. This is different from testing that the selection logic works. It tests that the analysis-only task's definition is well-formed.
+
+Alternatively, I could add a test that verifies the lifecycle-is-skipped behavior when analysis_only_active is True AND the lifecycle metrics are actionable (i.e., `has_actionable_lifecycle_gap` returns True). This would strengthen the guarantee that analysis-only pressure truly takes priority.
+
+Looking at the test at lines 995-1006: it has `reverted_no_edit=4` and `state_run_incomplete_count=2`. But does `has_actionable_lifecycle_gap` return True for `state_run_incomplete_count=2`? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def has_actionable_lifecycle_gap' in scripts/preseed_session_plan.py ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:543..583 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I've spent enough time analyzing. Let me decide what to do.
+
+The checklist says "by your 5th tool turn" but I'm in a checkpoined retry that says "by your third tool turn in this retry". I've used 3 tool turns (the 3 read_file calls at the start of this turn). But I'm now in my 4th turn. Let me just make a decision.
+
+The code already satisfies the task's success criteria:
+1. ✅ "Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup."
+2. ✅ "The selected seed Files list contains no protected implementation files."
+3. ✅ "Preseed self-tests cover the analysis-only/no-edit pressure path."
+
+Per evolve skill rule 6: I should either add a focused regression test or write an obsolete note.
+
+I'll add a focused regression test that strengthens an edge case. Specifically, I'll add a test that explicitly verifies the lifecycle-is-skipped + analysis-only-is-selected behavior using `task_analysis_only_attempt_count` as the trigger AND `state_run_incomplete_count` as the lifecycle metric. This confirms that `has_actionable_lifecycle_gap` returns True for the lifecycle metrics but the lifecycle task is still skipped because analysis_only_active takes priority.
+
+Wait, the test at line 995-1006 already does this but with `reverted_no_edit=4` instead of `task_analysis_only_attempt_count`. Let me add a similar test with `task_analysis_only_attempt_count` as the trigger.
+
+Actually, let me think about this differently. What's the minimal, honest, scoped change that proves the task is satisfied?
+
+I think the best approach is to write `session_plan/task_01_obsolete.md` with clear evidence. The code already satisfies all three success criteria. Tests pass. The task is self-referential by nature - when selected by the preseed, the implementation agent gets a meta-task about fixing task selection and can't land it because the code already works.
+
+Let me write the obsolete note.
+────────────────────────────────────────────────────────────────────────────────
+
+I've examined the code thoroughly. The task's three success criteria are all already satisfied by the current code:
+
+1. **Line 692-695**: Lifecycle cleanup is skipped when `analysis_only_active` is True — analysis-only takes priority
+2. **Line 686-687**: `_has_protected_files` check runs on all candidates including the analysis-only task
+3. **Lines 983-1093**: Comprehensive tests cover `reverted_no_edit`, `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, file-count guards, evidence-aware re-ranking, and recently-blocked guard
+
+The verification command passes: `python3 scripts/preseed_session_plan.py --test` → "preseed_session_plan self-tests passed"
+
+The actual operational issue (when this meta-task is selected, the implementation agent gets a circular self-referential task) is a harness-implementation-loop problem, not a task-selection problem. The task's own selection logic correctly produces a landable seed with non-protected files.
+
+I'm writing the obsolete note as the most honest response:
+  + # Task 1 Obsolete Note
+  + 
+  + **Task**: "Make analysis-only task pressure landable"
+  + **Day**: 118 (2026-06-26 03:50)
+  + **Decision**: OBSOLETE — task success criteria already satisfied by current code
+  + 
+  + ## Evidence
+  + 
+  + All three success criteria are mechanically verifiable in the current codebase:
+  + 
+  + ### Criterion 1: Graph-derived analysis-only/no-edit pressure selects a concrete seed before lifecycle cleanup
+  + `scripts/preseed_session_plan.py` lines 692-695: when `analysis_only_active` is True, the lifecycle task is explicitly skipped even when `lifecycle_metrics_present` is True. Confirmed by test at lines 995-1006 which asserts analysis-only task wins over lifecycle task when both pressures exist.
+  + 
+  + ### Criterion 2: The selected seed Files list contains no protected implementation files
+  + `scripts/preseed_session_plan.py` lines 686-687: `_has_protected_files(task)` runs on every candidate before selection. `PROTECTED_IMPLEMENTATION_FILES` (lines 30-36) excludes evolve.sh, format_issues.py, build_site.py, self-assess/SKILL.md, evolve/SKILL.md. The analysis-only task's own Files field (`scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`) contains none of these. Confirmed by: `assert not _has_protected_files(task)` at lines 1023 and 1073.
+  + 
+  + ### Criterion 3: Preseed self-tests cover the analysis-only/no-edit pressure path
+  + `scripts/preseed_session_plan.py` tests at lines 983-1093 cover:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (44 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (44 lines) ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify git diff --name-only shows the obsolete file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (222ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file isn't tracked yet, so `git diff --name-only` shows nothing. Let me check if it shows up in untracked:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the file wasn't created or git status doesn't see it. Let me check if session_plan/ exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la /home/runner/work/yyds-harness/yyds-harness/session_plan/ 2>&1 ✓ (177ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file wasn't created. Let me check why. Maybe session_plan is gitignored? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cat .gitignore | grep session … ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`session_plan/` is in `.gitignore`. So the file won't show up in git status. But the checkpoint says to "write session_plan/task_01_obsolete.md" — the directory is gitignored but the file should still exist on disk. Let me verify it was written:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la /home/runner/work/yyds-harness/yyds-harness/session_plan/task_01_obsolete… ✓ (221ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the file exists and is 3.4K. However, since `session_plan/` is gitignored, `git diff --name-only` won't show it. The checkpoint says:
+
+> "If `git diff --name-only` is empty and you did not write session_plan/task_01_obsolete.md or session_plan/task_01_blocked.md, the task is not complete. Keep working inside the task scope instead of ending with analysis only."
+
+I DID write `session_plan/task_01_obsolete.md`. The file exists. `git diff --name-only` is empty because the directory is gitignored, but the task is still complete because I wrote the obsolete note.
+
+Now I need to end with the terminal evidence marker. The evolve skill says:
+> "End your final answer with exactly one terminal evidence marker: `TASK_TERMINAL_EVIDENCE: changed`, `TASK_TERMINAL_EVIDENCE: obsolete`, or `TASK_TERMINAL_EVIDENCE: blocked`."
+
+Since this task is obsolete, I should use `TASK_TERMINAL_EVIDENCE: obsolete`.
+────────────────────────────────────────────────────────────────────────────────
+
+The file exists on disk. `session_plan/` is gitignored so it won't appear in `git diff --name-only`, but the checkpoint explicitly allows writing `session_plan/task_01_obsolete.md` as a valid completion path.
+
+## Summary
+
+**Decision**: Task is obsolete — all three success criteria are already satisfied by the current code.
+
+**Evidence**:
+• Criterion 1 ✅: Lines 692-695 explicitly skip lifecycle cleanup when `analysis_only_active` is True
+• Criterion 2 ✅: Lines 686-687 run `_has_protected_files` on all candidates; the analysis-only task's own files contain no protected paths
+• Criterion 3 ✅: Lines 983-1093 cover `reverted_no_edit`, `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, file-count guards, protected-file guards, evidence-aware re-ranking, and recently-blocked guard
+
+**Verification**: `python3 scripts/preseed_session_plan.py --test` → passed
+
+**Artifact**: `session_plan/task_01_obsolete.md` written with detailed evidence for each criterion and explanation of why no source change is needed.
+
+TASK_TERMINAL_EVIDENCE: obsolete
+
+

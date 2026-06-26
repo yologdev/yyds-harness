@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Only test cases were added (scripts/test_extract_trajectory.py +131/-5 lines); the implementation in scripts/extract_trajectory.py was not written (0 lines changed). The verifier `python3 -m unittest scripts.test_extract_trajectory` fails with 8 errors because tests call non-existent functions `classify_empty_session_reasons` and `render_empty_streak(reasons=...)`. No classification logic, no reason labels, no integration into `render_empty_streak`. The task is incomplete.

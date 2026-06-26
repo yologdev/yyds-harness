@@ -1,0 +1,417 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and evaluator feedback:
+
+1. The task is to add empty-session reason classification to `scripts/extract_trajectory.py`
+2. Tests were added but the implementation was NOT written
+3. I need to implement the classification logic in `scripts/extract_trajectory.py`
+
+Let me start by reading the current state of both files to understand what exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/extract_trajectory.py:1..101  ▶ read scripts/test_extract_trajectory.py:1..101 ✓ (17ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the existing `compute_empty_streak` function and `render_empty_streak` function, plus the test file's empty streak tests to understand what's already there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'compute_empty_streak' in scripts/extract_trajectory.py  ▶ search 'render_empty_streak' in scripts/extract_trajectory.py  ▶ search 'classify_empty' in scripts/test_extract_trajectory.py ✓ (25ms)
+ ✓ (26ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing `compute_empty_streak` and `render_empty_streak` functions, and also the test cases that were already added.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:818..888  ▶ read scripts/test_extract_trajectory.py:2280..2480 ✓ (18ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand what the tests expect. Let me also look at the `_make_session` helper and the `load_recent_session_outcomes` function plus how `render_outcomes` works and how `render_empty_streak` is called in the main render pipeline. Let me also check what `corrected_latest_gnomes` returns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Let me read the test helper `_make_session` and the `load_recent_session_outcomes` function, plus the integration point in the render pipeline.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_make_session' in scripts/test_extract_trajectory.py  ▶ search 'def load_recent_session_outcomes' in scripts/extract_trajectory.py  ▶ search 'render_empty_streak' in scripts/extract_trajectory.py ✓ (20ms)
+ ✓ (20ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_make_session` method, `load_recent_session_outcomes`, and the render pipeline where `render_empty_streak` is called (around line 2042).
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:2165..2215  ▶ read scripts/extract_trajectory.py:151..201  ▶ read scripts/extract_trajectory.py:2030..2080 ✓ (29ms)
+ ✓ (25ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand what I need to do:
+
+1. **`classify_empty_session_reasons(outcomes)`** — takes the list of `(session_dir, outcome)` tuples, iterates from newest to oldest, classifies each empty session, stopping at the first non-empty session. Returns a list of reason strings.
+
+The classification logic from the tests:
+- `attempted == 0 and succeeded == 0` AND `selected_task_count == 0` → `assessment_empty`
+- `attempted == 0 and succeeded == 0` AND `selected_task_count > 0` → `reverted_no_edit`
+- `attempted > 0 and succeeded == 0` → `implementation_failed`
+- Malformed (non-numeric) → `unknown`
+
+2. **`render_empty_streak(streak, reasons=None)`** — add an optional `reasons` parameter that, when provided, appends a `reasons=[...]` line.
+
+3. **Integration** — update the call site at line 2042 to pass classified reasons.
+
+Let me also check how `corrected_latest_gnomes` is imported (it's already in the imports at line 30).
+
+Let me now look at the corrected_latest_gnomes function to see its signature:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def corrected_latest_gnomes' in scripts ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `corrected_latest_gnomes` takes a `session_dir` Path and returns a dict. Let me check it returns `selected_task_count`.
+
+Now I have everything I need. Let me plan the implementation:
+
+### Changes to `scripts/extract_trajectory.py`:
+
+1. **New function `classify_empty_session_reasons(outcomes)`** (~40 lines):
+   - Takes `list[tuple[Path, dict[str, Any]]]`
+   - Iterates from newest to oldest
+   - For each outcome, checks if it's empty (attempted==0 or succeeded==0, or malformed)
+   - If empty, classifies the reason:
+     - If malformed → `unknown`
+     - If attempted>0 and succeeded==0 → `implementation_failed`
+     - If attempted==0, check gnomes for `selected_task_count`:
+       - `selected_task_count > 0` → `reverted_no_edit`
+       - else → `assessment_empty`
+   - Stops at first non-empty session
+   - Returns list of reason strings
+
+2. **Modify `render_empty_streak(streak, reasons=None)`** (~10 lines):
+   - Add `reasons` parameter
+   - When reasons provided, add `reasons=[...]` line
+
+3. **Modify call site at ~line 2042** (~3 lines):
+   - Compute empty streak
+   - Compute reasons
+   - Pass both to `render_empty_streak`
+
+Let me verify the `corrected_latest_gnomes` import path is already available — yes, it's imported at line 30.
+
+Now let me implement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the three changes needed in `scripts/extract_trajectory.py`:
+
+1. Add `classify_empty_session_reasons()` function
+2. Extend `render_empty_streak()` with optional `reasons` parameter
+3. Update the call site to pass classified reasons
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement step 1 and 2 together — add the `classify_empty_session_reasons` function and modify `render_empty_streak` to accept reasons.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.2s (4 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement. First, the `classify_empty_session_reasons` function. It goes right after `render_empty_streak` (after line 867). I also need to modify `render_empty_streak` to accept an optional `reasons` parameter.
+────────────────────────────────────────────────────────────────────────────────
+
+First, I'll add the `classify_empty_session_reasons` function and extend `render_empty_streak`:
+  - def render_empty_streak(streak):
+  + def render_empty_streak(streak, reasons=None):
+        """Render a diagnostic when consecutive sessions land zero tasks.
+    
+        Returns empty string when streak < EMPTY_STREAK_WARN.
+        When streak >= 3, includes guidance about the "nothing to fix vs can't
+        find things to fix" distinction and suggests filing agent-self issues.
+  +     If *reasons* is provided (list of per-session reason labels from
+  +     classify_empty_session_reasons), a reasons=[...] line is appended.
+        """
+        if streak < EMPTY_STREAK_WARN:
+            return ""
+  ···
+            "## Consecutive empty sessions",
+            f"- **{streak}** consecutive session{plural} with zero landed tasks",
+        ]
+  +     if reasons is not None:
+  +         lines.append(f"- reasons={reasons}")
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (28 → 76 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (28 → 76 lines)
+  - def render_empty_streak(streak):
+  + def render_empty_streak(streak, reasons=None):
+        """Render a diagnostic when consecutive sessions land zero tasks.
+    
+        Returns empty string when streak < EMPTY_STREAK_WARN.
+        When streak >= 3, includes guidance about the "nothing to fix vs can't
+        find things to fix" distinction and suggests filing agent-self issues.
+  +     If *reasons* is provided (list of per-session reason labels from
+  +     classify_empty_session_reasons), a reasons=[...] line is appended.
+        """
+        if streak < EMPTY_STREAK_WARN:
+            return ""
+  ···
+            "## Consecutive empty sessions",
+            f"- **{streak}** consecutive session{plural} with zero landed tasks",
+        ]
+  +     if reasons is not None:
+  +         lines.append(f"- reasons={reasons}")
+        if streak >= 5:
+            lines.append(
+  ... (58 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the call site at line 2042 (which may have shifted). Let me find it again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the call site. Let me search for the current line.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Now update the call site — need to pass classified reasons:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'render_empty_streak(compute_empty_streak' in scripts/extract_trajectory.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update line 2090 to compute streaks and reasons, then pass both. Recall that `compute_empty_streak` and `classify_empty_session_reasons` both iterate from the tip and stop at the first landed session. But they have different stopping criteria: `compute_empty_streak` counts sessions where `attempted==0 or succeeded==0`, while `classify_empty_session_reasons` stops when `attempted>0 and succeeded>0`. 
+
+Wait, let me check: the `compute_empty_streak` function considers a session empty when `attempted == 0 or succeeded == 0`. The `classify_empty_session_reasons` function also considers a session empty for those conditions - if attempted==0 and succeeded==0, or if attempted>0 and succeeded==0. It also handles malformed. They should agree on which sessions are "empty" - the only nuance is that `classify_empty_session_reasons` also classifies malformed as "unknown" and continues.
+
+Actually, looking more carefully at `compute_empty_streak`:
+- `attempted == 0 or succeeded == 0` → empty (continue streak)
+- else → break
+
+And `classify_empty_session_reasons`:
+- malformed → `unknown`, continue
+- `attempted == 0 and succeeded == 0` → `assessment_empty` or `reverted_no_edit`, continue
+- `attempted > 0 and succeeded == 0` → `implementation_failed`, continue
+- else (attempted > 0 and succeeded > 0) → break
+
+These should be consistent. Good.
+
+Now let me compute both and pass reasons to render_empty_streak. But I need to be careful: `compute_empty_streak` returns an int count, and `classify_empty_session_reasons` returns a list. The streak count and reasons list should have the same length for the same outcomes (except maybe malformed cases? Let me check).
+
+In `compute_empty_streak`, malformed outcomes increment the streak:
+```python
+if isinstance(attempted, (int, float)) and isinstance(succeeded, (int, float)):
+    if attempted == 0 or succeeded == 0:
+        streak += 1
+    else:
+        break
+else:
+    streak += 1
+```
+
+In `classify_empty_session_reasons`, malformed outcomes append "unknown" and continue. So they should agree on the length.
+
+Let me write the update to the call site:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     s = render_empty_streak(compute_empty_streak(outcomes))
+  +     empty_streak = compute_empty_streak(outcomes)
+  +     empty_reasons = classify_empty_session_reasons(outcomes)
+  +     s = render_empty_streak(empty_streak, empty_reasons if empty_streak >= EMPTY_STREAK_WARN else None)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (1 → 3 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (1 → 3 lines)
+  -     s = render_empty_streak(compute_empty_streak(outcomes))
+  +     empty_streak = compute_empty_streak(outcomes)
+  +     empty_reasons = classify_empty_session_reasons(outcomes)
+  +     s = render_empty_streak(empty_streak, empty_reasons if empty_streak >= EMPTY_STREAK_WARN else None)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to make sure the tests pass. But wait — the tests call `classify_empty_session_reasons` directly, and they mock `corrected_latest_gnomes`. The function I wrote calls `corrected_latest_gnomes` directly. Let me verify the import is there.
+
+Looking at line 30 of extract_trajectory.py:
+```python
+from state_graph_tools import corrected_latest_gnomes, evolution_suggestions, ordered_sessions, session_dirs
+```
+
+Good, `corrected_latest_gnomes` is already imported.
+
+Now let me also check that the test `test_classify_empty_session_reasons_malformed_skipped` expects the right behavior. The test says:
+- Makes a session with attempted=0, succeeded=0
+- Then corrupts the outcome.json to have `tasks_attempted: "zero"` and `tasks_succeeded: None`
+- Expects `["unknown"]`
+
+In my implementation, when `attempted` is `"zero"` (a string), `isinstance(attempted, (int, float))` is `False`, so it appends `"unknown"` and `continue`s. Good.
+
+But wait — the test for `test_classify_empty_session_reasons_malformed_skipped` doesn't mock `corrected_latest_gnomes`. Since my code calls `corrected_latest_gnomes` only when `attempted == 0 and succeeded == 0` (both numeric), and in the malformed case we never reach that branch, this should be fine. The function returns `"unknown"` before calling `corrected_latest_gnomes`.
+
+Let me also check the test `test_render_empty_streak_with_reasons`:
+```python
+reasons = ["assessment_empty", "assessment_empty", "reverted_no_edit"]
+result = extract_trajectory.render_empty_streak(3, reasons=reasons)
+self.assertIn("reasons=[assessment_empty, assessment_empty, reverted_no_edit]", result)
+```
+
+My implementation adds `f"- reasons={reasons}"` which would produce `- reasons=['assessment_empty', 'assessment_empty', 'reverted_no_edit']`. The test asserts `reasons=[assessment_empty, assessment_empty, reverted_no_edit]` — without quotes. 
+
+Wait, that's a problem. The Python list repr includes quotes: `['assessment_empty', 'assessment_empty', 'reverted_no_edit']`. The test expects `[assessment_empty, assessment_empty, reverted_no_edit]` without quotes.
+
+I need to format the reasons list without quotes. Let me use `", ".join(reasons)` and wrap in brackets: `f"- reasons=[{', '.join(reasons)}]"`.
+────────────────────────────────────────────────────────────────────────────────
+
+Wait — I need to check the format the test expects. The test has `reasons=[assessment_empty, assessment_empty, reverted_no_edit]` without quotes. Python's list repr would include quotes. Let me verify:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_extract_trajectory.py:2401..2413 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test expects `reasons=[assessment_empty, assessment_empty, reverted_no_edit]` — no quotes around the individual reason strings. Python's `str(list)` would produce `['assessment_empty', 'assessment_empty', 'reverted_no_edit']` which includes quotes. I need to format the reasons as `[assessment_empty, assessment_empty, reverted_no_edit]`.
+
+I already used `f"- reasons={reasons}"` which calls `str(reasons)` which produces `['assessment_empty', 'assessment_empty', 'reverted_no_edit']`. That won't match.
+
+I need to use `f"- reasons=[{', '.join(reasons)}]"`.
+
+Let me fix the render_empty_streak function.
+────────────────────────────────────────────────────────────────────────────────
+
+The test expects reasons without quotes (e.g., `[assessment_empty, assessment_empty, reverted_no_edit]`). Let me fix the format:
+        if reasons is not None:
+  -         lines.append(f"- reasons={reasons}")
+  +         lines.append(f"- reasons=[{', '.join(reasons)}]")
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (2 → 2 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (2 → 2 lines)
+        if reasons is not None:
+  -         lines.append(f"- reasons={reasons}")
+  +         lines.append(f"- reasons=[{', '.join(reasons)}]")
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also verify the classified_reasons has the right length relative to the empty_streak. The `render_empty_streak` is called as:
+
+```python
+empty_streak = compute_empty_streak(outcomes)
+empty_reasons = classify_empty_session_reasons(outcomes)
+s = render_empty_streak(empty_streak, empty_reasons if empty_streak >= EMPTY_STREAK_WARN else None)
+```
+
+The `classify_empty_session_reasons` function should return the same number of entries as `compute_empty_streak` count. Let me verify they agree on the conditions:
+
+`compute_empty_streak`: 
+- if attempted or succeeded is non-numeric → increment streak (malformed)
+- if attempted == 0 or succeeded == 0 → increment streak
+- else → break
+
+`classify_empty_session_reasons`:
+- if attempted or succeeded is non-numeric → "unknown", continue
+- if attempted == 0 and succeeded == 0 → "assessment_empty" or "reverted_no_edit", continue
+- if attempted > 0 and succeeded == 0 → "implementation_failed", continue
+- else (attempted > 0 and succeeded > 0) → break
+
+These should agree on the "empty" classification. Good.
+
+Now let me run the verifier.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (319ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 76 tests pass. Let me now also quickly verify that the file structure is clean and that `cargo fmt -- --check` would pass (Python file, so not relevant to cargo fmt, but the task says to run it).
+
+Let me also check: the task says "run cargo fmt -- --check and at most one focused verification command". The verification command is the unittest, which passed. Let me do a quick check on the `cargo fmt` gate too.
+────────────────────────────────────────────────────────────────────────────────
+
+All 76 tests pass. Let me also run the format check as required:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo fmt -- --check` passed (no output = clean). Let me also verify the final state of the key changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Both gates pass. Let me verify the final state of the changes:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the key parts of the implementation look correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:2088..2098 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything is done. Let me summarize the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+Fixed the incomplete implementation in `scripts/extract_trajectory.py` by adding the missing classification logic:
+
+### Changes to `scripts/extract_trajectory.py` (+58/-2 lines)
+
+1. **`classify_empty_session_reasons(session_outcomes)`** (new function): Classifies each consecutive empty session from newest to oldest. Stops at the first session with landed tasks. Returns reason labels:
+   • `assessment_empty` — no tasks selected (gnome `selected_task_count == 0`)
+   • `reverted_no_edit` — tasks selected but zero attempted
+   • `implementation_failed` — tasks attempted but zero succeeded
+   • `unknown` — malformed outcome data
+
+2. **`render_empty_streak(streak, reasons=None)`** (extended): Accepts optional `reasons` list and renders `reasons=[...]` line when provided. Backward compatible — omit `reasons` for no change in output.
+
+3. **Call site** (line 2090–2092): Now computes both `empty_streak` and `empty_reasons`, passing reasons to `render_empty_streak` only when streak ≥ `EMPTY_STREAK_WARN`.
+
+### Verification
+
+• `python3 -m unittest scripts.test_extract_trajectory` — **76 tests, all pass** (including 8 new classification tests)
+• `cargo fmt -- --check` — clean
+
+
