@@ -78,6 +78,8 @@ class TaskLineageFeedback(unittest.TestCase):
         self.assertIn('STATE_APPEND_LOG="$SESSION_STAGING/state/append_state_event.log"', evolve)
         self.assertIn("append_state_event_checked()", evolve)
         self.assertIn("inline fallback failed", evolve)
+        self.assertIn("session_plan/${TASK_ID}_external_evidence.json", evolve)
+
         self.assertNotIn('${4:-{}}', evolve)
         self.assertNotIn('${2:-{}}', evolve)
         self.assertIn('--payload-file "$payload_file"', evolve)
@@ -330,6 +332,47 @@ class TaskLineageFeedback(unittest.TestCase):
             evolve.index("scripts/verify_evo_readiness.py"),
             evolve.index('cp -R "$SESSION_STAGING/." "$AUDIT_PUSH_WT/$SESSION_DIR/"'),
         )
+
+    def test_task_verification_gate_accepts_external_only_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            subprocess.run(["git", "-C", str(repo), "init"], check=True, stdout=subprocess.DEVNULL)
+            (repo / "README.md").write_text("seed\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "README.md"], check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "-c",
+                    "user.name=Test",
+                    "commit",
+                    "-m",
+                    "seed",
+                ],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+            base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+            task = repo / "session_plan/task_01.md"
+            task.parent.mkdir(parents=True)
+            task.write_text("Title: File issue\nFiles: none (gh CLI only)\n", encoding="utf-8")
+            write_json(
+                repo / "session_plan/task_01_external_evidence.json",
+                {
+                    "status": "completed",
+                    "evidence": [{"kind": "github_issue", "number": 35, "url": "https://example.test/issues/35"}],
+                },
+            )
+
+            result = task_verification_gate.verify(repo, base, task)
+
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["reason"], "external-only task provided local external evidence")
+            self.assertEqual(result["overlapping_files"], [])
+            self.assertEqual(result["external_evidence_path"], "session_plan/task_01_external_evidence.json")
 
     def test_evolve_source_syncs_before_final_audit_evidence(self):
         evolve = Path(__file__).with_name("evolve.sh").read_text(encoding="utf-8")

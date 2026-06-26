@@ -35,6 +35,34 @@ def parse_planned_files(path: Path) -> list[str]:
     return []
 
 
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned]
+    return all(item.startswith("none") and "gh cli" in item for item in normalized)
+
+
+def external_evidence_path(task_file: Path) -> Path:
+    name = task_file.stem
+    return task_file.with_name(f"{name}_external_evidence.json")
+
+
+def load_external_evidence(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def valid_external_evidence(value: dict[str, Any]) -> bool:
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return False
+    return isinstance(evidence, list) and any(isinstance(item, dict) and item for item in evidence)
+
+
 def git(repo: Path, args: list[str]) -> list[str]:
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -81,6 +109,10 @@ def path_matches(planned: str, touched: str) -> bool:
 def verify(repo: Path, base: str, task_file: Path) -> dict[str, Any]:
     planned = parse_planned_files(task_file)
     touched = changed_files(repo, base)
+    external_path = external_evidence_path(task_file)
+    external_evidence = load_external_evidence(external_path)
+    external_only = external_only_planned(planned)
+    external_ok = external_only and valid_external_evidence(external_evidence)
     overlapping = compact(
         [
             touched_file
@@ -88,21 +120,34 @@ def verify(repo: Path, base: str, task_file: Path) -> dict[str, Any]:
             if any(path_matches(planned_file, touched_file) for planned_file in planned)
         ]
     )
-    ok = bool(planned and touched and overlapping)
+    ok = bool(planned and ((touched and overlapping) or external_ok))
     if not planned:
         reason = "task file has no Files: entries"
+    elif external_only and not external_evidence:
+        reason = "external-only task missing external evidence artifact"
+    elif external_only and not external_ok:
+        reason = "external-only task external evidence artifact is invalid"
+    elif external_ok:
+        reason = "external-only task provided local external evidence"
     elif not touched:
         reason = "task produced no git-visible file changes"
     elif not overlapping:
         reason = "task changes do not overlap planned Files entries"
     else:
         reason = "task changed planned files"
+    try:
+        external_display_path = str(external_path.relative_to(repo))
+    except ValueError:
+        external_display_path = str(external_path)
     return {
         "ok": ok,
         "reason": reason,
         "planned_files": planned,
         "touched_files": touched,
         "overlapping_files": overlapping,
+        "external_only": external_only,
+        "external_evidence_path": external_display_path if external_path.is_file() else None,
+        "external_evidence": external_evidence if external_ok else None,
         "unplanned_touched_files": [
             path
             for path in touched
@@ -164,6 +209,29 @@ def run_self_tests() -> int:
         assert "src/lib.rs" in ds["staged"], f"expected src/lib.rs in staged, got {ds['staged']}"
         assert "src/unstaged.rs" in ds["unstaged"], f"expected src/unstaged.rs in unstaged, got {ds['unstaged']}"
         assert "new_file.txt" in ds["untracked"], f"expected new_file.txt in untracked, got {ds['untracked']}"
+        subprocess.run(["git", "-C", str(repo), "reset", "--hard"], check=True, stdout=subprocess.DEVNULL)
+        untracked_file.unlink()
+        task.write_text("Title: x\nFiles: none (gh CLI only)\n", encoding="utf-8")
+        (repo / "session_plan/task_01_external_evidence.json").write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "evidence": [{"kind": "github_issue", "url": "https://example.test/1"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        external = verify(repo, base, task)
+        assert external["ok"] is True, external
+        assert external["external_only"] is True
+        assert external["external_evidence_path"] == "session_plan/task_01_external_evidence.json"
+        (repo / "session_plan/task_01_external_evidence.json").write_text(
+            json.dumps({"status": "completed", "evidence": []}),
+            encoding="utf-8",
+        )
+        invalid_external = verify(repo, base, task)
+        assert invalid_external["ok"] is False
+        assert invalid_external["reason"] == "external-only task external evidence artifact is invalid"
     print("task_verification_gate self-tests passed")
     return 0
 

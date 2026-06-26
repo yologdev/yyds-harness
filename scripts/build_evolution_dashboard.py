@@ -856,6 +856,23 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
 
 
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned if str(item).strip()]
+    return bool(normalized) and all(item.startswith("none") for item in normalized)
+
+
+def valid_external_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return False
+    return isinstance(evidence, list) and any(isinstance(item, dict) and item for item in evidence)
+
+
 def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
     lowered = str(note_text or "").lower()
     origin = str(task.get("origin") or "").lower()
@@ -1296,6 +1313,7 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
         task_file = task_dir / "task.md"
         obsolete_file = task_dir / "obsolete.md"
         outcome = load_json(task_dir / "outcome.json")
+        external_evidence = load_json(task_dir / "external_evidence.json")
         rows.append(
             {
                 "task_id": task_id,
@@ -1311,6 +1329,10 @@ def task_artifact_summary(session_dir: Path) -> list[dict[str, Any]]:
                 "source_files": outcome.get("source_files") if isinstance(outcome.get("source_files"), list) else [],
                 "touched_files": outcome.get("touched_files") if isinstance(outcome.get("touched_files"), list) else [],
                 "commit_shas": outcome.get("commit_shas") if isinstance(outcome.get("commit_shas"), list) else [],
+                "external_evidence_path": f"tasks/{task_id}/external_evidence.json"
+                if (task_dir / "external_evidence.json").is_file()
+                else None,
+                "external_evidence": external_evidence if external_evidence else outcome.get("external_evidence"),
                 "attempt_count": len(attempts),
                 "attempts": attempts[:8],
                 "max_turn_count": max(
@@ -1568,6 +1590,8 @@ def task_verification_summary(
             if sha
         ]
         overlap = file_overlap(planned, touched) if planned and touched else False
+        external_evidence = artifact.get("external_evidence") or lineage.get("external_evidence")
+        external_proven = external_only_planned(planned) and valid_external_evidence(external_evidence)
         artifact_evals = artifact.get("evals") or []
         eval_attempts = eval_attempt_summaries(artifact_evals)
         timeout_with_verdict = any(
@@ -1610,9 +1634,9 @@ def task_verification_summary(
         problems: list[str] = []
         if not planned:
             problems.append("missing_planned_files")
-        if not touched:
+        if not touched and not external_proven:
             problems.append("no_touched_files")
-        if planned and touched and not overlap:
+        if planned and touched and not overlap and not external_proven:
             problems.append("no_planned_file_overlap")
         if timeout_with_verdict:
             problems.append("evaluator_timed_out_after_verdict")
@@ -1626,7 +1650,14 @@ def task_verification_summary(
             problems.append("implementation_api_error")
         if protected_revert:
             problems.append("modified_protected_files")
-        if outcome_status == "reverted" and not touched and not obsolete and not api_error and not protected_revert:
+        if (
+            outcome_status == "reverted"
+            and not touched
+            and not external_proven
+            and not obsolete
+            and not api_error
+            and not protected_revert
+        ):
             problems.append("no_edit_revert")
         if source_touched and not landed_commits:
             problems.append("source_edits_not_landed")
@@ -1640,6 +1671,9 @@ def task_verification_summary(
                 "touched_files": touched,
                 "source_touched_files": source_touched,
                 "overlap": overlap,
+                "external_proven": external_proven,
+                "external_evidence_path": artifact.get("external_evidence_path")
+                or lineage.get("external_evidence_file"),
                 "verified": verified,
                 "outcome_status": outcome_status or None,
                 "revert_reason": revert_reason or None,
@@ -1655,7 +1689,10 @@ def task_verification_summary(
                 "obsolete": obsolete,
                 "stale_seed_obsolete_note": stale_seed_note,
                 "obsolete_note_path": artifact.get("obsolete_note_path") or lineage.get("obsolete_note_path"),
-                "strict_success": outcome_status == "completed" and overlap and verified and not problems,
+                "strict_success": outcome_status == "completed"
+                and (overlap or external_proven)
+                and verified
+                and not problems,
             }
         )
     total = len(rows)
@@ -1799,6 +1836,7 @@ def structured_task_states(
             or row.get("outcome_status")
             or row.get("touched_files")
             or row.get("eval_attempt_count")
+            or row.get("external_proven")
             or implementation_attempt_count
             or transcript_refs.get("eval")
             or transcript_refs.get("fix")
@@ -1815,6 +1853,8 @@ def structured_task_states(
             evidence_sources.append("transcripts")
         if row.get("landed_commit_shas"):
             evidence_sources.append("commits")
+        if row.get("external_proven"):
+            evidence_sources.append("external_evidence")
         failure_reasons = list(problems)
         if row.get("revert_reason"):
             failure_reasons.append(str(row.get("revert_reason")))
@@ -1833,6 +1873,8 @@ def structured_task_states(
                 "strict_success": bool(row.get("strict_success")),
                 "verified": bool(row.get("verified")),
                 "overlap": bool(row.get("overlap")),
+                "external_proven": bool(row.get("external_proven")),
+                "external_evidence_path": row.get("external_evidence_path"),
                 "landed_commit_shas": row.get("landed_commit_shas") or [],
                 "reverted": row.get("outcome_status") == "reverted" or bool(row.get("revert_reason")),
                 "revert_reason": row.get("revert_reason"),

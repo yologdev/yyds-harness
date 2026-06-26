@@ -347,6 +347,7 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
                 evals.append(value)
         attempts = load_jsonl(child / "attempts.jsonl")
         outcome = load_json(child / "outcome.json")
+        external_evidence = load_json(child / "external_evidence.json")
         obsolete_note = child / "obsolete.md"
         blocked_note = child / "blocked.md"
         rows[task_id] = {
@@ -360,6 +361,10 @@ def task_artifact_rows(session_dir: Path) -> dict[str, dict[str, Any]]:
             "attempts": attempts,
             "evals": evals,
             "outcome": outcome,
+            "external_evidence_path": f"tasks/{task_id}/external_evidence.json"
+            if (child / "external_evidence.json").is_file()
+            else None,
+            "external_evidence": external_evidence if external_evidence else outcome.get("external_evidence"),
         }
     return rows
 
@@ -409,6 +414,23 @@ def eval_passed(evals: list[Any]) -> bool:
     return False
 
 
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned if str(item).strip()]
+    return bool(normalized) and all(item.startswith("none") for item in normalized)
+
+
+def valid_external_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return False
+    return isinstance(evidence, list) and any(isinstance(item, dict) and item for item in evidence)
+
+
 def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
     manifest = task_manifest(session_dir)
     tasks = selected_tasks(manifest)
@@ -451,13 +473,15 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             and str(row.get("status") or "") == "analysis_only_no_terminal_evidence"
         )
         analysis_only_attempt = analysis_only_attempt_count > 0
+        external_evidence = artifact.get("external_evidence")
+        external_proven = external_only_planned(planned) and valid_external_evidence(external_evidence)
         problems: list[str] = []
         overlap = file_overlap(planned, touched) if planned and touched else False
         if not planned:
             problems.append("missing_planned_files")
-        if not touched:
+        if not touched and not external_proven:
             problems.append("no_touched_files")
-        if planned and touched and not overlap:
+        if planned and touched and not overlap and not external_proven:
             problems.append("no_planned_file_overlap")
         api_error = "api error" in revert_reason.lower()
         protected_revert = "modified protected files" in revert_reason.lower()
@@ -484,12 +508,20 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             problems.append("implementation_api_error")
         if protected_revert:
             problems.append("modified_protected_files")
-        if outcome_status == "reverted" and not touched and not obsolete and not blocked and not api_error and not protected_revert:
+        if (
+            outcome_status == "reverted"
+            and not touched
+            and not external_proven
+            and not obsolete
+            and not blocked
+            and not api_error
+            and not protected_revert
+        ):
             problems.append("no_edit_revert")
         if source_touched and not commits:
             problems.append("source_edits_not_landed")
         passed = eval_passed(artifact.get("evals") if isinstance(artifact.get("evals"), list) else [])
-        mechanically_proven = outcome_status == "completed" and overlap and passed and not (
+        mechanically_proven = outcome_status == "completed" and (overlap or external_proven) and passed and not (
             source_touched and not commits
         )
         incomplete_terminal = bool(terminal_marker_missing_attempt_count and not mechanically_proven)
@@ -504,6 +536,8 @@ def task_artifact_verification_metrics(session_dir: Path) -> dict[str, Any]:
             {
                 "strict_success": strict_success,
                 "verified": passed,
+                "external_proven": external_proven,
+                "external_evidence_path": artifact.get("external_evidence_path"),
                 "problems": problems,
                 "obsolete": obsolete,
                 "blocked": blocked,

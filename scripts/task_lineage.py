@@ -118,6 +118,24 @@ def parse_eval_file(path: Path | None) -> dict[str, Any] | None:
     return {"verdict": verdict or None, "reason": reason or None}
 
 
+def parse_external_evidence(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return None
+    if not isinstance(evidence, list) or not any(isinstance(item, dict) and item for item in evidence):
+        return None
+    return value
+
+
 def commit_records(repo: Path, base: str, head: str) -> list[dict[str, Any]]:
     if not base or not head or base == head:
         return []
@@ -168,6 +186,12 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
     files = changed_files(args.repo_root, args.base, head)
     commits = commit_records(args.repo_root, args.base, head)
     task_meta = parse_task_file(args.task_file)
+    external_path = (
+        args.task_file.with_name(f"{args.task_file.stem}_external_evidence.json")
+        if args.task_file is not None
+        else None
+    )
+    external_evidence = parse_external_evidence(external_path)
     payload: dict[str, Any] = {
         "phase": "task",
         "task_id": task_id(args.task_number),
@@ -181,6 +205,8 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
         "commit_shas": [commit["sha"] for commit in commits],
         "commits": commits,
         "eval": parse_eval_file(args.eval_file),
+        "external_evidence": external_evidence,
+        "external_evidence_file": str(external_path) if external_evidence and external_path else None,
         "revert_reason": args.reason or None,
         "gnome_deltas": {},
     }

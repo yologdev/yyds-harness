@@ -487,6 +487,47 @@ class BuildEvolutionDashboard(unittest.TestCase):
         self.assertEqual(row["eval_statuses"], ["pass"])
         self.assertEqual(row["eval_evidence_source"], "state_lineage")
 
+    def test_task_verification_accepts_external_only_evidence(self):
+        verification = task_verification_summary(
+            {
+                "tasks": [
+                    {
+                        "task_id": "task_01",
+                        "title": "File external issue",
+                        "files": ["none (gh CLI only)"],
+                    }
+                ]
+            },
+            [
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["none (gh CLI only)"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                    "external_evidence_path": "tasks/task_01/external_evidence.json",
+                    "external_evidence": {
+                        "status": "completed",
+                        "evidence": [
+                            {
+                                "kind": "github_issue",
+                                "number": 35,
+                                "url": "https://example.test/issues/35",
+                            }
+                        ],
+                    },
+                    "evals": [{"status": "pass", "verdict": "PASS"}],
+                }
+            ],
+            [],
+        )
+
+        row = verification["rows"][0]
+        self.assertTrue(row["strict_success"])
+        self.assertTrue(row["external_proven"])
+        self.assertNotIn("no_touched_files", row["problems"])
+
     def test_task_verification_surfaces_eval_attempt_details(self):
         verification = task_verification_summary(
             {

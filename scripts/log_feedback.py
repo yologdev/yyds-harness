@@ -148,6 +148,23 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(planned_file, touched_file) for planned_file in planned for touched_file in touched)
 
 
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned if str(item).strip()]
+    return bool(normalized) and all(item.startswith("none") for item in normalized)
+
+
+def valid_external_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return False
+    return isinstance(evidence, list) and any(isinstance(item, dict) and item for item in evidence)
+
+
 def stale_seed_obsolete_note(task: dict[str, Any], note_text: str) -> bool:
     lowered = str(note_text or "").lower()
     origin = str(task.get("origin") or "").lower()
@@ -1438,9 +1455,16 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             for path in (outcome.get("source_files") or outcome.get("touched_files") or [])
             if task_source_file(str(path))
         ]
+        external_file_evidence = load_json(task_dir / "external_evidence.json")
+        external_evidence = (
+            external_file_evidence
+            if valid_external_evidence(external_file_evidence)
+            else outcome.get("external_evidence")
+        )
+        external_proven = external_only_planned(planned) and valid_external_evidence(external_evidence)
         scope_mismatch = (
             "do not overlap planned" in revert_reason
-            or (bool(planned and touched) and not file_overlap(planned, touched))
+            or (bool(planned and touched) and not file_overlap(planned, touched) and not external_proven)
         )
         if scope_mismatch:
             scope_mismatch_count += 1
@@ -1448,6 +1472,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         no_edit_revert = (
             outcome.get("status") == "reverted"
             and not touched
+            and not external_proven
             and not obsolete
             and not blocked
             and not api_error
@@ -1458,7 +1483,12 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
             explained_unverified_ids.add(task_key)
         landed = bool(outcome.get("commit_shas") or outcome.get("commits"))
         has_landed_source = not touched or landed
-        mechanically_proven = outcome.get("status") == "completed" and has_pass and has_landed_source
+        mechanically_proven = (
+            outcome.get("status") == "completed"
+            and has_pass
+            and has_landed_source
+            and (bool(touched) or external_proven)
+        )
         if missing_terminal_attempt_count and not mechanically_proven:
             incomplete_terminal += 1
         if has_pass:

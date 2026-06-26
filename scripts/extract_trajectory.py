@@ -457,6 +457,23 @@ def file_overlap(planned: list[str], touched: list[str]) -> bool:
     return any(path_matches(plan, touch) for plan in planned for touch in touched)
 
 
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned if str(item).strip()]
+    return bool(normalized) and all(item.startswith("none") for item in normalized)
+
+
+def valid_external_evidence(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    evidence = value.get("evidence")
+    if status not in {"completed", "changed"}:
+        return False
+    return isinstance(evidence, list) and any(isinstance(item, dict) and item for item in evidence)
+
+
 def explicit_pass(value: Any) -> bool:
     text = str(value or "").strip().lower()
     return text in {"pass", "passed", "ok", "success"} or text.startswith("pass:")
@@ -613,6 +630,13 @@ def strict_task_verification(session_dir: Path) -> dict[str, Any]:
         ]
         commits = [str(sha) for sha in (outcome.get("commit_shas") or []) if sha]
         overlap = file_overlap(planned, touched) if planned and touched else False
+        external_file_evidence = load_json(task_dir / "external_evidence.json")
+        external_evidence = (
+            external_file_evidence
+            if valid_external_evidence(external_file_evidence)
+            else outcome.get("external_evidence")
+        )
+        external_proven = external_only_planned(planned) and valid_external_evidence(external_evidence)
         verified = eval_passed(evals, outcome.get("eval"))
         timeout_with_verdict = any(
             isinstance(eval_data, dict) and eval_timed_out_after_verdict(eval_data)
@@ -622,9 +646,9 @@ def strict_task_verification(session_dir: Path) -> dict[str, Any]:
         problems: list[str] = []
         if not planned:
             problems.append("missing_planned_files")
-        if not touched:
+        if not touched and not external_proven:
             problems.append("no_touched_files")
-        if planned and touched and not overlap:
+        if planned and touched and not overlap and not external_proven:
             problems.append("no_planned_file_overlap")
         if timeout_with_verdict:
             problems.append("evaluator_timed_out_after_verdict")
@@ -635,7 +659,11 @@ def strict_task_verification(session_dir: Path) -> dict[str, Any]:
         rows.append(
             {
                 "task_id": task_id,
-                "strict_success": status == "completed" and overlap and verified and not problems,
+                "strict_success": status == "completed" and (overlap or external_proven) and verified and not problems,
+                "external_proven": external_proven,
+                "external_evidence_path": f"tasks/{task_id}/external_evidence.json"
+                if (task_dir / "external_evidence.json").is_file()
+                else outcome.get("external_evidence_file"),
                 "problems": problems,
             }
         )

@@ -1877,6 +1877,7 @@ for TASK_FILE in session_plan/task_[0-9][0-9].md; do
     TASK_EVIDENCE_DIR="$SESSION_STAGING/tasks/$TASK_ID"
     TASK_OBSOLETE_NOTE="session_plan/${TASK_ID}_obsolete.md"
     TASK_BLOCKED_NOTE="session_plan/${TASK_ID}_blocked.md"
+    TASK_EXTERNAL_EVIDENCE="session_plan/${TASK_ID}_external_evidence.json"
     TASK_OBSOLETE_NOTE_PREEXISTED=false
     TASK_BLOCKED_NOTE_PREEXISTED=false
     if [ -s "$TASK_OBSOLETE_NOTE" ]; then
@@ -2046,6 +2047,13 @@ Follow the evolve skill rules:
   do not edit that outside file. Write session_plan/${TASK_ID}_blocked.md with
   the exact owner file, the symbol/evidence that proves the mismatch, and the
   smallest corrected Files list for a future task.
+- If this is an external-only task whose Files line names a non-file surface
+  such as "none (gh CLI only)", do the external action and write
+  session_plan/${TASK_ID}_external_evidence.json before your final answer.
+  The JSON must include {"status":"completed","evidence":[...]} where each
+  evidence item has a concrete kind plus URL, number, id, or command output
+  proving the external side effect. Without that local artifact the harness
+  cannot score the task as completed.
 - End your final answer with exactly one terminal evidence marker:
   \`TASK_TERMINAL_EVIDENCE: changed\`, \`TASK_TERMINAL_EVIDENCE: obsolete\`, or \`TASK_TERMINAL_EVIDENCE: blocked\`.
   The harness only recognizes that exact marker line; prose like "task completed",
@@ -2300,6 +2308,9 @@ BLOCKEDEOF
     fi
     if [ -s "$TASK_BLOCKED_NOTE" ] && [ "$TASK_BLOCKED_NOTE_PREEXISTED" != true ]; then
         cp "$TASK_BLOCKED_NOTE" "$TASK_EVIDENCE_DIR/blocked.md" 2>/dev/null || true
+    fi
+    if [ -s "$TASK_EXTERNAL_EVIDENCE" ]; then
+        cp "$TASK_EXTERNAL_EVIDENCE" "$TASK_EVIDENCE_DIR/external_evidence.json" 2>/dev/null || true
     fi
 
     # Preserve original break behavior for API errors

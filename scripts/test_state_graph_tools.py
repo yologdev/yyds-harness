@@ -1056,6 +1056,49 @@ class StateGraphTools(unittest.TestCase):
             self.assertEqual(gnomes["task_analysis_only_attempt_count"], 2)
             self.assertEqual(gnomes["task_seed_contradiction_count"], 0)
 
+    def test_task_artifact_metrics_accept_external_only_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Path(tmp) / "sessions/day-1"
+            write_json(
+                session / "tasks/manifest.json",
+                {
+                    "planner": {"planning_failed": False, "task_count": 1, "selected_task_count": 1},
+                    "selected_tasks": [
+                        {
+                            "task_id": "task_01",
+                            "task_number": 1,
+                            "title": "File external issue",
+                            "files": ["none (gh CLI only)"],
+                        }
+                    ],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/outcome.json",
+                {
+                    "task_id": "task_01",
+                    "status": "completed",
+                    "planned_files": ["none (gh CLI only)"],
+                    "source_files": [],
+                    "touched_files": [],
+                    "commit_shas": [],
+                },
+            )
+            write_json(
+                session / "tasks/task_01/external_evidence.json",
+                {
+                    "status": "completed",
+                    "evidence": [{"kind": "github_issue", "number": 35, "url": "https://example.test/issues/35"}],
+                },
+            )
+            write_json(session / "tasks/task_01/eval_attempt_1.json", {"status": "pass", "verdict": "PASS"})
+
+            metrics = state_graph_tools.task_artifact_verification_metrics(session)
+
+            self.assertEqual(metrics["task_strict_verified_count"], 1)
+            self.assertEqual(metrics["task_verification_rate"], 1.0)
+            self.assertEqual(metrics["task_no_edit_revert_count"], 0)
+
     def test_task_artifact_metrics_preserve_explicit_empty_selected_tasks(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Path(tmp) / "sessions/day-1"
