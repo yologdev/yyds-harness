@@ -455,6 +455,14 @@ _RESOLUTION_SIGNALS = (
     "addressed ",
     "made landable",
     "given enough standalone",
+    "marked obsolete",
+    "obsolete —",
+    "obsolete -",
+    "criteria already satisfied",
+    "already satisfied",
+    "reverted without",
+    "reverted — no edit",
+    "reverted_no_edit",
 )
 
 
@@ -467,6 +475,46 @@ def _line_shows_resolution(line: str, task_keys: tuple[str, ...]) -> bool:
     if re.match(r"day\s+\d+", lower):
         return True
     return any(signal in lower for signal in _RESOLUTION_SIGNALS)
+
+
+_OBSOLETE_REVERTED_MARKERS = (
+    "marked obsolete",
+    "obsolete_already_satisfied",
+    "reverted_no_edit",
+    "reverted — no edit",
+    "reverted — no",
+    "criteria already satisfied",
+    "reverted without",
+)
+
+
+def _line_shows_obsolete_or_reverted(
+    line: str, task_keys: tuple[str, ...], task_title: str
+) -> bool:
+    """Return True if line indicates a task was marked obsolete or reverted without edits.
+
+    This is a second-pass check for task-state evidence patterns that
+    `_line_shows_resolution` can miss when task keys are metric names
+    that don't appear verbatim in assessment prose (e.g. the
+    analysis-only task whose keys are ``task_analysis_only_attempt_count``,
+    ``reverted_no_edit``, etc., while the assessment writes "analysis-only
+    pressure marked obsolete — criteria already satisfied").
+    """
+    lower = line.lower()
+    if not any(m in lower for m in _OBSOLETE_REVERTED_MARKERS):
+        return False
+    # Match via task keys (substring)
+    if any(key in lower for key in task_keys):
+        return True
+    # Match via significant words from the task title
+    title_lower = task_title.lower()
+    title_words = title_lower.split()
+    for phrase_len in (3, 2, 1):
+        for i in range(len(title_words) - phrase_len + 1):
+            phrase = " ".join(title_words[i : i + phrase_len])
+            if len(phrase) > 5 and phrase in lower:
+                return True
+    return False
 
 
 def _self_tests_show_resolution(self_tests: str, task_keys: tuple[str, ...]) -> bool:
@@ -518,6 +566,14 @@ def check_task_contradiction(
     for line in recent_changes.splitlines():
         if _line_shows_resolution(line, task_keys):
             return True, f"assessment Recent Changes shows '{task['title']}' problem already resolved: {line.strip()}"
+
+    # Second pass: detect task-state evidence patterns (obsolete, reverted
+    # without edits) even when task keys don't appear verbatim in the line.
+    for line in recent_changes.splitlines():
+        if _line_shows_obsolete_or_reverted(
+            line, task_keys, str(task.get("title", ""))
+        ):
+            return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
 
     self_tests = extract_section(assessment, "self-test results")
     if _self_tests_show_resolution(self_tests, task_keys):
@@ -644,6 +700,9 @@ def _analysis_only_seed_recently_blocked(text: str) -> bool:
         "no file progress",
         "no-progress implementation",
         "no implementation landed",
+        "obsolete",
+        "criteria already satisfied",
+        "marked obsolete",
     )
     return any(marker in lower for marker in blocked_markers)
 
@@ -1356,6 +1415,33 @@ no-edit revert pressure from prior session.
             f"got validated_against_assessment={task.get('validated_against_assessment')}"
         )
         assert task.get("contradiction_reason"), "Expected contradiction_reason for Day-prefixed resolution"
+        # Test 9: Obsolete-seed contradiction — assessment marks task as
+        # "marked obsolete — criteria already satisfied" without using task
+        # keys verbatim (regression for Day 118 preseed re-seeding).
+        assessment = """# Assessment
+
+## Recent Changes
+Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+
+## Bugs / Friction Found
+no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == "Make analysis-only task pressure landable", (
+            f"Expected analysis-only task, got {task['title']}"
+        )
+        assert task.get("validated_against_assessment") is False, (
+            f"Obsolete-seed task should be contradicted, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+        assert task.get("contradiction_reason"), (
+            "Expected contradiction_reason for obsolete-seed detection"
+        )
+        reason = str(task.get("contradiction_reason", "")).lower()
+        assert "obsolete" in reason or "reverted" in reason, (
+            f"contradiction_reason should mention 'obsolete' or 'reverted', "
+            f"got: {task.get('contradiction_reason')}"
+        )
         for candidate in TASKS:
             protected = [
                 path.strip()
