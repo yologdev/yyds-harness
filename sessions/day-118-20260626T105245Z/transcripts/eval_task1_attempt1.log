@@ -1,0 +1,181 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task. The task claims to fix stale/obsolete seed detection in `scripts/preseed_session_plan.py`. Let me check what's actually in the diff provided and whether the task was implemented.
+
+The diff section is empty: "=== CHANGES MADE (git diff) ===" followed by nothing. This means no changes were made. But the build/tests claim PASS.
+
+Wait, let me re-read. The task says "=== CHANGES MADE (git diff) ===" and then it's blank. This could mean either:
+1. No changes were actually made (the implementation agent didn't implement anything)
+2. The diff wasn't populated in the prompt
+
+Let me check if there are actual changes in the repo.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -3 ✓ (11ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes in `scripts/preseed_session_plan.py`. Let me see the actual diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me get the full diff to see all 8 lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --no-color ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It seems the diff output is being truncated by the tool. Let me read the specific lines around the change directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:445..485 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the actual change. The implementation added 8 new signal strings to the `_RESOLUTION_SIGNALS` tuple:
+
+1. "marked obsolete"
+2. "obsolete —"
+3. "obsolete -"
+4. "criteria already satisfied"
+5. "already satisfied"
+6. "reverted without"
+7. "reverted — no edit"
+8. "reverted_no_edit"
+
+Now let me verify against the task's success criteria:
+
+1. `check_task_contradiction` returns `(True, reason)` when the assessment's Recent Changes section contains evidence that a task with matching keys was marked obsolete or reverted without edits.
+   - The fix adds these phrases to `_RESOLUTION_SIGNALS` which is checked in `_line_shows_resolution()`, which is called by `check_task_contradiction`. BUT the task says the Day-prefix path was already matching (because the line starts with "Day 118"), and the issue was that task keys (like "task_analysis_only_attempt_count") don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." The task says: "The keys are: 'task_analysis_only_attempt_count', 'reverted_no_edit', 'no-edit revert', 'implementation ended without file progress', etc. None of these appear in 'analysis-only pressure marked obsolete — criteria already satisfied.'"
+
+Wait, but the existing `_line_shows_resolution` function requires that the line contains a task key (line 472: `if not any(key in lower for key in task_keys): return False`). Adding these signals to `_RESOLUTION_SIGNALS` won't help if the task key isn't in the line!
+
+The task description explicitly identified this as the root cause. Let me re-read the task's proposed fix:
+
+Change 1 says: "after the existing _line_shows_resolution check, add a second pass that detects task-state evidence patterns" with a new helper `_line_shows_obsolete_or_reverted(line, task_keys)`.
+
+The current implementation only added strings to `_RESOLUTION_SIGNALS`. That's a partial fix at best. The fundamental issue is that `_line_shows_resolution` requires a task key to be a substring of the line, which won't match for the analysis-only task where "analysis-only pressure" appears instead of the actual key names.
+
+Let me check if the current `_line_shows_resolution` path already works via the Day-prefix path. Looking at line 474-476:
+```python
+# Session-date prefix (Day NNN) describing work already completed
+if re.match(r"day\s+\d+", lower):
+    return True
+```
+
+The Day-prefix path requires `lower` to match `day\s+\d+`. The assessment line is "Day 118 (03:50) | 3 tasks..." which starts with "day 118". BUT this path also requires the key check on line 472 to pass first. So if no task key is a substring of the line, this path won't be reached.
+
+So the core problem remains: the key check at line 472 prevents the Day-prefix path from working when the line doesn't contain a task key name.
+
+The implementation only added signal strings to `_RESOLUTION_SIGNALS` without addressing the key-substring prerequisite. This means the fix is incomplete.
+
+Let me also check if `_analysis_only_seed_recently_blocked` was updated (Change 2 in the task).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_analysis_only_seed_recently_blocked' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function to see if it was updated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:638..678 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_analysis_only_seed_recently_blocked` was NOT updated. The `blocked_markers` tuple doesn't include "obsolete", "criteria already satisfied", or "marked obsolete".
+
+Now let me also check if there are self-tests added (Change 3). The task says to add a regression test around line 1333. Let me check the self-test section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "marked obsolete\|obso… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The implementation only added strings to `_RESOLUTION_SIGNALS`. But there are critical gaps:
+
+1. **Change 1 (partial)**: Added signal strings but the fundamental issue remains: `_line_shows_resolution` requires a task key to be a substring of the line. The analysis-only task's keys (like "task_analysis_only_attempt_count", "reverted_no_edit") don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." The new signal "marked obsolete" would only help if the task key was in the line.
+
+Wait, actually let me re-read more carefully. The Day-prefix path (`re.match(r"day\s+\d+", lower)`) returns True on lines starting with "Day NNN". But it only gets there if `any(key in lower for key in task_keys)` is True (line 472). So if no task key is a substring, it returns False before reaching the Day-prefix check.
+
+BUT wait - let me look at this more carefully. The task says "The keys are: 'task_analysis_only_attempt_count', 'reverted_no_edit', 'no-edit revert', 'implementation ended without file progress', etc." 
+
+And the line is "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+
+Does "reverted_no_edit" appear in that line? No. Does "task_analysis_only_attempt_count"? No. So none of the task keys appear in the line, and `_line_shows_resolution` returns False immediately at line 472.
+
+The task description's proposed fix was a SECOND PASS with a new helper `_line_shows_obsolete_or_reverted` that doesn't require a task key substring match but instead detects the task title/domain keywords.
+
+The implementation DIDN'T do this. It only added signal strings to `_RESOLUTION_SIGNALS`, which is checked AFTER the key-substring prerequisite on line 472.
+
+So the fix is incomplete. Let me verify by looking at how `check_task_contradiction` calls `_line_shows_resolution`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'check_task_contradiction' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `check_task_contradiction` function to understand the full flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:513..563 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The implementation added signal strings to `_RESOLUTION_SIGNALS` but did NOT add:
+1. The second-pass detection (`_line_shows_obsolete_or_reverted` helper)
+2. The update to `_analysis_only_seed_recently_blocked` 
+3. A regression test
+
+The core issue remains: `_line_shows_resolution` (line 469) requires a task key to be a substring of the line (line 472). For the analysis-only task, its keys like "task_analysis_only_attempt_count", "reverted_no_edit" don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." So even with the new resolution signals, the function still returns False at line 472.
+
+The fix is incomplete. This is a FAIL.
+
+Let me also run the preseed test to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests pass, but the implementation is clearly incomplete. Let me now write the verdict.
+
+The task has three explicit success criteria:
+
+1. `check_task_contradiction` returns `(True, reason)` when the assessment's Recent Changes section contains evidence that a task with matching keys was marked obsolete or reverted without edits.
+   - NOT IMPLEMENTED: Only signal strings were added to `_RESOLUTION_SIGNALS`, but the core issue is that `_line_shows_resolution` requires a task key to be a substring of the line (line 472). The analysis-only task's keys don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." No second-pass detection was added.
+
+2. `_analysis_only_seed_recently_blocked` recognizes "obsolete" and "criteria already satisfied" as blocking markers.
+   - NOT IMPLEMENTED: `blocked_markers` tuple was not updated (lines 648-655).
+
+3. The preseed self-tests include a regression test where a task whose keys match an assessment line containing "marked obsolete — criteria already satisfied" is correctly flagged as contradicted.
+   - NOT IMPLEMENTED: No regression test was added.
+
+The implementation only did about 1/3 of the required work (adding signal strings to RESOLUTION_SIGNALS), missing the critical second-pass detection, the blocked_markers update, and the regression test. The fundamental bug remains unfixed.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence. The implementation is incomplete.
+  + Verdict: FAIL
+  + Reason: Only signal strings were added to _RESOLUTION_SIGNALS, but the core fix is missing: _line_shows_resolution requires a task key substring match (line 472) which fails for the analysis-only task since its keys ("task_analysis_only_attempt_count", "reverted_no_edit") don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." No second-pass _line_shows_obsolete_or_reverted helper was added. _analysis_only_seed_recently_blocked blocked_markers were not updated. No regression test was added.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (6ms)

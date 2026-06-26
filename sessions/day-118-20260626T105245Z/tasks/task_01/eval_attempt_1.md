@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Only signal strings were added to _RESOLUTION_SIGNALS, but the core fix is missing: _line_shows_resolution requires a task key substring match (line 472) which fails for the analysis-only task since its keys ("task_analysis_only_attempt_count", "reverted_no_edit") don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." No second-pass _line_shows_obsolete_or_reverted helper was added. _analysis_only_seed_recently_blocked blocked_markers were not updated. No regression test was added.

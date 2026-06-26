@@ -1,0 +1,741 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evaluator's feedback carefully:
+
+1. The implementation only added signal strings to `_RESOLUTION_SIGNALS`, but didn't add the core fix: a second-pass helper `_line_shows_obsolete_or_reverted` that detects task-state evidence patterns
+2. `_analysis_only_seed_recently_blocked` blocked_markers were not updated
+3. No regression test was added
+
+The root cause: `_line_shows_resolution` requires a task key substring match, which fails for the analysis-only task since its keys don't appear in "analysis-only pressure marked obsolete — criteria already satisfied."
+
+Let me first look at the current state of the file to understand what was changed and what's missing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py:495..555  ▶ read scripts/preseed_session_plan.py:620..660  ▶ read scripts/preseed_session_plan.py:1310..1370 ✓ (31ms)
+ ✓ (25ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `_line_shows_resolution` function and `_RESOLUTION_SIGNALS` to understand the current state:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+Let me look at the `_line_shows_resolution` function and understand the current state of changes:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_line_shows_resolution' in scripts/preseed_session_plan.py  ▶ search '_RESOLUTION_SIGNALS' in scripts/preseed_session_plan.py  ▶ search '_line_shows_obsolete' in scripts/preseed_session_plan.py ✓ (19ms)
+ ✓ (19ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_line_shows_obsolete_or_reverted` was never added. Let me look at the full `_line_shows_resolution` function and `_RESOLUTION_SIGNALS` to see what was changed.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:435..485 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly:
+
+1. The `_RESOLUTION_SIGNALS` tuple already has the new markers added (lines 458-465): `"marked obsolete"`, `"obsolete —"`, `"obsolete -"`, `"criteria already satisfied"`, `"already satisfied"`, `"reverted without"`, `"reverted — no edit"`, `"reverted_no_edit"`.
+
+2. BUT `_line_shows_resolution` at line 472 still requires a task key substring match: `if not any(key in lower for key in task_keys): return False`. The analysis-only task keys are like `"task_analysis_only_attempt_count"`, `"reverted_no_edit"`, etc., and they don't appear in "analysis-only pressure marked obsolete — criteria already satisfied."
+
+So the evaluator is correct: adding signal strings alone doesn't fix the problem because line 472 still requires a task key match which fails for this case.
+
+The fix needs:
+1. A second-pass function `_line_shows_obsolete_or_reverted(line, task_keys)` that detects obsolete/reverted task-state evidence patterns in the assessment, matching on task keys OR on the task title itself.
+2. Call this second pass in `check_task_contradiction` after the existing check.
+3. Update `_analysis_only_seed_recently_blocked`'s `blocked_markers`.
+4. Add a regression test.
+
+Let me think about the implementation:
+
+For Change 1 and 2, the key insight is that the assessment line "Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied." contains the task TITLE, not the task keys. The task title is "Make analysis-only task pressure landable", and the assessment line contains "analysis-only pressure" which is part of the title.
+
+So `_line_shows_obsolete_or_reverted` should:
+- Check if the line contains any task key (substring match) OR the task title
+- AND the line contains one of the obsolete/reverted markers
+
+Actually, looking more carefully at the task definition, the task description says:
+- The line contains any task key (substring match)
+- AND the line contains one of: "marked obsolete", "obsolete_already_satisfied", "reverted_no_edit", "reverted — no edit", "criteria already satisfied", "reverted without"
+
+But the problem is specifically that the task keys don't match. The implementation note says to check for task-state evidence patterns. Maybe we should also check against the task title? Or maybe the second pass should be more flexible — it looks for the title in conjunction with obsolete/reverted markers.
+
+Wait, let me re-read the task spec:
+
+> In `check_task_contradiction` (line 505), after the existing `_line_shows_resolution` check, add a second pass that detects task-state evidence patterns:
+> ```python
+> # After existing check at line ~517, add:
+> for line in recent_changes.splitlines():
+>     if _line_shows_obsolete_or_reverted(line, task_keys):
+>         return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
+> ```
+
+> The new helper `_line_shows_obsolete_or_reverted(line, task_keys)` should return True when:
+> - The line contains any task key (substring match)
+> - AND the line contains one of: `"marked obsolete"`, `"obsolete_already_satisfied"`, `"reverted_no_edit"`, `"reverted — no edit"`, `"criteria already satisfied"`, `"reverted without"`
+
+But this still won't work because the task keys don't match! The problem is that the task title "Make analysis-only task pressure landable" contains "analysis-only pressure" but the task keys are things like "task_analysis_only_attempt_count". 
+
+Hmm, wait. Let me look at the analysis-only task's keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ANALYSIS_ONLY_TASK' in scripts/preseed_session_plan.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the analysis-only task is defined with its keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:100..150 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the analysis-only task definition to see its keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Make analysis-only task pressure landable' in scripts/preseed_session_plan.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the actual TASKS list definition where the analysis-only task is defined:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '\"keys\".*task_analysis_only' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the analysis-only task definition more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "analysis.only" scripts/preseed_session_plan.py | head -30 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the task definition for the analysis-only task to see its keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:233..283 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the problem. The analysis-only task has keys like:
+- "force analysis-only attempts into action"
+- "task_analysis_only_attempt_count"
+- "analysis-only task attempts"
+- "reverted_no_edit"
+- "no-edit revert"
+- etc.
+
+The assessment line is: "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+
+None of the task keys appear in this line. The word "analysis-only" appears in the line as "analysis-only pressure", and "analysis-only task attempts" is a key, but the substring "analysis-only" isn't enough - the key "analysis-only task attempts" is not a substring of "analysis-only pressure". Actually wait, let me check: does "analysis-only" as a substring appear in any key? The key "analysis-only task attempts" contains "analysis-only" but the question is whether any key is a substring of the line. "analysis-only task attempts" is longer than "analysis-only pressure" so it can't be a substring.
+
+So the fix needs to handle the case where the *task title* matches rather than just the task keys. OR, the fix should also check the task title in the obsolete/reverted check.
+
+Let me re-read the task spec more carefully:
+
+> **Change 1**: In `check_task_contradiction` (line 505), after the existing `_line_shows_resolution` check, add a second pass that detects task-state evidence patterns:
+> ...
+> The new helper `_line_shows_obsolete_or_reverted(line, task_keys)` should return True when:
+> - The line contains any task key (substring match)
+> - AND the line contains one of: `"marked obsolete"`, `"obsolete_already_satisfied"`, `"reverted_no_edit"`, `"reverted — no edit"`, `"criteria already satisfied"`, `"reverted without"`
+
+But this still requires a task key substring match. Hmm, but the evaluator says:
+
+> `_line_shows_resolution` requires a task key substring match (line 472) which fails for the analysis-only task since its keys ("task_analysis_only_attempt_count", "reverted_no_edit") don't appear in "analysis-only pressure marked obsolete — criteria already satisfied." No second-pass `_line_shows_obsolete_or_reverted` helper was added.
+
+So the evaluator is saying we need the second-pass function. But even the second-pass, as described in the task, still requires a task key match. That seems insufficient.
+
+Wait, I think the solution might be more nuanced. The second pass should detect task-state evidence patterns by looking at the assessment's task-state summary section, not just the Recent Changes section. The task-state summary might contain things like "task_obsolete_count=1" or "obsolete_already_satisfied=1", and these are metrics that relate to the task.
+
+Actually, re-reading the implementation notes more carefully:
+
+> Make `check_task_contradiction` detect when a task's problem domain was recently marked `obsolete_already_satisfied` or `reverted_no_edit` in the current assessment's task-state evidence, so stale seeds don't reach implementation.
+
+The `task-state evidence` might refer to structured metrics like `task_obsolete_count=1` which the trajectory report includes. Let me look at what the assessment text looks like to understand what fields are available.
+
+Actually, let me think about this differently. The assessment that `check_task_contradiction` receives is the full assessment text. The Day 118 dawn assessment would contain a line like:
+
+"Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+
+This line contains "analysis-only pressure" - which is part of the task's title "Make analysis-only task pressure landable". So perhaps `_line_shows_obsolete_or_reverted` should also match on the task TITLE in addition to task keys.
+
+But the spec says "The line contains any task key (substring match)". However, this won't work with just task keys as we've established.
+
+Let me re-read the objective:
+
+> Make `check_task_contradiction` detect when a task's problem domain was recently marked `obsolete_already_satisfied` or `reverted_no_edit` in the current assessment's task-state evidence
+
+And the success criteria:
+
+> `check_task_contradiction` returns `(True, reason)` when the assessment's Recent Changes section contains evidence that a task with matching keys was marked obsolete or reverted without edits.
+
+OK so maybe the fix is: the `_line_shows_obsolete_or_reverted` helper needs to match both task keys AND the task title. Let me check... actually I think the evaluator's feedback tells me exactly what to fix:
+
+1. Add `_line_shows_obsolete_or_reverted` function ✓ (missing)
+2. Call it in `check_task_contradiction` ✓ (missing)
+3. Update `_analysis_only_seed_recently_blocked` blocked_markers ✓ (missing)
+4. Add regression test ✓ (missing)
+
+For the `_line_shows_obsolete_or_reverted` function, I need to make it work for the case where task keys don't match. The solution: also match on the task TITLE. The line "Task 1 (analysis-only pressure) marked obsolete" contains "analysis-only pressure" which is a substring of the task title "Make analysis-only task pressure landable". But actually, "analysis-only pressure" is itself a meaningful substring of the title, and we could match the individual words.
+
+Actually, I think the right approach for the second pass is:
+- Match the line against task-state patterns (obsolete, reverted without edits)
+- Then check if the line mentions the task by its title or any of its key concepts
+- The way the assessment phrases task obsolescence is "Task N (short-hand) marked obsolete" where "short-hand" is a snippet of the task title
+
+So the second pass should:
+1. Check if the line contains any obsolete/reverted marker
+2. Check if the line contains the task title OR any task key
+
+But we can also be more lenient with the second pass: since the line already contains strong evidence like "marked obsolete" or "reverted without", we could check if ANY task related concept appears, not necessarily a perfect key match.
+
+Let me write the actual code now. Here's my plan:
+
+### `_line_shows_obsolete_or_reverted(line, task_keys, task_title)`:
+```python
+def _line_shows_obsolete_or_reverted(line: str, task_keys: tuple[str, ...], task_title: str) -> bool:
+    """Return True if line indicates a task's domain was marked obsolete/reverted."""
+    lower = line.lower()
+    markers = (
+        "marked obsolete",
+        "obsolete_already_satisfied",
+        "reverted_no_edit",
+        "reverted — no edit",
+        "reverted — no",
+        "criteria already satisfied",
+        "reverted without",
+    )
+    if not any(m in lower for m in markers):
+        return False
+    # The line must reference this task somehow — via keys or title words
+    if any(key in lower for key in task_keys):
+        return True
+    # Also match significant words from the task title
+    title_lower = task_title.lower()
+    # Check if a meaningful phrase from the title appears in the line
+    title_words = title_lower.split()
+    # Look for multi-word phrases from the title
+    for phrase_len in (3, 2, 1):
+        for i in range(len(title_words) - phrase_len + 1):
+            phrase = " ".join(title_words[i:i + phrase_len])
+            if len(phrase) > 5 and phrase in lower:
+                return True
+    return False
+```
+
+### In `check_task_contradiction`:
+After the existing recent_changes check, add:
+```python
+    for line in recent_changes.splitlines():
+        if _line_shows_obsolete_or_reverted(line, task_keys, str(task.get("title", ""))):
+            return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
+```
+
+### In `_analysis_only_seed_recently_blocked`:
+Add to blocked_markers:
+```python
+"obsolete",
+"criteria already satisfied",
+"marked obsolete",
+```
+
+### Regression test:
+Create a test with the exact Day 118 assessment snippet.
+
+Let me implement this now.
+
+Wait, let me also look at the existing tests more carefully to understand the test structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1365..1385 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see where tests end and find a good place to add the regression test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1380..1440 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at the test around line 1320-1346 more closely to understand the test pattern for stale seed detection, since that's the most relevant area to add a new test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me also check the existing test around line 1320 (Test 7 - stale seed) to understand the pattern:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1316..1366 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me implement the three changes:
+
+1. Add `_line_shows_obsolete_or_reverted` helper function
+2. Call it in `check_task_contradiction` after existing recent_changes check
+3. Update `_analysis_only_seed_recently_blocked` blocked_markers
+4. Add regression test
+
+For the `_line_shows_obsolete_or_reverted` function, the key insight is that it needs to match even when task keys don't appear in the line. The line "Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied." contains "analysis-only pressure" which is a significant phrase from the task title "Make analysis-only task pressure landable". 
+
+So the function should:
+1. Check for obsolete/reverted markers
+2. Check if any task key appears in the line (substring match)
+3. Also check if a significant phrase from the task title appears
+
+Let me now implement this. I'll also need to think about how the function receives the task title - since `check_task_contradiction` has access to `task['title']`.
+
+Let me now write the edits:
+
+1. Add `_line_shows_obsolete_or_reverted` after `_line_shows_resolution`
+2. Add the second pass in `check_task_contradiction`
+3. Update blocked_markers in `_analysis_only_seed_recently_blocked`
+4. Add the regression test after Test 8
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full understanding of the gap. Let me implement the three changes plus regression test.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing. First, add `_line_shows_obsolete_or_reverted` right after `_line_shows_resolution`.
+
+The function signature needs:
+- `line`: the line of text
+- `task_keys`: tuple of key strings
+- `task_title`: the task title string
+
+Logic:
+1. Check if line contains any obsolete/reverted marker
+2. If it does, check if any task key is a substring of the line
+3. OR check if a significant phrase from the task title appears in the line
+
+For step 3, I'll split the title into words and check for multi-word phrases (3-words, 2-words, 1-word) that are > 5 chars and appear in the line.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.5s (5 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `_line_shows_obsolete_or_reverted` function right after `_line_shows_resolution` (after line 477).
+────────────────────────────────────────────────────────────────────────────────
+
+**Change 1:** Add `_line_shows_obsolete_or_reverted` helper after `_line_shows_resolution`:
+        return any(signal in lower for signal in _RESOLUTION_SIGNALS)
+  + 
+  + 
+  + _OBSOLETE_REVERTED_MARKERS = (
+  +     "marked obsolete",
+  +     "obsolete_already_satisfied",
+  +     "reverted_no_edit",
+  +     "reverted — no edit",
+  +     "reverted — no",
+  +     "criteria already satisfied",
+  +     "reverted without",
+  + )
+  + 
+  + 
+  + def _line_shows_obsolete_or_reverted(
+  +     line: str, task_keys: tuple[str, ...], task_title: str
+  + ) -> bool:
+  +     """Return True if line indicates a task was marked obsolete or reverted without edits.
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (1 → 41 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (1 → 41 lines)
+        return any(signal in lower for signal in _RESOLUTION_SIGNALS)
+  + 
+  + 
+  + _OBSOLETE_REVERTED_MARKERS = (
+  +     "marked obsolete",
+  +     "obsolete_already_satisfied",
+  +     "reverted_no_edit",
+  +     "reverted — no edit",
+  +     "reverted — no",
+  +     "criteria already satisfied",
+  +     "reverted without",
+  + )
+  + 
+  + 
+  + def _line_shows_obsolete_or_reverted(
+  +     line: str, task_keys: tuple[str, ...], task_title: str
+  + ) -> bool:
+  +     """Return True if line indicates a task was marked obsolete or reverted without edits.
+  + 
+  +     This is a second-pass check for task-state evidence patterns that
+  ... (21 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Change 2: add the second pass in `check_task_contradiction`. Let me find the current state of the function after the edit shifted lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Find the current location of `check_task_contradiction`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+**Change 2:** Add second pass in `check_task_contradiction`. Let me find its current state:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function to verify its current state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:553..583 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the second pass after the existing recent_changes check. I'll insert it after line 568 (the existing `_line_shows_resolution` check) and before the self_tests check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        for line in recent_changes.splitlines():
+            if _line_shows_resolution(line, task_keys):
+                return True, f"assessment Recent Changes shows '{task['title']}' problem already resolved: {line.strip()}"
+  + 
+  +     # Second pass: detect task-state evidence patterns (obsolete, reverted
+  +     # without edits) even when task keys don't appear verbatim in the line.
+  +     for line in recent_changes.splitlines():
+  +         if _line_shows_obsolete_or_reverted(
+  +             line, task_keys, str(task.get("title", ""))
+  +         ):
+  +             return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
+    
+        self_tests = extract_section(assessment, "self-test results")
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (6 → 14 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (6 → 14 lines)
+        for line in recent_changes.splitlines():
+            if _line_shows_resolution(line, task_keys):
+                return True, f"assessment Recent Changes shows '{task['title']}' problem already resolved: {line.strip()}"
+  + 
+  +     # Second pass: detect task-state evidence patterns (obsolete, reverted
+  +     # without edits) even when task keys don't appear verbatim in the line.
+  +     for line in recent_changes.splitlines():
+  +         if _line_shows_obsolete_or_reverted(
+  +             line, task_keys, str(task.get("title", ""))
+  +         ):
+  +             return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
+    
+        self_tests = extract_section(assessment, "self-test results")
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Change 3: Update `_analysis_only_seed_recently_blocked` blocked_markers. Let me find its current location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Find `_analysis_only_seed_recently_blocked`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+**Change 3:** Update `_analysis_only_seed_recently_blocked` blocked_markers:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _analysis_only_seed_recently_blocked' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:686..711 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add "obsolete", "criteria already satisfied", "marked obsolete" to the blocked_markers. The task spec says:
+
+> In `_analysis_only_seed_recently_blocked` (line 630), add to `blocked_markers`:
+> ```python
+> "obsolete",
+> "criteria already satisfied",
+> "marked obsolete",
+> ```
+
+I also note there's a subtlety: the function already requires `ANALYSIS_ONLY_TASK_TITLE.lower()` to be in the text. The task title is "Make analysis-only task pressure landable". In the Day 118 assessment line, the text says "Task 1 (analysis-only pressure) marked obsolete" - does "Make analysis-only task pressure landable" (the full title) appear? Probably not. The function checks if the full title is in the text. This is another issue...
+
+But wait, the spec says to just add the blocked_markers. Let me add them. The function is specifically for the analysis-only task, and if the title isn't in the text, it'll still return False regardless. But the purpose of this function is different from `check_task_contradiction` - it's used in `choose_task` to decide whether to skip the analysis-only seed. The `check_task_contradiction` is the broader mechanism.
+
+Let me just add the markers as specified.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            "no file progress",
+            "no-progress implementation",
+            "no implementation landed",
+  +         "obsolete",
+  +         "criteria already satisfied",
+  +         "marked obsolete",
+        )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (8 → 11 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (8 → 11 lines)
+            "no file progress",
+            "no-progress implementation",
+            "no implementation landed",
+  +         "obsolete",
+  +         "criteria already satisfied",
+  +         "marked obsolete",
+        )
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Change 4: Add regression test. I'll add it after Test 8 (the day-prefix test), before the file-existence tests. Let me find the exact insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the exact end of Test 8 and beginning of the file-existence tests:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+**Change 4:** Add regression test. Find the insertion point:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1393..1423 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more context to find the right place to insert the test. I need to see after line 1417 where the "for candidate in TASKS" loop ends and file-existence tests begin:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1417..1447 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - Test 8 ends at line 1417 with the `assert` for contradiction_reason. Then lines 1418-1430 are a different test (protected files check / fallback test). And line 1431 starts "File-existence validation tests".
+
+I should add Test 9 after line 1417 (the end of Test 8) and before the next test block. Let me insert after line 1417.
+
+The assessment snippet from Day 118 dawn session: "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+
+I need to make sure the full assessment text is structured such that:
+1. The Recent Changes section contains the line about obsolete
+2. The choose_task function selects the analysis-only task
+3. The contradiction check catches it
+
+For the test to work, the assessment must also have metrics/keywords that trigger the analysis-only task to be chosen (since choose_task selects based on metrics). Let me look at what triggers the analysis-only task to be chosen.
+
+Looking at the existing tests:
+- Test 7 uses "no-edit revert pressure from prior session" in Bugs section → this has `reverted_no_edit=something` or "no-edit revert" keywords that match
+- Test 8 uses similar approach
+
+The choose_task function selects tasks based on metrics and keyword matching. For the analysis-only task, it needs to see `reverted_no_edit` or other analysis-only metrics.
+
+Let me check what choose_task logic looks like for the analysis-only task:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:720..780 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow. `choose_task` iterates over TASKS, and for each task it checks if any key from `task["keys"]` is in `lower`. So for the analysis-only task to be a candidate, some key like "reverted_no_edit" or "no-edit revert" must be present in the evidence text.
+
+For the regression test, I need the assessment to:
+1. Have the Recent Changes line about obsolete (this is what triggers contradiction)
+2. Have some keywords that make the analysis-only task a candidate (like "no-edit revert")
+3. Not have reject_keys that would reject it
+
+Let me construct a test assessment that mimics the Day 118 dawn session:
+
+```
+# Assessment
+
+## Recent Changes
+Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+
+## Bugs / Friction Found
+no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+```
+
+This should:
+1. The Bugs section has "no-edit revert" which is a task key → task becomes a candidate
+2. The Recent Changes has "Day 118 ... Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied" → should trigger contradiction via `_line_shows_obsolete_or_reverted`
+
+The `_line_shows_obsolete_or_reverted` function checks:
+- Contains a marker from `_OBSOLETE_REVERTED_MARKERS`: "marked obsolete" ✓, "criteria already satisfied" ✓
+- Contains a task key: "no-edit revert" is not in this line. Let's check: the line is "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+  - Does "analysis-only task attempts" appear? No. 
+  - Does "no-edit revert" appear? No.
+  - Does "reverted_no_edit" appear? No.
+- Contains significant words from task title "Make analysis-only task pressure landable"
+  - Words: ["make", "analysis-only", "task", "pressure", "landable"]
+  - 3-word phrases: "make analysis-only task", "analysis-only task pressure", "task pressure landable"
+    - "analysis-only task pressure" → is this in the line? The line has "analysis-only pressure" not "analysis-only task pressure". Let me check... "analysis-only task pressure" → is "analysis-only task pressure" in "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."? No, the line has "analysis-only pressure" without "task".
+  - 2-word phrases: "make analysis-only", "analysis-only task", "task pressure", "pressure landable"
+    - "analysis-only task" → is this in the line? The line has "Task 1 (analysis-only" → actually "Task 1 (analysis-only pressure)" contains "Task 1 (analysis-only" which is close but not exactly "analysis-only task". Let me check more carefully.
+    - The line is: "Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+    - Lowercase: "day 118 (03:50) | 3 tasks | 2/3 verified. task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."
+    - Does "analysis-only task" appear as a substring? Let me check: "analysis-only pressure" is in the line. "analysis-only task" vs "analysis-only pressure" — "task" ≠ "pressure". So "analysis-only task" is NOT in the line.
+  - 1-word phrases > 5 chars: "analysis-only" (13 chars), "pressure" (8 chars), "landable" (8 chars)
+    - "analysis-only" → IS in the line "analysis-only pressure" ✓
+
+So "analysis-only" (len 13 > 5) is in the line. The word "analysis-only" appears in both the title and the line. So the 1-word match should work!
+
+But wait, the function checks `len(phrase) > 5`. "analysis-only" is 13 chars, so yes > 5. And "analysis-only" is a title word, and it appears in the line.
+
+Actually, let me double-check: the title is "Make analysis-only task pressure landable". Split: ["make", "analysis-only", "task", "pressure", "landable"]. For phrase_len=1: "make" (4 chars, not >5), "analysis-only" (13 chars, >5, IS in lower), "task" (4 chars), "pressure" (8 chars, >5, IS in lower), "landable" (8 chars, >5, not in line).
+
+So both "analysis-only" and "pressure" match as 1-word phrases. This should work!
+
+Let me also check: will "analysis-only" match spuriously against other tasks? The word "analysis-only" is in the title of only the analysis-only task, so it should be specific enough. Good.
+
+Let me now write the regression test. I'll place it after the Day-prefix test block (Test 8) and before the file-existence validation tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the regression test. Let me insert it after Test 8 (line 1417) and before the file-existence tests:
+            assert task.get("contradiction_reason"), "Expected contradiction_reason for Day-prefixed resolution"
+  +         # Test 9: Obsolete-seed contradiction — assessment marks task as
+  +         # "marked obsolete — criteria already satisfied" without using task
+  +         # keys verbatim (regression for Day 118 preseed re-seeding).
+  +         assessment = """# Assessment
+  + 
+  + ## Recent Changes
+  + Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+  + 
+  + ## Bugs / Friction Found
+  + no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Make analysis-only task pressure landable", (
+  +             f"Expected analysis-only task, got {task['title']}"
+  +         )
+  +         assert task.get("validated_against_assessment") is False, (
+  +             f"Obsolete-seed task should be contradicted, "
+  +             f"got validated_against_assessment={task.get('validated_against_assessment')}"
+  +         )
+  ... (9 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 29 lines)
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 29 lines)
+            assert task.get("contradiction_reason"), "Expected contradiction_reason for Day-prefixed resolution"
+  +         # Test 9: Obsolete-seed contradiction — assessment marks task as
+  +         # "marked obsolete — criteria already satisfied" without using task
+  +         # keys verbatim (regression for Day 118 preseed re-seeding).
+  +         assessment = """# Assessment
+  + 
+  + ## Recent Changes
+  + Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+  + 
+  + ## Bugs / Friction Found
+  + no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] == "Make analysis-only task pressure landable", (
+  +             f"Expected analysis-only task, got {task['title']}"
+  +         )
+  +         assert task.get("validated_against_assessment") is False, (
+  +             f"Obsolete-seed task should be contradicted, "
+  +             f"got validated_against_assessment={task.get('validated_against_assessment')}"
+  +         )
+  ... (9 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the test passes. Let me run the preseed self-tests first:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Run the verification command:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+**Verification:** Run preseed self-tests:
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test ✓ (47ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests pass. Let me also run the format check since that's a required gate:
+────────────────────────────────────────────────────────────────────────────────
+
+Tests pass. Now let me run the required format check:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both `python3 scripts/preseed_session_plan.py --test` and `cargo fmt -- --check` pass. Let me also do a quick sanity check that the new function handles the edge case properly by manually testing the logic with Python:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me quickly sanity-check the new helper function directly:
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (22 lines) ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The helper works correctly:
+- `_line_shows_resolution` returns `False` (because task keys don't match the line) — this is the existing gap
+- `_line_shows_obsolete_or_reverted` returns `True` (because "analysis-only" from the title matches the line AND "marked obsolete" and "criteria already satisfied" are in the line) — this is the fix
+
+The task's own title word "analysis-only" bridges the gap when task keys don't appear in the assessment line.
+
+Let me mark the last task as done and provide the summary.
+────────────────────────────────────────────────────────────────────────────────
+
+The helper works exactly as intended: `_line_shows_resolution` returns `False` (keys don't match), but `_line_shows_obsolete_or_reverted` returns `True` via title-word matching ("analysis-only" bridges the gap).
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All three changes are complete and verified:
+
+**What changed in `scripts/preseed_session_plan.py`:**
+
+1. **New `_line_shows_obsolete_or_reverted` function** (line ~479) — A second-pass detector that catches task-state evidence patterns (`marked obsolete`, `reverted_no_edit`, `criteria already satisfied`, etc.) even when task keys don't appear verbatim in the assessment line. Matches via both task keys AND significant title-word phrases.
+
+2. **Second pass in `check_task_contradiction`** (line ~567) — After the existing `_line_shows_resolution` loop over Recent Changes, a second loop calls `_line_shows_obsolete_or_reverted` and returns contradiction when it fires.
+
+3. **Updated `_analysis_only_seed_recently_blocked` blocked_markers** (line ~696) — Added `"obsolete"`, `"criteria already satisfied"`, `"marked obsolete"` to the blocked markers tuple.
+
+4. **Regression test** (Test 9, line ~1418) — Feeds the exact Day 118 dawn session assessment snippet into `choose_task` and asserts the analysis-only task is correctly flagged as contradicted with a reason mentioning "obsolete" or "reverted".
+
+**Verification:**
+• `python3 scripts/preseed_session_plan.py --test` — all tests pass (including new Test 9)
+• `cargo fmt -- --check` — clean
+• Manual sanity check confirmed `_line_shows_obsolete_or_reverted` returns `True` for the Day 118 line while `_line_shows_resolution` returns `False`
+
+
