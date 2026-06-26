@@ -2292,11 +2292,137 @@ class EmptyStreakTests(unittest.TestCase):
         self.assertIn("inability to find work", result5)
         self.assertIn("filing agent-self issues", result5)
 
-    def test_render_empty_streak_section_truncation(self) -> None:
-        """Diagnostic section is concise (fits within budget)."""
-        result = extract_trajectory.render_empty_streak(7)
-        self.assertTrue(len(result) <= 400, f"diagnostic too long: {len(result)} chars")
-        self.assertIn("**7** consecutive session", result)
+    def test_classify_empty_session_reasons_assessment_empty(self) -> None:
+        """No tasks selected, zero attempts → assessment_empty."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 4):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            with mock.patch.object(
+                extract_trajectory, "corrected_latest_gnomes",
+                return_value={"selected_task_count": 0},
+            ):
+                reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            self.assertEqual(reasons, ["assessment_empty", "assessment_empty", "assessment_empty"])
+
+    def test_classify_empty_session_reasons_reverted_no_edit(self) -> None:
+        """Tasks selected but never attempted → reverted_no_edit."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 3):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            with mock.patch.object(
+                extract_trajectory, "corrected_latest_gnomes",
+                return_value={"selected_task_count": 2},
+            ):
+                reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            self.assertEqual(reasons, ["reverted_no_edit", "reverted_no_edit"])
+
+    def test_classify_empty_session_reasons_implementation_failed(self) -> None:
+        """Tasks attempted but zero succeeded → implementation_failed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            for day in range(1, 4):
+                self._make_session(audit_dir, day, f"2026-06-{20+day:02d}T00:00:00Z",
+                                   attempted=2, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            self.assertEqual(reasons, ["implementation_failed"] * 3)
+
+    def test_classify_empty_session_reasons_mixed(self) -> None:
+        """Mixed empty reasons across sessions."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            # day 3 (newest): implementation_failed
+            self._make_session(audit_dir, 3, "2026-06-23T00:00:00Z",
+                               attempted=2, succeeded=0)
+            # day 2: reverted_no_edit (selected but not attempted)
+            self._make_session(audit_dir, 2, "2026-06-22T00:00:00Z",
+                               attempted=0, succeeded=0)
+            # day 1: assessment_empty
+            self._make_session(audit_dir, 1, "2026-06-21T00:00:00Z",
+                               attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            # Mock: day 2 has selected tasks, day 1 doesn't
+            gnome_responses = {
+                "day-3": {"selected_task_count": 2},
+                "day-2": {"selected_task_count": 1},
+                "day-1": {"selected_task_count": 0},
+            }
+
+            def _fake_gnomes(session_dir):
+                return gnome_responses.get(session_dir.name, {})
+
+            with mock.patch.object(
+                extract_trajectory, "corrected_latest_gnomes",
+                side_effect=_fake_gnomes,
+            ):
+                reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            self.assertEqual(
+                reasons,
+                ["implementation_failed", "reverted_no_edit", "assessment_empty"],
+            )
+
+    def test_classify_empty_session_reasons_stops_at_landed(self) -> None:
+        """Classification stops at first session with landed tasks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            # day 5,4: empty (newest)
+            self._make_session(audit_dir, 5, "2026-06-25T00:00:00Z",
+                               attempted=0, succeeded=0)
+            self._make_session(audit_dir, 4, "2026-06-24T00:00:00Z",
+                               attempted=2, succeeded=0)
+            # day 3: landed tasks — breaks the streak
+            self._make_session(audit_dir, 3, "2026-06-23T00:00:00Z",
+                               attempted=1, succeeded=1)
+            # day 2,1: older empty sessions (should not be classified)
+            self._make_session(audit_dir, 2, "2026-06-22T00:00:00Z",
+                               attempted=0, succeeded=0)
+            self._make_session(audit_dir, 1, "2026-06-21T00:00:00Z",
+                               attempted=0, succeeded=0)
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            with mock.patch.object(
+                extract_trajectory, "corrected_latest_gnomes",
+                return_value={"selected_task_count": 0},
+            ):
+                reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            # Only tip-2 empty sessions before the landed break
+            self.assertEqual(reasons, ["assessment_empty", "implementation_failed"])
+
+    def test_classify_empty_session_reasons_no_outcomes(self) -> None:
+        """Empty outcomes list produces empty reasons list."""
+        reasons = extract_trajectory.classify_empty_session_reasons([])
+        self.assertEqual(reasons, [])
+
+    def test_render_empty_streak_with_reasons(self) -> None:
+        """render_empty_streak includes reason labels when provided."""
+        reasons = ["assessment_empty", "assessment_empty", "reverted_no_edit"]
+        result = extract_trajectory.render_empty_streak(3, reasons=reasons)
+        self.assertIn("**3** consecutive session", result)
+        self.assertIn("reasons=[assessment_empty, assessment_empty, reverted_no_edit]", result)
+        # Backward compat: no reasons param
+        result_no_reasons = extract_trajectory.render_empty_streak(3)
+        self.assertIn("**3** consecutive session", result_no_reasons)
+        self.assertNotIn("reasons=", result_no_reasons)
+
+    def test_classify_empty_session_reasons_malformed_skipped(self) -> None:
+        """Non-numeric tasks_attempted/succeeded → unknown reason."""
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_dir = Path(tmp)
+            self._make_session(audit_dir, 1, "2026-06-21T00:00:00Z",
+                               attempted=0, succeeded=0)
+            # Corrupt the outcome to have non-numeric fields
+            outcome_path = audit_dir / "day-1" / "outcome.json"
+            outcome_path.write_text(json.dumps({"day": 1, "ts": "2026-06-21T00:00:00Z",
+                                                 "tasks_attempted": "zero",
+                                                 "tasks_succeeded": None}) + "\n")
+            outcomes = extract_trajectory.load_recent_session_outcomes(audit_dir)
+            reasons = extract_trajectory.classify_empty_session_reasons(outcomes)
+            self.assertEqual(reasons, ["unknown"])
 
 
 if __name__ == "__main__":

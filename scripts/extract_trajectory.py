@@ -837,12 +837,14 @@ def compute_empty_streak(session_outcomes):
     return streak
 
 
-def render_empty_streak(streak):
+def render_empty_streak(streak, reasons=None):
     """Render a diagnostic when consecutive sessions land zero tasks.
 
     Returns empty string when streak < EMPTY_STREAK_WARN.
     When streak >= 3, includes guidance about the "nothing to fix vs can't
     find things to fix" distinction and suggests filing agent-self issues.
+    If *reasons* is provided (list of per-session reason labels from
+    classify_empty_session_reasons), a reasons=[...] line is appended.
     """
     if streak < EMPTY_STREAK_WARN:
         return ""
@@ -851,20 +853,66 @@ def render_empty_streak(streak):
         "## Consecutive empty sessions",
         f"- **{streak}** consecutive session{plural} with zero landed tasks",
     ]
+    if reasons is not None:
+        lines.append(f"- reasons=[{', '.join(reasons)}]")
     if streak >= 5:
         lines.append(
-            "- \u26a0\ufe0f Prolonged empty streak \u2014 may indicate systemic inability to find work "
+            "- ⚠️ Prolonged empty streak — may indicate systemic inability to find work "
             "rather than absence of work. Consider filing agent-self issues, "
             "researching new capability gaps, or changing task-selection strategy."
         )
     else:
         lines.append(
-            "- \u26a0\ufe0f 3+ consecutive sessions with zero landed tasks \u2014 may indicate "
+            "- ⚠️ 3+ consecutive sessions with zero landed tasks — may indicate "
             "inability to find work rather than absence of work. Consider "
             "filing agent-self issues, researching new capability gaps, "
             "or changing task-selection strategy."
         )
     return "\n".join(lines)
+
+
+def classify_empty_session_reasons(session_outcomes):
+    """Classify each consecutive empty session from the tip of the outcome list.
+
+    Iterates from newest to oldest. Stops at the first session with landed tasks
+    (tasks_attempted > 0 AND tasks_succeeded > 0, both numeric). For each empty
+    session, assigns one of:
+
+      assessment_empty     — no tasks were selected (gnome selected_task_count == 0)
+      reverted_no_edit     — tasks selected but zero attempted (and zero succeeded)
+      implementation_failed — tasks attempted but zero succeeded
+      unknown              — outcome data is malformed (non-numeric fields)
+
+    Returns a list of reason labels in newest-first order (same ordering as
+    session_outcomes). The list may be shorter than session_outcomes if a
+    landed session breaks the streak.
+
+    Calls corrected_latest_gnomes for each empty session with attempted==0 to
+    distinguish assessment_empty from reverted_no_edit.
+    """
+    reasons = []
+    for session_dir, outcome in session_outcomes:
+        attempted = outcome.get("tasks_attempted", 0)
+        succeeded = outcome.get("tasks_succeeded", 0)
+        if not (isinstance(attempted, (int, float)) and isinstance(succeeded, (int, float))):
+            # Malformed outcome — treat as empty, reason unknown
+            reasons.append("unknown")
+            continue
+        if attempted == 0 and succeeded == 0:
+            # Empty session: check gnomes to see if tasks were selected
+            gnomes = corrected_latest_gnomes(session_dir)
+            selected = gnomes.get("selected_task_count", 0) if isinstance(gnomes, dict) else 0
+            if isinstance(selected, (int, float)) and selected > 0:
+                reasons.append("reverted_no_edit")
+            else:
+                reasons.append("assessment_empty")
+            continue
+        if attempted > 0 and succeeded == 0:
+            reasons.append("implementation_failed")
+            continue
+        # Landed tasks (attempted > 0 and succeeded > 0) — break the streak
+        break
+    return reasons
 
 
 # ── Section 2: Per-task success rate from git log ────────────────────────
@@ -2039,7 +2087,9 @@ def main() -> int:
     s = render_provider_health(sessions_audited, provider_hits)
     if s:
         sections.append(s)
-    s = render_empty_streak(compute_empty_streak(outcomes))
+    empty_streak = compute_empty_streak(outcomes)
+    empty_reasons = classify_empty_session_reasons(outcomes)
+    s = render_empty_streak(empty_streak, empty_reasons if empty_streak >= EMPTY_STREAK_WARN else None)
     if s:
         sections.append(s)
 
