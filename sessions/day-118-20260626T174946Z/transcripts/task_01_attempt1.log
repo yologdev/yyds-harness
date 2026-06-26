@@ -1,0 +1,768 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then examining the relevant source files to understand the current state of analysis-only task pressure handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the key source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (417ms)
+ ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the key parts of preseed_session_plan.py more carefully, especially the `choose_task` function, the `TASKS` list, and the analysis-only detection logic. I also need to check what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+Let me now focus on the key functions: `choose_task`, `check_task_contradiction`, and the task selection logic.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1340..1530  ▶ read scripts/preseed_session_plan.py:116..316 ✓ (385ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `choose_task` function more carefully to understand how it selects tasks:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:468..768 ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the choose_task function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:765..865 ✓ (100ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me analyze the current state:
+
+1. The `choose_task` function already has analysis-only pressure detection (`_has_analysis_only_pressure`) and when `analysis_only_active` is True:
+   - It skips tasks with >3 files (line 749-750)
+   - It prioritizes tasks with src/*.rs files (lines 769-771)
+   - It skips lifecycle tasks when analysis-only pressure is active (lines 751-754)
+   - It skips the analysis-only task itself when recently blocked (lines 743-744)
+
+2. But there's a potential issue: when analysis-only pressure is active, the code pushes analysis-only task candidates to the list (line 764), and they're subject to `_has_protected_files` filtering (line 745-746). Let me check the analysis-only task's files field:
+   - `"files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"`
+   - None of these are in `PROTECTED_IMPLEMENTATION_FILES` = `("scripts/evolve.sh", "scripts/format_issues.py", "scripts/build_site.py", "skills/self-assess/SKILL.md", "skills/evolve/SKILL.md")`
+
+So the analysis-only task itself doesn't have protected files. The concern from the task description is different: when analysis-only pressure fires (from trajectory evidence showing `obsolete_already_satisfied`, `reverted_no_edit`, `reverted_unlanded_source_edits`), the preseed picker should select a *landable* follow-up task — meaning one that targets actual source files (src/*.rs), not just scripts or other non-Rust files.
+
+Let me look more closely at what happens. When analysis-only pressure is active, the code:
+1. Filters to candidates matching current evidence keys
+2. Removes any with protected files
+3. Filters out tasks with >3 files
+4. Sorts to prefer src/*.rs tasks first
+5. Returns the first non-contradicted candidate
+
+The question is: is this sufficient? Let me trace through an example. If the assessment has `task_no_edit_revert_count=1` and `reverted_no_edit=1`, what tasks match?
+
+The analysis-only task has keys: `"task_analysis_only_attempt_count"`, `"task_no_edit_revert_count"`, `"reverted_no_edit"`, `"no-edit revert"`, etc. So `task_no_edit_revert_count=1` and `reverted_no_edit=1` would match the analysis-only task.
+
+The analysis-only task's files are: `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` — that's 3 files (not >3), none protected. So it would be selected.
+
+But the issue is: when analysis-only pressure is active, should we be selecting the analysis-only task itself? The task description says the preseed picker should select "a concrete, landable follow-up task whose Files list contains no protected implementation files." The analysis-only task targets scripts (preseed, state_graph_tools) — not Rust source files. 
+
+The issue is broader: when analysis-only pressure fires, the selected task should ideally be a Rust source file task (src/*.rs) because those produce cargo-testable changes. The analysis-only task is about fixing the preseed pipeline itself, which targets Python scripts — a script that affects *future* task selection.
+
+Let me look at what the `_has_analysis_only_pressure` function returns and what happens:
+
+When `analysis_only_active` is True (line 731), and the analysis-only task matches (line 734), and it's not blocked (line 743-744), it gets added to candidates and sorted to the back (because it doesn't have src/*.rs files — line 771 sorts non-src tasks last).
+
+But wait, the sort puts src-file tasks FIRST, so if there are no other candidates matching the evidence keys, the analysis-only task becomes the only candidate and is selected anyway.
+
+Hmm, the real problem might be more subtle. Let me re-read the task requirements:
+
+> Ensure that when trajectory evidence shows analysis-only/no-edit task outcomes (obsolete_already_satisfied, reverted_no_edit, reverted_unlanded_source_edits), the preseed picker selects a concrete, landable follow-up task whose Files list contains no protected implementation files (PROTECTED_IMPLEMENTATION_FILES).
+
+> `choose_task` returns a task with Files containing no entries from PROTECTED_IMPLEMENTATION_FILES when analysis-only pressure is the dominant signal.
+
+> The selected task Files list names at most 3 editable source files (not scripts/, not .github/).
+
+> Self-tests cover the path where ANALYSIS_ONLY_TASK_TITLE would have been selected but a landable alternative is chosen instead.
+
+So the key behavior change needed is: when analysis-only pressure is the dominant signal, if the only matching candidate is the analysis-only task itself (or other script-only tasks), we should select a landable alternative task (one with src/*.rs files).
+
+Currently, the analysis-only task's files are all scripts, not src/*.rs. When analysis-only pressure is active and only the analysis-only task matches, we still return it. Instead, we should prefer a landable src/*.rs task.
+
+Let me think about how to implement this:
+
+Option 1: When `analysis_only_active` and no src/*.rs candidates exist, pick a landable fallback task (like the tool-path recovery task or the cold-start diagnostics task).
+
+Option 2: Add a broader landable fallback that's specifically designed for analysis-only pressure.
+
+Option 3: When analysis-only pressure fires and only script-only tasks match, broaden the search to include any src/*.rs task from TASKS as a fallback, not just evidence-matching ones.
+
+Let me re-read the task's success criteria:
+- `choose_task` returns a task with Files containing no entries from PROTECTED_IMPLEMENTATION_FILES when analysis-only pressure is the dominant signal.
+- The selected task Files list names at most 3 editable source files (not scripts/, not .github/).
+- Self-tests cover the path where ANALYSIS_ONLY_TASK_TITLE would have been selected but a landable alternative is chosen instead.
+
+Looking at the current code flow again:
+1. Analysis-only pressure detected → `analysis_only_active = True`
+2. For each task in TASKS: if keys match and no reject_keys match and not blocked and no protected files and files exist...
+   - TASKS are iterated in order. The analysis-only task (index ~5) comes before the tool-path recovery task (index ~4? No, let me re-check order).
+
+Let me check the order of TASKS. Looking at the TASKS list:
+1. "Verify and fix sub-agent API key propagation" (line 40-75)
+2. "Record DeepSeek prompt cache metrics during prompt runs" (line 76-115)
+3. "Improve cold-start state failure diagnostics" (line 116-162)
+4. "Stabilize run completion guard panic test" (line 163-195)
+5. "Add recovery hints for common tool-path and permission errors" (line 196-236)
+6. "Make analysis-only task pressure landable" (line 237-278)
+7. LIFECYCLE_TASK_TITLE (line 279-315)
+
+So the analysis-only task is at index 5. When it matches and `analysis_only_active` is True:
+- It has 3 files (not >3), passes the file count check
+- It doesn't have protected files
+- It doesn't have src/*.rs files
+- It's added to candidates
+
+After sorting by `not _has_src_files(c)`, non-src tasks go last. But if no src-file tasks also match the evidence keys, the analysis-only task is the only candidate.
+
+The fix: when analysis-only pressure is active and all matching candidates are script-only (no src/*.rs), we should select a landable fallback that targets src/*.rs files. This could be:
+- The tool-path recovery task (src/tool_wrappers.rs) — single file, landable
+- The cold-start diagnostics task (src/commands_state.rs, src/state.rs) — if it doesn't get filtered out
+- A new landable fallback
+
+Let me think about the best approach. The task says to make it so that analysis-only pressure selects a landable src/*.rs task. The most surgical approach would be:
+
+After building candidates and sorting (src-first), if `analysis_only_active` is True and no candidate has src/*.rs files, fall through to a landable recovery task instead of returning the analysis-only task.
+
+Let me look at what tests exist and what needs to change:
+
+Current tests (lines 1445-1457): Check that no TASK has protected files, and that the fallback works.
+
+Let me now implement the change. The key modifications:
+
+1. In `choose_task`, after the candidate loop, if `analysis_only_active` and no src-candidate is selected, override to a landable fallback.
+
+2. Add a test case for this path.
+
+Let me look at the exact location where the change needs to go:
+
+```python
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+```
+
+After this loop, if analysis_only_active and the selected candidate was the analysis-only task (or any script-only task), we should fall back to a landable alternative.
+
+Actually, let me think about this differently. The current flow:
+1. Build candidates list (filtered by evidence keys, protected files, etc.)
+2. Sort src-first when analysis_only_active
+3. Return first non-contradicted
+4. If all contradicted, return first with annotation
+
+The issue is in step 3: when analysis-only pressure is active and the only matching candidate is the analysis-only task itself (scripts only), we still return it.
+
+The better approach: when analysis_only_active is True, after building candidates, if NO candidate has src/*.rs files, we should replace the candidates with a landable fallback. Or, more precisely, we should inject a landable task into the candidates.
+
+Actually, let me re-read the task more carefully:
+
+> When analysis-only pressure is the top signal, it should either pick the next-best landable task or return a narrowed version of the analysis task that targets a specific editable file.
+
+So there are two approaches:
+A) Pick the next-best landable task from TASKS
+B) Narrow the analysis-only task to target a specific editable file
+
+Approach A seems cleaner. The idea: when analysis_only_active and no src-candidate exists, select a landable src/*.rs task from TASKS regardless of evidence matching.
+
+Let me look at which tasks have src/*.rs files:
+- "Verify and fix sub-agent API key propagation": src/tools.rs, src/agent_builder.rs, src/lib.rs (3 files)
+- "Record DeepSeek prompt cache metrics during prompt runs": src/prompt.rs, src/deepseek.rs, src/state.rs (3 files, but deepseek.rs may not exist)
+- "Improve cold-start state failure diagnostics": src/commands_state.rs, src/state.rs (2 files)
+- "Stabilize run completion guard panic test": src/state.rs (1 file)
+- "Add recovery hints for common tool-path and permission errors": src/tool_wrappers.rs (1 file)
+
+So there are several good options. The "Add recovery hints" task is the most landable (single file, tool_wrappers.rs).
+
+Let me implement this:
+
+1. After building candidates and sorting by src-first, if `analysis_only_active` and no candidate has src files, inject a landable fallback candidate.
+
+Actually, let me think about this more carefully. The task says "Self-tests cover the path where ANALYSIS_ONLY_TASK_TITLE would have been selected but a landable alternative is chosen instead." So I need to create a test case where:
+- Assessment has analysis-only pressure metrics (e.g., `task_no_edit_revert_count=1`)
+- But no src/*.rs tasks match the evidence keys
+- The function should select a landable src/*.rs task instead of the analysis-only task
+
+Let me implement:
+
+```python
+# After the candidate loop (around line 773), if analysis_only_active and no
+# candidate has src/*.rs files, inject a landable fallback.
+
+if analysis_only_active:
+    has_src_candidate = any(_has_src_files(c) for c in candidates)
+    if not has_src_candidate:
+        # No landable src/*.rs candidate matched — inject the smallest
+        # landable src/*.rs task as a recovery seed.
+        landable = _landable_recovery_candidate()
+        if landable:
+            candidates.insert(0, landable)
+```
+
+Wait, but we also need to shift the analysis-only task lower. Actually, the sort already puts non-src tasks last. If we inject a src task at the front, the first non-contradicted src task would be selected.
+
+Hmm, but we need to be careful. The injected task might not match any evidence keys, and that's intentional — it's a recovery seed. But the test needs to show this behavior.
+
+Let me look at the actual test cases more carefully and plan my test and code changes.
+
+Let me also look at the self-tests section to understand the test patterns:
+
+The tests are in the `if args.test:` branch. Let me trace through test cases that touch analysis-only:
+
+Test 7 (line 1371): Stale seed — analysis-only contradicted when made landable. Assessment has analysis-only key but "made landable" → contradicted.
+
+Test 8 (line 1398): Day-prefixed line with task key → contradicted
+
+Test 9 (line 1418): Obsolete-seed contradiction
+
+Test 10 (line 1445): All TASKS entries have no protected files
+Test 11 (line 1452): Fallback when no evidence matches
+Test 12 (line 1458): All TASKS have existing files
+
+So there's no test that verifies: when analysis-only pressure is active and only the analysis-only task matches, a landable src/*.rs alternative is selected instead.
+
+Now let me plan my implementation:
+
+1. Add `_landable_recovery_candidate()` function that returns the smallest src/*.rs task
+2. In `choose_task`, after building candidates and before the selection loop, if analysis_only_active and no src candidate exists, inject the landable recovery candidate
+3. Add a test case that verifies this behavior
+
+Let me now write the code.
+
+Actually, let me reconsider. The task says: "The selected task Files list names at most 3 editable source files (not scripts/, not .github/)." 
+
+Looking at the candidates in TASKS that are src/*.rs:
+- "Stabilize run completion guard panic test": src/state.rs (1 file) — smallest
+- "Add recovery hints for common tool-path and permission errors": src/tool_wrappers.rs (1 file) — also 1 file
+
+The "run completion guard" task has keys that match specific test failures. The "tool-path recovery" task has broader keys. Either could work as a landable fallback.
+
+But actually, I should pick the most landable one. The tool-path recovery task (tool_wrappers.rs) is the simplest — single file, well-defined scope. Let me use that as the recovery candidate.
+
+Wait, but the recovery candidate should ideally match *some* evidence. Let me think about what makes a good recovery candidate:
+
+When analysis-only pressure fires, it means tasks are being selected but not producing source changes. The recovery should be: pick the smallest, most landable src/*.rs task regardless of evidence match. The tool-path recovery task is perfect: single file, clear objective, no structural changes.
+
+Let me implement this now. Here's my plan:
+
+1. Add function `_landable_recovery_task()` → returns the tool-path recovery task dict
+2. In `choose_task`, after candidate filtering and sorting, if `analysis_only_active` and no candidate has src/*.rs files, prepend the recovery task
+3. Add a test case: assessment with analysis-only pressure, no src tasks matching evidence → selects landable recovery instead
+
+Let me also check: does the current code already have guards against the analysis-only task being self-selected? Yes: `_analysis_only_seed_recently_blocked` (line 743-744) prevents reselection when it's already been blocked. But what about when it hasn't been blocked yet but analysis-only pressure is active?
+
+The critical scenario: assessment shows `task_no_edit_revert_count=1` or `reverted_no_edit=1` (analysis-only pressure), but no src/*.rs task keys match the evidence. Only the analysis-only task's keys match. In this case, we'd select the analysis-only task (scripts only), which doesn't produce cargo-testable changes.
+
+This is exactly the scenario the task wants to fix.
+
+Let me implement it now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow. Let me look at the specific scenario:
+
+When `analysis_only_active` is True (metrics like `task_no_edit_revert_count=1`), and only the analysis-only task keys match the assessment evidence, the code:
+
+1. Builds candidates: only the analysis-only task (no src/*.rs files)
+2. Sorts by src-first (no change, only one candidate)
+3. Returns the analysis-only task if not contradicted
+
+The fix: after building candidates, if `analysis_only_active` and no candidate has src/*.rs files, inject a landable recovery task.
+
+Let me now also check `_has_analysis_only_pressure` — it checks for `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`. These need to be present as metrics (key=value) in the assessment.
+
+Let me now write the test first, then the implementation change.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the flow clearly. The issue is in `choose_task`: when analysis-only pressure fires (`analysis_only_active=True`) and the only matching candidates are script-only tasks, the function still selects them. The fix needs to inject a landable src/*.rs recovery candidate.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (65ms)
+  ▶ todo ✓ (156ms)
+  ▶ todo ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first. I'll add a test case after the existing analysis-only tests that verifies: when analysis-only pressure is active (metrics show no-edit reverts), and only the analysis-only task matches evidence keys, the function selects a landable src/*.rs task instead.
+
+Let me find a good insertion point in the test section.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+Let me first write the test. I'll add it after test 9 (around line 1444) in the self-test section.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1440..1460 ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test. I'll add it right after test 9 (before the "all tasks have no protected files" check). The test should:
+
+1. Create an assessment with analysis-only pressure metrics but no src/*.rs task keys matching
+2. Verify that choose_task returns a landable src/*.rs task, not the analysis-only task
+
+Here's my test plan:
+
+```python
+        # Test 10: Analysis-only pressure selects landable src/*.rs recovery
+        # when no src-candidate matches the evidence keys directly.
+        assessment = """# Assessment
+
+## Current Evidence
+task_no_edit_revert_count=1
+reverted_no_edit=1
+
+## Bugs / Friction Found
+no-edit revert pressure from prior session. No other actionable bugs.
+"""
+        task = choose_task(assessment)
+        # Should NOT select the analysis-only task (scripts only)
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"Analysis-only pressure should select landable recovery, "
+            f"not the analysis-only task itself: got {task['title']}"
+        )
+        # Should select a task with src/*.rs files
+        assert _has_src_files(task), (
+            f"Analysis-only pressure should select a task with src/*.rs files, "
+            f"got files: {task.get('files')}"
+        )
+        assert not _has_protected_files(task), (
+            f"Selected task has protected files: {task.get('files')}"
+        )
+        assert _task_file_count(task) <= 3, (
+            f"Selected task has too many files: {task.get('files')}"
+        )
+```
+
+And for the implementation, I need to add after the candidate sorting:
+
+```python
+    # When analysis-only pressure is active and no candidate has src/*.rs
+    # files, inject the smallest landable src/*.rs recovery task to prevent
+    # another analysis-only/no-edit cycle.
+    if analysis_only_active and candidates and not any(_has_src_files(c) for c in candidates):
+        landable = _landable_recovery_task()
+        if landable and _candidate_files_exist(landable):
+            # Prepend so it's checked first; the contradiction check still
+            # applies so if the recovery task is itself contradicted we
+            # fall through to the original candidates.
+            candidates.insert(0, landable)
+```
+
+And the recovery task function:
+
+```python
+def _landable_recovery_task() -> dict[str, object] | None:
+    """Return the smallest landable src/*.rs task from TASKS."""
+    # Find the task with the fewest src/*.rs files
+    src_tasks = [t for t in TASKS if _has_src_files(t)]
+    if not src_tasks:
+        return None
+    src_tasks.sort(key=_task_file_count)
+    # Prefer the tool-path recovery task (1 file, well-scoped) or the
+    # run-completion-guard task (1 file) as the most landable options.
+    for title in (
+        "Add recovery hints for common tool-path and permission errors",
+        "Stabilize run completion guard panic test",
+    ):
+        for t in src_tasks:
+            if t["title"] == title:
+                return dict(t)
+    return dict(src_tasks[0])
+```
+
+Wait, I need to be careful. The `_landable_recovery_task` needs to return a copy, not the original dict, because `choose_task` mutates it (adding validated_against_assessment, etc.).
+
+Also, I need to make sure the recovery task is NOT filtered out by the later checks (protected files, file existence). The tool-path recovery task has `src/tool_wrappers.rs` — not in PROTECTED_IMPLEMENTATION_FILES, and it should exist.
+
+But wait — what if the tool-path recovery task IS contradicted? Then we fall through to the original candidates and end up with the analysis-only task again. That's fine — the task description says "it should either pick the next-best landable task or return a narrowed version of the analysis task that targets a specific editable file." If all landable tasks are contradicted, the analysis-only task (with contradiction annotation) is the right answer.
+
+Actually, let me reconsider. The task says:
+> `choose_task` returns a task with Files containing no entries from PROTECTED_IMPLEMENTATION_FILES when analysis-only pressure is the dominant signal.
+
+The current code already filters out protected files (line 745-746). So the analysis-only task itself has no protected files (its files are scripts/preseed_session_plan.py, etc. — not in PROTECTED_IMPLEMENTATION_FILES). The issue is about selecting landable src/*.rs tasks vs script-only tasks.
+
+Let me also consider the "narrowed version" approach: if no src task is available, narrow the analysis-only task to target a specific editable file. But the analysis-only task already targets specific script files (preseed_session_plan.py, state_graph_tools.py, test_state_graph_tools.py). None are protected, but none are src/*.rs either.
+
+I think the right approach is: inject the recovery task. If it's contradicted (unlikely since these are generic tasks), fall through to the original candidates. The test should focus on the happy path where the recovery task is selected.
+
+Let me also think about edge cases:
+- What if the assessment explicitly says "no src bugs" or similar? Then the recovery task won't match any evidence keys (line 734: `if not any(key in lower for key in task["keys"])`). Wait — the recovery task is injected AFTER the key-matching loop! So it would be prepended to candidates without going through the key check. Good.
+
+Let me now write the code.
+
+One more thing: I also need to make sure the recovery task isn't filtered later. The `_has_protected_files` check happens during the initial candidate loop (line 745-746), not during the injected recovery. The `_candidate_files_exist` check also happens during the loop (line 747). So when we inject the recovery task, we need to ensure it wouldn't have been filtered by those checks. I'll verify `_candidate_files_exist` in the injection code.
+
+Let me also check: does the tool-path recovery task exist in git?
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the test and code changes.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1444..1456 ✓ (85ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test. I'll insert it right after line 1444 (after the test 9 assertion block and before the protected-files loop).
+
+And for the implementation, I need to:
+1. Add `_landable_recovery_task()` function
+2. Modify `choose_task` to inject the recovery when analysis_only_active and no src candidates
+
+Let me plan the edit_file calls.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test. I'll insert it right after the test 9 assertions (line 1444) and before the protected-files checks:
+  +         )
+  +         # Test 10: Analysis-only pressure selects landable src/*.rs recovery
+  +         # when no src-candidate matches the evidence keys directly.
+  +         # Regression: the analysis-only task (scripts only) should not be
+  +         # selected when analysis-only pressure fires — a landable src/*.rs
+  +         # task must be chosen instead to break the no-edit cycle.
+  +         assessment = """# Assessment
+  + 
+  + ## Current Evidence
+  + task_no_edit_revert_count=1
+  + reverted_no_edit=1
+  + 
+  + ## Bugs / Friction Found
+  + no-edit revert pressure from prior session. No other actionable bugs.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable recovery, "
+  +             f"not the analysis-only task itself: got {task['title']}"
+  +         )
+  ... (11 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 31 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 31 lines)
+  +         )
+  +         # Test 10: Analysis-only pressure selects landable src/*.rs recovery
+  +         # when no src-candidate matches the evidence keys directly.
+  +         # Regression: the analysis-only task (scripts only) should not be
+  +         # selected when analysis-only pressure fires — a landable src/*.rs
+  +         # task must be chosen instead to break the no-edit cycle.
+  +         assessment = """# Assessment
+  + 
+  + ## Current Evidence
+  + task_no_edit_revert_count=1
+  + reverted_no_edit=1
+  + 
+  + ## Bugs / Friction Found
+  + no-edit revert pressure from prior session. No other actionable bugs.
+  + """
+  +         task = choose_task(assessment)
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable recovery, "
+  +             f"not the analysis-only task itself: got {task['title']}"
+  +         )
+  ... (11 more lines)
+ ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test added. Now let me add the `_landable_recovery_task` function and modify `choose_task`. First, let me add the recovery function near the other helper functions.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `_landable_recovery_task` helper function. I'll place it right before `choose_task`:
+            if path and path.startswith("src/") and path.endswith(".rs"):
+                return True
+        return False
+  + 
+  + 
+  + def _landable_recovery_task() -> dict[str, object] | None:
+  +     """Return the smallest landable src/*.rs task from TASKS.
+  + 
+  +     Used when analysis-only pressure fires but no src/*.rs candidate matched
+  +     the evidence keys.  Returns a shallow copy so choose_task can annotate it.
+  +     """
+  +     src_tasks = [t for t in TASKS if _has_src_files(t) and not _has_protected_files(t)]
+  +     if not src_tasks:
+  +         return None
+  +     # Prefer single-file tasks as the most landable
+  +     src_tasks.sort(key=_task_file_count)
+  +     for title in (
+  +         "Add recovery hints for common tool-path and permission errors",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (11 → 32 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (11 → 32 lines)
+            if path and path.startswith("src/") and path.endswith(".rs"):
+                return True
+        return False
+  + 
+  + 
+  + def _landable_recovery_task() -> dict[str, object] | None:
+  +     """Return the smallest landable src/*.rs task from TASKS.
+  + 
+  +     Used when analysis-only pressure fires but no src/*.rs candidate matched
+  +     the evidence keys.  Returns a shallow copy so choose_task can annotate it.
+  +     """
+  +     src_tasks = [t for t in TASKS if _has_src_files(t) and not _has_protected_files(t)]
+  +     if not src_tasks:
+  +         return None
+  +     # Prefer single-file tasks as the most landable
+  +     src_tasks.sort(key=_task_file_count)
+  +     for title in (
+  +         "Add recovery hints for common tool-path and permission errors",
+  +         "Stabilize run completion guard panic test",
+  +     ):
+  ... (7 more lines)
+ ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to modify `choose_task` to inject the landable recovery when analysis_only_active and no src candidates exist. Let me find the exact location after the candidate sort and before the selection loop.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me modify `choose_task` to inject the recovery task when analysis-only pressure fires but no src candidates exist. I need to insert code after the candidate sort and before the selection loop:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:786..816 ✓ (107ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the recovery injection after line 792 (after the sort, before the selection loop):
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When analysis-only pressure is active and every candidate is script-only
+  +     # (no src/*.rs files), inject the smallest landable src/*.rs recovery task
+  +     # to break the no-edit cycle instead of reselecting a script-only seed.
+  +     if analysis_only_active and candidates and not any(
+  +         _has_src_files(c) for c in candidates
+  +     ):
+  +         landable = _landable_recovery_task()
+  +         if landable and _candidate_files_exist(landable):
+  +             candidates.insert(0, landable)
+    
+        for candidate in candidates:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 15 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 15 lines)
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When analysis-only pressure is active and every candidate is script-only
+  +     # (no src/*.rs files), inject the smallest landable src/*.rs recovery task
+  +     # to break the no-edit cycle instead of reselecting a script-only seed.
+  +     if analysis_only_active and candidates and not any(
+  +         _has_src_files(c) for c in candidates
+  +     ):
+  +         landable = _landable_recovery_task()
+  +         if landable and _candidate_files_exist(landable):
+  +             candidates.insert(0, landable)
+    
+        for candidate in candidates:
+ ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the self-tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the self-tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (224ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a test that expects `choose_task` to return the analysis-only task but now gets the tool-path recovery task instead. Let me find which test this is (around line 1049).
+────────────────────────────────────────────────────────────────────────────────
+
+I need to find and update the test that expects the analysis-only task to be selected. Let me look at the failing test:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1030..1070 ✓ (111ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — there are existing tests (around lines 1048-1069) that explicitly test for analysis-only pressure selecting `ANALYSIS_ONLY_TASK_TITLE`. These tests need to be updated because now the behavior should be: analysis-only pressure selects a landable src/*.rs task instead.
+
+But wait — let me re-read the task description again:
+
+> When analysis-only pressure is the top signal, it should either pick the next-best landable task or return a narrowed version of the analysis task that targets a specific editable file.
+
+So the old behavior (selecting ANALYSIS_ONLY_TASK_TITLE) should be replaced. Let me look more carefully at these tests:
+
+Test at line 1041-1052: Assessment has `task_analysis_only_attempt_count=2`, `task_no_edit_revert_count=1`, and `state_run_incomplete_count=2`. The old expectation was `ANALYSIS_ONLY_TASK_TITLE`. Now it should be a landable src/*.rs task.
+
+But wait — this test has lifecycle metrics (`state_run_incomplete_count=2`), so the lifecycle task's keys might also match. Let me trace through: `task_analysis_only_attempt_count` matches ANALYSIS_ONLY task keys. `task_no_edit_revert_count` also matches. `state_run_incomplete_count` matches LIFECYCLE task keys.
+
+But lifecycle task gets skipped when analysis_only_active (line 773: `if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present: if analysis_only_active: continue`). So the only candidate is the analysis-only task. Now with the injection, we'd get the tool-path recovery task instead.
+
+Similarly, test at line 1054-1069: Assessment has `reverted_no_edit=1`. Old expectation was ANALYSIS_ONLY_TASK_TITLE. Now should be landable src task.
+
+Let me update these tests to expect the landable recovery task instead.
+────────────────────────────────────────────────────────────────────────────────
+
+I see — there are existing tests that expect analysis-only pressure to select `ANALYSIS_ONLY_TASK_TITLE`. These need to be updated to match the new behavior (landable src/*.rs task instead). Let me update them:
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+  +         # Analysis-only pressure now selects a landable src/*.rs recovery
+  +         # task instead of the script-only analysis task itself.
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable src task, "
+  +             f"not analysis-only task: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, "
+  +             f"got: {task.get('files')}"
+  +         )
+            assert "scripts/evolve.sh" not in str(task["files"]), task
+            text = render_task(task, "107", "21:55")
+            assert "task_analysis_only_attempt_count" in text, text
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 14 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 14 lines)
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+  +         # Analysis-only pressure now selects a landable src/*.rs recovery
+  +         # task instead of the script-only analysis task itself.
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable src task, "
+  +             f"not analysis-only task: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, "
+  +             f"got: {task.get('files')}"
+  +         )
+            assert "scripts/evolve.sh" not in str(task["files"]), task
+            text = render_task(task, "107", "21:55")
+            assert "task_analysis_only_attempt_count" in text, text
+ ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the second test case (around line 1067-1069):
+────────────────────────────────────────────────────────────────────────────────
+
+
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+  +         # Analysis-only pressure selects landable src/*.rs recovery, not
+  +         # the analysis-only task itself.
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable src task, "
+  +             f"not analysis-only task: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, "
+  +             f"got: {task.get('files')}"
+  +         )
+            assert task["title"] != "Improve cold-start state failure diagnostics", task
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 12 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 12 lines)
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+  +         # Analysis-only pressure selects landable src/*.rs recovery, not
+  +         # the analysis-only task itself.
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"Analysis-only pressure must select landable src task, "
+  +             f"not analysis-only task: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, "
+  +             f"got: {task.get('files')}"
+  +         )
+            assert task["title"] != "Improve cold-start state failure diagnostics", task
+ ✓ (146ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if there are other tests that expect ANALYSIS_ONLY_TASK_TITLE to be selected:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for any other tests that might expect `ANALYSIS_ONLY_TASK_TITLE` as selected:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ANALYSIS_ONLY_TASK_TITLE, task' in scripts/preseed_session_plan.py ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's one more at line 1126. Let me check it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1110..1140 ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two more tests to update. Let me also look at lines 1100-1115 to understand the context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1090..1120 ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to update three more tests that expect `ANALYSIS_ONLY_TASK_TITLE` to be selected. These tests all have analysis-only pressure (reverted_no_edit, task_analysis_only_attempt_count) but no other matching src-candidates. With the new behavior, they should select the recovery task instead.
+
+Let me update them all:
+────────────────────────────────────────────────────────────────────────────────
+
+I need to update all three remaining tests. Let me handle them:
+  -         # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
+  -         # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+  +         # --- Analysis-only pressure: reverted_no_edit selects landable recovery ---
+  +         # reverted_no_edit alone (no lifecycle metrics) → landable src/*.rs task
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"reverted_no_edit=4 should select landable src task, not analysis-only: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"reverted_no_edit should select src/*.rs task, got: {task.get('files')}"
+            )
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (43 → 52 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (43 → 52 lines)
+  -         # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
+  -         # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+  +         # --- Analysis-only pressure: reverted_no_edit selects landable recovery ---
+  +         # reverted_no_edit alone (no lifecycle metrics) → landable src/*.rs task
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"reverted_no_edit=4 should select landable src task, not analysis-only: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"reverted_no_edit should select src/*.rs task, got: {task.get('files')}"
+            )
+    
+  -         # --- Analysis-only pressure + lifecycle metrics: analysis-only wins ---
+  ... (40 more lines)
+ ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the self-tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the self-tests again:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (223ms)
+
+

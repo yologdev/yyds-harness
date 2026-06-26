@@ -1,0 +1,783 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evaluator feedback:
+
+1. The verifier `python3 scripts/preseed_session_plan.py --test` fails at line 1061 with an `AssertionError`
+2. The test asserts `"task_analysis_only_attempt_count" in text` but the code change now selects a landable recovery task whose rendered evidence does not contain that string
+3. The test was not updated to match the new behavior
+
+So the fix involves reading the test file, understanding what was changed, and updating the test to match the new expected behavior. Let me start by reading the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py:1050..1080  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -30 ✓ (16ms)
+ ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failure is clear — line 1061 checks for `"task_analysis_only_attempt_count" in text` but the task selected is a landable recovery task that doesn't include that string. I need to read the full test to understand the intent.
+
+Let me first understand what `choose_task` does and what the test expects. The test on lines 1045-1061 is asserting that when analysis-only pressure is present, a landable task is selected instead of the analysis-only task. But line 1061 still checks that the rendered text contains `"task_analysis_only_attempt_count"` — this seems like a stale assertion.
+
+Let me read more context around the test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1030..1110 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. The test at line 1061 asserts that `"task_analysis_only_attempt_count" in text` should be in the rendered task text. But since the code now selects a landable recovery task instead of the analysis-only task, the rendered evidence doesn't contain that string anymore.
+
+Let me understand what happens: the test at line 1061 was added when the `choose_task` function was modified to select landable tasks over analysis-only tasks. But line 1061 is a leftover assertion that expects the old behavior (where the analysis-only task was selected and its evidence contained `task_analysis_only_attempt_count`).
+
+Now that the code correctly selects a landable task, the rendered text won't contain `task_analysis_only_attempt_count`. The assertion needs to be removed or changed.
+
+Let me look at what `render_task` does to understand what the rendered text might look like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def render_task' in scripts/preseed_session_plan.py ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the render_task function and also the choose_task function to understand the flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:953..1033  ▶ search 'def choose_task' in scripts/preseed_session_plan.py ✓ (12ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the issue better. The test at line 1061 expects `"task_analysis_only_attempt_count" in text` — this string comes from the evidence of the analysis-only task. But now `choose_task` selects a landable recovery task instead. The test assertion at line 1061 is wrong — it should check for something in the landable task's rendered text, not the analysis-only task's evidence.
+
+Let me see what task `choose_task` returns for the assessment at line 1041, and what the rendered text looks like for that task.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (25 lines) ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the problem clearly. The `choose_task` function correctly selects a landable recovery task (`"Add recovery hints for common tool-path and permission errors"` with `Files: src/tool_wrappers.rs`) instead of the analysis-only task. But the test at line 1061 still checks for `"task_analysis_only_attempt_count" in text` — which was the old evidence from the analysis-only task.
+
+The fix is to update the test assertion at line 1061 to match the new behavior. The landable recovery task has `"task_no_edit_revert_count"` or `"reverted"` related evidence, not `"task_analysis_only_attempt_count"`.
+
+Let me look at what would be a reasonable assertion. The test should verify that:
+1. The task is not the analysis-only task (already checked at line 1051)
+2. The task has src files (already checked at lines 1055-1058)
+3. The rendered text contains something relevant from the assessment evidence — in this case, `"task_no_edit_revert_count"` or `"reverted"` would be good since that's the evidence that drove the selection
+
+Wait, let me re-read the assessment text more carefully:
+
+```
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2)
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2)
+```
+
+The rendered task has evidence: "Agents are hitting tool failures without adequate recovery guidance. A small, concrete src/*.rs improvement is more landable than script-level seed repair and directly raises task success rate."
+
+So `"task_no_edit_revert_count"` is not in the rendered text either. The rendered text is the task's `why` field, not the assessment evidence directly.
+
+Let me look at what the second test (line 1076-1089) does — it checks `"reverted_no_edit" in text` which matches the task's evidence/why field. Let me check what the landable task rendered for that assessment looks like.
+
+Actually, looking at the test structure more carefully:
+
+Test 1 (lines 1041-1061): assessment with `task_analysis_only_attempt_count=2`, `task_no_edit_revert_count=1`, `state_run_incomplete_count=2`
+- Lines 1051-1058: asserts task is not analysis-only, has src files, no protected files → PASS
+- Line 1061: asserts `"task_analysis_only_attempt_count" in text` → FAIL because the selected task no longer contains this
+
+Test 2 (lines 1063-1089): assessment with `reverted_no_edit=1`, `verified task success rate 0.667`
+- Lines 1079-1087: asserts task is not analysis-only, has src files, not the cold-start task → PASS
+- Line 1089: asserts `"reverted_no_edit" in text` → need to check if this passes
+
+The fix for Test 1 line 1061: The assertion should check something that IS in the rendered text of the landable recovery task. Looking at the output above, the rendered text contains "src/tool_wrappers.rs", "recovery hints", "tool failures", etc. 
+
+The best approach would be:
+1. Either remove the assertion at line 1061 entirely (since lines 1051-1058 already validate the task is landable)
+2. Or change it to check something in the landable task's rendered text
+
+Looking at Test 2 line 1089 which uses `"reverted_no_edit" in text` — let me check if that passes.
+
+Let me first check what task is selected for Test 2:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (32 lines) ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so Test 2 line 1089 also fails! `"reverted_no_edit" in text` is False because the selected task is the "Add recovery hints for common tool-path and permission errors" which renders with its own `why` field, not the assessment evidence.
+
+Let me check Tests 3 and 4 too:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (19 lines) ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full test section to understand all the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1091..1211 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the exact failing tests:
+
+1. **Line 1061**: `assert "task_analysis_only_attempt_count" in text` — This is checking the rendered task text. The test was likely written assuming the old behavior where the task evidence would mention `task_analysis_only_attempt_count`. But now `choose_task` returns a landable recovery task, and its rendered text doesn't contain that string. This assertion needs to be changed or removed.
+
+2. **Line 1089**: `assert "reverted_no_edit" in text` — Same issue, the landable task's rendered text doesn't contain `reverted_no_edit`.
+
+But wait — the evaluator only mentions failure at line 1061. Let me re-run the test to see all failures.
+
+Let me think about what the assertions should be changed to. The key insight from the test comments is:
+- Line 1049 comment: "Analysis-only pressure now selects a landable src/*.rs recovery task instead of the script-only analysis task itself."
+- Line 1077 comment: "Analysis-only pressure selects landable src/*.rs recovery, not the analysis-only task itself."
+
+So the intent of the tests at lines 1061 and 1089 is to verify that the rendered task text contains evidence that's relevant to the selection. Since the landable task is "Add recovery hints for common tool-path and permission errors" with files `src/tool_wrappers.rs`, we should check for something that appears in that task's rendered text.
+
+Looking at the rendered output earlier, the task's rendered text contains:
+- `"src/tool_wrappers.rs"`
+- `"recovery hints"`
+- `"tool failures"`
+- `"tool-path"`
+
+The tests at lines 1061 and 1089 should be updated to check for something that's actually in the rendered text. Let me look at what the task's `why` field contains vs what we'd expect.
+
+Actually, let me re-think. The test at line 1061 was likely written alongside the code change that fixed `choose_task`. The developer added the test but forgot to update line 1061 to match the new behavior. The simplest fix is:
+
+For line 1061: Replace `"task_analysis_only_attempt_count"` with something that IS in the landable task's rendered text. Since the task is "Add recovery hints for common tool-path and permission errors", we could check for `"src/tool_wrappers.rs"` or `"recovery"` in the text.
+
+For line 1089: Same thing — check for something in the landable task's text.
+
+But wait, I need to think about what makes a good assertion here. The test should verify that the rendered task:
+1. Is not the analysis-only task (already checked)
+2. Has src files (already checked)
+3. The rendered text is meaningful for the selected task
+
+Let me check what test assertions would be most robust. Looking at the task, `"src/tool_wrappers.rs"` is unique and stable. `"recovery"` is also good. `"tool failure"` or `"tool-path"` too.
+
+Actually wait — let me re-examine. The test at line 1061 checks `text = render_task(task, ...)` and the task is a recovery task. The assertion `"task_analysis_only_attempt_count" in text` was checking that the evidence in the rendered task mentions the analysis-only count. But now the task is different, so this assertion is stale.
+
+The simplest correct fix is to replace the assertion with something that checks the rendered text of the selected task. Since the selected task is "Add recovery hints for common tool-path and permission errors" with `Files: src/tool_wrappers.rs`, I can check for `"src/tool_wrappers.rs"` in the text.
+
+Similarly for line 1089, check for `"src/tool_wrappers.rs"` instead of `"reverted_no_edit"`.
+
+But hold on — I should check if the rendered text for the second test case (line 1089) also picks the same task...
+
+Looking at Test 2:
+- Assessment has `reverted_no_edit=1` and task success rate 0.667
+- Task selected: "Add recovery hints for common tool-path and permission errors" (same as Test 1)
+
+So both tests pick the same recovery task. The assertions should check for something stable in that task's rendered output.
+
+Let me think about what the best assertion is:
+
+For line 1061: `assert "src/tool_wrappers.rs" in text, text` — this verifies that the rendered task includes the file path for the landable task.
+
+For line 1089: Same — `assert "src/tool_wrappers.rs" in text, text`
+
+But actually, maybe I should just remove these assertions since lines 1051-1058 and 1079-1087 already fully validate the task selection. The `in text` assertions were checking that the rendered output contained evidence from the old analysis-only task, which is the opposite of what we want now.
+
+Let me keep it simple: remove the stale assertions at lines 1061 and 1089. The assertions at 1051-1058 and 1079-1087 already validate:
+- The task is not the analysis-only task
+- The task has src files
+- The task has no protected files
+
+Let me also run the test to see if there are other failures beyond what the evaluator reported.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run the full test to see all failures, and also look at the `choose_task` function to understand the selection logic:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ read scripts/preseed_session_plan.py:747..947 ✓ (6ms)
+ ✓ (115ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `choose_task` function correctly selects a landable recovery task when analysis-only pressure is active. The issue is only in the tests — two stale assertions at lines 1061 and 1089 that check for strings from the old analysis-only task evidence.
+
+The fix is straightforward: update the assertions at lines 1061 and 1089 to check for something that's actually in the rendered text of the landable recovery task.
+
+Looking at the rendered text from the test run, the landable task's rendered text contains:
+- `"src/tool_wrappers.rs"` — the file path
+- `"recovery hints"` 
+- `"tool-path"`
+
+The most stable thing to check for would be `"src/tool_wrappers.rs"` since that's the actual file being edited.
+
+But wait — I should also check if line 1089 assertion passes or fails. Let me look at the test output more carefully. The evaluator only mentioned line 1061, which means the test execution stopped at line 1061 (first assertion error). Let me fix both.
+
+Actually, let me re-read the assertions in context:
+
+Line 1061: `assert "task_analysis_only_attempt_count" in text, text`
+- The comment above says: "Analysis-only pressure now selects a landable src/*.rs recovery task instead of the script-only analysis task itself."
+- This assertion was checking that the old analysis-only task's evidence appears in the rendered text. But now a landable task is selected instead.
+- Fix: change to assert something in the landable task's text, like `"src/tool_wrappers.rs" in text` or `"recovery" in text`
+
+Line 1089: `assert "reverted_no_edit" in text, text`
+- The comment: "Analysis-only pressure selects landable src/*.rs recovery, not the analysis-only task itself."
+- Same issue.
+- Fix: change to assert something in the landable task's text
+
+Let me also check what `_landable_recovery_task()` returns and what `_has_src_files` does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _landable_recovery_task' in scripts/preseed_session_plan.py  ▶ search 'def _has_src_files' in scripts/preseed_session_plan.py ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those functions to understand what the recovery task is.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:716..746 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The `_landable_recovery_task()` returns either "Add recovery hints for common tool-path and permission errors" (files: `src/tool_wrappers.rs`) or "Stabilize run completion guard panic test" (files: `src/state.rs`), in that order of preference.
+
+The fix is to update the stale assertions:
+
+1. **Line 1061**: `assert "task_analysis_only_attempt_count" in text, text` → should check for something in the landable task's rendered text. `"src/tool_wrappers.rs"` is stable and present.
+
+2. **Line 1089**: `assert "reverted_no_edit" in text, text` → same fix. `"src/tool_wrappers.rs"` in text.
+
+The assertions at lines 1051-1058 and 1079-1087 already validate the key behaviors (not analysis-only, has src files, no protected files). The `in text` assertions should verify the rendered task text is correct for the selected task.
+
+Let me make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue. The `choose_task` function correctly selects a landable recovery task ("Add recovery hints for common tool-path and permission errors" with `src/tool_wrappers.rs`) when analysis-only pressure is active. But two test assertions (lines 1061 and 1089) still check for strings from the old analysis-only task's rendered evidence, which no longer appears since a different task is selected.
+
+The fix: update those assertions to check for text that's actually in the landable recovery task's rendered output.
+            text = render_task(task, "107", "21:55")
+  -         assert "task_analysis_only_attempt_count" in text, text
+  +         assert "src/tool_wrappers.rs" in text, text
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 2 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 2 lines)
+            text = render_task(task, "107", "21:55")
+  -         assert "task_analysis_only_attempt_count" in text, text
+  +         assert "src/tool_wrappers.rs" in text, text
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix line 1089 — same issue. The rendered text for the landable task doesn't contain `"reverted_no_edit"`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            text = render_task(task, "110", "18:26")
+  -         assert "reverted_no_edit" in text, text
+  +         assert "src/tool_wrappers.rs" in text, text
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 2 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 2 lines)
+            text = render_task(task, "110", "18:26")
+  -         assert "reverted_no_edit" in text, text
+  +         assert "src/tool_wrappers.rs" in text, text
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the fix by running the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's another failure at line 1176. Let me look at that test. The test expected that `reverted_no_edit` alone would still select the analysis-only task. But now with analysis-only pressure active, the recovery task is injected even for that case. Let me read the test.
+
+Looking at the earlier output:
+```
+        # --- Evidence-aware re-ranking: still picks scripts task when no src candidate matches ---
+        # When reverted_no_edit pressure exists but only the analysis-only task's keys match,
+        # the analysis-only task is still selected (no src candidate to prefer).
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+            f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
+        )
+```
+
+The comment says "When reverted_no_edit pressure exists but only the analysis-only task's keys match, the analysis-only task is still selected (no src candidate to prefer)." 
+
+But now the code at lines 797-802 injects the landable recovery task when analysis-only pressure is active and all candidates are script-only. So the behavior changed — and the test needs to be updated.
+
+The question is: was this change intentional? Looking at the code:
+
+```python
+    if analysis_only_active and candidates and not any(
+        _has_src_files(c) for c in candidates
+    ):
+        landable = _landable_recovery_task()
+        if landable and _candidate_files_exist(landable):
+            candidates.insert(0, landable)
+```
+
+This injects the landable recovery task when NO candidate has src files. The test at line 1167 expected the analysis-only task to still be selected in this case, but the new code intentionally injects a recovery task.
+
+The comment at line 1167 says "still picks scripts task when no src candidate matches" — this is now stale. The new behavior is to inject a landable src task even when no src candidate matched.
+
+The fix should update the test assertion to match the new behavior. The test should now expect that the landable recovery task is selected instead of the analysis-only task.
+
+Let me read lines 1167-1178 more carefully and update them.
+────────────────────────────────────────────────────────────────────────────────
+
+Another test at line 1176 expects the old behavior. Let me read that test block:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1167..1197 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test at line 1167-1178: The comment says "still picks scripts task when no src candidate matches". But the new code at lines 797-802 injects a recovery task. This test needs to be updated to match the new behavior.
+
+The correct expectation now is: when `reverted_no_edit=3` and only the analysis-only task's keys match, the landable recovery task is injected and selected instead. So the assertion should be:
+
+```python
+assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, ...
+assert _has_src_files(task), ...
+```
+
+Let me also check: does line 1186-1189 have the same issue? That test has `task_no_edit_revert_count=3` — let me check if `_has_analysis_only_pressure` treats that as analysis-only pressure.
+
+Let me look at `_has_analysis_only_pressure`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:681..701 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full list:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:674..682 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_ANALYSIS_ONLY_METRICS` includes `task_no_edit_revert_count` and `reverted_no_edit`. Both the test at line 1167 (`reverted_no_edit=3`) and line 1180 (`task_no_edit_revert_count=3`) will trigger analysis-only pressure.
+
+For line 1176: The assessment has `reverted_no_edit=3`. The `reverted_no_edit` key is checked in `_has_analysis_only_pressure`. If `reverted_no_edit` is in the metrics (value > 0), analysis_only_active is True. Then at line 797-802, if no candidates have src files, the landable recovery task is injected. 
+
+But wait — let me check if the analysis-only task's keys match the assessment. The assessment is just `- Force analysis-only attempts into action (reverted_no_edit=3)`. The analysis-only task has some keys — let me find them.
+
+Let me search for the ANALYSIS_ONLY_TASK_TITLE in the TASKS list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (13 lines) ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the analysis-only task's keys match `reverted_no_edit=3`. The task is script-only (no src files). When `analysis_only_active` is True and all candidates are script-only, the code at lines 797-802 injects the landable recovery task.
+
+The test at line 1167 says "still picks scripts task when no src candidate matches" — this comment is now stale. The new behavior intentionally injects a landable recovery task. So this test needs to be updated to expect the new behavior.
+
+Let me update lines 1167-1178 to reflect the new behavior. The test should assert that when only the analysis-only task matches, the landable recovery task is still injected and selected instead.
+
+Now let me also check line 1180 — does `task_no_edit_revert_count=3` also match the analysis-only task? Yes, it's in the keys list. So the same scenario.
+
+But wait — the test at line 1180 seems to ALSO assert the analysis-only task IS selected: `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE`. Let me check if this fails too.
+
+Actually, I only saw the failure at line 1176. Let me run the test again after fixing lines 1061 and 1089 — but actually the test stopped at line 1176 first. Let me fix that too.
+
+Let me think about which tests need updating:
+
+1. **Lines 1167-1178**: Old comment "still picks scripts task when no src candidate matches" — needs updating to expect landable recovery.
+2. **Lines 1180-1195**: Has `task_no_edit_revert_count=3`, which is in `_ANALYSIS_ONLY_METRICS`. This should also trigger analysis-only pressure and inject the recovery task. But the assertion says `== ANALYSIS_ONLY_TASK_TITLE`. Let me check...
+
+Wait, for `task_no_edit_revert_count=3`:
+- This is in `_ANALYSIS_ONLY_METRICS`, so `analysis_only_active = True`
+- The assessment has `task_no_edit_revert_count=3` which matches the analysis-only task's keys
+- The analysis-only task is script-only
+- At line 797: `analysis_only_active and candidates and not any(_has_src_files(c) for c in candidates)` → True
+- So the landable recovery task is injected as candidates[0]
+
+So yes, the test at line 1186 also expects the old behavior. But... the test stopped at line 1176. After I fix 1176, it will fail at 1186 too.
+
+Let me fix both test blocks now. For each:
+1. Update the comment to reflect new behavior
+2. Change the assertion to expect the landable recovery task
+────────────────────────────────────────────────────────────────────────────────
+
+I need to also fix the tests at lines 1167-1195. The new behavior at lines 797-802 injects a landable recovery task when analysis-only pressure is active and no src-file candidates matched. Let me check exactly what the test at line 1186 expects:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (28 lines) ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both old tests expected the analysis-only task to be selected, but the new behavior injects the landable recovery task instead. I need to update both test blocks.
+
+For the test at lines 1167-1178: Update the comment and assertion to expect the landable task.
+
+For the test at lines 1180-1195: Same — update to expect the landable task.
+
+Let me edit both.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests expect the old behavior. Now let me update them to match the new behavior where the landable recovery task is injected:
+  -         # --- Evidence-aware re-ranking: still picks scripts task when no src candidate matches ---
+  +         # --- Evidence-aware re-ranking: injects landable src task when no src candidate matches ---
+            # When reverted_no_edit pressure exists but only the analysis-only task's keys match,
+  -         # the analysis-only task is still selected (no src candidate to prefer).
+  +         # the landable recovery task is injected to break the no-edit cycle.
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"reverted_no_edit should inject landable recovery task, not analysis-only: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, got: {task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (12 → 15 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (12 → 15 lines)
+  -         # --- Evidence-aware re-ranking: still picks scripts task when no src candidate matches ---
+  +         # --- Evidence-aware re-ranking: injects landable src task when no src candidate matches ---
+            # When reverted_no_edit pressure exists but only the analysis-only task's keys match,
+  -         # the analysis-only task is still selected (no src candidate to prefer).
+  +         # the landable recovery task is injected to break the no-edit cycle.
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"reverted_no_edit should inject landable recovery task, not analysis-only: got {task['title']}"
+  +         )
+  +         assert _has_src_files(task), (
+  +             f"Landable recovery should have src/*.rs files, got: {task.get('files')}"
+            )
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the test at lines 1180-1195 for `task_no_edit_revert_count=3`:
+
+```python
+        # --- Analysis-only pressure: task_no_edit_revert_count alone triggers analysis-only task ---
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
+"""
+        task = choose_task(assessment)
+        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+            f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+        )
+        assert not _has_protected_files(task), (
+            f"Analysis-only pressure from task_no_edit_revert_count should skip protected files, got: {task['files']}"
+        )
+        assert _task_file_count(task) <= 3, (
+            f"Analysis-only pressure should select task with ≤3 files, got {_task_file_count(task)}"
+        )
+```
+
+This also needs to be updated. The comment says "triggers analysis-only task" but now it triggers landable recovery.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         # --- Analysis-only pressure: task_no_edit_revert_count alone triggers analysis-only task ---
+  +         # --- Analysis-only pressure: task_no_edit_revert_count alone injects landable recovery ---
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"task_no_edit_revert_count should inject landable recovery task, not analysis-only: got {task['title']}"
+            )
+            assert not _has_protected_files(task), (
+                f"Analysis-only pressure from task_no_edit_revert_count should skip protected files, got: {task['files']}"
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (16 → 16 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (16 → 16 lines)
+  -         # --- Analysis-only pressure: task_no_edit_revert_count alone triggers analysis-only task ---
+  +         # --- Analysis-only pressure: task_no_edit_revert_count alone injects landable recovery ---
+            assessment = """# Assessment
+    
+    ## Graph-derived Next-Task Pressure
+    - **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"task_no_edit_revert_count should inject landable recovery task, not analysis-only: got {task['title']}"
+            )
+            assert not _has_protected_files(task), (
+                f"Analysis-only pressure from task_no_edit_revert_count should skip protected files, got: {task['files']}"
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run the tests again:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Another test failure at line 1491. Let me look at that test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1480..1510 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more context around this test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1474..1504 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is Test 9. The assessment has `task_analysis_only_attempt_count=2`, which triggers analysis-only pressure. The assessment also contains `(analysis-only pressure) marked obsolete` and `no-edit revert`. 
+
+The assessment says `"Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied."`
+
+This assessment contains the ANALYSIS_ONLY_TASK_TITLE ("Make analysis-only task pressure landable") in the form of "(analysis-only pressure)" — not exactly but let me check `_analysis_only_seed_recently_blocked`.
+
+Looking at the code at line 764:
+```python
+if task["title"] == ANALYSIS_ONLY_TASK_TITLE and _analysis_only_seed_recently_blocked(lower):
+    continue
+```
+
+And `_analysis_only_seed_recently_blocked` checks:
+```python
+if ANALYSIS_ONLY_TASK_TITLE.lower() not in lower:
+    return False
+```
+
+`ANALYSIS_ONLY_TASK_TITLE.lower()` is `"make analysis-only task pressure landable"`. The assessment doesn't contain this exact string — it contains "(analysis-only pressure) marked obsolete". So `_analysis_only_seed_recently_blocked` would return False.
+
+But wait — the assessment also has `task_analysis_only_attempt_count=2` which triggers `_has_analysis_only_pressure` → True. So analysis_only_active is True. 
+
+The analysis-only task matches (its keys include "task_analysis_only_attempt_count" and "no-edit revert"). But there are no src-file candidates matching. So the landable recovery task is injected.
+
+The test expected the analysis-only task to be selected (with contradiction annotation). But now the landable recovery task is injected.
+
+This test at line 1491 is checking for the "obsolete-seed contradiction" case. The assessment says the task was "marked obsolete — criteria already satisfied." The test expects `choose_task` to return the analysis-only task with `validated_against_assessment=False` and a contradiction reason.
+
+But now that we always inject a landable recovery task when analysis-only pressure is active and no src candidates match, this test case also gets the recovery task instead.
+
+This is tricky. The test at line 1491 tests a different scenario — it tests the obsolete-seed contradiction, where the assessment marks the analysis-only task as obsolete. The test expects the analysis-only task to be returned with contradiction annotation.
+
+But now the code at lines 797-802 injects a landable recovery task regardless of whether the analysis-only task has contradiction. The injection happens before the contradiction check.
+
+Let me look at the code flow:
+
+```python
+# Lines 787-802
+if analysis_only_active:
+    candidates.sort(key=lambda c: not _has_src_files(c))
+
+if analysis_only_active and candidates and not any(
+    _has_src_files(c) for c in candidates
+):
+    landable = _landable_recovery_task()
+    if landable and _candidate_files_exist(landable):
+        candidates.insert(0, landable)
+
+# Lines 804-808
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+```
+
+So the landable recovery task is inserted at position 0, and then the loop checks it for contradiction first. If it's not contradicted, it's returned.
+
+The issue is: in this test, the assessment says "marked obsolete — criteria already satisfied" which refers to the analysis-only task. The landable recovery task wouldn't be contradicted by this, so it gets returned.
+
+The question is: should the test be updated, or should the code logic be changed?
+
+Looking at the test comment:
+```
+# Test 9: Obsolete-seed contradiction — assessment marks task as
+# "marked obsolete — criteria already satisfied" without using task
+# keys verbatim (regression for Day 118 preseed re-seeding).
+```
+
+This test verifies that when the assessment marks the analysis-only task as obsolete, `choose_task` detects it and returns the task with contradiction annotation. 
+
+But the new behavior (injecting landable recovery when analysis-only pressure is active) is intentional. The test needs to be updated to reflect the new behavior.
+
+The new expectation should be: when analysis-only pressure fires and the assessment marks the analysis-only task as obsolete, a landable recovery task is injected instead. The test should assert the landable recovery task is selected.
+
+Let me verify: the assessment says "marked obsolete — criteria already satisfied". The key check at line 762 is:
+```python
+if any(key in lower for key in task.get("reject_keys", ())):
+    continue
+```
+
+The analysis-only task may have reject_keys that would skip it when "obsolete" appears. But regardless, the landable recovery task is injected at position 0.
+
+Let me update the test to match the new expected behavior. The test should verify that when analysis-only pressure fires and the assessment mentions the analysis-only task being obsolete, a landable recovery task is selected instead.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1503..1523 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of this test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1520..1540 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to fix Test 9 (lines 1479-1505). The test expects the analysis-only task to be selected with contradiction annotation. But now with the injection of landable recovery, this test fails at line 1491.
+
+The fix: update Test 9 to expect the landable recovery task instead. The assessment has `task_analysis_only_attempt_count=2` which triggers analysis-only pressure. The landable recovery task will be injected. The test should assert that:
+1. The selected task is not the analysis-only task
+2. The selected task has src files
+3. No protected files
+
+Let me update the test. Actually, looking more carefully at the test, it specifically tests the "Obsolete-seed contradiction" — where the assessment says the analysis-only task was "marked obsolete — criteria already satisfied." This is a valuable test because it verifies that `check_task_contradiction` detects the "obsolete" signal.
+
+But now with the injection, this contradiction check never fires because the landable recovery task is selected first. The contradiction detection is still important though.
+
+Hmm, let me think about this differently. The test at line 1491 is specifically testing the "obsolete-seed contradiction" path. The fact that the landable recovery task is injected means the contradiction path for the analysis-only task is never reached. But the contradiction detection is still tested elsewhere (Tests 7 and 8, at lines 1442-1478).
+
+The fix should be to update Test 9 to match the new behavior: when analysis-only pressure is active and the assessment mentions the obsolete analysis-only task, a landable recovery task is injected.
+
+Let me update lines 1479-1505:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         # Test 9: Obsolete-seed contradiction — assessment marks task as
+  -         # "marked obsolete — criteria already satisfied" without using task
+  -         # keys verbatim (regression for Day 118 preseed re-seeding).
+  +         # Test 9: Obsolete-seed + analysis-only pressure → landable recovery injected.
+  +         # When the assessment marks the analysis-only task as "marked obsolete —
+  +         # criteria already satisfied" and analysis-only metrics are present,
+  +         # the landable recovery task is injected to break the no-edit cycle
+  +         # instead of returning the contradicted analysis-only task.
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  ···
+    no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == "Make analysis-only task pressure landable", (
+  -             f"Expected analysis-only task, got {task['title']}"
+  -         )
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (27 → 24 lines)
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (27 → 24 lines)
+  -         # Test 9: Obsolete-seed contradiction — assessment marks task as
+  -         # "marked obsolete — criteria already satisfied" without using task
+  -         # keys verbatim (regression for Day 118 preseed re-seeding).
+  +         # Test 9: Obsolete-seed + analysis-only pressure → landable recovery injected.
+  +         # When the assessment marks the analysis-only task as "marked obsolete —
+  +         # criteria already satisfied" and analysis-only metrics are present,
+  +         # the landable recovery task is injected to break the no-edit cycle
+  +         # instead of returning the contradicted analysis-only task.
+            assessment = """# Assessment
+    
+    ## Recent Changes
+  ···
+    no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+    """
+            task = choose_task(assessment)
+  -         assert task["title"] == "Make analysis-only task pressure landable", (
+  -             f"Expected analysis-only task, got {task['title']}"
+  -         )
+  -         assert task.get("validated_against_assessment") is False, (
+  -             f"Obsolete-seed task should be contradicted, "
+  ... (17 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (121ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test 10 now also fails! The assessment is:
+```
+task_no_edit_revert_count=1
+reverted_no_edit=1
+```
+This triggers analysis-only pressure. But the analysis-only task is being selected instead of the landable recovery.
+
+Wait, this is Test 10 which I didn't modify. Let me look at why the landable recovery is not being injected here.
+
+Let me debug this...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1503..1533 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test 10 has assessment:
+```
+task_no_edit_revert_count=1
+reverted_no_edit=1
+```
+
+These match the analysis-only task's keys. But `_has_analysis_only_pressure` returns True. The analysis-only task is script-only. So the code at 797-802 should inject the landable recovery task.
+
+But the assertion at line 1518 says the task IS the analysis-only task! Let me debug:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (25 lines) ✓ (46ms)
+
+
