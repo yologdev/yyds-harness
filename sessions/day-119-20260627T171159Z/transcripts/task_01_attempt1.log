@@ -1,0 +1,408 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Read the evolve skill first
+2. Understand the task: emit RunCompleted for every RunStarted event, closing a lifecycle gap
+3. Examine the relevant files: scripts/append_terminal_state_events.py and scripts/log_feedback.py
+4. Write tests, make changes, verify
+
+Let me start by reading the evolve skill and the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/log_feedback.py ✓ (755ms)
+ ✓ (648ms)
+ ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task better. The task is about closing a state run lifecycle gap. Let me look at:
+
+1. The current `append_terminal_state_events.py` - I've read it. The key logic is in `lifecycle_for_scope` and `append_terminal_events`. The current code:
+   - Tracks `run_started` and `run_completed` sets
+   - For open runs, it emits RunCompleted events
+   - However, there might be a gap: if a RunStarted event exists but the exit path doesn't trigger `append_terminal_events`, the RunCompleted won't be emitted
+
+2. The `log_feedback.py` file - I need to look at the lifecycle gap detection and lesson generation parts.
+
+Let me search for relevant sections in log_feedback.py that deal with lifecycle gaps, specifically the `state_incomplete` and `open_after_RunStarted` patterns.
+
+Let me also look at the test files mentioned:
+- scripts/test_append_terminal_state_events.py
+- scripts/test_task_lineage_feedback.py
+
+Let me search for the key patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.1s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_incomplete' in scripts  ▶ search 'open_after_RunStarted' in scripts  ▶ search 'RunStarted' in scripts/append_terminal_state_events.py ✓ (308ms)
+ ✓ (301ms)
+ ✓ (588ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search for `open_after_RunStarted` returned no matches. Let me look at the log_feedback.py for where lifecycle gaps and lessons are generated, particularly `state_incomplete` related patterns. Let me also look at the test files to understand what's expected.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'lifecycle' in scripts/log_feedback.py  ▶ search 'open_run' in scripts/log_feedback.py  ▶ search 'state_incomplete' in scripts/log_feedback.py ✓ (313ms)
+ ✓ (387ms)
+ ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `run_lifecycle_event_summary` function in log_feedback.py, and the lesson generation around line 2080. Also, let me search more broadly for "incomplete" in log_feedback.py.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1190..1270  ▶ read scripts/log_feedback.py:2060..2140 ✓ (161ms)
+ ✓ (593ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where `state_run_incomplete_count` is computed. Let me search for that in log_feedback.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete_count' in scripts/log_feedback.py ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the area around line 269 to see the GNOME_KEYS list and how `state_run_incomplete_count` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:258..288  ▶ search 'state_run_completion' in scripts/log_feedback.py ✓ (252ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now find where `state_run_incomplete_count` is computed in the metrics. I need to search for `run_incomplete` or the gnome computation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_incomplete' in scripts/log_feedback.py  ▶ search 'run_started' in scripts/log_feedback.py ✓ (182ms)
+ ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the state_cache_metrics function fully to understand the gnome computation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1227..1327 ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state of things:
+
+1. `append_terminal_state_events.py` - When an agent invocation is interrupted (timeout, API error, etc.), this script is called to emit `RunCompleted` and `ModelCallCompleted` events for any open runs/models. The `lifecycle_for_scope` function finds open runs (started but not completed) and the `append_terminal_events` function emits the completion events.
+
+2. `log_feedback.py` - The `state_cache_metrics` function counts `state_run_incomplete_count` as `len(run_started - run_completed)` and generates a lesson when this count > 0.
+
+Now, the task says there's a gap: `open_after_RunStarted=1` meaning a RunStarted was recorded but no matching RunCompleted. Looking at the `append_terminal_state_events.py` code more carefully:
+
+In `lifecycle_for_scope` at line 90-92:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+So session-run events are IGNORED. But then `open_runs = active_runs - run_completed` where `active_runs = run_started | set(model_started) | model_completed`. 
+
+Wait, but the "open runs" are detected from the events AFTER `after_line`. So if the `after_line` is correctly set to the line before the agent invocation starts, any RunStarted that happened during that invocation should be detected as open.
+
+Let me think about where the gap could be:
+
+1. **Timeout exits**: If the agent times out, does `append_terminal_events` get called? The evolve.sh would need to call it. Let me check the evolve.sh.
+
+2. **API error exits**: Same question.
+
+3. **Signal handlers/crash exits**: The panic hook in Rust emits events, but if the process crashes hard (segfault), no events get emitted.
+
+4. **Input validation exits**: These are pre-agent exits that shouldn't have a RunStarted at all. The task says these should stay classified separately.
+
+Let me look at evolve.sh to see where `append_terminal_state_events` is called and when it might be skipped.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'append_terminal_state_events' in scripts/evolve.sh ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the context around that call to understand how it's invoked and what exit paths might miss it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:230..330 ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find where `record_agent_terminal_events` is called. Let me search for callers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'record_agent_terminal_events' in scripts/evolve.sh ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around lines 755-775 and 910-935 to see the exit paths and which ones call record_agent_terminal_events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:745..805  ▶ read scripts/evolve.sh:905..965 ✓ (412ms)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the structure more clearly. The `record_agent_terminal_events` function is called for the main agent in `run_agent_with_fallback` (around lines 760-772) and for the completion-watch agent in `run_agent_with_completion_watch` (around lines 918-935). 
+
+The issue is that `append_terminal_state_events.py` collects open runs (RunStarted without RunCompleted) and emits RunCompleted for them. But there are some scenarios where this might not work:
+
+1. If the session exits before the agent is launched (input validation, pre-flight checks), there's no RunStarted event at all.
+2. If the agent is launched with a `run_agent_with_fallback` that doesn't call `record_agent_terminal_events` — but looking at the code, it seems to call it in all three branches (timeout, success, error).
+3. If the `after_line` is set incorrectly, the script might miss the most recent RunStarted.
+
+Wait, I need to look at this more carefully. The task evidence says `state_incomplete/open_after_RunStarted=1` — there's one open RunStarted. This could be happening because:
+
+1. `append_terminal_state_events.py` handles open models AND runs properly. For open runs, line 197-208 emits RunCompleted for each open run.
+2. But `open_runs` is computed as `active_runs - run_completed` where `active_runs = run_started | set(model_started) | model_completed`.
+
+Wait - at line 106: `active_runs = run_started | set(model_started) | model_completed`
+
+This means active_runs includes:
+- All RunStarted run_ids
+- All ModelCallStarted run_ids  
+- All ModelCallCompleted run_ids
+
+But the issue is: what about runs that have RunStarted but NO ModelCallStarted? Like in the case where the agent starts up, emits RunStarted, but fails to make an API call before crashing? Let me trace through:
+
+1. RunStarted emitted for rid "X"
+2. During session, the agent crashes before making any model call.
+3. In `lifecycle_for_scope`: `run_started` includes "X", `model_started` is empty, `model_completed` is empty, `run_completed` is empty.
+4. `active_runs = {"X"} | {} | {} = {"X"}`
+5. `open_runs = {"X"} - {} = {"X"}`
+6. `open_models = {}` (empty)
+7. The code then emits ModelCallCompleted for open_models (none), then RunCompleted for open_runs ("X").
+
+That seems correct. So where's the gap?
+
+Let me look at `is_session_run` more carefully. At line 90-92:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+So session-run events are IGNORED. What's a session run? Looks like `data.get("phase") == "session"`. So if a RunStarted has phase="session", it's skipped and NOT counted. This means the gap COULD be: if the RunStarted is a session-run event but there's also a non-session RunStarted that's tracked...
+
+Actually wait, let me re-read the task evidence more carefully. The gap is `open_after_RunStarted` — meaning there's a RunStarted event that was NOT matched by a RunCompleted. The `append_terminal_state_events.py` script IS designed to close these gaps. But maybe it's not being called in all cases?
+
+Let me search for where `run_agent_with_fallback` is called and whether there are cases where it might fail to call `record_agent_terminal_events`. Let me look at the broader evolve.sh for the `run_agent_with_fallback` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.1s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:700..750 ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test files to understand what behavior is expected and check current tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me analyze more carefully. The existing tests cover many scenarios:
+
+1. `test_closes_open_model_and_run_after_line` - RunStarted + ModelCallStarted, emitted RunCompleted + ModelCallCompleted
+2. `test_leaves_already_completed_invocation_unchanged` - Already completed, no new events
+3. `test_closes_open_lifecycle_after_normal_agent_exit` - Normal agent exit, both completed
+4. `test_closes_run_when_model_completed_but_run_terminal_missing` - Model already completed, only RunCompleted emitted
+5. `test_scans_current_file_when_after_line_exceeds_reset_events_file` - After_line > file lines
+6. `test_ambiguous_reset_scan_does_not_close_historical_open_runs` - Multiple open runs, ambiguous
+7. `test_fallback_after_line_closes_open_agent_run_without_closing_session_run` - Session runs ignored
+
+The actual issue seems to be that there's ONE specific run lifecycle that didn't close. The trajectory says `state_incomplete/open_after_RunStarted=1`. This could be a pre-existing gap from an earlier session before the current code was in place, OR there's still a code path that misses the terminal event emission.
+
+But wait - the task description says:
+> "earlier runs show RunCompleted status=error events — indicating some runs terminated abnormally"
+
+This means there ARE RunCompleted events for some runs. But ONE run didn't get its RunCompleted. The question is: what scenario would cause a RunStarted to be emitted but no RunCompleted?
+
+Let me think about the possible scenario:
+
+1. If `append_terminal_state_events.py` is called with an incorrect `after_line` - Let me look at how `state_before_lines` is set. It's set before the agent binary is launched (line 741: `state_before_lines=$(wc -l < "$STATE_EVENTS" ...)`). After the agent exits, the `record_agent_terminal_events` uses this saved line count. This should be correct because the RunStarted is emitted by the agent binary during execution, after `state_before_lines` was recorded.
+
+2. But what if the agent binary emits the RunStarted BEFORE `state_before_lines` is recorded? Let me trace through: `state_before_lines` is set at line 741, THEN the agent binary runs (line 745 or 752). The RunStarted event is emitted by the Rust binary at the start of the agent loop. So `state_before_lines` should capture all events BEFORE the agent run, and the RunStarted should appear AFTER `state_before_lines`. This should be correct.
+
+3. What about signal handlers (SIGTERM/SIGKILL)? If the process is killed with SIGKILL, it can't emit any events. The `append_terminal_state_events` should still close the RunStarted. But what if `record_agent_terminal_events` isn't called in the SIGTERM handler? Let me check.
+
+Wait, let me re-read the problem statement more carefully:
+
+> "emit RunCompleted for every RunStarted, including timeout and API-error exits"
+
+Maybe the issue is that some exit paths DON'T call `record_agent_terminal_events`. Let me search for all the places where agents are launched in evolve.sh.
+
+Actually, let me step back and think about what could cause `open_after_RunStarted=1`. Looking at `lifecycle_for_scope`:
+
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+Session RunStarted events are IGNORED. So if the session itself has a RunStarted but no RunCompleted, it wouldn't show up here because session runs are excluded.
+
+But what about non-session runs? Looking at line 90-92 again:
+- `is_session_run(data)` checks `data.get("phase") == "session"`.
+- If a RunStarted has `phase: "session"`, it's skipped.
+- Regular agent runs have RunStarted without `phase: "session"` (or with a different phase), so they are tracked.
+
+Now, the `open_runs` computation:
+```python
+active_runs = run_started | set(model_started) | model_completed
+open_runs = active_runs - run_completed
+```
+
+This means: open_runs = runs with RunStarted OR ModelCallStarted OR ModelCallCompleted, minus runs with RunCompleted.
+
+But wait: `model_completed` contains run_ids that have ModelCallCompleted events. So a run that has ModelCallCompleted but no RunStarted would be in `active_runs`. And if it also doesn't have a RunCompleted, it would be in `open_runs`.
+
+The code then emits RunCompleted for all `open_runs` (line 197-208). That seems correct.
+
+But there's a subtle issue at line 195: `open_runs.add(rid)` - when a ModelCallCompleted is emitted for an open model, the rid is added to `open_runs`. But wait, the rid was already in `active_runs` (because it was in `model_started`). And `open_runs = active_runs - run_completed`. So if `rid` is in `model_started` and not in `run_completed`, it's already in `open_runs`. The `open_runs.add(rid)` at line 195 is redundant but harmless.
+
+Hmm, let me look at this differently. Let me check if there's a scenario where the `append_terminal_events` function is called but fails to close an open run. 
+
+Wait, I notice something. At line 90-92:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+A session RunStarted is IGNORED (not added to `run_started`). But what about a session RunCompleted? It's also ignored (not added to `run_completed`). So session runs are completely excluded. Good.
+
+But what about a non-session RunStarted that happens for a RunStarted emitted by the session runner itself (in evolve.sh or somewhere else)? Let me check what Rust code emits RunStarted.
+
+Actually, let me take a different approach. Let me look at where RunStarted is emitted in the Rust source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunStarted' in src  ▶ search 'RunStarted' in scripts ✓ (80ms)
+ ✓ (307ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is very informative. Let me focus on the key finding: `scripts/evolve.sh:578` shows that a session RunStarted is emitted:
+
+```bash
+record_state_event "RunStarted" "{\"phase\":\"session\",\"day\":$DAY,...}"
+```
+
+And in `src/state.rs:418`:
+```rust
+let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+```
+
+So there are TWO sources of RunStarted:
+1. The bash-level session RunStarted (emitted by evolve.sh with phase: "session")
+2. The Rust-level agent RunStarted (emitted by the binary)
+
+Now, looking at `append_terminal_state_events.py` line 90-92:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+The session RunStarted is ignored - good.
+
+Now the question is: where does the actual open RunStarted come from? The Rust binary emits RunStarted at the start of each agent invocation. When does it emit RunCompleted? Let me search for RunCompleted in the Rust source.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompleted' in src/state.rs ✓ (69ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the Rust side has a sophisticated mechanism for closing orphaned runs. Let me read the relevant sections of state.rs to understand how RunCompleted is emitted normally and in error cases.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:40..120  ▶ read src/state.rs:305..365  ▶ read src/state.rs:400..500 ✓ (719ms)
+ ✓ (648ms)
+ ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The Rust code has:
+
+1. `close_orphaned_run_if_needed` - called at startup to close any RunStarted from a previous session that has no RunCompleted.
+2. `RunCompletionGuard` - a Drop guard that emits RunCompleted on drop
+3. Panic hook that emits RunCompleted
+4. `mark_run_completed` / `mark_run_completed_with_error` functions
+
+And the bash side has:
+1. `append_terminal_state_events.py` - called after agent exits to close open runs/models
+2. Session RunStarted (with phase: "session") - emitted by evolve.sh
+
+Now, the evidence says `state_incomplete/open_after_RunStarted=1`. Looking at `summarize_state_gnomes.py` which computes these gnomes... let me look at that.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'open_after_RunStarted' in scripts/summarize_state_gnomes.py  ▶ search 'state_incomplete' in scripts/summarize_state_gnomes.py ✓ (159ms)
+ ✓ (234ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`open_after_RunStarted` is not found in summarize_state_gnomes.py. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -r "open_after_RunStarted" scripts/ --include='*.py' -l ✓ (260ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The term "open_after_RunStarted" doesn't exist yet in the codebase. It seems like this is a new classification the task wants me to add. The task evidence says the trajectory has `state_incomplete/open_after_RunStarted=1`, which likely comes from a newer classification that differentiates between different types of incomplete states.
+
+Let me look at the current `summarize_state_gnomes.py` to understand how `state_run_incomplete_count` is currently computed, and see how to add the breakdown of incomplete types.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:310..360 ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read further to understand how the current state gnomes compute the incomplete count and what categories it already has.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:359..439 ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see how the state gnomes' "incomplete" category is broken down into subcategories. Let me read a bit further.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:438..518 ✓ (99ms)
+
+
