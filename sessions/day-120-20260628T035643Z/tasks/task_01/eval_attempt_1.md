@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The catch-all replaces `None` with a concise `Some(...)` hint that covers all required keywords (`$?`, explicit paths, bounded command, individual steps). A new test validates it, existing tests were correctly updated for the changed semantics, and build+tests pass.

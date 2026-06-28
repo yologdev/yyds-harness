@@ -1,0 +1,664 @@
+warning: skipping corrupted event at line 54529 of '.yoyo/state/events.jsonl': key must be a string at line 1 column 7616
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the current state of the code. I need to:
+
+1. Read `skills/evolve/SKILL.md` first (as instructed)
+2. Read `scripts/preseed_session_plan.py` to understand the current `choose_task` function and `ANALYSIS_ONLY_TASK_TITLE`
+3. Implement a post-selection check that avoids selecting `ANALYSIS_ONLY_TASK_TITLE` when analysis-only pressure is the dominant signal
+4. Add a test
+5. Verify with `python3 scripts/preseed_session_plan.py --test`
+
+Let me start by reading the evolve skill and the preseed file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (330ms)
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I've read the full preseed_session_plan.py file. Let me now understand the key pieces:
+
+1. `ANALYSIS_ONLY_TASK_TITLE = "Make analysis-only task pressure landable"` (line 15)
+2. `choose_task` function is the main task selection logic
+3. The TASKS list contains the tasks
+
+Let me now look at the `choose_task` function more carefully to understand where to add the escape hatch.
+
+I need to understand:
+- How `choose_task` works
+- Where analysis-only pressure signals come from
+- What `task_analysis_only_attempt_count` and `reverted_no_edit` look like in the evidence
+
+Let me search for the `choose_task` function definition and the pressure signal processing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'task_analysis_only_attempt_count' in scripts/preseed_session_plan.py  ▶ search 'reverted_no_edit' in scripts/preseed_session_plan.py ✓ (277ms)
+ ✓ (368ms)
+ ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `choose_task` function and the surrounding context to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:200..320  ▶ read scripts/preseed_session_plan.py:726..926 ✓ (341ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture of `choose_task`. Let me understand the key parts:
+
+1. `ANALYSIS_ONLY_TASK_TITLE = "Make analysis-only task pressure landable"` — this is the task that we want to skip when analysis-only pressure is active.
+2. `analysis_only_active = _has_analysis_only_pressure(metrics)` is computed from the metrics.
+3. When `analysis_only_active` is true, candidates with src files are preferred.
+4. The check on line 743-744 already blocks the ANALYSIS_ONLY_TASK_TITLE when `_analysis_only_seed_recently_blocked(lower)` returns True.
+
+What I need to add: After `choose_task` selects a candidate, if the selected task's title equals `ANALYSIS_ONLY_TASK_TITLE` AND `analysis_only_active` is True, iterate through remaining candidates to find the first one whose title is NOT `ANALYSIS_ONLY_TASK_TITLE`.
+
+But wait — looking more carefully, the current code flow:
+- Lines 773-777: iterate through candidates, check for contradiction, return the first non-contradicted candidate
+- If the first non-contradicted candidate IS the ANALYSIS_ONLY_TASK_TITLE and analysis_only_active is True, we should skip it and find the next non-contradicted candidate.
+
+Let me look at `_has_analysis_only_pressure` to understand how it detects pressure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py  ▶ search 'def _analysis_only_seed_recently_blocked' in scripts/preseed_session_plan.py ✓ (132ms)
+ ✓ (189ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions to understand the detection.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:681..731 ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that constant definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:674..684 ✓ (62ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me now look at the existing tests to understand the test patterns, especially around the analysis-only task and the `choose_task` function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the test section to understand existing test patterns:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1380..1460 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at existing tests for the analysis-only active path to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analysis_only_active' in scripts/preseed_session_plan.py ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test section around lines related to the analysis-only tests to see existing test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1350..1410 ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to look at where analysis-only _active_ tests are to see how the escape hatch interacts with existing tests. Let me search for tests that test with analysis_only_active=True and the ANALYSIS_ONLY_TASK_TITLE.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ANALYSIS_ONLY_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test around line 1150 and surrounding context to see the existing test for analysis-only pressure with the task:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1090..1170 ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at lines 1117-1120 where `reverted_no_edit alone should still select analysis-only task`. This test needs to be updated because the new behavior is: when analysis-only pressure is active AND the selected task is `ANALYSIS_ONLY_TASK_TITLE`, we should fall back to the next landable task instead.
+
+Wait, let me re-read the task. The task says:
+> "when the selected task matches `ANALYSIS_ONLY_TASK_TITLE` and analysis-only pressure is the dominant signal, falls back to the next landable task in the TASKS list."
+
+The existing test at line 1117-1120 says: when only reverted_no_edit pressure exists and only the analysis-only task's keys match, it still selects the analysis-only task. This test should still pass because the fallback logic should only kick in when there IS a landable alternative. If no other candidate matches (only the analysis-only task's keys match), we keep the analysis-only task.
+
+But wait — the task says `analysis_only_active` being the dominant signal means the analysis-only task should be skipped. In the test at line 1110-1120, the assessment only contains analysis-only keys (`reverted_no_edit=3`), so only the analysis-only task would be a candidate. In this case, there's no landable alternative, so the analysis-only task should be kept.
+
+Let me now plan the implementation:
+
+1. In `choose_task`, after the candidate loop (lines 773-777), when `analysis_only_active` is True and the selected candidate's title is `ANALYSIS_ONLY_TASK_TITLE`, iterate through remaining candidates (after the selected one) to find the first one whose title is NOT `ANALYSIS_ONLY_TASK_TITLE`.
+
+Actually, I need to think about this more carefully. The loop at 773-777 iterates through candidates in order and returns the first one that's not contradicted. The `analysis_only_active` flag already sorts src-file candidates first (line 771). So by the time we reach the loop, the analysis-only task might be the first non-contradicted one.
+
+The fix should be: in the loop at 773-777, before returning the candidate, check: if `analysis_only_active` is True AND candidate's title is `ANALYSIS_ONLY_TASK_TITLE`, skip it (continue to next candidate).
+
+This is cleaner than a post-hoc check. Let me implement this.
+
+Actually, looking more carefully, the task says:
+> "add ONE check: after `choose_task` returns its selection, if the selected task title equals `ANALYSIS_ONLY_TASK_TITLE` and analysis-only pressure is the top signal in the evidence, iterate through the remaining TASKS (in order) and pick the first one whose title does NOT equal `ANALYSIS_ONLY_TASK_TITLE`."
+
+But the current `choose_task` is an internal function. The task says to add the check after the candidate loop. Let me be more surgical:
+
+In the loop at 773-777:
+```python
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            if analysis_only_active and candidate["title"] == ANALYSIS_ONLY_TASK_TITLE:
+                continue  # Skip analysis-only task; try next landable candidate
+            candidate["validated_against_assessment"] = True
+            return candidate
+```
+
+This is the simplest approach. When analysis-only pressure is active and the selected candidate is the analysis-only task, skip it and try the next non-contradicted candidate.
+
+Now for the test: I need to add a test where:
+- Assessment has `task_analysis_only_attempt_count=1` (analysis-only pressure active)
+- Both the analysis-only task keys AND some other task's keys match
+- The picker should NOT return `ANALYSIS_ONLY_TASK_TITLE`
+
+Wait, but the analysis-only task's keys include "no-edit revert" and "task_analysis_only_attempt_count". If those are in the assessment, the analysis-only task will be a candidate. But other tasks may also match. For example, the sub-agent task keys include "api_key_present" and "sub-agent". If the assessment contains both analysis-only pressure AND sub-agent failures, the sub-agent task should be selected instead of the analysis-only task.
+
+Let me also check that the existing test at line 1117-1120 still passes (reverted_no_edit alone should still select analysis-only task when there's no alternative). In that test, only "reverted_no_edit=3" is in the assessment. The analysis-only task keys include "reverted_no_edit". But other tasks' keys might also match... Let me check: does "reverted_no_edit" appear in any other task's keys?
+
+Looking at the TASKS list... The analysis-only task's keys include "reverted_no_edit". But do any other tasks have "reverted_no_edit" in their keys or reject_keys? Let me search...
+
+Actually, that test should still pass because only the analysis-only task's keys match "reverted_no_edit". No other task has that in its keys. So the analysis-only task is the only candidate, and there's no landable alternative. My skip logic would skip it, but then there would be no more candidates in the loop, and we'd fall through to the "all candidates are contradicted" path at line 779.
+
+Wait, that's a problem. The analysis-only task was not contradicted — we just skipped it. We shouldn't go to the "all candidates are contradicted" path (line 779). Let me re-read:
+
+```python
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+
+    # All candidates are contradicted — return the first with annotation
+    if candidates:
+        contradicted, reason = check_task_contradiction(candidates[0], assessment)
+        candidates[0]["validated_against_assessment"] = False
+        candidates[0]["contradiction_reason"] = reason
+        return candidates[0]
+```
+
+If I skip the analysis-only task when it's the only candidate, the loop ends without returning, and we hit the "all candidates are contradicted" path. That would incorrectly mark the first candidate as contradicted when it wasn't. 
+
+Better approach: I should collect skipped analysis-only tasks or track whether the only reason we're not returning is the escape hatch. Let me think of a better way.
+
+Alternative: Track the analysis-only candidate separately. When we encounter it and it's not contradicted, note it but continue searching. If we find a landable alternative, return it. If we exhaust all candidates without finding a landable alternative, return the analysis-only candidate.
+
+```python
+    analysis_only_fallback = None
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            if analysis_only_active and candidate["title"] == ANALYSIS_ONLY_TASK_TITLE:
+                analysis_only_fallback = candidate
+                continue  # Skip analysis-only task; try next landable candidate
+            candidate["validated_against_assessment"] = True
+            return candidate
+    if analysis_only_fallback is not None:
+        analysis_only_fallback["validated_against_assessment"] = True
+        return analysis_only_fallback
+    
+    # ...rest of fallback logic unchanged
+```
+
+This is cleaner. The analysis-only fallback is only used when no landable alternative is available.
+
+Now for the test. I need a test where:
+1. Analysis-only pressure is active (e.g., `task_analysis_only_attempt_count=1`)
+2. Some other task's keys also match the assessment
+3. The picker selects the other task, not `ANALYSIS_ONLY_TASK_TITLE`
+
+And another test:
+1. Analysis-only pressure is active (e.g., `reverted_no_edit=3`)
+2. Only the analysis-only task's keys match
+3. The picker still selects `ANALYSIS_ONLY_TASK_TITLE` (no landable alternative)
+
+Let me now implement this. I'll add the escape hatch after line 775 (the `if not contradicted:` check).
+
+Also I need to update the existing test at line 1117-1120. Currently it expects `ANALYSIS_ONLY_TASK_TITLE`. With my change, when only `reverted_no_edit=3` is in the assessment, only the analysis-only task matches, so it still returns analysis-only task as fallback. The test should still pass.
+
+But wait — I need to double-check: in the test at 1117-1120, the assessment is:
+```
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
+```
+
+Does "Force analysis-only attempts into action" match any other task's keys? Let me check other tasks... It contains "analysis" which is in many keys, but the analysis-only task keys include "force analysis-only attempts into action" as a key. I need to check if other tasks also match.
+
+Let me search for which tasks have keys that include "force":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'force analysis' in scripts/preseed_session_plan.py ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 239 is in the analysis-only task's keys. Let me check if any other task has "force" in its keys.
+
+Let me also check: does "sessions with no file progress" match any other task's keys? The analysis-only task has "implementation ended without file progress" in its keys. No other task seems to have that.
+
+OK, the test at 1117-1120 should still pass because only the analysis-only task matches, so it'll be the only candidate, and my escape hatch will fall back to it.
+
+Now let me also look at the test at line 1149-1152 which tests `ANALYSIS_ONLY_TASK_TITLE != ...`. This test case has `analysis_only_no_terminal_evidence=1` which is a blocked marker mentioned in `_analysis_only_seed_recently_blocked`. But the function checks for `"obsolete"` and `"no file progress"` etc. Let me check:
+
+```python
+blocked_markers = (
+    "analysis_only_no_terminal_evidence",
+    "task blocked by analysis-only implementation attempt",
+    "task blocked by no-progress implementation attempts",
+    "no file progress",
+    "no-progress implementation",
+    "no implementation landed",
+    "obsolete",
+    "criteria already satisfied",
+    "marked obsolete",
+)
+```
+
+In the test at 1148:
+```
+- Task 1 "Make analysis-only task pressure landable" was blocked by analysis-only implementation attempt with no file progress and no implementation landed.
+```
+
+This contains "blocked by analysis-only implementation attempt" and "no file progress" and "no implementation landed". The `_analysis_only_seed_recently_blocked` function checks:
+1. Is `ANALYSIS_ONLY_TASK_TITLE` in the text?
+2. Any of the blocked markers in the text?
+
+"task blocked by analysis-only implementation attempt" — wait, the blocked marker is `"task blocked by analysis-only implementation attempt"` but in the assessment it's `"was blocked by analysis-only implementation attempt"`. The substring "blocked by analysis-only implementation attempt" doesn't match "task blocked by analysis-only implementation attempt". Wait, let me look more carefully.
+
+The blocked marker is: `"task blocked by analysis-only implementation attempt"`. 
+The assessment text has: `"was blocked by analysis-only implementation attempt with no file progress and no implementation landed."`
+
+Does "task blocked by analysis-only implementation attempt" appear in the assessment? No — it says "was blocked by analysis-only implementation attempt". However, "no file progress" IS a blocked marker and IS in the text. And "no implementation landed" IS a blocked marker and IS in the text. So `_analysis_only_seed_recently_blocked` would return True. That's why the analysis-only task is rejected at line 743-744 in `choose_task`.
+
+OK, now I understand the full picture. Let me implement the change.
+
+My plan:
+1. In `choose_task`, add an escape hatch: when `analysis_only_active` and the candidate is `ANALYSIS_ONLY_TASK_TITLE`, save it as fallback and continue searching for a landable alternative.
+2. If no landable alternative is found, return the saved analysis-only fallback.
+3. Add a test for this path.
+
+Let me now write the edit.
+
+Actually wait, I need to be more careful about the position. Let me re-read lines 769-777:
+
+```python
+    if analysis_only_active:
+        # Stable sort: preserve relative order, src-file tasks first
+        candidates.sort(key=lambda c: not _has_src_files(c))
+
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+```
+
+I need to replace lines 773-777 with the escape hatch logic. Let me craft the edit.
+
+Also, I need to handle the case where the analysis-only task was already removed from candidates earlier (at line 743-744), so this escape hatch only fires when the analysis-only task survived the `_analysis_only_seed_recently_blocked` check.
+
+Let me write the implementation now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding of the code. Let me implement the escape hatch. The approach: in the candidate loop, when `analysis_only_active` and the selected candidate is `ANALYSIS_ONLY_TASK_TITLE`, save it as fallback and continue searching for a landable alternative. If none found, return the saved analysis-only fallback.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (65ms)
+  ▶ todo ✓ (142ms)
+  ▶ todo ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the surgical edit. I'll replace lines 773-777 with the escape hatch logic.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. The current code at 773-777 is:
+
+```python
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            candidate["validated_against_assessment"] = True
+            return candidate
+```
+
+I need to replace it with:
+
+```python
+    analysis_only_fallback = None
+    for candidate in candidates:
+        contradicted, reason = check_task_contradiction(candidate, assessment)
+        if not contradicted:
+            if analysis_only_active and candidate["title"] == ANALYSIS_ONLY_TASK_TITLE:
+                # Save as fallback; prefer a landable alternative.
+                analysis_only_fallback = candidate
+                continue
+            candidate["validated_against_assessment"] = True
+            return candidate
+    if analysis_only_fallback is not None:
+        analysis_only_fallback["validated_against_assessment"] = True
+        return analysis_only_fallback
+```
+
+This preserves all existing behavior and only adds the escape hatch.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     analysis_only_fallback: dict[str, object] | None = None
+        for candidate in candidates:
+            contradicted, reason = check_task_contradiction(candidate, assessment)
+            if not contradicted:
+  +             if analysis_only_active and candidate["title"] == ANALYSIS_ONLY_TASK_TITLE:
+  +                 # Save as fallback; prefer a landable alternative.
+  +                 analysis_only_fallback = candidate
+  +                 continue
+                candidate["validated_against_assessment"] = True
+                return candidate
+  +     if analysis_only_fallback is not None:
+  +         analysis_only_fallback["validated_against_assessment"] = True
+  +         return analysis_only_fallback
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 13 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 13 lines)
+  +     analysis_only_fallback: dict[str, object] | None = None
+        for candidate in candidates:
+            contradicted, reason = check_task_contradiction(candidate, assessment)
+            if not contradicted:
+  +             if analysis_only_active and candidate["title"] == ANALYSIS_ONLY_TASK_TITLE:
+  +                 # Save as fallback; prefer a landable alternative.
+  +                 analysis_only_fallback = candidate
+  +                 continue
+                candidate["validated_against_assessment"] = True
+                return candidate
+  +     if analysis_only_fallback is not None:
+  +         analysis_only_fallback["validated_against_assessment"] = True
+  +         return analysis_only_fallback
+ ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the edit looks correct by reading the changed section.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:770..800 ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. Now let me mark task 1 done, move to task 2: add the test.
+
+I need to add a test for the escape hatch path. The test should:
+1. Assessment has analysis-only pressure active (e.g., `task_analysis_only_attempt_count=1`)
+2. Some other task's keys also match
+3. The picker returns the other task, not `ANALYSIS_ONLY_TASK_TITLE`
+
+Let me find a good place to add this test. Looking at the existing test structure, there's a block of analysis-only tests around lines 1090-1152. Let me add the test within that block, around line 1152-1153.
+
+And also I should add a test that confirms the analysis-only task is still selected when no landable alternative exists (this is already tested at line 1117-1120, but let me make sure it still passes).
+
+Let me first run the existing tests to make sure the edit doesn't break anything.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first run the existing tests to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run the existing tests first to confirm nothing is broken:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (199ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All existing tests pass. Now let me add the test for the escape hatch.
+
+The test scenario:
+1. Assessment has analysis-only pressure active: `task_analysis_only_attempt_count=1`
+2. Some other task's keys also match — let me use the sub-agent task which has `api_key_present` and `sub-agent` as keys
+3. The picker should return the sub-agent task, not `ANALYSIS_ONLY_TASK_TITLE`
+
+I'll add it after the existing analysis-only tests block, around line 1152-1153.
+
+Let me also add a confirmation test: when only the analysis-only task's keys match (e.g., `reverted_no_edit=3` with no other task keys matching), the analysis-only task is still returned as fallback. This is already tested at line 1117-1120 but let me verify it still passes by adding a note in my test.
+
+Actually, the existing test at 1117-1120 already covers the "no alternative" case. Let me just add the escape hatch test.
+
+I'll insert the new test after line 1152 (the `assert task["title"] != ANALYSIS_ONLY_TASK_TITLE` test for the blocked seed case). Actually, there's a natural gap around line 1153 (a blank line before the next test). Let me add it there.
+────────────────────────────────────────────────────────────────────────────────
+
+All existing tests pass. Now let me add the test for the escape hatch.
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the exact lines around where I want to insert the new test (after line 1152).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1149..1164 ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the new test after line 1160 (after the assert that checks recently blocked seed), before the next assessment block at line 1162.
+
+The test I want to add:
+- Assessment with analysis-only pressure active AND a landable alternative's keys
+- The picker should select the landable alternative, not ANALYSIS_ONLY_TASK_TITLE
+
+Let me create the test assessment:
+```
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress.
+- Sub-agent spawn failures: api_key_present validation shows worker agents failing.
+```
+
+This should trigger both the analysis-only task AND the sub-agent task as candidates. The sub-agent task has `keys: ("sub-agent", "sub agent", "api_key_present", ...)`. Let me verify "sub agent" would match. Actually "sub-agent" is also in the keys. And "api_key_present" is too.
+
+The "Force analysis-only attempts into action" matches the analysis-only task's key. And "task_analysis_only_attempt_count=2" gives us the metric. "api_key_present" matches the sub-agent task.
+
+With analysis_only_active=True, src-file tasks are sorted first. The sub-agent task has `files: "src/tools.rs, src/agent_builder.rs, src/lib.rs"` which are src/*.rs files. The analysis-only task has `files: "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"` — no src files.
+
+So candidates would be sorted: sub-agent task first (has src files), then analysis-only task. Without my fix, the analysis-only task might still be picked second if the sub-agent task is contradicted. With my fix, the analysis-only task is skipped.
+
+Wait, let me think. The sub-agent task wouldn't be contradicted by this assessment. So it would be returned first, and the analysis-only task would never be reached. That means even without my fix, this particular assessment would pick the sub-agent task.
+
+I need a test case where the ANALYSIS_ONLY_TASK_TITLE IS the first non-contradicted candidate that would normally be returned. This happens when:
+- The analysis-only task's keys match
+- No src-file candidate also matches (or src-file candidates are contradicted)
+- The analysis-only task is not blocked/rejected
+- But there IS another non-contradicted script-level candidate after it
+
+Let me think about which tasks are ordered after the analysis-only task and don't have src files. Let me look at the TASKS list order...
+
+Actually, the analysis-only task is the 5th task in the list (index 4, zero-indexed). Tasks before it:
+1. Sub-agent API key propagation (src files)
+2. DeepSeek prompt cache metrics (src files)  
+3. Search tool errors (scripts only)
+4. Recovery hints (src files)
+5. Analysis-only task (scripts)
+
+Tasks after it:
+6. Lifecycle gaps (scripts)
+7. Search friction (scripts)
+
+So if the analysis-only task matches and none of the earlier tasks match (or they're contradicted), the analysis-only task would be first among remaining candidates. But there might be later candidates like lifecycle or search friction that also match.
+
+For my test, I want:
+- `task_analysis_only_attempt_count=2` triggers analysis-only active
+- Analysis-only task keys match (e.g., "no-edit revert" + "task_analysis_only_attempt_count")
+- Some later task's keys also match (e.g., lifecycle task or search friction)
+- Earlier tasks don't match or are contradicted
+
+Let me use the search friction task. Its keys include "search_regex_error" and "search_binary_match". If the assessment has both "task_analysis_only_attempt_count=2" and "search_regex_error=5", both tasks would be candidates. The search friction task's files don't have src files (they're scripts), so the sort wouldn't reorder them, meaning analysis-only task (at index 4) comes before search friction (at index 6). 
+
+Without my fix: analysis-only task gets picked.
+With my fix: analysis-only task is skipped, search friction gets picked.
+
+Let me craft this test:
+
+```python
+        # --- Escape hatch: analysis-only pressure prefers landable alternative ---
+        # When task_analysis_only_attempt_count > 0 and a landable alternative
+        # task matches the assessment, the picker skips ANALYSIS_ONLY_TASK_TITLE.
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress.
+
+## Bugs / Friction Found
+- Search tool errors: search_regex_error=5 in recent sessions.
+"""
+        task = choose_task(assessment)
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"Escape hatch: analysis-only task should be skipped when landable alternative exists, got {task['title']}"
+        )
+        assert task["title"] == SEARCH_FRICTION_TASK_TITLE, (
+            f"Expected search friction task as landable alternative, got {task['title']}"
+        )
+```
+
+Wait, but `search_regex_error=5` — does that match the search friction task's keys? Let me check. The constant is `SEARCH_FRICTION_KEYS = ("search_regex_error", "search_binary_match", ...)`. But the task uses keys from its keys field, not SEARCH_FRICTION_KEYS. Let me look at the search friction task's keys.
+
+Let me search for the search friction task.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the search friction task definition to use in the test:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the search friction task definition to get its keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:320..350 ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The search friction task's keys come from `SEARCH_FRICTION_KEYS` which includes `"search_regex_error"`, `"search_binary_match"`, `"search/grep error"`, `"search/grep errors"`, `"broken regex"`, `"binary file matches"`.
+
+So `search_regex_error=5` in the assessment would match the key `search_regex_error` in the search friction task.
+
+Now, the search friction task has `files: "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py"` which includes a src file. So it has `_has_src_files(c) == True`. The analysis-only task doesn't have src files. With `analysis_only_active`, the search friction task gets sorted before the analysis-only task. So even without my fix, the search friction task might be picked first.
+
+Wait, that's a problem. If the search friction task is already sorted before the analysis-only task, my fix wouldn't be exercised — the search friction task would be checked first and returned if not contradicted.
+
+I need a test case where:
+1. Analysis-only task is the first non-contradicted candidate (before the escape hatch)
+2. There's a landable alternative later in the candidate list
+3. The escape hatch kicks in and selects the later alternative
+
+This happens when the analysis-only task's keys match and there are no src-file candidates before it. But if there are no src-file candidates matching, the sort by src files wouldn't change the ordering — analysis-only task stays where it is in the TASKS order.
+
+So I need a scenario where only script-level tasks match. Let me think of what tasks are script-only and come after the analysis-only task.
+
+Looking at the TASKS list order:
+1. Sub-agent (src files) - index 0
+2. Cache metrics (src files) - index 1
+3. Search tools errors? Actually let me look at the full list again.
+
+Hmm, let me check the full task list. Actually I need to look at which tasks DON'T have src files and come AFTER analysis-only.
+
+Actually, let me try a different approach. Let me craft a test where BOTH analysis-only task AND lifecycle task match, and neither has src files (in the lifecycle task's case). The lifecycle task uses `LIFECYCLE_TASK_TITLE` and has script files only: `"scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"`.
+
+But there's special logic at lines 751-758 for the lifecycle task:
+```python
+        if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+            if analysis_only_active:
+                # Analysis-only pressure takes priority over lifecycle cleanup
+                continue
+```
+
+When `analysis_only_active` is True, the lifecycle task is SKIPPED entirely. So it can't be a landable alternative.
+
+What about the search friction task? Its files include `src/tools.rs` so it HAS src files. With analysis-only active, it gets sorted before the analysis-only task.
+
+Let me think differently. The task specification says:
+> "after `choose_task` returns its selection, if the selected task title equals `ANALYSIS_ONLY_TASK_TITLE` and analysis-only pressure is the top signal in the evidence, iterate through the remaining TASKS (in order) and pick the first one whose title does NOT equal `ANALYSIS_ONLY_TASK_TITLE`."
+
+The remaining TASKS (not remaining candidates, but remaining TASKS in the full list). Wait, that's ambiguous. Let me re-read:
+
+> "iterate through the remaining TASKS (in order) and pick the first one whose title does NOT equal `ANALYSIS_ONLY_TASK_TITLE`"
+
+This seems to say: go through ALL TASKS (the full list) and pick the first one whose title is not `ANALYSIS_ONLY_TASK_TITLE`. But that doesn't make sense either — you'd always pick the sub-agent task.
+
+OK, I think the right interpretation is: iterate through the remaining CANDIDATES that haven't been checked yet. But since the contradiction check has already been done in the loop, I'm implementing it as: skip the analysis-only task in the loop, continue to the next non-contradicted candidate.
+
+Let me also consider: what if the sub-agent task matches and has src files? Then the sub-agent task goes first (sorted by src files), and the analysis-only task is second. The sub-agent task would be picked first anyway. My escape hatch wouldn't change anything in that case.
+
+The escape hatch matters when:
+- The analysis-only task is the first (or only) non-contradicted candidate BEFORE any landable alternative
+
+This happens when no src-file candidate matches. Let me create a test where:
+- Analysis-only keys match (task_analysis_only_attempt_count, reverted_no_edit)
+- Search friction keys match (search_regex_error)
+- But the search friction task is contradicted somehow... no, that's too complicated.
+
+Actually, the simplest test: what if ONLY the analysis-only task matches, but then by my escape hatch it's skipped, and there are no other candidates? Then `analysis_only_fallback` would be returned. This is already tested at line 1117-1120.
+
+For a test where the escape hatch actually changes the result, I need:
+- Analysis-only task matches
+- At least one other task matches (and is not contradicted)
+- That other task comes after the analysis-only task in the candidate list
+
+The only tasks after the analysis-only task are:
+- Lifecycle task (but it's skipped when analysis_only_active)
+- Search friction task (but it has src files, so it gets sorted before analysis-only)
+
+Hmm, this means the search friction task would be sorted BEFORE the analysis-only task because `_has_src_files` returns True for it (it has `src/tools.rs`). So even without my escape hatch, the search friction task would be picked first.
+
+Let me check: does any task AFTER the analysis-only task NOT have src files? Looking at the lifecycle task: `"scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"` — no src files. But it's skipped when analysis_only_active.
+
+So my escape hatch currently can't be reached in a test where a landable alternative exists... unless I consider that the search friction task, despite having src files, could be contradicted. But that's fragile.
+
+Wait, let me re-examine. Let me look at order again. The TASKS list order:
+1. Sub-agent (src files) — index 0
+2. Cache metrics (src files) — index 1
+3. Cold start diagnostics (scripts) — index 2
+4. Search tools (src files) — index 3... no wait.
+
+Let me actually read the full TASKS list to know the order.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the full TASKS list order:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (5 lines) ✓ (218ms)
+
+
