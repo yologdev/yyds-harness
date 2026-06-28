@@ -1042,7 +1042,13 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                         .to_string(),
                 )
             } else {
-                None
+                Some(
+                    "The shell command failed. Check `$?` immediately for the exit code, \
+                     use explicit paths (`./script`, not `script`), and retry with a \
+                     simpler bounded command. Break pipelines into individual steps to \
+                     isolate the failure."
+                        .to_string(),
+                )
             }
         }
         "search" => {
@@ -2957,6 +2963,18 @@ mod tests {
     }
 
     #[test]
+    fn test_targeted_recovery_hint_bash_catch_all_unrecognized_error() {
+        // Unrecognized bash error output should get a catch-all hint, not None
+        let hint = targeted_recovery_hint("bash", "something went wrong");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("$?"));
+        assert!(hint.contains("explicit path"));
+        assert!(hint.contains("bounded command"));
+        assert!(hint.contains("individual steps"));
+    }
+
+    #[test]
     fn test_targeted_recovery_hint_read_file_no_such_file() {
         let hint = targeted_recovery_hint("read_file", "No such file or directory (os error 2)");
         assert!(hint.is_some());
@@ -3002,9 +3020,9 @@ mod tests {
     fn test_targeted_recovery_hint_no_match_returns_none() {
         // Non-bash, non-search tools get None
         assert!(targeted_recovery_hint("read_file", "file not found").is_none());
-        // Bash with a message that doesn't match any pattern
-        assert!(targeted_recovery_hint("bash", "some generic error").is_none());
-        // Search with a non-regex error
+        // Bash with unrecognized error now gets a catch-all hint (no longer None)
+        assert!(targeted_recovery_hint("bash", "some generic error").is_some());
+        // Search with a non-regex error still gets None
         assert!(targeted_recovery_hint("search", "no results found").is_none());
     }
 
@@ -3034,12 +3052,13 @@ mod tests {
     #[tokio::test]
     async fn test_recovery_hint_no_targeted_for_non_matching_error() {
         // When the error message doesn't match a targeted pattern,
-        // only the generic Recovery hint should appear
+        // only the generic Recovery hint should appear.
+        // Use a non-bash, non-search tool so no targeted hint fires.
         let tracker = ToolFailureTracker::new();
         let tool = with_recovery_hints(
             Box::new(ConfigurableMockTool {
-                tool_name: "bash",
-                fail_msg: Some("some unknown error".to_string()),
+                tool_name: "read_file",
+                fail_msg: Some("file not found".to_string()),
             }),
             &tracker,
         );
