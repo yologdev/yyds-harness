@@ -1,0 +1,115 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task quickly. The diff shows empty changes, but the build/tests show PASS. Let me check the current state of the file to see if the fix is already in place.
+
+The task says to check:
+1. If the condition at line 743 already includes `analysis_only_active`, the task is `obsolete_already_satisfied`
+2. If the existing test already covers this case, it's `obsolete_already_satisfied`
+
+I need to verify the current state of the file. Let me check both conditions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ grep ✗ (11ms)
+    │ Tool grep not found
+  ▶ read scripts/preseed_session_plan.py:740..750 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 743 already has `(_analysis_only_seed_recently_blocked(lower) or analysis_only_active)`. The fix is already in place. Let me verify line 731 to confirm `analysis_only_active` is computed there and line 769 for sorting.
+
+Now let me also check if there's an existing test that covers this case. Let me search for test lines around 1145-1152.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.4s (1 ✓, 1 ✗)
+
+Line 743 **already contains** the fix: `(_analysis_only_seed_recently_blocked(lower) or analysis_only_active)`. The task's own fallback instruction says to write `obsolete_already_satisfied` if this is the case.
+
+Let me verify the test coverage too:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'analysis_only_active' scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:1140..1160 ✓ (6ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now run the tests to confirm everything passes. This will be the verifier.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+The fix is already in place (line 743) and the test at line 1145-1152 already covers the recently-blocked case. Let me run the tests as the verifier requires:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (119ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is failing. Let me look at this test case more carefully. It expects that when the assessment has analysis-only pressure AND the seed is recently blocked, the picker returns ANALYSIS_ONLY_TASK_TITLE. But wait - the test expects that when the seed is recently blocked, it should pick ANALYSIS_ONLY_TASK_TITLE? That doesn't make sense.
+
+Let me re-read the test. The test at line 1149-1152 says: when the bug mentions the analysis-only task was recently blocked, `choose_task(assessment)["title"] != ANALYSIS_ONLY_TASK_TITLE`. So it expects the task NOT to be the analysis-only one.
+
+But line 1018 is the failure. Let me look at that.
+────────────────────────────────────────────────────────────────────────────────
+
+The test at line 1018 expects `ANALYSIS_ONLY_TASK_TITLE` but got a different task. Let me check what's happening there:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1000..1030 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test at line 1010-1018 expects that when `task_analysis_only_attempt_count=2` appears in the assessment, `choose_task()` SHOULD return `ANALYSIS_ONLY_TASK_TITLE` (the analysis-only task). This was the ORIGINAL behavior. With the fix applied, this test now fails because the picker now skips the analysis-only task when `analysis_only_active` is true.
+
+The task description says: "When trajectory evidence shows analysis-only/no-edit task pressure, the preseed picker must NOT select ANALYSIS_ONLY_TASK_TITLE." The fix is correct, but the existing test at line 1010-1018 expects the OLD behavior.
+
+This is a conflict: the fix changes behavior correctly, but it breaks an existing test that was testing the old (buggy) behavior. The task description says "Existing tests continue to pass" which is impossible as-is - this test needs to be updated to reflect the new expected behavior.
+
+Wait, let me re-read the task. It says "Self-tests cover this escape-hatch path with a new test case" and "Existing tests (including the test at line 1145 that verifies recently-blocked seeds are skipped) continue to pass." But the test at line 1010-1018 specifically tests that when analysis-only pressure is present, the picker returns ANALYSIS_ONLY_TASK_TITLE. This test directly contradicts the new behavior.
+
+So either:
+1. The fix was already applied (line 743 has the `or analysis_only_active`), and the test at 1010-1018 was supposed to be updated but wasn't
+2. Or someone applied the fix but forgot to update the test
+
+The build/test status claims "PASS" but the test is actually failing. This is a contradiction.
+
+Let me check: maybe someone already modified line 743 but the test was supposed to also be updated. Let me check the test more carefully - the test expects the picker to return ANALYSIS_ONLY_TASK_TITLE when analysis_only pressure exists. But the fix says it should NOT return it.
+
+The task says the fix is one line at 743 plus one new test. But the existing test at 1010-1018 would need to be updated too. Since the test is failing, this is NOT a PASS.
+
+Wait, but the task says build/tests are PASS. Let me re-read the diff... it shows empty. So maybe the fix hasn't actually been applied yet? Let me check git status.
+
+Actually, let me re-read: the diff is empty, meaning no changes were made. But line 743 already has the fix. This means the fix was pre-applied (possibly from a previous session). The test at 1010-1018 hasn't been updated to match.
+
+This is a FAIL because:
+1. The existing test at line 1010-1018 expects the OLD behavior (returning ANALYSIS_ONLY_TASK_TITLE when analysis_only pressure exists)
+2. The fix on line 743 changes behavior to NOT return it
+3. The test now fails
+
+The implementation needs to update the test at line 1010-1018 to expect a different task (not ANALYSIS_ONLY_TASK_TITLE), or better yet, change the expected behavior for that test case.
+
+Let me look more at what the test should expect now. When analysis_only pressure is present, the picker should skip ANALYSIS_ONLY_TASK_TITLE and pick the next landable task.
+────────────────────────────────────────────────────────────────────────────────
+
+The fix is already applied on line 743, but there's a broken existing test. Let me check line 1010-1018 more carefully — the test expects the OLD behavior where analysis-only pressure selects ANALYSIS_ONLY_TASK_TITLE:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1010..1022 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1010-1018 explicitly expects that when `task_analysis_only_attempt_count=2` and `task_no_edit_revert_count=1` appear, the picker should return `ANALYSIS_ONLY_TASK_TITLE`. This is exactly the OLD buggy behavior that the fix aims to change.
+
+Now with the fix on line 743, `analysis_only_active` is True (because the metrics include `task_analysis_only_attempt_count=2` and `task_no_edit_revert_count=1`), so the picker skips ANALYSIS_ONLY_TASK_TITLE and selects a different task. The test fails because it expects the old behavior.
+
+The task says "Existing tests continue to pass" — but that's impossible unless the test at 1010-1018 is updated. The task description explicitly says to add a new test case for the escape hatch path, but doesn't mention updating this existing test.
+
+So the implementation (line 743 change) is correct per the task description, but the existing test at 1010-1018 needs to be updated too. Since it wasn't, and the test now fails, this is FAIL.
+
+Actually wait — the task says "Build: PASS, Tests: PASS". But the test is clearly failing. So either:
+1. The task description is wrong about tests passing
+2. Or maybe the fix hasn't been applied yet and the diff is empty because changes weren't made
+
+Let me check: the diff is empty, but line 743 already has the fix. So the fix was applied in a prior session, and then the tests were not updated. The test at line 1010-1018 still expects OLD behavior.
+
+This is a FAIL. The test at 1017-1018 needs to be updated to match the new behavior. Without that update, the test suite is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+The verdict is clear. The fix on line 743 is correct, but the existing test at line 1017-1018 expects the **old buggy behavior** (it asserts that analysis-only pressure should return `ANALYSIS_ONLY_TASK_TITLE`). With the fix applied, this test now fails because the picker correctly skips the analysis-only task. The test was not updated to match the new behavior.
+  + Verdict: FAIL
+  + Reason: The condition change on line 743 is correct (adds `or analysis_only_active`), but the existing test at line 1010-1018 expects the OLD behavior — it asserts `choose_task(assessment)["title"] == ANALYSIS_ONLY_TASK_TITLE` when `task_analysis_only_attempt_count=2` appears in evidence. With the fix, `analysis_only_active` is True so the picker correctly skips ANALYSIS_ONLY_TASK_TITLE and selects a different landable task, causing the test at line 1018 to fail with a different task title. This test must be updated to expect a non-analysis-only task (or removed and replaced with the new test case the task describes).
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (6ms)

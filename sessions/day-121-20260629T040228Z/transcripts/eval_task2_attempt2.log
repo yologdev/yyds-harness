@@ -1,0 +1,168 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is about modifying `scripts/preseed_session_plan.py` to break a self-reinforcing cycle where analysis-only pressure selects analysis tasks. Let me check the current state of the code and whether the fix has been applied.
+
+Let me start by checking the current code at line 743 and the `analysis_only_active` variable usage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ grep -n 'analysis_only_active' scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:725..780 ✓ (6ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 743 already shows `(_analysis_only_seed_recently_blocked(lower) or analysis_only_active)` — the fix is already in place. Let me also check the test cases to confirm they exist and cover the new condition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Good — line 743 already has the fix applied: `(_analysis_only_seed_recently_blocked(lower) or analysis_only_active)`. Let me verify the tests exist and pass.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -30 ✓ (115ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a test failure. Let me look at the test in question around line 1145-1152 and understand the issue. The test apparently expects that `task_no_edit_revert_count` alone should select the ANALYSIS_ONLY_TASK_TITLE, but with our change where `analysis_only_active` skips it, it now returns a different task.
+
+Wait, let me re-read the task. The task says:
+- "If the existing test at line 1145-1152 already covers this case (analysis_only_active=True → skips ANALYSIS_ONLY_TASK_TITLE), write obsolete_already_satisfied."
+- The task also says: "Add ONE test case (after existing tests, before `if __name__ == "__main__") that constructs assessment text containing `task_analysis_only_attempt_count=1` and asserts `choose_task(assessment)["title"] != ANALYSIS_ONLY_TASK_TITLE`."
+
+So there's a conflict. Let me look at the test at line 1145-1152 to see what it expects.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1120..1160 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the problem. The test at line 1140-1152 says `task_no_edit_revert_count=3` alone should still select the analysis-only task. But our `_has_analysis_only_pressure` at line 681-683 checks for `task_analysis_only_attempt_count > 0`, `task_no_edit_revert_count > 0`, or `reverted_no_edit > 0`. So `task_no_edit_revert_count=3` triggers analysis_only_active, and the new condition skips the analysis-only task.
+
+But wait - the task description says:
+> `_has_analysis_only_pressure(metrics)` already exists (line 681-683) and correctly detects when `task_analysis_only_attempt_count > 0`, `task_no_edit_revert_count > 0`, or `reverted_no_edit > 0` are present.
+
+So the existing test at line 1140 expects that `task_no_edit_revert_count` alone selects the analysis-only task. But our fix treats `analysis_only_active` (which includes `task_no_edit_revert_count > 0`) as a reason to skip it.
+
+The task description itself says:
+> The only gap is that line 743 doesn't consult it.
+
+But now there's a test that expects the opposite behavior. The test at line 1140-1152 says when `task_no_edit_revert_count` alone is present, the analysis-only task should still be selected. But with our fix, it would NOT be selected.
+
+Hmm, but actually, the task description states the fix should be exactly this, and the test at line 1140 is the OLD test from a previous attempt. Let me look more carefully...
+
+Actually wait, looking at the task description again:
+- "If the existing test at line 1145-1152 already covers this case (analysis_only_active=True → skips ANALYSIS_ONLY_TASK_TITLE), write obsolete_already_satisfied."
+
+And the existing test at 1140-1152 says `task_no_edit_revert_count` alone SHOULD select the analysis-only task. That's the OPPOSITE of what our fix does. So this test is in conflict with the fix.
+
+But the test at 1127-1138 (right above) tests that `reverted_no_edit=3` should skip. So it seems inconsistent.
+
+Let me re-read the task more carefully. The task says `_has_analysis_only_pressure` detects when these are present, and the fix should skip the analysis-only task when analysis_only_active is True. So the fix is correct but the OLD test at line 1140-1152 conflicts.
+
+Wait... let me look at this more carefully. Maybe the test at line 1140-1152 was added in a PREVIOUS attempt that was reverted, and this is the leftover test. Let me check git log.
+
+Actually, let me check `git diff` or `git log` to understand what changes are pending.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff -- scripts/preseed_se…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 -- script… ✓ (11ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The git diff shows changes have been made, but there's a test failure. Let me look at the failing test. The error was:
+
+```
+AssertionError: task_no_edit_revert_count alone should select analysis-only task, got Repair evidence-backed planning after no-task sessions
+```
+
+This is the test at line 1140-1152. The diff shows the changes were made to the condition at line 743, and many tests were updated to expect the new behavior. But one test (line 1140-1152) still expects the OLD behavior — that `task_no_edit_revert_count` alone should select the analysis-only task. This test wasn't updated in the diff.
+
+Let me look at the exact lines around 1140-1152 in the current file to see what's there now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1140..1155 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at lines 1140-1152 still asserts that `task_no_edit_revert_count=3` should select ANALYSIS_ONLY_TASK_TITLE. But the fix now makes `analysis_only_active` True when `task_no_edit_revert_count > 0`, which means the analysis-only task is skipped. The test needs to be updated to match the new behavior.
+
+Let me check the `_has_analysis_only_pressure` function to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:681..691 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check what `_ANALYSIS_ONLY_METRICS` contains.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see line 674.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:674..684 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_has_analysis_only_pressure` returns True when any of `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, or `reverted_no_edit` > 0. This means the fix makes ANY of these skip the analysis-only task.
+
+The test at line 1140-1152 asserts `task_no_edit_revert_count=3` should STILL select the analysis-only task. But with the fix, that's no longer the case — `analysis_only_active` is True, so the analysis-only task IS skipped.
+
+The failing test needs to be updated to expect the new behavior. The diff already shows many other tests were updated (lines 1015, 1034, 1044, 1060, 1075, 1093, 1127, 1136). But this test at 1140-1152 was missed.
+
+So the implementation is correct (the condition change on line 743 is right), but there's one test that still expects old behavior and needs to be updated. This means the implementation is incomplete — the task isn't fully done because the tests don't all pass.
+
+Let me check if this test was added by a previous attempt (the old reverted one). Let me look at git log/blame to see when this test was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --all --oneline -5 -- … ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the last commit that touched this file is `5472bc21` which is Day 118's Task 1. The changes in the working tree (the git diff I saw) have NOT been committed yet. 
+
+The diff shows:
+1. Line 743 was changed (the fix)
+2. Many tests were updated to expect the new behavior
+3. A new test case was added (the escape-hatch test)
+4. BUT one test at line 1140-1152 was NOT updated - it still expects ANALYSIS_ONLY_TASK_TITLE
+
+This is clearly a bug in the implementation — the test at 1140-1152 asserts the OPPOSITE of what the fix does. The test needs to be updated.
+
+Since I'm the evaluator, not the implementer, my job is to FAIL this task because:
+- Tests don't pass
+- The implementation is incomplete (missed updating one test)
+
+Let me write the verdict. Wait, the task says tests should pass. They don't. Let me verify one more time.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: tests fail because line 1147 still asserts the old behavior. The implementation is incomplete — the test at line 1140-1152 was not updated to match the new behavior.
+
+Now, the task description says the implementation should change line 743 and add one test case. The diff shows the condition was changed correctly AND many tests were updated AND a new test was added. But one test was missed. This is a minor implementation bug — the test at lines 1147-1148 should be updated to `!=` instead of `==`.
+
+My verdict: FAIL — the implementation is correct in intent but incomplete because one test still asserts the old behavior that `task_no_edit_revert_count` alone selects ANALYSIS_ONLY_TASK_TITLE, which contradicts the fix. The test at lines 1140-1152 needs to be updated to expect `!= ANALYSIS_ONLY_TASK_TITLE`.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+The fix on line 743 is correct, and the new escape-hatch test was added. But the implementation is **incomplete**: the existing test at line 1140-1152 still asserts `task["title"] == ANALYSIS_ONLY_TASK_TITLE` when `task_no_edit_revert_count=3`, which contradicts the fix (since `task_no_edit_revert_count > 0` now triggers `analysis_only_active=True`, causing the analysis-only task to be skipped). All other tests in the diff were updated — this one was missed.
+  + Verdict: FAIL
+  + Reason: Tests fail with `AssertionError: task_no_edit_revert_count alone should select analysis-only task`. The fix on line 743 is correct, and a new escape-hatch test was added, but the existing test at lines 1140-1152 was not updated — it still asserts `task_no_edit_revert_count=3` selects ANALYSIS_ONLY_TASK_TITLE, which contradicts the fix. Change line 1147 from `==` to `!=` (matching the pattern used in all other updated tests in the diff).
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (6ms)

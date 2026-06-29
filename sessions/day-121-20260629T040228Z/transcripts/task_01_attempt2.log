@@ -1,0 +1,402 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the contract, then investigate the task scope.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/log_feedback.py:1..101 ✓ (772ms)
+ ✓ (693ms)
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the key areas of interest. The task mentions lifecycle gaps in `log_feedback.py` and `summarize_state_gnomes.py`. Let me look at:
+
+1. The `top_lessons` function in `log_feedback.py` to see if lessons are generated for unmatched/abnormal model completions
+2. The `lifecycle_gnomes` function in `summarize_state_gnomes.py` to check for key mismatches
+3. The `SCORE_FAILURE_WEIGHTS` to see what's already tracked
+
+Let me also check the key files mentioned in the task.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def top_lessons' in scripts/log_feedback.py  ▶ search 'SCORE_FAILURE_WEIGHTS' in scripts/log_feedback.py  ▶ search 'deepseek_model_call' in scripts/log_feedback.py  ▶ search 'lifecycle_imbalance' in scripts/log_feedback.py ✓ (544ms)
+ ✓ (608ms)
+ ✓ (691ms)
+ ✓ (650ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `top_lessons` function and the SCORE_FAILURE_WEIGHTS section, along with how lessons are generated for the deepseek_model_call metrics.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.2s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1945..2145  ▶ read scripts/log_feedback.py:250..330 ✓ (433ms)
+ ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key gaps. Looking at `top_lessons` (lines 1945-2144):
+
+1. `deepseek_model_call_incomplete_count` has a lesson (line 2076-2083)
+2. BUT `deepseek_model_call_abnormal_completed_count` does NOT have a lesson
+3. BUT `deepseek_model_call_unmatched_completed_count` does NOT have a lesson
+
+Both are in SCORE_FAILURE_WEIGHTS (lines 302-304) and penalize the score, but the pipeline can't surface the root cause through lessons.
+
+Also, the task mentions `summarize_state_gnomes.py`. Let me check the key-mismatch issue from the transcript.
+
+Now, the task says:
+- "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions"
+- "Log feedback and state summaries emit lifecycle lessons only for real incomplete or non-validation unmatched paths"
+
+Let me look at `summarize_state_gnomes.py` for the potential key mismatch between `unmatched_completed_runs` and `unmatched_completed_details`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_completed' in scripts/summarize_state_gnomes.py  ▶ search 'unmatched_completed' in scripts/state_graph_tools.py ✓ (151ms)
+ ✓ (261ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the specific areas in `summarize_state_gnomes.py` where the `model_calls` dict is built, especially the `unmatched_completed_runs` key.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:380..480  ▶ read scripts/state_graph_tools.py:910..970 ✓ (456ms)
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key mismatch clearly:
+
+1. In `summarize_state_gnomes.py`, the `model_calls` dict has key `"unmatched_completed_runs"` (line 439) for the model call unmatched completed runs.
+
+2. In `state_graph_tools.py`, `lifecycle_imbalance_causes` accesses `model_calls.get("unmatched_completed_details")` on line 922.
+
+So the key in `summarize_state_gnomes.py` is `"unmatched_completed_runs"` but `state_graph_tools.py` reads `"unmatched_completed_details"`. This is a key-mismatch that makes model call unmatched completed details invisible to lifecycle imbalance causes.
+
+For runs, the keys match: `summarize_state_gnomes.py` uses `"unmatched_completed_details"` (line 415), and `lifecycle_imbalance_causes` reads `runs.get("unmatched_completed_details")` (line 919).
+
+Now, the question is: what's the smallest fix?
+
+Two issues I've identified:
+1. `log_feedback.py` `top_lessons` doesn't generate lessons for `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count`
+2. `summarize_state_gnomes.py` has a key mismatch where model_calls uses `unmatched_completed_runs` but `state_graph_tools.py` reads `unmatched_completed_details`
+
+The task says: "Close one concrete yyds lifecycle feedback gap by keeping terminal event recording and lifecycle lessons precise when current run/model-call imbalance is real."
+
+For the Feedback gap (log_feedback.py): The issue is that `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count` are penalized in SCORE_FAILURE_WEIGHTS but no lesson is emitted for them. This means the assessment can't surface why those penalties exist.
+
+For the recording precision (summarize_state_gnomes.py): The key mismatch means model_call_unmatched_completed details aren't fed into `lifecycle_imbalance_causes`.
+
+Let me fix the most impactful one first. The task says "one concrete gap". Let me fix the lesson gap in `log_feedback.py` since it directly impacts assessment and task selection. The key mismatch is also important but might be harder to verify.
+
+Actually, looking more carefully at the task:
+- "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions"
+- "Log feedback and state summaries emit lifecycle lessons only for real incomplete or non-validation unmatched paths"
+
+These requirements suggest I should add lessons for `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count` in `top_lessons`, similar to how `state_run_incomplete_count` and `state_run_unmatched_non_validation_completed_count` already have lessons.
+
+Let me now also check `summarize_state_gnomes.py` for the key mismatch fix. The fix should be: change `"unmatched_completed_runs"` to `"unmatched_completed_details"` or add both keys.
+
+Wait, but the task says "Keep the change scoped to the listed files unless verification reveals a direct dependency." The listed files are:
+- `scripts/append_terminal_state_events.py`
+- `scripts/log_feedback.py`
+- `scripts/summarize_state_gnomes.py`
+
+`state_graph_tools.py` is NOT in the listed files. So I cannot fix the key mismatch there. But I CAN fix it in `summarize_state_gnomes.py` by changing the key name to match what `state_graph_tools.py` expects, OR I can add both keys.
+
+Wait, if I change the key in `summarize_state_gnomes.py` from `unmatched_completed_runs` to `unmatched_completed_details`, it affects the consumers in `state_graph_tools.py`. But `state_graph_tools.py` is not in the listed files. And I should not edit files outside the task surface.
+
+Hmm, but the task surface includes `summarize_state_gnomes.py`. Changing the key name there is fine. The question is whether `state_graph_tools.py` will then read it correctly. Looking at line 922: `model_calls.get("unmatched_completed_details")`. If I change the key in `summarize_state_gnomes.py` to `"unmatched_completed_details"`, then `state_graph_tools.py` will correctly read it. This is a fix entirely within `summarize_state_gnomes.py`.
+
+But wait, let me also check if anything else reads `unmatched_completed_runs` from model_calls.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_completed_runs' ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `summarize_state_gnomes.py` uses `"unmatched_completed_runs"` for model_calls (line 439)
+2. `state_graph_tools.py` reads `model_calls.get("unmatched_completed_details")` (line 922) - MISMATCH
+3. `build_evolution_dashboard.py` uses `modelCalls.unmatched_completed_details || modelCalls.unmatched_completed_runs` (line 7044) - has fallback
+4. For runs, `unmatched_completed_details` is used consistently
+
+So the fix in `summarize_state_gnomes.py` is to either:
+a. Change `"unmatched_completed_runs"` to `"unmatched_completed_details"` for model_calls (matching what state_graph_tools expects), OR
+b. Add `"unmatched_completed_details": model_unmatched_completed_ids[:8]` alongside the existing key
+
+Option (a) is cleaner but changes the key in the dict. Option (b) preserves backward compatibility. But since `build_evolution_dashboard.py` already handles both keys, option (b) is safe.
+
+Actually, looking at `build_evolution_dashboard.py` line 7044: `modelCalls.unmatched_completed_details || modelCalls.unmatched_completed_runs` - it tries `unmatched_completed_details` first, then falls back to `unmatched_completed_runs`. So if I add `unmatched_completed_details`, the dashboard will use it. And if I keep `unmatched_completed_runs`, the dashboard still works as fallback.
+
+And `state_graph_tools.py` reads only `unmatched_completed_details`, so adding that key would fix the `lifecycle_imbalance_causes` gap.
+
+Also, for the `log_feedback.py` lesson gap: I need to add lessons for `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count` in `top_lessons`.
+
+Wait, let me also check whether there's a corresponding `state_run_unmatched_completed_count` lesson (the raw count, not the non-validation filtered one). Looking at the code, `state_run_unmatched_completed_count` doesn't have a lesson either, but `state_run_unmatched_non_validation_completed_count` does. This seems intentional - the non-validation filtered count is the one that matters for action.
+
+OK, so my plan:
+1. In `log_feedback.py`: Add lessons for `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count` in `top_lessons`
+2. In `summarize_state_gnomes.py`: Add `"unmatched_completed_details"` key alongside `"unmatched_completed_runs"` in the model_calls dict
+
+But wait, the task says "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions." Let me check if there's a distinction being made for model calls like there is for runs (where `unmatched_non_validation_completed` is tracked separately from raw `unmatched_completed`).
+
+Looking at the model call tracking in summarizer: there's no equivalent of `is_input_validation_completion` for model calls. Model calls don't have the same input-validation distinction because models are what the agent calls, not what the CLI does.
+
+So for model calls:
+- `deepseek_model_call_unmatched_completed_count` tracks model completions without matching starts
+- `deepseek_model_call_abnormal_completed_count` tracks model completions with abnormal status
+
+For the lesson in `top_lessons`, I should mirror what's done for `state_run_unmatched_non_validation_completed_count` (line 2068-2075).
+
+Now let me also look at the gnome computation more carefully. I need to understand the `GNOME_KEYS` to see if the new lesson keys need to be registered there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'GNOME_KEYS' in scripts/log_feedback.py ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the GNOME_KEYS to understand what's tracked.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:203..263 ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the deepseek model call metrics ARE in GNOME_KEYS, including:
+- `deepseek_model_call_abnormal_completed_count`
+- `deepseek_model_call_incomplete_count` 
+- `deepseek_model_call_unmatched_completed_count`
+
+And they're in SCORE_FAILURE_WEIGHTS. But only `deepseek_model_call_incomplete_count` has a lesson. I need to add lessons for the other two.
+
+Now let me also check the `top_lessons` area more carefully to understand exactly where to add the new lessons. I already read lines 1945-2144. The relevant lessons for lifecycle are at lines 2060-2083:
+- `state_run_incomplete_count` → lesson (line 2060-2067)
+- `state_run_unmatched_non_validation_completed_count` → lesson (line 2068-2075)
+- `deepseek_model_call_incomplete_count` → lesson (line 2076-2083)
+
+Missing:
+- `deepseek_model_call_abnormal_completed_count` → no lesson
+- `deepseek_model_call_unmatched_completed_count` → no lesson
+
+Now, for `summarize_state_gnomes.py`, the fix is to add `"unmatched_completed_details"` key alongside `"unmatched_completed_runs"` in the model_calls dict (line 439).
+
+Let me now write the code. First, I want to check the test files to understand what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the test files for these scripts to understand how to add tests.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_log_feedback.py (50 lines)  ▶ search 'deepseek_model_call' in scripts/test_task_lineage_feedback.py  ▶ search 'top_lessons|lifecycle_lesson' in scripts/test_task_lineage_feedback.py ✗ (582ms)
+    │ Cannot access scripts/test_log_feedback.py: No such file or directory (os error 2)
+ ✓ (690ms)
+ ✓ (664ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the test file for log_feedback.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (2 ✓, 1 ✗)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'test.*log_feedback' in scripts  ▶ search 'import.*log_feedback' in scripts ✓ (161ms)
+ ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no test file for log_feedback.py. But the task's verifier mentions `scripts.test_task_lineage_feedback` which does test aspects of log_feedback.py. Let me check how log_feedback is tested. Let me look at the test files in the scripts directory.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ ls scripts (test_*.py) ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are tests for `append_terminal_state_events.py` and `task_lineage_feedback.py` but not a dedicated test for `log_feedback.py`. However, `log_feedback.py` has a `run_self_tests` function. Let me check if I can run those tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def run_self_tests' in scripts/log_feedback.py ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the self-tests cover and whether they test top_lessons.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2322..2422 ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The self-tests in `log_feedback.py` test the `parse_log` function but don't seem to test `top_lessons` specifically. Let me check the test_task_lineage_feedback.py to see what tests exist for the lifecycle lessons.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'class.*Lesson|def test.*lesson' in scripts/test_task_lineage_feedback.py ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for test classes and methods that might test top_lessons or related functionality.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'top_lessons' in scripts/test_task_lineage_feedback.py ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test at line 2762 which calls `top_lessons`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2750..2830 ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I can see the test patterns. Let me look at the test around line 2740 to see the test that tests model call lessons.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2730..2760 ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me now read the test file's last test class area to understand where I can add tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough context. Let me plan my changes:
+
+1. **`scripts/log_feedback.py`**: Add lessons for `deepseek_model_call_abnormal_completed_count` and `deepseek_model_call_unmatched_completed_count` in `top_lessons`
+
+2. **`scripts/summarize_state_gnomes.py`**: Add `"unmatched_completed_details"` key in model_calls dict so `state_graph_tools.py` can read it
+
+3. **`scripts/test_task_lineage_feedback.py`**: Add tests for the new lessons
+
+Let me now implement these changes.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (73ms)
+  ▶ todo ✓ (180ms)
+  ▶ todo ✓ (145ms)
+  ▶ todo ✓ (144ms)
+  ▶ todo ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, the lessons in `log_feedback.py`. I'll add them right after the existing `deepseek_model_call_incomplete` lesson (after line 2083).
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.3s (5 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (73ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+                    "kind": "deepseek_model_call_incomplete",
+                    "fingerprint": "DeepSeek model call lifecycle was incomplete",
+                    "action": "append ModelCallCompleted on normal exits, timeout exits, and completion-file early stops before scoring cache or task outcomes",
+  +             }
+  +         )
+  +     if int(metrics.get("deepseek_model_call_abnormal_completed_count") or 0) > 0:
+  +         lessons.append(
+  +             {
+  +                 "kind": "deepseek_model_call_abnormal_completed",
+  +                 "fingerprint": "DeepSeek model call completed with an abnormal status",
+  +                 "action": "preserve model completion status and error detail in terminal events before scoring; abnormal completions can hide provider errors",
+  +             }
+  +         )
+  +     if int(metrics.get("deepseek_model_call_unmatched_completed_count") or 0) > 0:
+  +         lessons.append(
+  +             {
+  +                 "kind": "deepseek_model_call_unmatched_completed",
+  +                 "fingerprint": "DeepSeek ModelCallCompleted events appeared without matching ModelCallStarted",
+  +                 "action": "preserve model_id pairing for terminal events and route unmatched completions to the state lifecycle diagnostics",
+                }
+  ... (1 more lines)
+  ✓ Auto-approved: edit: scripts/log_feedback.py (8 → 24 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (8 → 24 lines)
+                    "kind": "deepseek_model_call_incomplete",
+                    "fingerprint": "DeepSeek model call lifecycle was incomplete",
+                    "action": "append ModelCallCompleted on normal exits, timeout exits, and completion-file early stops before scoring cache or task outcomes",
+  +             }
+  +         )
+  +     if int(metrics.get("deepseek_model_call_abnormal_completed_count") or 0) > 0:
+  +         lessons.append(
+  +             {
+  +                 "kind": "deepseek_model_call_abnormal_completed",
+  +                 "fingerprint": "DeepSeek model call completed with an abnormal status",
+  +                 "action": "preserve model completion status and error detail in terminal events before scoring; abnormal completions can hide provider errors",
+  +             }
+  +         )
+  +     if int(metrics.get("deepseek_model_call_unmatched_completed_count") or 0) > 0:
+  +         lessons.append(
+  +             {
+  +                 "kind": "deepseek_model_call_unmatched_completed",
+  +                 "fingerprint": "DeepSeek ModelCallCompleted events appeared without matching ModelCallStarted",
+  +                 "action": "preserve model_id pairing for terminal events and route unmatched completions to the state lifecycle diagnostics",
+                }
+  ... (1 more lines)
+ ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me fix the key mismatch in `summarize_state_gnomes.py`. I need to add `"unmatched_completed_details"` key alongside `"unmatched_completed_runs"` in the model_calls dict.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (73ms)
+  ▶ todo ✓ (199ms)
+  ▶ todo ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add `"unmatched_completed_details"` in the model_calls dict. The key exists as `unmatched_completed_runs` (line 439), and I need to add `unmatched_completed_details` alongside it. Looking at the runs dict for comparison:
+
+```python
+"unmatched_completed_runs": run_unmatched_completed_ids[:8],
+"unmatched_completed_details": run_unmatched_completed,
+```
+
+For runs, `unmatched_completed_details` contains the full details (dicts with event data), while `unmatched_completed_runs` is just the IDs. Let me create analogous details for model calls. But wait - for model calls, `model_unmatched_completed_ids` are just the run_ids (not full event data). I don't have the same rich structures.
+
+Actually, looking more carefully at the state_graph_tools code (line 919-922):
+```python
+add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+add("model_call_abnormal_completed", model_calls.get("abnormal_completed_runs"))
+add("model_call_incomplete", model_calls.get("incomplete_runs"))
+add("model_call_unmatched_completed", model_calls.get("unmatched_completed_details"))
+```
+
+For runs, it reads `unmatched_completed_details` - which is a list of dicts (rich data).
+For model calls, it reads `unmatched_completed_details` - but the key in the dict is `unmatched_completed_runs` which is a list of IDs (strings).
+
+So I need to add the `unmatched_completed_details` key. The question is what data to put there. Looking at the `add` function in `lifecycle_imbalance_causes`:
+
+```python
+for item in items:
+    ...
+    add_item
+```
+
+It iterates over items. If the items are strings, the function won't have run_id, etc. Let me look at the `add` function more carefully to see what's expected.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.4s (3 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:885..925 ✓ (92ms)
+
+

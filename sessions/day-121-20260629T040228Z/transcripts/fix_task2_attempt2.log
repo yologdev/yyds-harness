@@ -1,0 +1,221 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator says the fix on line 743 is correct (changing the condition to include `analysis_only_active`)
+2. The new escape-hatch test was added
+3. But the existing test at lines 1140-1152 still asserts that `task_no_edit_revert_count=3` selects ANALYSIS_ONLY_TASK_TITLE, which contradicts the fix
+4. I need to change line 1147 from `==` to `!=`
+
+Let me first verify the current state of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ grep -n 'analysis_only_active' scripts/preseed_session_plan.py  ▶ $ grep -n 'task_no_edit_revert_count' scripts/preseed_session_plan.py ✓ (22ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the specific test at lines 1140-1152 to understand the current state:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1138..1158 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. The existing test at line 1147 asserts `== ANALYSIS_ONLY_TASK_TITLE`, but since the fix now makes `analysis_only_active` skip the ANALYSIS_ONLY_TASK_TITLE, this test contradicts the fix. The evaluator says to change line 1147 from `==` to `!=`.
+
+Let me also verify the fix on line 743 is already in place:
+────────────────────────────────────────────────────────────────────────────────
+
+Good. The fix on line 743 is already in place (`or analysis_only_active`), and the new escape-hatch tests are added. The only issue is the existing test at line 1147 still asserts `== ANALYSIS_ONLY_TASK_TITLE` when `task_no_edit_revert_count=3` — this contradicts the fix. Let me apply the one-line fix:
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"task_no_edit_revert_count alone should NOT select analysis-only task (analysis_only_active blocks), got {task['title']}"
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 2 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (2 → 2 lines)
+  -         assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
+  -             f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+  +         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+  +             f"task_no_edit_revert_count alone should NOT select analysis-only task (analysis_only_active blocks), got {task['title']}"
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify by running the tests:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's another test at line 1448 that also asserts `== ANALYSIS_ONLY_TASK_TITLE`. Let me read that test.
+────────────────────────────────────────────────────────────────────────────────
+
+Another test at line 1448 also expects the old behavior. Let me read and fix it:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1430..1460 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test at line 1447-1448 also expects the analysis-only task to be selected when there's `task_analysis_only_attempt_count=2`. But now with the fix, `analysis_only_active` will be True (because `task_analysis_only_attempt_count=2` triggers it), and the picker will skip ANALYSIS_ONLY_TASK_TITLE.
+
+Let me also look at what other tests expect the old behavior. Let me search more broadly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ANALYSIS_ONLY_TASK_TITLE' scripts/preseed_session_plan.py | grep -v '^[… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1448 is the problem. Let me also read lines 1160-1175 to check if there are more tests that expect the old behavior:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check lines around 1160 and 1440 more carefully:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1156..1181 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - line 1168 already has `!=` so that test is fine. Now let me also check around line 1440-1460 more carefully. The issue is at line 1448 - the test with `task_analysis_only_attempt_count=2` expects the analysis-only task to be selected, but with the fix, `analysis_only_active` will be True and the picker will skip it.
+
+Let me re-read that section to understand the full context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1436..1496 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test at line 1439-1462 is specifically about obsolete-seed contradiction. The assessment mentions both:
+1. "Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied" 
+2. "task_analysis_only_attempt_count=2"
+
+Now with the fix, `analysis_only_active` will be True (because of `task_analysis_only_attempt_count=2`), so the picker will skip ANALYSIS_ONLY_TASK_TITLE and pick a different task. But the test expects the analysis-only task to be returned so it can check `contradiction_reason`.
+
+I need to update this test. The test's purpose is to verify obsolete-seed contradiction detection, not specifically to verify that analysis-only pressure selects the analysis-only task. The fix means that when analysis-only pressure is active, the picker should skip ANALYSIS_ONLY_TASK_TITLE and pick a landable task instead.
+
+I need to modify the assessment text to include analysis-only pressure without triggering `analysis_only_active`. Or better, I should rewrite this test to test obsolete-seed contradiction without analysis-only pressure. Let me think about what triggers `_has_analysis_only_pressure`:
+
+Looking at line 681-683:
+```python
+def _has_analysis_only_pressure(metrics):
+    return (metrics.get("task_analysis_only_attempt_count", 0) > 0
+            or metrics.get("task_no_edit_revert_count", 0) > 0
+            or metrics.get("reverted_no_edit", 0) > 0)
+```
+
+So I need to remove `task_analysis_only_attempt_count=2` from the assessment text. But the test is about obsolete-seed contradiction - it says "Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied." That text mentions "analysis-only pressure" but doesn't contain the camelCase metric keys.
+
+Let me just change `task_analysis_only_attempt_count=2` to something that won't trigger analysis-only pressure. The test just needs the obsolete-seed contradiction to work.
+────────────────────────────────────────────────────────────────────────────────
+
+I see the problem. The test at line 1448 also expects the old behavior. This test has `task_analysis_only_attempt_count=2` in the assessment text, which now triggers `analysis_only_active=True` and skips the analysis-only task. The test's real purpose is verifying obsolete-seed contradiction detection, not analysis-only task selection. Let me fix it by removing the triggering metric:
+    Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+    
+    ## Bugs / Friction Found
+  - no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+  + no-edit revert pressure from prior session.
+    """
+            task = choose_task(assessment)
+            assert task["title"] == "Make analysis-only task pressure landable", (
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (10 → 10 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (10 → 10 lines)
+    Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
+    
+    ## Bugs / Friction Found
+  - no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+  + no-edit revert pressure from prior session.
+    """
+            task = choose_task(assessment)
+            assert task["title"] == "Make analysis-only task pressure landable", (
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check: does the assessment text "no-edit revert pressure from prior session" trigger `analysis_only_active`? Let me check the `_has_analysis_only_pressure` function again - it checks for specific camelCase metric keys like `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, and `reverted_no_edit`. The text "no-edit revert pressure from prior session" doesn't contain any of those exact keys, so it shouldn't trigger.
+
+But wait, I need to also check that this assessment text still triggers the `_analysis_only_seed_recently_blocked` check... Actually no, looking at the test more carefully, it's testing obsolete-seed contradiction. The text says "Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied." This should cause the seed to detect the analysis-only task as obsolete/recently-blocked and flag it.
+
+Let me also check if there are other tests that might be affected. Let me run the tests now:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Let me verify the changes are consistent by doing a final check:
+
+1. Line 743: `if task["title"] == ANALYSIS_ONLY_TASK_TITLE and (_analysis_only_seed_recently_blocked(lower) or analysis_only_active):` ✓
+2. Line 1147: `assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (` ✓
+3. Line 1448: Still `== ANALYSIS_ONLY_TASK_TITLE` but without the triggering metric ✓ (this test now tests a different code path - obsolete-seed contradiction without analysis-only pressure)
+4. All self-tests pass ✓
+
+Let me do a final grep to make sure no other `== ANALYSIS_ONLY_TASK_TITLE` assertions remain that would contradict the fix:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me do a final verification to make sure no other contradictory assertions remain:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '== ANALYSIS_ONLY_TASK_TITLE' scripts/preseed_session_plan.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 743 is the skip condition itself (correct — this is the fix), and there are no other `== ANALYSIS_ONLY_TASK_TITLE` assertions left. Good.
+
+Let me also confirm the test at line 1448 no longer has the contradictory assertion. Wait, it should still have `==` because the obsolete-seed test no longer triggers analysis-only pressure. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'assert task\["title"\] == "Make analysis-only' scripts/preseed_session_… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are still 3 `==` assertions. Let me check each one to see if they're in tests that include triggering metrics. Lines 1403 and 1428 were there before and presumably don't trigger analysis-only pressure. The fix at line 1448 now also doesn't trigger.
+
+Let me quickly verify lines 1403 and 1428 to make sure they're fine:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify these don't contain triggering metrics:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1395..1425 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1403 test: Assessment has "no-edit revert pressure from prior session" — this doesn't contain the exact camelCase metric keys, so it won't trigger `_has_analysis_only_pressure`. Good.
+
+Line 1428 test: Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1424..1444 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Same pattern - these tests use "no-edit revert pressure from prior session" which doesn't contain the exact metric key camelCase strings. They won't trigger `_has_analysis_only_pressure`. Good.
+
+All three remaining `== ANALYSIS_ONLY_TASK_TITLE` assertions are in tests that don't trigger `analysis_only_active`, so they're fine. They test stale-seed contradiction detection (where the analysis-only task IS the seed that should be contradicted), not the escape-hatch path.
+
+Summary of changes:
+1. Line 743: Already had the fix `(_analysis_only_seed_recently_blocked(lower) or analysis_only_active)` — no change needed
+2. Line 1147: Changed `==` to `!=` — the evaluator's specific request
+3. Line 1445: Removed `task_analysis_only_attempt_count=2` from the assessment text so this test (obsolete-seed contradiction) doesn't trigger the escape-hatch
+
+All tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+All three remaining `== ANALYSIS_ONLY_TASK_TITLE` assertions are in stale-seed contradiction tests that don't contain camelCase metric keys triggering `_has_analysis_only_pressure` — they correctly test that the analysis-only seed task gets *contradicted* (flagged as stale) when it appears in assessment text as resolved/obsolete. These don't conflict with the escape-hatch.
+
+**Summary of changes:**
+
+1. **Line 1147** (the evaluator's specific request): Changed `assert task["title"] == ANALYSIS_ONLY_TASK_TITLE` to `!=` — the `task_no_edit_revert_count=3` test now verifies the escape-hatch skips the analysis-only task.
+
+2. **Lines 1444-1445**: Removed `task_analysis_only_attempt_count=2` from the obsolete-seed contradiction test's assessment text, so it doesn't trigger `analysis_only_active` and can still test contradiction detection.
+
+3. **Line 743** was already correct from the prior implementation attempt (condition includes `or analysis_only_active`).
+
+All self-tests pass: `python3 scripts/preseed_session_plan.py --test` ✓
+
+

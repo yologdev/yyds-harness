@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Tests fail with `AssertionError: task_no_edit_revert_count alone should select analysis-only task`. The fix on line 743 is correct, and a new escape-hatch test was added, but the existing test at lines 1140-1152 was not updated — it still asserts `task_no_edit_revert_count=3` selects ANALYSIS_ONLY_TASK_TITLE, which contradicts the fix. Change line 1147 from `==` to `!=` (matching the pattern used in all other updated tests in the diff).
