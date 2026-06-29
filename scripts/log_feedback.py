@@ -2081,6 +2081,22 @@ def top_lessons(metrics: dict[str, Any]) -> list[dict[str, Any]]:
                 "action": "append ModelCallCompleted on normal exits, timeout exits, and completion-file early stops before scoring cache or task outcomes",
             }
         )
+    if int(metrics.get("deepseek_model_call_abnormal_completed_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "deepseek_model_call_abnormal_completed",
+                "fingerprint": "DeepSeek model call completed with an abnormal status",
+                "action": "preserve model completion status and error detail in terminal events before scoring; abnormal completions can hide provider errors",
+            }
+        )
+    if int(metrics.get("deepseek_model_call_unmatched_completed_count") or 0) > 0:
+        lessons.append(
+            {
+                "kind": "deepseek_model_call_unmatched_completed",
+                "fingerprint": "DeepSeek ModelCallCompleted events appeared without matching ModelCallStarted",
+                "action": "preserve model_id pairing for terminal events and route unmatched completions to the state lifecycle diagnostics",
+            }
+        )
     if int(metrics.get("protected_file_revert_count") or 0) > 0:
         lessons.append(
             {
