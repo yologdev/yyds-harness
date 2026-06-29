@@ -1,0 +1,622 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment is available - the assessment agent didn't produce output
+2. I need to follow the fallback planning rule: create task files from trajectory, recent CI, journals, state/gnome feedback
+3. The trajectory shows the latest session (day-121) was a full success: 2/2 tasks verified
+4. There are graph-derived next-task pressures
+5. There's one agent-self issue (#37) about held-out coding eval coverage
+6. No trusted owner issues are explicitly listed (no ISSUES_TODAY.md content shown)
+
+Let me check what exists in session_plan/ first, then look at the trajectory evidence to decide on tasks.
+
+The trajectory gives me:
+- Graph-derived next-task pressure (multiple items)
+- A successful recent session
+- Log feedback lessons
+
+Let me follow the ARTIFACT-FIRST REQUIREMENT: first, mkdir -p session_plan, then check if task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty" ✓ (272ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and assessment_missing.md. Let me read those to understand what the harness already seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (439ms)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the assessment agent timed out after 600 seconds (exit code 124) without producing assessment.md. The harness already seeded a task_01.md about repairing evidence-backed planning.
+
+Now I need to:
+1. Decide whether to keep, refine, or replace task_01.md
+2. Write task_02.md and task_03.md if I have good evidence for additional tasks
+3. Write issue_responses.md
+
+Let me evaluate the seeded task_01.md:
+
+The task is about repairing evidence-backed planning after no-task sessions. But wait - the trajectory shows day-121 already had a successful session (tasks 2/2 ✅). The assessment timed out, which is a different problem than "no task artifacts." The seeded task seems to be a generic fallback that doesn't quite match the actual evidence.
+
+The actual evidence from this session is:
+- Assessment timed out after 600s (exit code 124) - this is the assessment reliability problem
+- Day 121's prior session was fully successful (2/2 tasks)
+- Graph-derived pressures include: state_run_incomplete_count=1, task_analysis_only_attempt_count=1, tool failure reconciliations
+
+Let me check the graph-derived pressures more carefully and look at what's actionable.
+
+The trajectory says:
+1. "Close yyds state and model lifecycle gaps (state_run_incomplete_count=1)" - state lifecycle incomplete
+2. "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)" - analysis-only tasks
+3. "Reconcile transcript-only tool failures (transcript_only_failed_tool_count=5)" - tool failures in transcripts but not state
+4. "Reconcile state-only tool failures (state_only_failed_tool_count=39)" - tool failures in state but not transcripts
+5. "Recover failed tool actions before scoring (tool_error_count=4)" - tool errors
+
+And the log feedback says:
+- "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+The assessment itself timed out (exit code 124), which is evidence of #1 (state lifecycle incomplete) and the log feedback lesson. This is directly relevant.
+
+Let me also check the agent-self issue #37 about eval coverage.
+
+Let me decide on tasks:
+
+Task 01: The seeded task about "Repair evidence-backed planning after no-task sessions" - this seems misaligned with current evidence. The issue isn't no-task sessions (day-121 was successful). The issue is assessment timeout. I should replace it or substantially refine it.
+
+Actually, wait. The harness seeded this task automatically. Let me re-read the seed task more carefully. It says "The harness reached planning with no task artifacts" which refers to the assessment not producing task artifacts (i.e., assessment.md). But the trajectory shows this isn't a recurring pattern - the prior session was successful.
+
+Let me consider what's most impactful:
+
+1. Assessment timeout (exit code 124, 600s) - the assessment agent timed out. This is the immediate failure. This relates to the "state_run_incomplete_count=1" graph pressure and the log feedback lesson about emitting RunCompleted for timeout exits.
+
+2. State lifecycle gap - the RunCompleted event should be emitted even on timeout
+
+3. Task_analysis_only_attempt_count=1 - one task attempted but produced no file progress
+
+Given the log feedback lesson explicitly says "emit RunCompleted events for every started run, including timeout and API-error exits", and the assessment just timed out (which likely left a run incomplete), fixing the assessment timeout handling / RunCompleted emission is directly evidence-backed.
+
+Let me refine task_01 to be about the assessment timeout + state lifecycle gap, then add task_02 about eval fixtures (agent-self #37), and task_03 about transcript/state tool failure reconciliation.
+
+Actually, let me be more careful. The assessment timeout is in `scripts/evolve.sh` or wherever the assessment phase runs. The state lifecycle (RunCompleted on timeout) is also likely in `scripts/evolve.sh`. Let me check ownership quickly.
+
+Let me look at the files involved without reading them fully - just check what's in evolve.sh related to assessment and RunCompleted.
+
+Actually, the planning rules say: "Do not read all source files" and "After task_01.md exists, you may run at most 3 short context-gathering reads or commands." Let me use targeted grep to verify file ownership.
+
+Let me refine task_01 to be directly evidence-backed. The assessment timed out. The log feedback says to emit RunCompleted for timeout exits. The graph pressure says state_run_incomplete_count=1. These all point to the same thing.
+
+For task_02, the agent-self issue #37 about eval fixtures is tracked but lower priority. The trajectory says "fitness_score=1.0" now so eval coverage may not be as urgent.
+
+For task_03, the tool failure reconciliation (39 state-only, 5 transcript-only) seems like a data quality issue but the trajectory says these are "historical unrecovered" - the instructions say to treat these as context only unless recent evidence shows they still reproduce.
+
+Let me also consider: the seeded task_01.md says Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py. If I keep the seed task but refine it to be about assessment timeout, these files might not be the right owners. Let me check.
+
+The assessment timeout happened in the assessment phase pipeline (evolve.sh). The state lifecycle (RunCompleted) is likely in evolve.sh. Let me do a quick grep.
+
+Let me plan my approach:
+
+1. Refine task_01 to address the assessment timeout + RunCompleted on timeout (real evidence from this session)
+2. Create task_02 for eval fixtures (#37)
+3. Create task_03 for tool failure reconciliation or skip if not enough evidence
+
+Let me first check the file ownership with quick greps.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 21.2s (2 ✓)
+
+The assessment timed out (exit code 124, 600s) — this is real, current evidence. Let me verify file ownership with targeted greps before refining the seed task.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'RunCompleted\|run_agent_with\|assessment.*timeout\|append_state_event\|…  ▶ $ grep -n 'timeout\|RunCompleted\|state_incomplete\|open_after' scripts/evolve.sh …  ▶ $ git ls-files scripts/task_manifest.py scripts/test_task_manifest.py 2>/dev/null;… ✓ (649ms)
+ ✓ (1.3s)
+ ✓ (993ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have evidence. Let me trace the assessment timeout flow:
+
+1. Line 1322: `run_agent_with_completion_watch` is called for assessment
+2. Lines 717-763: `run_agent_with_fallback` does timeout handling - when the agent times out, it records a FailureObserved event (line 762-763) but does NOT emit RunCompleted
+3. Line 3351: `record_state_event "RunCompleted"` is only called at the very end of the session - if the assessment times out and the session exits early, RunCompleted never fires
+
+This is the exact bug the log feedback describes: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+And the seeded task_01.md lists `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` - these have nothing to do with the assessment timeout / state lifecycle issue! The seeded task is about a generic "no task artifacts" problem, but the real issue is that the assessment agent TIMED OUT and RunCompleted wasn't emitted.
+
+The actual fix locations are in `scripts/evolve.sh` - around the assessment phase timeout handling and the RunCompleted emission.
+
+Let me refine task_01 to address the real evidence, then write task_02 and task_03.
+
+Key evidence for task_01:
+- Assessment exit code 124 (timeout after 600s)
+- Log feedback: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1"
+- Graph pressure: "Close yyds state and model lifecycle gaps (state_run_incomplete_count=1)"
+- The RunCompleted at line 3351 only fires on normal session completion, not on early exit from assessment timeout
+
+For task_02, I'll use the agent-self issue #37 about eval fixtures. The trajectory shows fitness_score=1.0 so this is lower priority, but it's tracked.
+
+For task_03, the tool failure reconciliation (39 state-only, 5 transcript-only) - let me decide if this is actionable. The trajectory instructions say "treat historical unrecovered tool failures as context only unless recent evidence shows the failure still reproduces." These might be historical artifacts. But 39 is a large number. Let me check if there's a quick way to verify.
+
+Actually, let me focus on what I can verify. Let me check the assessment log for evidence of the timeout.
+
+Let me now write the task files. Task_01 needs to be replaced with the real assessment timeout + RunCompleted fix.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 9.4s (3 ✓)
+
+Key finding: the seed task targets `preseed_session_plan.py` and `task_manifest.py`, but the actual evidence is an **assessment timeout** (exit 124, 600s) where `RunCompleted` never fires. The fix is in `scripts/evolve.sh`. Let me check the assessment log for corroboration, then replace the seed task.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ tail -30 transcripts/assess.log 2>/dev/null || echo "NO_ASSESS_LOG"  ▶ $ grep -n 'exit 124\|TIMEOUT\|timeout.*600\|ASSESS.*TIMEOUT\|record_state_event.*R… ✓ (599ms)
+ ✓ (606ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the assessment phase flow more carefully. I need to see what happens when the assessment times out - does the script continue to planning or exit?
+
+Lines around 1320-1370 are likely where the assessment runs. Let me read that section.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1315..1385 ✓ (160ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the flow clearly now:
+
+1. Assessment runs with timeout (line 1322-1325)
+2. If it times out (exit 124), it prints a warning (line 1341-1342)
+3. If no assessment.md produced, it writes assessment_missing.md (line 1356-1377)
+4. The planning phase continues - it does NOT exit
+
+But the key issue: the session continues after assessment timeout. The RunCompleted event at line 3351 should still fire at the end. Let me check if the session can exit early before reaching line 3351.
+
+Wait, let me re-read the log feedback more carefully: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+This is saying that a run (a model call, not the session) can time out and not emit RunCompleted. Let me check `run_agent_with_fallback` more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:716..776 ✓ (126ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: `run_agent_with_fallback` calls `record_agent_terminal_events` on exit (timeout, success, failure). Let me check what `record_agent_terminal_events` does - does it emit RunCompleted?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_agent_terminal_events' scripts/evolve.sh | head -5 ✓ (296ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record_agent_terminal_events` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:240..290 ✓ (128ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `record_agent_terminal_events` calls `scripts/append_terminal_state_events.py` which should handle RunCompleted emission. Let me check what that script does. But wait - the log feedback says the state is open_after_SessionStarted. Let me check if the issue is specifically about the SessionStarted/RunCompleted lifecycle, not the per-model-call lifecycle.
+
+Let me look at the actual state events: SessionStarted is emitted somewhere, and RunCompleted should close it. The log feedback says `state_incomplete/open_after_SessionStarted=1`. Let me check `append_terminal_state_events.py` or the equivalent.
+
+Actually, let me re-examine. The `record_state_event` function at line 213 records to both the global state events and session state events. RunStarted is at line 578, RunCompleted at line 3351. SessionStarted would be somewhere. If the session exits before line 3351 (e.g., on a hard failure), RunCompleted never fires. But in this case, the assessment timed out and the session continued to planning - it should still reach line 3351.
+
+Wait - but the assessment_missing.md says exit_code was 124. And the session_plan/assessment_missing.md exists, which means the planning phase IS continuing. So RunCompleted should fire.
+
+Unless... the issue is about a different session. The graph pressure says state_run_incomplete_count=1 - there was ONE session where this happened. And the log feedback says to emit RunCompleted for timeout and API-error exits. This might be from a DIFFERENT session, not the current one.
+
+The current session (Day 121 12:36) is still in-progress - we're in the planning phase! The assessment just timed out. The RunCompleted hasn't fired yet because the session is still running.
+
+OK so the real picture:
+1. Current session: assessment timed out (exit 124, 600s). We're now in planning. The session will continue through implementation and eventually hit RunCompleted.
+2. Graph pressure: state_run_incomplete_count=1 - this is from a PRIOR session where RunCompleted never fired (likely a crash/hard exit before reaching line 3351)
+3. Log feedback: recommends emitting RunCompleted on timeout/API-error exits
+
+The assessment timeout in THIS session is an example of the broader problem. But the fix needs to ensure RunCompleted fires even when the session crashes or exits early.
+
+Now, the seeded task_01.md about "Repair evidence-backed planning after no-task sessions" with files `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` - this is NOT aligned with the evidence. The real problem is the assessment timeout and the state lifecycle gap.
+
+Let me refine task_01 to address the real evidence:
+- Assessment timeout (exit 124) - the agent timed out after 600s
+- state_run_incomplete_count=1 - RunCompleted not emitted after SessionStarted
+- The log feedback's top lesson: "emit RunCompleted events for every started run, including timeout and API-error exits"
+
+The fix should:
+1. Investigate why the assessment timed out (600s should be enough unless the model is slow or the prompt is too large)
+2. Ensure RunCompleted is emitted even on timeout/early exit
+
+But wait - the assessment timeout might be a DeepSeek model issue, not a code issue. The prompt might be too large, or the model might be slow. The `run_agent_with_completion_watch` function at line 780 handles timeouts with a completion watch that tries to capture partial output before the timeout kills the process.
+
+The more impactful fix is the state lifecycle: ensure RunCompleted is always emitted. But this is a broader infrastructure change that might touch many parts of evolve.sh.
+
+Let me think about what task is most appropriate for a 20-minute implementation window:
+
+Option A: Fix the assessment timeout itself - add better timeout handling, maybe capture partial output, increase timeout, or reduce prompt size. But this is speculative - we don't know WHY it timed out.
+
+Option B: Fix the state lifecycle gap - ensure RunCompleted fires on all exit paths (including early exits). This is the log feedback's top lesson and directly addresses the graph pressure.
+
+Option C: Add a trap-based RunCompleted emission in evolve.sh so it fires on any exit.
+
+Actually, looking at the code comment at line 485-486: "Why no EXIT trap: a future maintainer adding `trap '…' EXIT` elsewhere in evolve.sh would silently overwrite ours (bash trap is REPLACE, not append)."
+
+So they deliberately avoided an EXIT trap. That's the root cause - if the script exits early (set -e, crash, etc.), RunCompleted never fires. The fix would need to use a different approach - maybe append to the trap instead of replacing it.
+
+Let me focus on what's most evidence-backed and achievable in 20 minutes:
+
+Task 01 (refined): Fix the state lifecycle gap in evolve.sh - ensure RunCompleted fires on timeout and early-exit paths. The assessment timeout is the immediate trigger, and the log feedback explicitly calls for this.
+
+Now for task_02 and task_03, let me look at other evidence:
+
+- task_analysis_only_attempt_count=1 - one task attempted but no file progress. Could be worth investigating but might be hard to fix.
+- transcript_only_failed_tool_count=5, state_only_failed_tool_count=39 - tool failure reconciliation. These are historical and the trajectory says to treat as context only.
+- tool_error_count=4 - recent. But without knowing which tools, hard to fix.
+- Issue #37 (agent-self): held-out coding eval coverage. fitness_score=1.0 now though.
+
+Let me create:
+
+Task 01: Replace the seed with the state lifecycle fix (RunCompleted on timeout/early exit)
+Task 02: Assessment timeout investigation - understand why the assessment agent timed out and add diagnostics
+Task 03: Eval fixture for state lifecycle - add a held-out eval that verifies RunCompleted is emitted for all exit paths
+
+Actually, let me keep it simpler. The planning rules say max 3 tasks, each touching at most 3 files. Let me do:
+
+Task 01: State lifecycle - RunCompleted on all exit paths (scripts/evolve.sh)
+Task 02: Assessment timeout resilience - capture partial output before timeout, improve diagnostics (scripts/evolve.sh)
+Task 03: Eval fixture for RunCompleted lifecycle (eval/fixtures/)
+
+Wait, tasks 01 and 02 both touch evolve.sh. The 3-file limit is per task. But having two tasks touch the same file is fine if they're different changes.
+
+Actually, let me be more strategic. The assessment timeout is the IMMEDIATE problem. Let me focus on that plus the state lifecycle:
+
+Task 01 (replaces seed): Fix RunCompleted emission on timeout and early exit in evolve.sh
+Task 02: Add held-out eval fixture for state lifecycle completeness (#37)
+Task 03: Not needed - only 2 strong evidence-backed tasks
+
+Actually wait, I should also check: does the issue #37 have real evidence behind it? The trajectory shows fitness_score=1.0 now, so eval coverage might not be the bottleneck. Let me check if there are eval fixture patterns already.
+
+Let me just write the tasks now. I have enough evidence.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The assessment timed out (exit 124). The `run_agent_with_fallback` already records terminal events on timeout (line 760-763), but the session-level `RunCompleted` at line 3351 only fires on normal completion — if the script exits early on any path, it's missed. The `record_agent_terminal_events` delegates to `scripts/append_terminal_state_events.py`. Let me verify what that emits.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted\|RunCompleted\|SessionStarted\|model_status\|run_sta…  ▶ $ grep -n 'SessionStarted\|RunCompleted' scripts/evolve.sh | head -10 ✓ (569ms)
+ ✓ (663ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: `append_terminal_state_events.py` does emit both `ModelCallCompleted` AND `RunCompleted` events! Lines 193 and 207. So `record_agent_terminal_events` → `append_terminal_state_events.py` → emits both events.
+
+But wait - there are TWO levels of RunCompleted:
+1. Per-model-call RunCompleted (emitted by `append_terminal_state_events.py` at line 207)
+2. Session-level RunCompleted (emitted by `record_state_event` at evolve.sh line 3351)
+
+The log feedback's "state_incomplete/open_after_SessionStarted=1" likely refers to the SESSION-level lifecycle: SessionStarted was emitted but RunCompleted (session-level) never fired because the session exited before reaching line 3351.
+
+The per-model-call RunCompleted IS being emitted by `append_terminal_state_events.py`. So the gap is at the session level.
+
+Actually wait, let me look at what `is_session_run` does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:85..115 ✓ (136ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the architecture:
+
+1. `append_terminal_state_events.py` scans past events to find open runs/models (started but not completed)
+2. It emits ModelCallCompleted for open model calls (line 193)
+3. It emits RunCompleted for open runs (line 207)
+4. It skips session-level RunStarted/RunCompleted (line 90-91 - `is_session_run`)
+
+So the "state_incomplete/open_after_SessionStarted=1" means:
+- A SessionStarted event was emitted (session-level)
+- The corresponding session-level RunCompleted was never emitted (because the script exited before line 3351)
+- `append_terminal_state_events.py` deliberately skips session-level events (they have special payloads)
+- Therefore, the session-level RunCompleted is never closed
+
+This is the gap. The fix should be in `append_terminal_state_events.py` or in `evolve.sh` to ensure session-level RunCompleted is always emitted.
+
+But wait - how would `append_terminal_state_events.py` close a session-level RunCompleted? It doesn't have session-level task counts (tasks_attempted, tasks_succeeded, build_ok, test_ok). The session-level RunCompleted at line 3351 has rich payload data that can't be synthesized by `append_terminal_state_events.py`.
+
+So the fix might need to be in `evolve.sh` itself: use a trap-based approach or ensure RunCompleted fires even on early exits.
+
+The comment at line 485-486 says they deliberately avoided an EXIT trap because bash traps replace, not append. The solution would be to use `trap ... EXIT` in a way that appends to existing traps, or to ensure the script always reaches line 3351.
+
+Actually, looking more carefully at the code: the session-level RunCompleted at line 3351 fires at the very end. If the script exits early (due to `set -e` or a crash), it never reaches that line. The fix should be a trap that fires RunCompleted on EXIT, but with a guard to avoid double-firing.
+
+Let me check if `set -e` is active:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -5 scripts/evolve.sh; echo "---"; grep -n 'set -' scripts/evolve.sh | head … ✓ (284ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`set -euo pipefail` is active at line 22. So any failing command that isn't in a `|| true` or similar guard will cause the script to exit immediately, before reaching the RunCompleted at line 3351.
+
+The fix should be an EXIT trap that records RunCompleted. But the comment at line 485-486 says they avoided it because bash trap is REPLACE not APPEND.
+
+Let me re-read that comment:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:483..498 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the EXIT trap concern is valid but manageable. The fix could:
+1. Use `trap` with append semantics (save existing trap, chain them)
+2. Or ensure the RunCompleted is called from multiple exit points
+3. Or make RunCompleted more resilient by checking if it was already emitted
+
+Actually, there's a simpler approach: save any existing EXIT trap, then set a new one that calls both the saved trap and RunCompleted. This is a standard bash pattern:
+
+```bash
+_evolve_exit_trap() {
+    local exit_code=$?
+    record_state_event "RunCompleted" ...
+    # call any previously-set trap
+    [ -n "$_PREV_EXIT_TRAP" ] && eval "$_PREV_EXIT_TRAP"
+    return $exit_code
+}
+_PREV_EXIT_TRAP="$(trap -p EXIT | sed "s/trap -- '\(.*\)' EXIT/\1/")"
+trap '_evolve_exit_trap' EXIT
+```
+
+But this adds complexity. Let me think about whether this is the right task for a 20-minute window.
+
+Actually, let me look at what actually happens. The session-level RunCompleted at line 3351 is the LAST thing in the script. For the current session, the assessment timed out but the script continued to planning (we're here now). So it WILL reach line 3351 eventually. The `state_incomplete_count=1` in the trajectory is from a PAST session where the script truly crashed/exit early.
+
+But the log feedback lesson says "emit RunCompleted events for every started run, including timeout and API-error exits" - this is more about per-model-call RunCompleted, which `append_terminal_state_events.py` already handles. Let me re-check...
+
+Actually wait, let me re-read the log feedback more carefully:
+"state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+"SessionStarted" is a state event type. Let me check if there's a SessionStarted event emission:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'SessionStarted\|SessionCompleted\|session_start\|session_complete' scri… ✓ (275ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No SessionStarted found in these files. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SessionStarted' in scripts ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+SessionStarted is referenced in test fixtures and dashboard code but doesn't seem to be emitted by the harness scripts. The log feedback says "state_incomplete/open_after_SessionStarted=1" - this might be from an external state analysis tool (the dashboard or `summarize_state_gnomes.py`). Let me check if SessionStarted is something the dashboard INFERS rather than something emitted.
+
+Let me search for where "open_after_SessionStarted" comes from:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'open_after_SessionStarted' ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The term "open_after_SessionStarted" doesn't exist in the codebase! It's generated text from the dashboard/log feedback. The dashboard probably detects states where RunStarted was emitted but RunCompleted wasn't, and labels it as "open after SessionStarted."
+
+OK, I've spent enough time investigating. Let me now write the task files. Here's my plan:
+
+**Task 01 (replaces seed):** Fix the assessment timeout resilience and state lifecycle gap. The assessment timed out at 600s. The `run_agent_with_completion_watch` already has timeout handling but the session-level RunCompleted isn't guaranteed on early exits. Add an EXIT trap that ensures RunCompleted fires.
+
+Wait, actually - let me re-examine whether the assessment timeout is the right problem to fix. The assessment agent timed out - that's a DeepSeek model issue, not a code issue. The code already handles timeouts correctly (records terminal events, prints warning, continues). The session WILL reach RunCompleted at line 3351.
+
+The `state_incomplete_count=1` is from a DIFFERENT session where the script truly crashed. The log feedback lesson is about that past session, not the current one.
+
+So what should I actually fix? Let me look at the graph pressures again:
+
+1. "Close yyds state and model lifecycle gaps (state_run_incomplete_count=1)" - fix the EXIT trap so RunCompleted always fires
+2. "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)" - hard to fix in 20 min
+3. "Reconcile transcript-only tool failures (transcript_only_failed_tool_count=5)" - data quality, might be historical
+4. "Reconcile state-only tool failures (state_only_failed_tool_count=39)" - data quality
+5. "Recover failed tool actions before scoring (tool_error_count=4)" - could be recent
+
+For items 3-5, the trajectory says "treat historical unrecovered tool failures as context only unless recent evidence shows the failure still reproduces." Without recent reproduction evidence, these aren't actionable.
+
+The most actionable items are:
+1. State lifecycle gap - add EXIT trap for RunCompleted
+2. The log feedback top lessons include specific edit/search patterns
+
+Let me also consider: the log feedback says "edit failed because the replacement context was ambiguous or absent -> read a tighter surrounding range and use unique old_text context before applying edits" and "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them." These are agent-behavior patterns, not code bugs.
+
+OK, let me settle on the tasks:
+
+**Task 01 (replaces seed):** Add EXIT trap for session-level RunCompleted in evolve.sh
+- Files: scripts/evolve.sh
+- Evidence: state_run_incomplete_count=1, log feedback top lesson
+- This ensures RunCompleted fires even on early script exit
+
+**Task 02:** Add held-out eval fixture for state lifecycle completeness
+- Files: eval/fixtures/ (new fixture)
+- Issue: #37
+- Evidence: agent-self issue, log feedback lesson
+
+**Task 03:** Not needed - only 2 strong tasks
+
+Let me write these now. First, let me replace the seed task_01.md.
+
+Actually, wait. The seed task says "Refine it if the planner has stronger evidence." I should replace it entirely since the seed targets the wrong files (preseed_session_plan.py, task_manifest.py) when the real fix is in evolve.sh.
+
+Let me also check if the current assessment timeout (600s) is a recurring pattern or a one-off. The trajectory shows day-121's earlier session was successful. It could be that the model was just slow for this particular assessment call.
+
+Let me now write the task files.
+────────────────────────────────────────────────────────────────────────────────
+
+I've traced the full evidence chain. The key facts:
+
+1. **Assessment timeout (exit 124, 600s)**: `run_agent_with_completion_watch` handled it, `append_terminal_state_events.py` emitted per-model-call RunCompleted. The session continues to planning — it WILL reach the session-level RunCompleted at line 3351.
+
+2. **`state_run_incomplete_count=1`** is from a PAST session where the script exited before line 3351 (due to `set -euo pipefail` at line 22). The EXIT trap was deliberately avoided (line 485-486) because bash traps replace, not append.
+
+3. The seed task targets `preseed_session_plan.py`/`task_manifest.py` — wrong files for both the assessment timeout and the state lifecycle gap.
+
+The log feedback's #1 corrected lesson is: "emit RunCompleted events for every started run, including timeout and API-error exits." I'll replace the seed task with the right fix, then add an eval fixture task for #37.
+  - Title: Repair evidence-backed planning after no-task sessions
+  - Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+  + Title: Ensure session RunCompleted fires on all exit paths (EXIT trap)
+  + Files: scripts/evolve.sh
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - state_run_incomplete_count=1 (graph pressure): at least one past session emitted RunStarted/SessionStarted but never emitted the session-level RunCompleted because the script exited early via `set -euo pipefail` (line 22) before reaching the RunCompleted at line 3351.
+  + - Log feedback corrected lesson #1: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+  + - Current session: assessment timed out (exit 124, 600s) but will reach RunCompleted normally since the harness continues to planning. This session won't be the one with the gap — but it proves timeouts happen and the next early-exit crash will create another incomplete lifecycle.
+  + - Line 485-486 documents why no EXIT trap exists: "a future maintainer adding `trap '…' EXIT` elsewhere in evolve.sh would silently overwrite ours (bash trap is REPLACE, not append)." This is correct but solvable by saving and chaining the prior trap.
+    
+    Edit Surface:
+  - - scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (49 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (49 lines) ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task_02. Let me create an eval fixture task for state lifecycle completeness, tied to issue #37. But I need to check what eval fixtures already exist and what the format is.
+
+The task should be small enough for 20 minutes: add one eval fixture that verifies RunCompleted is emitted after RunStarted in the state event stream.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check existing eval fixture patterns before writing task_02.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/ 2>/dev/null | head -20; echo "---"; ls eval/ 2>/dev/null | hea…  ▶ $ git ls-files 'eval/*' | head -20 ✓ (364ms)
+ ✓ (925ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check one existing fixture to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/ | head -25 ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a `022-run-completion-lineage.json`! Let me check if it already covers RunCompleted lifecycle.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/022-run-completion-lineage.json ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This fixture tests the Rust-side RunCompleted payload. It's not testing the shell-side EXIT trap. It tests `state::tests::run_completed_payload_records_terminal_status`. That's different from what Task 01 is fixing.
+
+For Task 02, I should add an eval fixture that tests the shell-side lifecycle completeness - i.e., that RunCompleted is always emitted after RunStarted in the session state events, even on early exit.
+
+But wait - a shell-side eval fixture would need to run evolve.sh or a portion of it. That's complex. Let me think about what's actually testable.
+
+Actually, let me reconsider task_02. The eval fixtures in this repo seem to be JSON files that describe test scenarios. The actual evaluation harness reads these fixtures and runs the specified tests. An eval fixture for "RunCompleted always follows RunStarted" would need to either:
+1. Run a portion of evolve.sh and check state events
+2. Test the state event recording functions directly (unit test in Python)
+
+The simplest approach is a Python test on `append_terminal_state_events.py` that verifies it emits RunCompleted for open runs. But that already works - the issue is at the session level in evolve.sh.
+
+Alternatively, I could create a fixture that tests the EXIT trap behavior. But that's hard to test without actually running evolve.sh.
+
+Let me consider a different task_02. Looking at the graph pressures:
+- "Recover failed tool actions before scoring (tool_error_count=4)" - this is recent (tool_error_count=4)
+- But the trajectory says the recent session (day-121) was fully successful
+
+Let me look at what's most valuable. The log feedback also says:
+- "edit failed because the replacement context was ambiguous or absent -> read a tighter surrounding range and use unique old_text context before applying edits"
+- "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them"
+
+These are agent prompt/behavior improvements, not code changes. They might be hard to fix in a 20-minute implementation window.
+
+Let me create task_02 as an eval fixture for the session lifecycle (aligned with issue #37), and task_03 as a small improvement based on another log feedback lesson.
+
+Actually, let me be more practical. The task sizing rules say each task must be completable in 20 minutes. An eval fixture is small. Let me check if there's an eval runner I can hook into.
+
+Let me look at how existing fixtures are used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -5 eval/fixtures/local-smoke/024-eval-state-metrics.json; echo "---"; head …  ▶ $ grep -n 'local-smoke\|eval.*fixture\|fixture.*smoke' scripts/evolve.sh | head -1… ✓ (654ms)
+ ✓ (652ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the eval fixtures are actually run - there might be an eval runner script.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'local-smoke\|eval.*run\|fixture' scripts/evolve.sh | grep -i 'eval\|fi…  ▶ $ ls src/eval* 2>/dev/null; grep -n 'eval\|fixture\|local.smoke' Cargo.toml | head… ✓ (652ms)
+ ✓ (648ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's `src/eval_fixtures.rs` - this is the Rust-level eval fixture runner. Let me check it briefly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -50 src/eval_fixtures.rs ✓ (279ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the eval fixture format is JSON files that specify tests to run (like `cargo test state::tests::...`). They're used by the eval system.
+
+For task_02, I'll create an eval fixture that adds a shell-level test for RunCompleted lifecycle. But actually, the most practical test would be a Python test on `append_terminal_state_events.py` since the shell EXIT trap is hard to unit-test.
+
+Let me reconsider the overall task plan. Looking at the trajectory evidence again:
+
+The most impactful things I can plan:
+1. Task 01: EXIT trap for RunCompleted - directly addresses log feedback #1 lesson and graph pressure
+2. Task 02: Something from the log feedback or graph pressures
+
+The log feedback also has these lessons:
+- "edit failed because the replacement context was ambiguous" → improve SmartEditTool
+- "agent read or searched paths that did not exist" → improve search path verification
+
+These could be implemented in src/smart_edit.rs or similar. But the task sizing rules say at most 3 files and completable in 20 minutes.
+
+Let me go with:
+- Task 01: EXIT trap for RunCompleted (scripts/evolve.sh)
+- Task 02: Improve SmartEditTool error messages to suggest reading tighter surrounding range (src/smart_edit.rs, src/tool_wrappers.rs)
+- Task 03: Skip - only need 2 tasks
+
+Wait, but the log feedback lesson says "read a tighter surrounding range and use unique old_text context before applying edits" - this is more of an agent behavior instruction than a code change. The SmartEditTool already does fuzzy matching and nearest-match hints. The lesson might be about improving the SYSTEM PROMPT or the tool's error messages.
+
+Actually, let me check what the SmartEditTool currently does for ambiguous matches:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ambiguous\|not found\|not unique\|tighter\|surrounding' src/smart_edit.… ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The SmartEditTool handles "not found" errors. The log feedback says "edit failed because the replacement context was ambiguous or absent" - this might be a different failure mode (ambiguous match vs not found). Let me look at the SmartEditTool more carefully.
+
+Actually, I think I'm overcomplicating this. Let me focus on what I know and write 2 tasks:
+
+1. Task 01: EXIT trap for RunCompleted (already written)
+2. Task 02: Add eval fixture for state lifecycle completeness (#37)
+
+Then write issue_responses.md and stop.
+
+For task 02, I'll create a simple eval fixture that tests whether RunCompleted follows RunStarted in the state event stream, using a Python test on `append_terminal_state_events.py`.
+
+Actually, let me check if there's already a test file for `append_terminal_state_events.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/test_*state* scripts/test_*terminal* 2>/dev/null; grep -l 'append_ter… ✓ (300ms)
+
+
