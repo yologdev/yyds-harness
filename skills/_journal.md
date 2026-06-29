@@ -190,3 +190,9 @@ Each event is one stanza. See `skills/skill-evolve/SKILL.md` for the schema.
 - type: refused
 - parent-event: evt-0005
 - note: agent changed files but did not append the required skills/_journal.md event; harness reverted the changes
+
+## 2026-06-29T05:16:30Z evt-0023 refused
+- ts: 2026-06-29T05:16:30Z
+- type: refused
+- parent-event: evt-0005
+- note: agent changed files but did not append the required skills/_journal.md event; harness reverted the changes
