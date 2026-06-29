@@ -62,6 +62,55 @@ pub struct FixtureAgentAttemptResult {
     pub command_results: Vec<FixtureCommandResult>,
 }
 
+/// Per-category aggregate score from a scored fixture suite.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CategoryScore {
+    pub passed: usize,
+    pub failed: usize,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f64>,
+}
+
+impl CategoryScore {
+    fn new() -> Self {
+        Self {
+            passed: 0,
+            failed: 0,
+            total: 0,
+            score: None,
+        }
+    }
+
+    fn record(&mut self, passed: bool) {
+        self.total += 1;
+        if passed {
+            self.passed += 1;
+        } else {
+            self.failed += 1;
+        }
+    }
+
+    fn finalize(&mut self) {
+        if self.total > 0 {
+            self.score = Some(self.passed as f64 / self.total as f64);
+        }
+    }
+}
+
+/// Aggregate score for a fixture suite run.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FixtureScore {
+    pub suite: String,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub score: f64,
+    pub categories: BTreeMap<String, CategoryScore>,
+    pub risk_levels: BTreeMap<String, CategoryScore>,
+    pub task_results: Vec<FixtureTaskResult>,
+}
+
 impl FixtureSuite {
     pub fn validate(&self) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
@@ -339,6 +388,96 @@ pub fn format_fixture_list_by_domain(suite: &FixtureSuite) -> String {
         ));
     }
     out.trim_end().to_string()
+}
+
+/// Run all (or a sampled subset of) fixture tasks and compute an aggregate
+/// pass/fail score with per-category and per-risk-level breakdowns.
+///
+/// When `sample` is set, a deterministic subset of tasks is selected using a
+/// hash of the suite name as the seed. The score reflects only the sampled tasks.
+pub fn score_fixture_suite(suite: &FixtureSuite, sample: Option<usize>) -> FixtureScore {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut total: usize = 0;
+    let mut passed: usize = 0;
+    let mut failed: usize = 0;
+    let mut categories: BTreeMap<String, CategoryScore> = BTreeMap::new();
+    let mut risk_levels: BTreeMap<String, CategoryScore> = BTreeMap::new();
+    let mut task_results: Vec<FixtureTaskResult> = Vec::new();
+
+    // Select tasks: either all or a deterministic sample
+    let selected: Vec<&BenchmarkTask> = if let Some(n) = sample {
+        if n == 0 || suite.tasks.is_empty() {
+            Vec::new()
+        } else {
+            let mut hasher = DefaultHasher::new();
+            suite.suite.hash(&mut hasher);
+            let seed = hasher.finish();
+            let mut indices: Vec<usize> = (0..suite.tasks.len()).collect();
+            // Deterministic shuffle using the seed as a u64 rng stand-in
+            for i in 0..suite.tasks.len() {
+                let j = (seed as usize + i * 2654435761) % suite.tasks.len();
+                indices.swap(i, j);
+            }
+            indices
+                .into_iter()
+                .take(n.min(suite.tasks.len()))
+                .map(|i| &suite.tasks[i])
+                .collect()
+        }
+    } else {
+        suite.tasks.iter().collect()
+    };
+
+    for task in &selected {
+        let result = run_fixture_task(task);
+        total += 1;
+        if result.passed {
+            passed += 1;
+        } else {
+            failed += 1;
+        }
+
+        // Per-category tally
+        let cat_entry = categories
+            .entry(task.category.clone())
+            .or_insert_with(CategoryScore::new);
+        cat_entry.record(result.passed);
+
+        // Per-risk-level tally
+        let risk_entry = risk_levels
+            .entry(task.risk_label.clone())
+            .or_insert_with(CategoryScore::new);
+        risk_entry.record(result.passed);
+
+        task_results.push(result);
+    }
+
+    // Finalize scores
+    for cat in categories.values_mut() {
+        cat.finalize();
+    }
+    for risk in risk_levels.values_mut() {
+        risk.finalize();
+    }
+
+    let score = if total > 0 {
+        passed as f64 / total as f64
+    } else {
+        0.0
+    };
+
+    FixtureScore {
+        suite: suite.suite.clone(),
+        total,
+        passed,
+        failed,
+        score,
+        categories,
+        risk_levels,
+        task_results,
+    }
 }
 
 fn validate_task(task: &BenchmarkTask) -> Vec<String> {

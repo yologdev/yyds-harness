@@ -216,8 +216,9 @@ fn handle_fixtures(args: &[String]) {
         }
         "run" => handle_fixture_run(args, suite),
         "attempt" => handle_fixture_attempt(args, suite),
+        "score" => handle_fixture_score(args, suite),
         _ => eprintln!(
-            "{YELLOW}  Usage: yoyo eval fixtures <list|validate|run|attempt> [--suite local-smoke] [--task TASK] [--worktree PATH] [--agent-command CMD|--default-agent] [--dry-run]{RESET}"
+            "{YELLOW}  Usage: yoyo eval fixtures <list|validate|run|attempt|score> [--suite local-smoke] [--task TASK] [--worktree PATH] [--agent-command CMD|--default-agent] [--dry-run] [--sample N] [--json]{RESET}"
         ),
     }
 }
@@ -430,6 +431,68 @@ fn handle_fixture_attempt(args: &[String], suite: crate::eval_fixtures::FixtureS
             println!("  status:       {}", status_label(&eval.status));
         }
         Err(e) => eprintln!("{RED}  failed to record fixture agent eval result: {e}{RESET}"),
+    }
+}
+
+fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSuite) {
+    let json_output = args.iter().any(|arg| arg == "--json");
+    let sample: Option<usize> = flag_value(args, "--sample").and_then(|s| s.parse::<usize>().ok());
+    let domain_filter: Option<&str> = flag_value(args, "--domain").map(|s| s.as_str());
+
+    // Filter by domain if specified
+    let suite = if let Some(domain) = domain_filter {
+        crate::eval_fixtures::FixtureSuite {
+            suite: suite.suite.clone(),
+            root: suite.root.clone(),
+            tasks: suite
+                .tasks
+                .into_iter()
+                .filter(|task| task.category.starts_with(domain))
+                .collect(),
+        }
+    } else {
+        suite
+    };
+
+    let score = crate::eval_fixtures::score_fixture_suite(&suite, sample);
+
+    if json_output {
+        match serde_json::to_string_pretty(&score) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("{YELLOW}  failed to serialize score as JSON: {e}{RESET}"),
+        }
+    } else {
+        // Human-readable summary
+        println!("Fixture Score");
+        println!("  suite:      {}", score.suite);
+        println!(
+            "  total:      {}  passed: {}  failed: {}  score: {:.3}",
+            score.total, score.passed, score.failed, score.score
+        );
+        if !score.categories.is_empty() {
+            println!("  categories:");
+            for (category, cat_score) in &score.categories {
+                let s = cat_score.score.unwrap_or(0.0);
+                println!(
+                    "    {category:20}  passed: {}/{} ({:.1}%)",
+                    cat_score.passed,
+                    cat_score.total,
+                    s * 100.0
+                );
+            }
+        }
+        if !score.risk_levels.is_empty() {
+            println!("  risk_levels:");
+            for (risk, risk_score) in &score.risk_levels {
+                let s = risk_score.score.unwrap_or(0.0);
+                println!(
+                    "    {risk:20}  passed: {}/{} ({:.1}%)",
+                    risk_score.passed,
+                    risk_score.total,
+                    s * 100.0
+                );
+            }
+        }
     }
 }
 
