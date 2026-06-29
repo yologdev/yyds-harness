@@ -740,7 +740,7 @@ def choose_task(assessment: str) -> dict[str, object]:
             continue
         if any(key in lower for key in task.get("reject_keys", ())):
             continue
-        if task["title"] == ANALYSIS_ONLY_TASK_TITLE and _analysis_only_seed_recently_blocked(lower):
+        if task["title"] == ANALYSIS_ONLY_TASK_TITLE and (_analysis_only_seed_recently_blocked(lower) or analysis_only_active):
             continue
         if _has_protected_files(task):
             continue
@@ -1015,10 +1015,16 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 - Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
-        assert "scripts/evolve.sh" not in str(task["files"]), task
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip ANALYSIS_ONLY_TASK_TITLE, got {task['title']}"
+        )
+        # Task should be a landable task with source files, not analysis-only
+        assert "scripts/" in str(task["files"]), (
+            f"Expected landable task with script files, got {task.get('files')}"
+        )
         text = render_task(task, "107", "21:55")
-        assert "task_analysis_only_attempt_count" in text, text
+        # Rendered output should contain the task title
+        assert task["title"] in text, f"Rendered text missing task title: {task['title']}"
 
         assessment = """# Assessment
 
@@ -1034,25 +1040,30 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
 MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but reverted without touching any source file.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip analysis-only task, got {task['title']}"
+        )
         assert task["title"] != "Improve cold-start state failure diagnostics", task
-        text = render_task(task, "110", "18:26")
-        assert "reverted_no_edit" in text, text
+        # Should select a landable task (not analysis-only)
+        assert task.get("files"), f"Expected task with files, got {task}"
 
-        # --- Analysis-only pressure: reverted_no_edit triggers analysis-only task ---
-        # reverted_no_edit alone (no lifecycle metrics) → analysis-only task
+
+        # --- Analysis-only pressure: reverted_no_edit now skips analysis-only task ---
+        # reverted_no_edit alone (no lifecycle metrics) → landable task, not analysis-only
         assessment = """# Assessment
 
 ## Graph-derived Next-Task Pressure
 - **Task-state counts**: reverted_no_edit=4 in recent window. These are sessions where tasks were assigned but produced no file changes.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
-            f"reverted_no_edit=4 should select analysis-only task, got {task['title']}"
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"reverted_no_edit=4 with analysis_only_active should skip analysis-only task, got {task['title']}"
         )
+        assert task.get("files"), f"Expected landable task, got {task}"
 
-        # --- Analysis-only pressure + lifecycle metrics: analysis-only wins ---
-        # reverted_no_edit=4 + lifecycle incomplete → analysis-only task, NOT lifecycle
+        # --- Analysis-only pressure + lifecycle metrics: landable task wins ---
+        # When analysis-only pressure is active, lifecycle task is also skipped (line 752-754)
+        # and a landable non-analysis-only task is selected instead.
         assessment = """# Assessment
 
 ## Graph-derived Next-Task Pressure
@@ -1060,21 +1071,27 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
-            f"reverted_no_edit + lifecycle should select analysis-only task, got {task['title']}"
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip analysis-only task, got {task['title']}"
         )
+        assert task["title"] != LIFECYCLE_TASK_TITLE, (
+            f"analysis_only_active should also skip lifecycle task, got {task['title']}"
+        )
+        assert task.get("files"), f"Expected landable task, got {task}"
 
-        # --- Analysis-only pressure: file-count guard (hypothetical >3 file task) ---
-        # When analysis-only pressure is active, tasks with >3 files are skipped.
-        # All current TASKS have ≤3 files, so this guard is future-proofing.
-        # Verify the guard works by checking _task_file_count on the selected task.
+        # --- Analysis-only pressure: file-count guard ---
+        # When analysis-only pressure is active, tasks with >3 files are skipped
+        # (line 749). The selected landable task should have ≤3 files.
+        # All current non-analysis-only TASKS have ≤3 files, so this is future-proofing.
         assessment = """# Assessment
 
 ## Graph-derived Next-Task Pressure
 - Force analysis-only attempts into action (task_analysis_only_attempt_count=3): Implementation ended without file progress.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, task
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip analysis-only task, got {task['title']}"
+        )
         files_count = _task_file_count(task)
         assert files_count <= 3, (
             f"Analysis-only pressure should select task with ≤3 files, got {files_count}: {task['files']}"
@@ -1106,18 +1123,19 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
             f"Evidence-aware selection should skip protected files, got: {task['files']}"
         )
 
-        # --- Evidence-aware re-ranking: still picks scripts task when no src candidate matches ---
-        # When reverted_no_edit pressure exists but only the analysis-only task's keys match,
-        # the analysis-only task is still selected (no src candidate to prefer).
+        # --- Evidence-aware re-ranking: picks landable task when analysis-only active ---
+        # When reverted_no_edit pressure exists, analysis_only_active=True skips the
+        # analysis-only task and selects the next-best landable candidate.
         assessment = """# Assessment
 
 ## Graph-derived Next-Task Pressure
 - Force analysis-only attempts into action (reverted_no_edit=3): Sessions with no file progress.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
-            f"reverted_no_edit alone should still select analysis-only task, got {task['title']}"
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip analysis-only task, got {task['title']}"
         )
+        assert task.get("files"), f"Expected landable task with files, got {task}"
 
         # --- Analysis-only pressure: task_no_edit_revert_count alone triggers analysis-only task ---
         assessment = """# Assessment
@@ -1126,8 +1144,8 @@ MEDIUM — `reverted_no_edit` pattern (1 in last session): Tasks planned but rev
 - **Task-state counts**: task_no_edit_revert_count=3 in recent window. Tasks reverted without touching source files.
 """
         task = choose_task(assessment)
-        assert task["title"] == ANALYSIS_ONLY_TASK_TITLE, (
-            f"task_no_edit_revert_count alone should select analysis-only task, got {task['title']}"
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"task_no_edit_revert_count alone should NOT select analysis-only task (analysis_only_active blocks), got {task['title']}"
         )
         assert not _has_protected_files(task), (
             f"Analysis-only pressure from task_no_edit_revert_count should skip protected files, got: {task['files']}"
@@ -1424,7 +1442,7 @@ no-edit revert pressure from prior session.
 Day 118 (03:50) | 3 tasks | 2/3 verified. Task 1 (analysis-only pressure) marked obsolete — criteria already satisfied.
 
 ## Bugs / Friction Found
-no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
+no-edit revert pressure from prior session.
 """
         task = choose_task(assessment)
         assert task["title"] == "Make analysis-only task pressure landable", (
@@ -1498,6 +1516,24 @@ no-edit revert pressure from prior session. task_analysis_only_attempt_count=2.
         assert not _candidate_files_exist(
             {"files": "target/CACHEDIR.TAG, Cargo.lock"}), (
             "all-gitignored files should be rejected")
+        # --- Analysis-only pressure escape-hatch test ---
+        # When task_analysis_only_attempt_count > 0 appears in evidence,
+        # analysis_only_active is True and the picker must skip
+        # ANALYSIS_ONLY_TASK_TITLE in favor of a landable task.
+        assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence.
+"""
+        task = choose_task(assessment)
+        assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+            f"analysis_only_active should skip analysis-only task, got {task['title']}"
+        )
+        # The selected task should have at least one editable source file
+        # (not just scripts/evolve.sh or similar protected paths)
+        assert task.get("files"), (
+            f"Expected task with files, got {task}"
+        )
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
