@@ -1,0 +1,238 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error is clear: `handle_fixture_score` doesn't exist in `src/commands_eval.rs`. I need to look at the current state of both files to understand what exists and what's missing.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me inspect the current state of both files to understand what's there.
+  ▶ read src/commands_eval.rs:210..240  ▶ read src/eval_fixtures.rs:1..51 ✓ (354ms)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see more of `src/eval_fixtures.rs` to check if `score_fixture_suite` and `FixtureScore` exist, and look at the end of the `src/commands_eval.rs` file to see if `handle_fixture_score` is defined.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_fixture_score' in src/commands_eval.rs  ▶ search 'score_fixture_suite' in src/eval_fixtures.rs  ▶ search 'FixtureScore' in src/eval_fixtures.rs ✓ (1.1s)
+ ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `FixtureScore` and `score_fixture_suite` exist in `src/eval_fixtures.rs`, but `handle_fixture_score` doesn't exist in `src/commands_eval.rs`. I need to add that function. Let me see the end of `commands_eval.rs` and look at how `handle_fixture_run` is structured (to follow the same pattern), and also check the `FixtureScore` struct to know what fields are available.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:100..130  ▶ read src/eval_fixtures.rs:390..490  ▶ read src/commands_eval.rs:226..306 ✓ (2.2s)
+ ✓ (1.6s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation. `handle_fixture_score` doesn't exist in `src/commands_eval.rs` but `score_fixture_suite` and `FixtureScore` exist in `src/eval_fixtures.rs`. I need to implement `handle_fixture_score` in `src/commands_eval.rs`.
+
+Let me also look at:
+1. `CategoryScore` struct to understand its fields
+2. How `flag_value` is used (to parse `--sample`, `--json` flags)
+3. The end of the file to know where to add the function
+4. How `handle_fixture_run` handles things (as a model)
+
+Let me look at the `CategoryScore` struct and then the end of `commands_eval.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct CategoryScore' in src/eval_fixtures.rs  ▶ read src/commands_eval.rs:6620..6650 ✓ (1.1s)
+ ✓ (715ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the CategoryScore struct.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:60..95 ✓ (344ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see how `handle_fixture_run` works, how `flag_value` works, and where to insert the new function. Let me also look at the imports at the top of `commands_eval.rs` and see how things like `Color`, `YELLOW`, `RESET` etc are used. Let me get a broader view.
+
+Let me now write the `handle_fixture_score` function. I'll add it between `handle_fixture_attempt` and the next function (or at the end of its block).
+
+Let me look at the area around line 300-400 to see the end of `handle_fixture_attempt` and where I should insert:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:299..499 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I need to add the `handle_fixture_score` function to `src/commands_eval.rs`. It should:
+
+1. Parse `--sample N` flag
+2. Parse `--json` output flag
+3. Parse `--domain D` filter flag (optional)
+4. Call `crate::eval_fixtures::score_fixture_suite(&suite, sample)`
+5. Print a human-readable summary by default, structured JSON with `--json`
+
+Let me check how `flag_value` is defined and used (it takes args and flag name, returns Option<&str>).
+
+Let me also check what imports/constants are available at the top of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. I need to add the `handle_fixture_score` function to `src/commands_eval.rs`. Let me add it right after `handle_fixture_attempt` (line 435) and before `handle_run` (line 437).
+  + }
+  + 
+  + fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSuite) {
+  +     let json_output = args.iter().any(|arg| arg == "--json");
+  +     let sample: Option<usize> = flag_value(args, "--sample")
+  +         .and_then(|s| s.parse::<usize>().ok());
+  +     let domain_filter: Option<&str> = flag_value(args, "--domain");
+  + 
+  +     // Filter by domain if specified
+  +     let suite = if let Some(domain) = domain_filter {
+  +         crate::eval_fixtures::FixtureSuite {
+  +             suite: suite.suite.clone(),
+  +             root: suite.root.clone(),
+  +             tasks: suite
+  +                 .tasks
+  +                 .into_iter()
+  +                 .filter(|task| task.category.starts_with(domain))
+  +                 .collect(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_eval.rs (3 → 68 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (3 → 68 lines)
+  + }
+  + 
+  + fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSuite) {
+  +     let json_output = args.iter().any(|arg| arg == "--json");
+  +     let sample: Option<usize> = flag_value(args, "--sample")
+  +         .and_then(|s| s.parse::<usize>().ok());
+  +     let domain_filter: Option<&str> = flag_value(args, "--domain");
+  + 
+  +     // Filter by domain if specified
+  +     let suite = if let Some(domain) = domain_filter {
+  +         crate::eval_fixtures::FixtureSuite {
+  +             suite: suite.suite.clone(),
+  +             root: suite.root.clone(),
+  +             tasks: suite
+  +                 .tasks
+  +                 .into_iter()
+  +                 .filter(|task| task.category.starts_with(domain))
+  +                 .collect(),
+  +         }
+  +     } else {
+  ... (48 more lines)
+ ✓ (364ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the build compiles. Let me also check if there's an issue with `serde_json::to_string_pretty` — it's probably available since the project already uses `serde_json`. Let me check the imports.
+
+Actually, wait — the suite is consumed by value. Let me check the `handle_fixtures` function signature. The `handle_fixture_score` takes `suite` by value (it's `FixtureSuite`, not `&FixtureSuite`). Looking at the match arm: `"score" => handle_fixture_score(args, suite),` — and `handle_fixture_run` also takes `crate::eval_fixtures::FixtureSuite` by value. So my function signature is consistent.
+
+But wait — in my function I'm trying to filter the tasks. The suite is consumed by value, which is fine. However, `score_fixture_suite` takes `&FixtureSuite`. So I'm constructing a new `FixtureSuite` and passing a reference. That should work.
+
+Let me also check if `serde_json` is importable and whether `to_string_pretty` works. Let me just build and see.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me build to verify:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -30 ✓ (6.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `.map(|x: &String| x.as_str())` for the domain_filter. Also, I should check that `serde_json` is available — the `flag_value` returns `Option<&String>`, so I need `.map(|s| s.as_str())`. Let me fix this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     let domain_filter: Option<&str> = flag_value(args, "--domain");
+  +     let domain_filter: Option<&str> = flag_value(args, "--domain").map(|s| s.as_str());
+  ✓ Auto-approved: edit: src/commands_eval.rs (1 → 1 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (1 → 1 lines)
+  -     let domain_filter: Option<&str> = flag_value(args, "--domain");
+  +     let domain_filter: Option<&str> = flag_value(args, "--domain").map(|s| s.as_str());
+ ✓ (356ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -15 ✓ (13.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run cargo fmt -- --check and then the relevant tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now let me run fmt check and the relevant tests:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Formatting issues. Let me fix them by running `cargo fmt`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (787ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo build again and then the tests for the eval fixtures module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 && … ✓ (38.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build and tests pass. Let me now verify the CLI works end to end:
+────────────────────────────────────────────────────────────────────────────────
+
+Build and 21 tests pass. Let me verify the CLI works:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds eval fixtu… ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The human-readable output works. Now let me test the JSON output:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/d… (9 lines) ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Let me run cargo fmt -- --check one more time to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run fmt check one final time to confirm clean:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (6.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Everything passes. Here's a summary of what was done:
+
+**Fix**: Added the missing `handle_fixture_score` function to `src/commands_eval.rs` (after line 435, between `handle_fixture_attempt` and `handle_run`).
+
+**What the function does**:
+• Parses `--json`, `--sample N`, and `--domain D` flags from args
+• Filters tasks by domain prefix if `--domain` is set
+• Calls `crate::eval_fixtures::score_fixture_suite(&suite, sample)` (which already existed in `src/eval_fixtures.rs`)
+• Outputs either human-readable summary (default) or pretty-printed JSON (`--json`)
+
+**Verification**:
+• `cargo build` ✅
+• `cargo fmt -- --check` ✅
+• `cargo test --lib eval_fixtures::tests` — 21 passed, 0 failed ✅
+• `yyds eval fixtures score --suite local-smoke --sample 5` — human-readable output ✅
+• `yyds eval fixtures score --suite local-smoke --sample 5 --json` — valid JSON with `total`, `score`, `categories`, `risk_levels` ✅
+
+
