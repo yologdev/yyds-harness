@@ -1,0 +1,828 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to fix a timeout in `yyds state why last-failure` by adding an event sampling cap. The command reads the full 63K-line events.jsonl file without any limit, causing it to timeout at 15 seconds. I need to add a sampling cap similar to what was done for `state doctor` (Day 117) and `state crashes` (Day 122).
+
+Let me start by reading the relevant source file and the evolve skill, then understand the existing patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ $ wc -l src/commands_state.rs ✓ (21ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is huge - 24724 lines. Let me find the relevant sections. I need to locate `build_why_report` and the handler around it. Let me also look at `state doctor` and `state crashes` to understand the sampling pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report' in src/commands_state.rs  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'state doctor' in src/commands_state.rs  ▶ search 'state crashes' in src/commands_state.rs ✓ (29ms)
+ ✓ (29ms)
+ ✓ (29ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the key areas: the handler around line 1148, the `build_why_report` function, and the existing sampling patterns in state doctor and state crashes.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.4s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..41  ▶ read src/commands_state.rs:1130..1230 ✓ (21ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the handler for `state why` more broadly to understand how events are loaded and the limit is used. Let me look at the area around where events are loaded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+Now let me find where events are loaded and where the `limit` parameter is used:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs  ▶ search '\"why\"' in src/commands_state.rs ✓ (14ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1080..1150 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the `handle_why` function. It calls `read_tail_events(&path, limit)` with a limit. Let me find where `handle_why` is called and what limit is passed, and also look at `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why\("' in src/commands_state.rs  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (17ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where `handle_why` is called:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the call site at line 98 and `read_tail_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:82..162  ▶ read src/commands_state.rs:1367..1427 ✓ (20ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the problem. The `handle_why` function is called with a default limit of 200 (line 88: `.unwrap_or(200)`). But then in `read_tail_events`, when `limit` is 200, it calls `read_tail(path, limit)` which reads the last 200 lines of the file. This seems fine — 200 events should be fast.
+
+Wait, but the task says it's timing out. Let me look more carefully. The issue says `read_tail_events` is called with limit, but let me check what `read_tail` does — maybe it reads the entire file to find the last N lines?
+
+Also, the task says "The command reads the full 63K-line `.yoyo/state/events.jsonl` (67.9MB) without any sampling or limit." But looking at the code, `handle_why` gets a limit of 200. Let me verify.
+
+Wait, let me re-read line 82-98. If `--summary` is passed without an explicit ID, `handle_state_summary` is called. But if there IS an id (including "last-failure"), `handle_why` is called with limit=200.
+
+BUT the test `handle_why` is being called from additional places. Let me look at where `why` is dispatched more carefully.
+
+Actually wait, at line 88, the limit defaults to 200. But the task says it's reading the full 63K-line file. Let me check: is the `last-failure` path loading `read_tail_events` with a limit of 0? Let me look at `build_why_report`:
+
+Actually, the issue may be that the `read_tail(path, limit)` function reads the entire file and then takes only the last N lines, which would still be slow with a 67MB file. Let me find the `read_tail` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1318..1368 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly! `read_tail` at line 1318 reads the ENTIRE file into memory with `std::fs::read_to_string(path)`, then processes all lines to keep only the last `limit` lines. So even with `limit=200`, it reads the full 67.9 MB file into memory. This is the performance bottleneck.
+
+The `read_tail_events` function (line 1367) when called with a non-zero limit calls `read_tail(path, limit)` which reads the entire file. With limit=0, it calls `read_events_lenient` which also reads the entire file.
+
+So the fix should be to make `read_tail` read only the tail of the file efficiently. Instead of reading the entire file, it should seek to near the end of the file and read backward.
+
+But actually, let me also check if the `build_why_report` function itself has any additional complete reads. And if it's looking at the right events.
+
+Actually wait - let me re-read the handle_why more carefully. At line 88, the default limit is 200. But the handle_why at line 1082 calls `read_tail_events(&path, limit)` where limit can be 0 (meaning read everything) or some positive number.
+
+Actually no - the default is 200, so the first call would be `read_tail_events(&path, 200)`. Let me check if maybe `read_tail` with 200 lines from a 67MB file is still slow because it reads the whole file first.
+
+Actually, I think the real problem might be that `read_tail` reads the entire 67MB file into a string, then processes every line. That could take more than 15 seconds on a constrained system.
+
+Let me check the actual timeout situation. But more importantly, the task says to follow the pattern from `state doctor` and `state crashes`. Let me look at `handle_doctor` again:
+
+At line 157, `handle_doctor` has: 
+```
+let (sampled_events, sample_note) = if limit > 0 && total_events > limit {
+    match read_tail_events(&events_path, limit) {
+```
+
+So state doctor ALSO calls `read_tail_events` which calls `read_tail` which reads the entire file. Hmm, but state doctor was fixed to not timeout...
+
+Actually wait, let me re-read - the doctor has `DEFAULT_DOCTOR_LIMIT: usize = 20_000`. So it reads the last 20,000 lines of events. But `read_tail` still reads the entire file first...
+
+Actually, I think the issue is different. Let me look at what `handle_doctor` is actually doing vs `handle_why`. Let me check the actual `handle_doctor` more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:145..225 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that both `handle_doctor` and `handle_why` use `read_tail_events` which calls `read_tail` which reads the ENTIRE file. The `handle_doctor` also calls `std::fs::read_to_string` for counting lines first at line 152!
+
+The `state doctor` also reads the full file (twice!), but at line 157, it checks `if limit > 0 && total_events > limit` and only reads the last 20,000. But `read_tail` still reads the ENTIRE file.
+
+Wait - but the task says state doctor was already fixed. Let me check the current state of the `read_tail` function. Maybe it was already fixed to use efficient tail reading, but the handle_why wasn't updated...
+
+Actually, looking at `read_tail` at line 1318-1328, it clearly reads the ENTIRE file with `std::fs::read_to_string(path)`. This hasn't been changed.
+
+But somehow state doctor passed its 15-second timeout. Let me think about why handle_why might be slower than handle_doctor:
+
+Both call `read_tail_events` → `read_tail` → `std::fs::read_to_string` on a 67MB file. So both should be equally slow. But handle_doctor also does a full `std::fs::read_to_string` for counting lines.
+
+Hmm, maybe the issue is that `state doctor` DOES time out too under certain conditions, but the pattern fix is to make `read_tail` efficient. But that's not what the task says - it says to add a "sampling cap" similar to state doctor and state crashes.
+
+Wait - let me re-read the task: "The same read-everything pattern was already fixed in state doctor (Day 117) and state crashes (Day 122) by adding sampling caps."
+
+So maybe state doctor and state crashes were fixed by NOT calling `read_tail` which reads the whole file. Let me look at state crashes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_crashes' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+State crashes is in a different module `commands_state_crashes`. Let me find it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail' in src/commands_state_crashes.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `read_tail_events_capped` function in commands_state_crashes.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:1..61 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. Both `state doctor` and `state crashes` read the entire file with `read_to_string` but then only keep the last N lines. The `read_tail` function in `commands_state.rs` (line 1318) does the exact same thing — reads the entire file and keeps the last N lines.
+
+So the issue isn't a fundamentally different read pattern. ALL of them read the full file. But state doctor at least counts lines separately and has a 20K event cap for what it scans after. State crashes also has a 20K cap (`MAX_EVENTS_SCAN`).
+
+The handle_why at line 88 uses a default limit of 200. But the thing is — with limit=200, `read_tail` reads the entire 67MB file, stores every line in a VecDeque, and keeps the last 200. That is fundamentally slow because:
+1. `std::fs::read_to_string` reads the ENTIRE 67MB file
+2. Then iterates over all 63K+ lines
+3. Each line gets `.to_string()` (heap allocation)
+4. The VecDeque pushes/pops 63K times
+
+I think the real fix here is to make `read_tail` use an efficient approach — reading the file in reverse from the end to get just the last N lines. Let me try a different approach.
+
+Actually, wait. Let me re-read the task more carefully:
+
+"The same read-everything pattern was already fixed in state doctor (Day 117) and state crashes (Day 122) by adding sampling caps."
+
+So the "fix" for state doctor and state crashes was simply adding a cap — i.e., they only scan the last 20K events. But `read_tail` already does that for handle_why with limit=200. The difference is that the cap is 200 vs 20K.
+
+But the task says the command timed out at 15s. If `read_tail` with limit=200 is timing out, then adding a cap of e.g. 5000 won't help because `read_tail` already reads the full file regardless of the cap.
+
+Hmm, let me think about this from a different angle. Maybe the issue isn't about `read_tail` at all. Let me look at `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:15750..15830 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find `build_why_report` function definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3112..3232 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full pattern. Let me look at `find_target_event` which is called at line 3113:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `find_target_event` to understand how it finds the last failure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14175..14235 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me trace the flow:
+
+1. `handle_why` (line 1080) is called with `limit=200` by default
+2. It calls `read_tail_events(&path, limit)` where limit=200
+3. `read_tail_events` calls `read_tail(path, limit)` which:
+   - Reads the ENTIRE 67MB file with `std::fs::read_to_string`
+   - Creates a VecDeque of every line as a String
+   - Keeps only the last 200
+4. Then `build_why_report` scans these 200 events for the last failure
+
+The bottleneck is step 3 - reading the entire 67MB file. Even though it only keeps the last 200 lines, it reads all 63K+ lines.
+
+Now the question is: should I fix `read_tail` to efficiently read only the last N lines (using file seek from the end), or should I just add a sampling cap in `handle_why`?
+
+I think the right approach is to fix `read_tail` to efficiently read from the end of the file. This would make `state doctor`, `state crashes`, `state why`, etc. all fast. This is the fundamental fix.
+
+But the task is more modest: "add a sampling cap" similar to state doctor. Let me re-read what state doctor does...
+
+State doctor at lines 157-161:
+```rust
+let (sampled_events, sample_note) = if limit > 0 && total_events > limit {
+    match read_tail_events(&events_path, limit) {
+```
+
+It calls the SAME `read_tail_events` which calls the SAME `read_tail`. So state doctor also reads the entire file. But it has a cap of 20K and maybe it doesn't timeout because... hmm, maybe it does timeout sometimes too?
+
+Actually the task states that state doctor was ALREADY FIXED on Day 117. Let me check if there's something else going on. Maybe the issue is specific to `build_why_report` doing something expensive.
+
+Let me look more carefully. `handle_why` is called with a `limit` of 200 by default. But `read_tail_events` with limit=200 calls `read_tail(path, 200)` which reads the entire file.
+
+Wait, I just realized something. Maybe the fix needs to be different. Maybe `handle_why` should use a LARGER limit (like 5000) to have enough events to find a failure event, and the current 200 is too small. But the task says to add a "sampling cap"...
+
+OK let me just focus on what the task asks: add a sampling cap. The pattern from state doctor and state crashes is:
+1. Define a constant cap (e.g., `DEFAULT_DOCTOR_LIMIT: usize = 20_000`)
+2. When events exceed the cap, only scan the most recent N
+
+But this is already happening! The default limit for `handle_why` is 200. It only scans the last 200 events.
+
+Unless... the issue is that reading the entire file to get the last 200 lines is what's slow. And the fix is to make the tail read efficient instead of reading the entire file.
+
+Actually, let me re-read the task again: "The same read-everything pattern was already fixed in state doctor (Day 117) and state crashes (Day 122) by adding sampling caps."
+
+I think the task is a bit misleading about the nature of the fix. But the key is that `state why` is timing out. Let me look at what the actual fix should be.
+
+Let me just implement an efficient `read_tail` function. Instead of reading the entire file, I'll seek to near the end and read backwards.
+
+Actually, let me first check if there's a `--limit` flag that can be used with `yyds state why`. If the default limit is 200, can we just add a larger default? No — reading just 200 lines from a 67MB file is the same cost as reading all 63K lines if you use `read_to_string`.
+
+The real fix: make `read_tail` efficient by reading from the end of the file. Let me implement this.
+
+Here's my plan:
+1. Replace the `read_tail` function with an efficient version that reads from the end of the file
+2. This will fix state doctor, state crashes, and state why all at once
+
+Actually wait - let me check if state doctor and state crashes are still slow or if they have already been fixed differently. Let me check if `read_tail_events_capped` in commands_state_crashes.rs still reads the entire file:
+
+Looking at lines 22-34 of commands_state_crashes.rs:
+```rust
+fn read_tail_events_capped(
+    path: &Path,
+    cap: usize,
+) -> Result<(Vec<Value>, usize, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let total: usize = raw.lines().count();
+```
+
+Yes, it still reads the entire file! So state crashes ALSO has this problem. The "fix" was adding the cap (not reading all events for analysis), but the tail reading itself still reads the full file.
+
+So the fundamental fix should be making tail reading efficient. This will benefit state doctor, state crashes, and state why.
+
+Let me implement an efficient `read_tail` that seeks to the end of the file and reads backwards. Here's the approach:
+1. Open the file
+2. Seek to the end
+3. Read chunks backwards until we have enough lines
+
+Actually, a simpler approach: seek to file_size - some_buffer (e.g., 64KB or 128KB), read from there, and if we don't have enough lines, seek further back.
+
+Let me implement this. But before I do, let me check how big 200 lines typically are. Each JSON line might be ~200-1000 bytes. So 200 lines might be ~40-200KB. Let me use a buffer of 512KB to be safe.
+
+Here's my plan:
+1. Modify `read_tail` to use efficient tail reading
+2. This fixes the timing issue for handle_why, handle_doctor, and handle_crashes
+
+Actually, let me be more targeted. The task specifically says to fix `yyds state why last-failure`. Let me look more carefully at whether there's a simpler fix.
+
+Actually, I think I found the real issue. Let me look at `build_why_report` more carefully — specifically the `build_state_summary` call when no target event is found (line 3121):
+
+```rust
+err.push_str(&build_state_summary(events));
+```
+
+And `build_state_summary` is called at line 1169 when show_summary is true. Maybe `build_state_summary` does something expensive.
+
+But the most important thing: the `read_tail` function reads the ENTIRE file. That's the fundamental bottleneck.
+
+Let me implement an efficient tail reader and then verify it works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand the full `build_why_report` and also look at `build_state_summary`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3230..3370 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full flow. The key issue: `read_tail` at line 1318 reads the ENTIRE file with `std::fs::read_to_string`. This is the bottleneck for `yyds state why last-failure`.
+
+The fix should be to make `read_tail` efficient. Let me now do it. Here's my approach:
+
+1. Create an efficient tail reader that seeks to near the end of the file and reads backward
+2. Use a reasonable buffer size (e.g., 1 MB) to read the last chunk
+3. If that doesn't contain enough lines, seek back further
+
+Let me also look at another option: can I just use the `handle_why` path and change the default limit? Actually, the issue is that even with limit=200, the entire file gets read because `read_tail` uses `std::fs::read_to_string`.
+
+Let me implement an efficient `read_tail`:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::io::{Read, Seek, SeekFrom};
+    
+    let mut file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))?;
+    
+    // Estimate: average line is ~500 bytes, so we need at most limit * 500 bytes.
+    // Use a larger estimate (2KB per line) to be safe.
+    const MAX_LINE_BYTES: usize = 2048;
+    let mut buf_size = (limit + 1) * MAX_LINE_BYTES;
+    if buf_size > file_size as usize {
+        buf_size = file_size as usize;
+    }
+    
+    let seek_pos = file_size - buf_size as u64;
+    file.seek(SeekFrom::Start(seek_pos))?;
+    
+    let mut buf = vec![0u8; buf_size];
+    file.read_exact(&mut buf)?;
+    
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+    
+    // If we didn't get enough lines, read more.
+    // ...
+    
+    // Keep only the last `limit` lines
+    if lines.len() > limit {
+        lines = lines.split_off(lines.len() - limit);
+    }
+    
+    Ok(lines)
+}
+```
+
+Wait, but this has a complexity: the first line in the buffer might be partial (started mid-line). I need to handle that.
+
+Let me also consider: maybe I should just make the fix minimal. Instead of rewriting `read_tail` (which is used by multiple callers and changing it might break things), let me add a new efficient function and use it in `handle_why`.
+
+Actually, let me think about this differently. The simplest approach:
+1. In `handle_why`, check the file size first
+2. If it's large (> 1MB), use an efficient tail reader
+3. Otherwise, use the existing `read_tail`
+
+Or better yet: just fix `read_tail` to be efficient. All callers will benefit.
+
+Let me implement an efficient `read_tail`:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    
+    let file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))?;
+    
+    // Buffer size: estimate each line at ~1KB, read up to 1MB
+    let estimated_bytes = (limit * 1024).min(1_048_576);
+    let read_size = estimated_bytes.min(file_size as usize);
+    
+    let mut reader = std::io::BufReader::new(file);
+    reader.seek(SeekFrom::Start(file_size - read_size as u64))?;
+    
+    // Skip the first (possibly partial) line
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line)?;
+    
+    // Read remaining lines
+    let mut lines = Vec::with_capacity(limit);
+    for line in reader.lines() {
+        let line = line?;
+        lines.push(line);
+        if lines.len() > limit {
+            lines.remove(0);
+        }
+    }
+    
+    Ok(lines)
+}
+```
+
+Hmm, but there's an issue: if I read 1MB from a 67MB file and there are 200 lines in that 1MB, it should be fast. But if lines are very long, I might need to read more. Let me add a fallback: if we don't get enough lines, seek back further and read more.
+
+Actually, let me reconsider. Maybe the simplest fix that follows the existing patterns is to:
+
+1. In `handle_why`, check if events file is large and if so, use an efficient tail reader
+2. For now, just change `read_tail` to be efficient
+
+Let me just implement the fix in `read_tail`. This benefits all callers.
+
+Actually wait - let me be more careful. The `read_tail` function is used by `read_tail_events` which is used by multiple callers. Let me check all callers of `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me now fully trace the callers and understand the full pattern before editing:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail\b' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The regex doesn't work in the search tool. Let me try without regex:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_tail' src/commands_state.rs | head -30 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `read_tail` is called directly at lines 484 and 24445, and indirectly through `read_tail_events` at many other places. The fix to `read_tail` would benefit ALL callers.
+
+Now let me also check `read_tail_events` since that's the main accessor for state why:
+
+Line 1367: `fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error>`
+
+It calls `read_tail` for the raw lines, then parses JSON. So fixing `read_tail` fixes `read_tail_events` too.
+
+Let me now implement the efficient tail reader. Here's my plan:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::io::{BufRead, Read, Seek, SeekFrom};
+    
+    let mut file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))? as usize;
+    
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+    
+    // Estimate bytes to read: assume ~1KB per line, but cap at 8MB
+    let estimated_bytes = (limit * 1024).min(8 * 1024 * 1024);
+    let mut read_size = estimated_bytes.min(file_size);
+    
+    let mut buf_reader;
+    let mut lines: Vec<String>;
+    
+    loop {
+        let seek_pos = file_size - read_size;
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(seek_pos as u64))?;
+        
+        buf_reader = std::io::BufReader::new(file);
+        
+        // Skip the first partial line if we didn't seek to the beginning
+        if seek_pos > 0 {
+            let mut skip = String::new();
+            buf_reader.read_line(&mut skip)?;
+        }
+        
+        lines = Vec::with_capacity(limit + 1);
+        for line in buf_reader.lines() {
+            let line = line?;
+            if lines.len() >= limit {
+                lines.remove(0);
+            }
+            lines.push(line);
+        }
+        
+        if lines.len() >= limit || read_size >= file_size {
+            break;
+        }
+        
+        // Need more lines - double the read size
+        read_size = (read_size * 2).min(file_size);
+    }
+    
+    Ok(lines)
+}
+```
+
+Wait, this uses a sliding window approach with remove(0) which is O(n) for Vec. Let me use a VecDeque instead.
+
+Actually, I think a simpler approach would work better. Let me use a simpler algorithm that:
+1. Opens the file and seeks to an estimated position near the end
+2. Reads backwards in chunks until we have enough newlines
+3. Collects the lines
+
+But reading backwards is complex. Let me just use the approach that reads chunks from near the end, skipping the first partial line, and doubling the read size if needed.
+
+Let me also think about the edge cases:
+- File smaller than estimated read size → read entire file
+- File has fewer lines than limit → return all lines
+- File is empty → return empty vec
+- Very long lines → need to read more
+
+Here's my cleaner implementation:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, Seek, SeekFrom};
+    
+    let file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))? as usize;
+    
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+    
+    // Start by reading the last ~limit * 1KB, capped at 8MB
+    let mut read_size = (limit * 1024).min(8 * 1024 * 1024).min(file_size);
+    
+    loop {
+        let seek_pos = file_size - read_size;
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(seek_pos as u64))?;  // wait, I'm using u64 for file_size but then as u64, that's fine
+        
+        let mut reader = std::io::BufReader::new(file);
+        
+        // Skip first partial line unless we're at start of file
+        if seek_pos > 0 {
+            let mut skip = String::new();
+            reader.read_line(&mut skip)?;
+        }
+        
+        let mut lines: VecDeque<String> = VecDeque::with_capacity(limit + 1);
+        for line_result in reader.lines() {
+            let line = line_result?;
+            if lines.len() >= limit {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+        
+        if lines.len() >= limit || read_size >= file_size {
+            return Ok(lines.into_iter().collect());
+        }
+        
+        // Need more lines — double the read window
+        read_size = (read_size * 2).min(file_size);
+    }
+}
+```
+
+Actually wait, there's an issue with the loop opening the file multiple times. Let me restructure.
+
+But also, I just realized: I should be checking what the task actually says about the default behavior. Let me re-read the key parts:
+
+From the task description:
+- "Add a sampling cap: read only the most recent N events (e.g., 5000 or 10000)"
+- "The sampling logic should mirror what was done for state doctor (Day 117) and state crashes (Day 122)"
+- "--limit 0 should still work for full scans"
+
+Currently, the default limit for `handle_why` is 200 (line 88). The task seems to want a larger default (5000-10000). But the fundamental issue is that even with limit=200, the ENTIRE file is read.
+
+Let me look at the handle_why again more carefully. At line 88, `.unwrap_or(200)` — so the default is 200. And `read_tail_events` with limit=200 calls `read_tail(path, 200)`.
+
+My fix plan:
+1. Fix `read_tail` to read efficiently from the end of the file
+2. Optionally increase the default limit for handle_why to e.g. 5000
+
+Let me also check: does the `--limit 0` path (full read) work? If limit is 0, `read_tail_events` calls `read_events_lenient` which reads the entire file — that's intentional for full scans.
+
+OK, let me just implement the efficient `read_tail` and also adjust the default limit for `handle_why`. This is the core fix.
+
+Actually, let me now also think about: is `read_tail` safe to change? It's used by multiple callers. The key behavioral contract is:
+- Returns at most `limit` lines from the end of the file
+- Returns fewer if the file has fewer lines
+
+My new implementation maintains this contract. Let me proceed.
+
+Let me also read the existing test for `read_tail` at line 24445:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24440..24470 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the tests verify that `read_tail` returns the last N lines correctly. My efficient implementation must pass these tests.
+
+Now let me write my implementation. Let me plan the edit carefully:
+
+1. Replace `read_tail` function (lines 1318-1328) with an efficient version
+2. Also update the default limit in `handle_why` call site from 200 to something larger (5000 or 10000)
+
+Wait, the task says the default should be 5000 or 10000. Let me use 5000 as a reasonable cap.
+
+Actually, let me re-read the task's fallback:
+"If no failure exists in the sampled window, print "No failure found in recent events (sampled last N events). Use --full to scan all history.""
+
+So the task wants:
+1. An efficient sampling cap (default ~5000 events)
+2. A `--full` flag to scan all history
+3. A clear message when no failure is found in the sampled window
+
+But wait - the code already has `--limit 0` for full scans. Let me check if `--full` exists or if I need to add it.
+
+Actually, looking at the current code flow:
+- Line 88: `.unwrap_or(200)` — default limit is 200
+- `--limit 0` means read all events
+- The task says add `--full` flag
+
+Let me look at how the args are parsed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:60..115 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me plan my edits:
+
+1. **Fix `read_tail`** (line 1318-1328): Replace with an efficient tail reader that reads from the end of the file instead of reading the entire file.
+
+2. **Update the default limit for `handle_why`** (line 88): Change from 200 to 5000 (as the task suggests). Currently, 200 events is too few to reliably find a failure event. With a larger default, the command will be more useful.
+
+3. **Add `--full` flag**: When `--full` is passed, use `limit=0` (read everything). This gives users an explicit way to scan all history.
+
+4. **Update the "no failure found" message**: When no failure is found in sampled events, print a note about the sampling.
+
+But wait - I also need to check: does the current code already handle the `--limit 0` case? Yes, `read_tail_events` with limit=0 calls `read_events_lenient` which reads everything.
+
+Let me now implement:
+
+### Plan:
+1. Replace `read_tail` with an efficient implementation
+2. Change default limit for `handle_why` from 200 to 5000
+3. Add `--full` flag support
+4. Update message when no failure found in sampled window
+
+Let me start coding. First, let me write the efficient `read_tail`:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, Seek, SeekFrom};
+    
+    let file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))? as usize;
+    
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+    
+    // Estimate: each line averages ~500 bytes but can be much longer for JSON payloads.
+    // Read in chunks and double the window if we don't have enough lines.
+    // Start with a window that should cover limit lines at ~1KB each, capped at 8MB.
+    let mut read_size = (limit * 1024).min(8 * 1024 * 1024).min(file_size);
+    
+    loop {
+        let seek_pos = file_size - read_size;
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(seek_pos as u64))?;
+        
+        let mut reader = std::io::BufReader::new(file);
+        
+        // Skip the first (possibly partial) line unless we're at file start
+        if seek_pos > 0 {
+            let mut skip = String::new();
+            reader.read_line(&mut skip)?;
+        }
+        
+        let mut lines: VecDeque<String> = VecDeque::with_capacity(limit + 1);
+        for line_result in reader.lines() {
+            let line = line_result?;
+            if lines.len() >= limit {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+        
+        if lines.len() >= limit || read_size >= file_size {
+            return Ok(lines.into_iter().collect());
+        }
+        
+        // Not enough lines — double the window
+        read_size = (read_size * 2).min(file_size);
+    }
+}
+```
+
+Wait, I realize there's an issue with `file.seek` — the `File::open` returns a reference and I can't call `seek` on a `&File`. I need to use `&mut File`. Let me fix.
+
+Actually, the issue is that `Seek` is implemented for `&File` in std... let me check. Yes, `impl Seek for &File` exists in std. So `file.seek(SeekFrom::End(0))` should work.
+
+But wait, `BufReader::new(file)` takes ownership. So I need to reopen the file for the BufReader. That's fine.
+
+Hmm, actually there's a cleaner approach. Let me use `std::io::BufReader::new(std::fs::File::open(path)?)`. Let me restructure:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::collections::VecDeque;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+    
+    let file = std::fs::File::open(path)?;
+    let file_size = file.seek(SeekFrom::End(0))? as usize;
+    
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+    
+    let mut read_size = (limit * 1024).min(8 * 1024 * 1024).min(file_size);
+    
+    loop {
+        let seek_pos = file_size - read_size;
+        let mut file = std::fs::File::open(path)?;
+        file.seek(SeekFrom::Start(seek_pos as u64))?;
+        
+        let mut reader = BufReader::new(file);
+        
+        // Skip first (possibly partial) line unless at file start
+        if seek_pos > 0 {
+            let mut skip = String::new();
+            reader.read_line(&mut skip)?;
+        }
+        
+        let mut lines: VecDeque<String> = VecDeque::with_capacity(limit + 1);
+        for line in reader.lines() {
+            let line = line?;
+            if lines.len() >= limit {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+        
+        if lines.len() >= limit || read_size >= file_size {
+            return Ok(lines.into_iter().collect());
+        }
+        
+        read_size = (read_size * 2).min(file_size);
+    }
+}
+```
+
+This is clean. Now let me also handle the case where the file is smaller than the estimated read size. In that case, read_size = file_size, seek_pos = 0, and we read the entire file.
+
+For the default limit change, I need to switch from 200 to 5000 at line 88 and also add a `--full` flag. Let me check if `--full` already exists:
+
+Looking at line 82-98, there's no `--full` check. But `--limit 0` already works. Let me add `--full` as an alias:
+
+```rust
+let limit = if args.iter().any(|a| a == "--full") {
+    0
+} else {
+    args.iter()
+        .position(|a| a == "--limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(5000)
+};
+```
+
+Now, for the message when no failure is found in the sampled window: at line 1175-1180 in handle_why:
+```rust
+if limit > 0 && events.len() >= limit {
+    msg.push_str(&format!(
+        "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+    ));
+}
+```
+
+This already exists! Good. But the task's fallback says:
+"If no failure exists in the sampled window, print "No failure found in recent events (sampled last N events). Use --full to scan all history.""
+
+Let me update the message to mention `--full` instead of `--limit 0`.
+
+OK let me now implement all of these changes. Let me start with the code edits.
+
+One more thing: I need to check if there's a `VecDeque` import already at the top of the file:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me check the existing imports and the `handle_why` default limit, then implement the fix:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..11 ✓ (9ms)
+
+
