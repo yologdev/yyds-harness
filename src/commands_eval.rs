@@ -218,7 +218,8 @@ fn handle_fixtures(args: &[String]) {
         "attempt" => handle_fixture_attempt(args, suite),
         "score" => handle_fixture_score(args, suite),
         _ => eprintln!(
-            "{YELLOW}  Usage: yoyo eval fixtures <list|validate|run|attempt|score> [--suite local-smoke] [--task TASK] [--worktree PATH] [--agent-command CMD|--default-agent] [--dry-run] [--sample N] [--json]{RESET}"
+            "{YELLOW}  Usage: yoyo eval fixtures <list|validate|run|attempt|score> [--suite local-smoke] [--task TASK] [--worktree PATH] [--agent-command CMD|--default-agent] [--dry-run] [--sample N] [--json]{RESET}\n\
+             {YELLOW}    score defaults to --sample 5; use --sample 0 to score all fixtures.{RESET}"
         ),
     }
 }
@@ -436,7 +437,12 @@ fn handle_fixture_attempt(args: &[String], suite: crate::eval_fixtures::FixtureS
 
 fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSuite) {
     let json_output = args.iter().any(|arg| arg == "--json");
-    let sample: Option<usize> = flag_value(args, "--sample").and_then(|s| s.parse::<usize>().ok());
+    let sample: Option<usize> = flag_value(args, "--sample")
+        .and_then(|s| s.parse::<usize>().ok())
+        // Default to 5 when --sample is not provided. --sample 0 scores all.
+        .or(Some(5));
+    // --sample 0 means "score all" — convert to None so score_fixture_suite iterates everything
+    let sample = if sample == Some(0) { None } else { sample };
     let domain_filter: Option<&str> = flag_value(args, "--domain").map(|s| s.as_str());
 
     // Filter by domain if specified
@@ -455,6 +461,7 @@ fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSui
     };
 
     let score = crate::eval_fixtures::score_fixture_suite(&suite, sample);
+    let suite_total = suite.tasks.len();
 
     if json_output {
         match serde_json::to_string_pretty(&score) {
@@ -492,6 +499,13 @@ fn handle_fixture_score(args: &[String], suite: crate::eval_fixtures::FixtureSui
                     s * 100.0
                 );
             }
+        }
+        // Hint when sampling was used
+        if sample.is_some() && score.total < suite_total {
+            println!(
+                "  Scored {} of {} total fixtures (use --sample 0 to score all).",
+                score.total, suite_total
+            );
         }
     }
 }

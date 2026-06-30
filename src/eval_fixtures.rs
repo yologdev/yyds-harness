@@ -408,7 +408,10 @@ pub fn score_fixture_suite(suite: &FixtureSuite, sample: Option<usize>) -> Fixtu
 
     // Select tasks: either all or a deterministic sample
     let selected: Vec<&BenchmarkTask> = if let Some(n) = sample {
-        if n == 0 || suite.tasks.is_empty() {
+        if n == 0 {
+            // --sample 0 means "score all"
+            suite.tasks.iter().collect()
+        } else if suite.tasks.is_empty() {
             Vec::new()
         } else {
             let mut hasher = DefaultHasher::new();
