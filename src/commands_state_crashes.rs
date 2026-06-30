@@ -3,10 +3,45 @@
 
 use crate::commands_state::{
     default_events_path, event_string, event_timestamp_ms, flag_value, format_timestamp_ms,
-    read_events,
 };
 use crate::format::*;
 use serde_json::Value;
+use std::collections::VecDeque;
+use std::path::Path;
+
+/// Maximum events to scan for crash detection before capping.
+/// Matching the state doctor's sampling cap of 20K events.
+const MAX_EVENTS_SCAN: usize = 20_000;
+
+/// Read only the last `limit` events from the state log, returning them as parsed JSON.
+/// Returns the parsed events, the total line count, and the number actually scanned.
+fn read_tail_events_capped(
+    path: &Path,
+    cap: usize,
+) -> Result<(Vec<Value>, usize, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let total: usize = raw.lines().count();
+
+    let lines: VecDeque<&str> = {
+        let mut deque = VecDeque::new();
+        for line in raw.lines() {
+            deque.push_back(line);
+            if deque.len() > cap {
+                deque.pop_front();
+            }
+        }
+        deque
+    };
+    let scanned = lines.len();
+
+    let events: Vec<Value> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+
+    Ok((events, total, scanned))
+}
 
 pub(crate) fn handle_crashes(args: &[String]) {
     let limit = flag_value(args, "--limit")
@@ -15,12 +50,39 @@ pub(crate) fn handle_crashes(args: &[String]) {
     let json_output = args.iter().any(|a| a == "--json");
     let show_all = args.iter().any(|a| a == "--all");
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
+
+    // Use capped tail read to avoid timeout on large event files.
+    // Matching the state doctor's approach: scan only the most recent
+    // MAX_EVENTS_SCAN events when the log is larger than that.
+    let (events, truncation_note) = match read_tail_events_capped(&path, MAX_EVENTS_SCAN) {
+        Ok((events, total, scanned)) => {
+            let note = if total > MAX_EVENTS_SCAN {
+                format!(
+                    "\n{DIM}Scanned most recent {scanned} of {total} events (capped for performance).{RESET}\n"
+                )
+            } else {
+                String::new()
+            };
+            (events, note)
+        }
+        Err(_) => {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+        }
+    };
+
+    if events.is_empty() {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
-    };
+    }
+
     match build_crashes_report(&events, limit, json_output, show_all) {
-        Ok(report) => println!("{report}"),
+        Ok(report) => {
+            if !truncation_note.is_empty() {
+                println!("{truncation_note}");
+            }
+            println!("{report}");
+        }
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
 }
@@ -466,5 +528,67 @@ mod tests {
         ));
         assert!(!is_preflight_error("api_key missing"));
         assert!(!is_preflight_error(""));
+    }
+
+    #[test]
+    fn read_tail_events_capped_truncates() {
+        use std::io::Write;
+        // Create a temp file with 100 events, test that cap=30 returns only 30
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..100 {
+            writeln!(
+                tmp,
+                r#"{{"event_type":"SessionStarted","run_id":"run-{}","payload":{{"api_key_present":true}}}}"#,
+                i
+            )
+            .unwrap();
+        }
+        tmp.flush().unwrap();
+        let (events, total, scanned) = read_tail_events_capped(tmp.path(), 30).unwrap();
+        assert_eq!(total, 100);
+        assert_eq!(scanned, 30);
+        assert_eq!(events.len(), 30);
+    }
+
+    #[test]
+    fn read_tail_events_capped_no_cap_when_under_limit() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..5 {
+            writeln!(
+                tmp,
+                r#"{{"event_type":"SessionStarted","run_id":"run-{}","payload":{{"api_key_present":true}}}}"#,
+                i
+            )
+            .unwrap();
+        }
+        tmp.flush().unwrap();
+        let (events, total, scanned) = read_tail_events_capped(tmp.path(), 100).unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(scanned, 5);
+        assert_eq!(events.len(), 5);
+    }
+
+    #[test]
+    fn read_tail_events_capped_skips_empty_lines() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            r#"{{"event_type":"SessionStarted","run_id":"run-a","payload":{{"api_key_present":true}}}}"#
+        )
+        .unwrap();
+        writeln!(tmp, "").unwrap();
+        writeln!(
+            tmp,
+            r#"{{"event_type":"RunCompleted","run_id":"run-b","payload":{{"status":"error","error_detail":"timeout"}}}}"#
+        )
+        .unwrap();
+        writeln!(tmp, "").unwrap();
+        tmp.flush().unwrap();
+        let (events, total, _scanned) = read_tail_events_capped(tmp.path(), 10).unwrap();
+        // Empty lines are counted in total but not parsed as events
+        assert_eq!(total, 4);
+        assert_eq!(events.len(), 2);
     }
 }
