@@ -1,0 +1,474 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix `yyds state crashes --limit 5` to complete within 10 seconds by adding event sampling (capping the number of events scanned), similar to what was already done for `yyds state doctor`.
+
+Let me first read the evolve skill, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state_crashes.rs ✓ (528ms)
+ ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the code. Let me read the full source file and understand the issue. The `handle_crashes` function at line 11 calls `read_events(&path)` which reads all events from a 66.9MB file (~62K events). This causes a timeout.
+
+Let me look at how the state doctor handles this - the task says state doctor limits to 20K recent events. Let me also check `read_events` and `commands_state.rs` to understand the existing patterns.
+
+Let me first check the state doctor pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (47ms)
+  ▶ todo ✓ (141ms)
+  ▶ todo ✓ (144ms)
+  ▶ todo ✓ (143ms)
+  ▶ todo ✓ (160ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the state doctor's sampling fix and understand read_events.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.1s (5 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_events' in src (*.rs)  ▶ search '20000' in src (*.rs)  ▶ search 'MAX_EVENTS' in src (*.rs) ✓ (293ms)
+ ✓ (548ms)
+ ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more specifically for the state doctor's sampling fix. The task says state doctor uses a sampling fix - let me look in commands_state.rs for where it handles the doctor command and caps the events.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_doctor' in src (*.rs)  ▶ search 'fn read_events' in src (*.rs) ✓ (223ms)
+ ✓ (333ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state doctor implementation and the read_events function in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:145..225  ▶ read src/commands_state.rs:1320..1380 ✓ (495ms)
+ ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern. The state doctor uses `read_tail_events` to sample the most recent N events when the file is too large. Let me also look at `read_tail` to understand the full chain.
+
+The approach for fixing crashes is clear:
+1. In `handle_crashes`, instead of calling `read_events(&path)` (which reads all events), use a strategy similar to the doctor:
+   - Count total lines first (fast, without JSON parsing)
+   - If total > MAX_EVENTS_SCAN (e.g., 20000), use `read_tail_events` to read only the most recent MAX_EVENTS_SCAN events
+   - Otherwise, read all events normally
+   - Print an informational line about truncation
+
+Let me also look at `read_tail` and `read_tail_events` more completely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1270..1300 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also find `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail(' in src (*.rs) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture:
+- `read_tail_events(path, limit)` reads only the last `limit` lines and parses them as JSON events
+- `read_tail(path, limit)` reads only the last `limit` lines as raw strings
+
+So the fix for `handle_crashes` is:
+1. Count total events (fast, line count)
+2. If total > MAX_EVENTS_SCAN, use `read_tail_events(path, MAX_EVENTS_SCAN)` 
+3. Otherwise use `read_events(path)`
+4. Print an informational line when truncated
+
+Now let me also check how `handle_crashes` uses the events. Looking at the code again, the events are used in two passes:
+1. Lines 60-81: iterate forward to build session/tool_call maps
+2. Lines 84-100+: iterate in reverse to find crashes
+
+With a tail-only read, the forward pass (building sessions map) would only see recent sessions. This could miss some SessionStarted events that happened before the tail window but whose RunCompleted events are within the window. But the state doctor has the same limitation and it's acceptable for a diagnostic tool.
+
+Let me also check the imports and what's available from the commands_state module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:1..11 ✓ (169ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check if `read_tail_events` is public (pub(crate)):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub(crate) fn read_tail_events' in src (*.rs)  ▶ search 'pub(crate) fn read_limited_events' in src (*.rs) ✓ (208ms)
+ ✓ (315ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`read_tail_events` is private (not pub(crate)), so I can't use it directly from `commands_state_crashes.rs`. I need to either:
+1. Make it public in commands_state.rs, or
+2. Replicate the logic in commands_state_crashes.rs
+
+Let me also check what `read_tail` access is:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub.*fn read_tail' in src (*.rs) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`read_tail` and `read_tail_events` are both private. Let me check if `read_events_lenient` is public:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub.*fn read_events_lenient' in src (*.rs) ✓ (51ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All the helper functions are private. The state doctor uses them internally within `commands_state.rs`. 
+
+I have two options:
+1. Make `read_tail_events` `pub(crate)` in commands_state.rs — this is the cleanest approach, but it's editing a file outside my task scope (commands_state.rs vs commands_state_crashes.rs)
+2. Implement the sampling logic directly in `commands_state_crashes.rs`
+
+The task says "Edit Surface: src/commands_state_crashes.rs". But making read_tail_events accessible is a reasonable dependency. However, the task also says: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md..."
+
+Actually, wait. I can implement the tail-reading logic inside `commands_state_crashes.rs` itself. The logic is simple: read the file, split into lines, keep only the last N, parse. Let me implement this within the crashes module.
+
+Actually, let me think about this more carefully. The `read_tail` function is quite simple:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut lines = VecDeque::new();
+    for line in raw.lines() {
+        lines.push_back(line.to_string());
+        if lines.len() > limit {
+            lines.pop_front();
+        }
+    }
+    Ok(lines.into_iter().collect())
+}
+```
+
+And `read_tail_events` parses those lines as JSON.
+
+But reading the entire 66.9MB file into a string just to get the last N lines is wasteful. A better approach would be to read from the end of the file. But that's complex.
+
+Actually, the simpler approach used by `read_tail` is fine — it reads the whole file but only keeps the last N lines in memory. The bottleneck for `yyds state crashes` is JSON deserializing all 62K events, not reading the raw bytes. The `read_tail` approach only parses N lines, which is exactly the fix.
+
+But wait — even reading 66.9MB into a string and iterating over lines is fast. The real bottleneck is JSON parsing 62K events. So using `read_tail` + parsing only the last N would be fast.
+
+Let me implement the sampling directly in `commands_state_crashes.rs`. I'll implement a `read_tail_events_capped` function that:
+1. Reads the whole file as raw bytes
+2. Counts total lines
+3. Keeps only the last N lines
+4. Parses each as JSON
+
+This keeps the change entirely within the task's Edit Surface.
+
+Let me now write the implementation. I need to:
+
+1. Add a constant `MAX_EVENTS_SCAN` (e.g., 20_000)
+2. Modify `handle_crashes` to use tail-reading when the file is too large
+3. Print info line when truncated
+4. Add tests
+
+Let me read the full crashes source to understand what I need to work with, then implement.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I have enough to implement. Let me now read the complete file to understand the full picture before editing:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:11..111 ✓ (168ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full view. Let me also make sure I understand the test patterns in the file. Let me check from the test section:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:200..300 ✓ (181ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the read_events function and the full picture. I'm also going to look at what `use` I need to add (std::collections::VecDeque, etc.)
+
+Now I'm ready to implement. Here's my plan:
+
+1. Add a `MAX_EVENTS_SCAN` constant
+2. Add a `read_tail_events_capped` function within `commands_state_crashes.rs` that:
+   - Reads the raw file
+   - Counts total lines
+   - Keeps only the last N lines (if total > N)
+   - Parses each as JSON
+3. Modify `handle_crashes` to use this
+4. Add a test for the capped read
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the fix. The approach:
+
+1. Add `MAX_EVENTS_SCAN = 20_000` constant
+2. Implement a local `read_tail_events_capped` function
+3. Modify `handle_crashes` to use tail sampling
+4. Add a test
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (48ms)
+  ▶ todo ✓ (144ms)
+  ▶ todo ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the fix. First, let me add the import for `VecDeque` and then modify `handle_crashes`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.6s (3 ✓)
+
+First, add the `VecDeque` import and the `MAX_EVENTS_SCAN` constant:
+    };
+    use crate::format::*;
+    use serde_json::Value;
+  + use std::collections::VecDeque;
+  + use std::path::Path;
+  + 
+  + /// Maximum events to scan for crash detection before capping.
+  + /// Matching the state doctor's sampling cap of 20K events.
+  + const MAX_EVENTS_SCAN: usize = 20_000;
+  + 
+  + /// Read only the last `limit` events from the state log, returning them as parsed JSON.
+  + /// Returns the parsed events, the total line count, and the number actually scanned.
+  + fn read_tail_events_capped(
+  +     path: &Path,
+  +     cap: usize,
+  + ) -> Result<(Vec<Value>, usize, usize), std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let total: usize = raw.lines().filter(|l| !l.trim().is_empty()).count();
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (9 → 45 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (9 → 45 lines)
+    };
+    use crate::format::*;
+    use serde_json::Value;
+  + use std::collections::VecDeque;
+  + use std::path::Path;
+  + 
+  + /// Maximum events to scan for crash detection before capping.
+  + /// Matching the state doctor's sampling cap of 20K events.
+  + const MAX_EVENTS_SCAN: usize = 20_000;
+  + 
+  + /// Read only the last `limit` events from the state log, returning them as parsed JSON.
+  + /// Returns the parsed events, the total line count, and the number actually scanned.
+  + fn read_tail_events_capped(
+  +     path: &Path,
+  +     cap: usize,
+  + ) -> Result<(Vec<Value>, usize, usize), std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let total: usize = raw.lines().filter(|l| !l.trim().is_empty()).count();
+  + 
+  +     let lines: VecDeque<&str> = {
+  ... (19 more lines)
+ ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `handle_crashes` to use sampling:
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `handle_crashes` to use the capped tail read when the file is large:
+        let json_output = args.iter().any(|a| a == "--json");
+        let show_all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  + 
+  +     // Use capped tail read to avoid timeout on large event files.
+  +     // Matching the state doctor's approach: scan only the most recent
+  +     // MAX_EVENTS_SCAN events when the log is larger than that.
+  +     let (events, truncation_note) = match read_tail_events_capped(&path, MAX_EVENTS_SCAN) {
+  +         Ok((events, total, scanned)) => {
+  +             let note = if total > MAX_EVENTS_SCAN {
+  +                 format!(
+  +                     "\n{DIM}Scanned most recent {scanned} of {total} events (capped for performance).{RESET}\n"
+  +                 )
+  +             } else {
+  +                 String::new()
+  +             };
+  +             (events, note)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (16 → 43 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (16 → 43 lines)
+        let json_output = args.iter().any(|a| a == "--json");
+        let show_all = args.iter().any(|a| a == "--all");
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  + 
+  +     // Use capped tail read to avoid timeout on large event files.
+  +     // Matching the state doctor's approach: scan only the most recent
+  +     // MAX_EVENTS_SCAN events when the log is larger than that.
+  +     let (events, truncation_note) = match read_tail_events_capped(&path, MAX_EVENTS_SCAN) {
+  +         Ok((events, total, scanned)) => {
+  +             let note = if total > MAX_EVENTS_SCAN {
+  +                 format!(
+  +                     "\n{DIM}Scanned most recent {scanned} of {total} events (capped for performance).{RESET}\n"
+  +                 )
+  +             } else {
+  +                 String::new()
+  +             };
+  +             (events, note)
+  +         }
+  +         Err(_) => {
+  ... (22 more lines)
+ ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test for the capped tail read function. Let me find the test section and add a test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add a test. Let me find where tests end to append one:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:470..500 ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:500..530 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:529..539 ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test. I'll create a temporary file with events, then test the capped read. Actually, since `read_tail_events_capped` reads from a file, I need to use temp files. Let me add a test that creates a temp file and verifies the cap logic.
+
+But actually, looking at the existing tests, they all test `build_crashes_report` directly, not `handle_crashes`. The `read_tail_events_capped` function reads from a file, so it's harder to unit test without creating temp files. Let me write a test using temp files, which is more realistic.
+
+Actually, the more impactful test would be to test that `handle_crashes` works with the capped tail read on a synthetic large file. But I'd need to mock or use temp directories.
+
+Let me write a simpler test: test that `read_tail_events_capped` correctly caps when given a file with more events than the cap.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test for the capped tail read:
+            assert!(!is_preflight_error("api_key missing"));
+            assert!(!is_preflight_error(""));
+  +     }
+  + 
+  +     #[test]
+  +     fn read_tail_events_capped_truncates() {
+  +         use std::io::Write;
+  +         // Create a temp file with 100 events, test that cap=30 returns only 30
+  +         let mut tmp = tempfile::NamedTempFile::new().unwrap();
+  +         for i in 0..100 {
+  +             writeln!(
+  +                 tmp,
+  +                 r#"{{"event_type":"SessionStarted","run_id":"run-{}","payload":{{"api_key_present":true}}}}"#,
+  +                 i
+  +             )
+  +             .unwrap();
+  +         }
+  +         tmp.flush().unwrap();
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (4 → 69 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (4 → 69 lines)
+            assert!(!is_preflight_error("api_key missing"));
+            assert!(!is_preflight_error(""));
+  +     }
+  + 
+  +     #[test]
+  +     fn read_tail_events_capped_truncates() {
+  +         use std::io::Write;
+  +         // Create a temp file with 100 events, test that cap=30 returns only 30
+  +         let mut tmp = tempfile::NamedTempFile::new().unwrap();
+  +         for i in 0..100 {
+  +             writeln!(
+  +                 tmp,
+  +                 r#"{{"event_type":"SessionStarted","run_id":"run-{}","payload":{{"api_key_present":true}}}}"#,
+  +                 i
+  +             )
+  +             .unwrap();
+  +         }
+  +         tmp.flush().unwrap();
+  +         let (events, total, scanned) =
+  +             read_tail_events_capped(tmp.path(), 30).unwrap();
+  ... (49 more lines)
+ ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check if `tempfile` is available as a dev-dependency. Let me check Cargo.toml:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check if `tempfile` is available as a dev-dependency:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'tempfile' in . (Cargo.toml) ✓ (48ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `tempfile` is available. Now let me also check that the `read_events` import is still needed (it might not be since we no longer use it in `handle_crashes`). Let me check if `read_events` is used elsewhere in the file... The import is from `commands_state`, and `handle_crashes` no longer calls it. But other functions in the file might use it. Let me check:
+
+The file only has `handle_crashes`, `build_crashes_report`, `format_relative_ms`, and some types. `build_crashes_report` doesn't use `read_events`. So `read_events` is no longer needed. Let me remove it from the imports.
+
+But wait — removing unused imports should be caught by `cargo check` or `cargo clippy`. Let me first try to build and see if there are any issues.
+
+Actually, let me just run cargo check first to see.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 | head -30 ✓ (7.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, it compiles with just one unused import warning. Let me remove the `read_events` import since we no longer use it.
+────────────────────────────────────────────────────────────────────────────────
+
+Remove unused import:
+    use crate::commands_state::{
+        default_events_path, event_string, event_timestamp_ms, flag_value, format_timestamp_ms,
+  -     read_events,
+    };
+  ✓ Auto-approved: edit: src/commands_state_crashes.rs (4 → 3 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state_crashes.rs (4 → 3 lines)
+    use crate::commands_state::{
+        default_events_path, event_string, event_timestamp_ms, flag_value, format_timestamp_ms,
+  -     read_events,
+    };
+ ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests for the crashes module specifically:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (46ms)
+  ▶ todo ✓ (140ms)
+  2 tools completed in 337ms (2 ✓)
+
+
