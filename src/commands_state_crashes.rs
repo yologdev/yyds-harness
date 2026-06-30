@@ -578,13 +578,13 @@ mod tests {
             r#"{{"event_type":"SessionStarted","run_id":"run-a","payload":{{"api_key_present":true}}}}"#
         )
         .unwrap();
-        writeln!(tmp, "").unwrap();
+        writeln!(tmp).unwrap();
         writeln!(
             tmp,
             r#"{{"event_type":"RunCompleted","run_id":"run-b","payload":{{"status":"error","error_detail":"timeout"}}}}"#
         )
         .unwrap();
-        writeln!(tmp, "").unwrap();
+        writeln!(tmp).unwrap();
         tmp.flush().unwrap();
         let (events, total, _scanned) = read_tail_events_capped(tmp.path(), 10).unwrap();
         // Empty lines are counted in total but not parsed as events
