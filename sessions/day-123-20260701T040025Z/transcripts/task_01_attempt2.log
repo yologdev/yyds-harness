@@ -1,0 +1,1249 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill, then the target file, and understand the current state of things.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (497ms)
+ ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current code carefully.
+
+The `append_terminal_state_events.py` script currently:
+
+1. Loads all events from the JSONL file
+2. Scans events after `after_line` to find open runs and models
+3. For open models (ModelCallStarted without ModelCallCompleted), appends ModelCallCompleted
+4. For open runs (RunStarted without RunCompleted), appends RunCompleted
+
+The key function is `lifecycle_for_scope` which identifies open runs and models by:
+- Tracking `RunStarted` → adds to `run_started`
+- Tracking `RunCompleted` → adds to `run_completed`
+- Tracking `ModelCallStarted` → adds to `model_started`
+- Tracking `ModelCallCompleted` → adds to `model_completed`
+
+Open runs are: (`run_started` ∪ keys of `model_started` ∪ `model_completed`) - `run_completed`
+
+Wait, this is interesting. Let me trace through what happens with the evaluator timeout case:
+
+The evaluator is an agent invocation that has its own run lifecycle. Let me look at how the evaluator's run was opened. Looking at `evolve.sh`, the evaluator calls `run_agent_with_completion_watch`. Let me check whether `run_agent_with_completion_watch` and `record_agent_terminal_events` handle the evaluator case.
+
+The key question: does the evaluator timeout path call `record_agent_terminal_events`? From the previous transcript's analysis, if the evaluator times out (SIGTERM after timeout, then SIGKILL), `timeout` exits with 124. The bash code at line 931 handles non-zero exit codes and calls `record_agent_terminal_events`. So the evaluator timeout IS handled by the existing code.
+
+But wait - what about the case from the task description: "the evaluator process exited without closing the run lifecycle." Let me think about this differently. Maybe the issue isn't with `append_terminal_state_events.py` per se, but with how it's called (or not called) for the evaluator.
+
+Let me look at `evolve.sh` to understand how `append_terminal_state_events.py` is called and whether there's a gap for the evaluator timeout case.
+
+Actually, looking more carefully at the code, `append_terminal_state_events.py` is called from `record_agent_terminal_events` in `evolve.sh`. The question is whether `record_agent_terminal_events` is actually called for the evaluator timeout case.
+
+But wait, the task says "scripts/append_terminal_state_events.py is the post-hoc lifecycle closer." Maybe the issue is that `append_terminal_state_events.py` looks for open runs by scanning for RunStarted events, but the evaluator timeout case might have a different event shape.
+
+Actually, let me re-read the task more carefully. It says:
+- "The evaluator timeout in Day 122 left runs permanently open in the state graph"
+- "runs that have a RunStarted but no RunCompleted"
+
+So the runs ARE in the state file with RunStarted. The question is why `append_terminal_state_events.py` didn't close them.
+
+Let me look at the `lifecycle_for_scope` function again:
+
+```python
+active_runs = run_started | set(model_started) | model_completed
+open_runs = active_runs - run_completed
+```
+
+So `open_runs` includes: run_started run IDs, model_started run IDs, and model_completed run IDs, minus run_completed run IDs.
+
+Wait, `model_completed` are runs that have ModelCallCompleted but not RunCompleted. Those are included in `open_runs` too. That seems correct.
+
+But there's a subtle issue: what if the evaluator run has a `FailureObserved` event but no `RunCompleted`? Looking at the code, `FailureObserved` is NOT treated as a terminal event. The only events that mark a run as "completed" are `RunCompleted`. So if the evaluator process crashes without emitting `RunCompleted`, the run stays open.
+
+Let me look at whether `FailureObserved` should also be treated as a terminal event. Let me check what events the yoyo binary emits when it crashes.
+
+Actually, I think the core issue might be simpler. Let me look at `evolve.sh` to see what happens when the evaluator times out. The evaluator uses `timeout $EVAL_TIMEOUT $EVAL_CMD`. If timeout kills it, the bash `if` branch for exit code 124 handles it. But what if the evaluator process dies in a way that `timeout` doesn't catch?
+
+Actually, let me approach this differently. Instead of analyzing the evaluator timeout path in evolve.sh (which is complex and I might not have full access to all the relevant code), let me focus on what the task actually asks me to do:
+
+1. Make `append_terminal_state_events.py` detect runs that have a RunStarted but no RunCompleted
+2. Append a RunCompleted with appropriate outcome
+3. Don't double-close runs
+4. Add tests
+
+Looking at the current code, it ALREADY does steps 1-3. The `lifecycle_for_scope` function finds open runs and `append_terminal_events` closes them.
+
+So the question is: is there a bug where the evaluator timeout produces a different event shape that the current code doesn't handle?
+
+One potential issue: `lifecycle_for_scope` scans events after `after_line`. If `after_line` is beyond the evaluator's RunStarted event line, the run won't be found. Let me think about this...
+
+Actually wait. `after_line` is the line number in the state file BEFORE the agent invocation. The evaluator's RunStarted was emitted DURING the evaluator invocation, so it should be AFTER `after_line`. So it should be found by the scan.
+
+Unless... the state file was rebuilt/reset between the evaluator's RunStarted and the call to `append_terminal_state_events`. In that case, the RunStarted event might not exist in the current file.
+
+Or... maybe the issue is with `FailureObserved`. Let me check if there's a `FailureObserved` event type that could mark a run as terminated:
+
+Looking at the code, the only terminal event for runs is `RunCompleted`. `FailureObserved` is not checked. So if the yoyo binary emits `FailureObserved` instead of `RunCompleted` when it crashes, the run would remain "open" in the lifecycle tracker.
+
+But `append_terminal_state_events.py` is supposed to handle this - it's called post-hoc to close any open runs.
+
+Let me look at the actual problem from a different angle. Let me check if there's a `FailureObserved` event type in the codebase:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.3s (2 ✓)
+
+Let me understand the current state of the code and the test file before deciding what to do.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in scripts  ▶ search 'record_agent_terminal_events' in scripts/evolve.sh  ▶ read scripts/test_append_terminal_state_events.py ✓ (158ms)
+ ✓ (739ms)
+ ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state:
+
+1. The `append_terminal_state_events.py` already handles open runs - it detects runs that have RunStarted but no RunCompleted, and closes them.
+
+2. Looking at the tests, they already cover:
+   - Closing open model and run after a specific line
+   - Leaving already completed invocations unchanged
+   - Closing open lifecycle after normal agent exit
+   - Closing run when model completed but run terminal missing
+   - Scanning current file when after_line exceeds reset events
+   - Ambiguous reset scan not closing historical runs
+   - Fallback after_line closing agent runs without closing session runs
+
+Now, the question the task is asking: does the code handle evaluator-timeout orphaned runs? Let me think about what the evaluator timeout case produces.
+
+When the evaluator times out:
+1. The evaluator yoyo binary process starts → emits `RunStarted` for its run
+2. The evaluator runs its prompts
+3. Something goes wrong (timeout, crash, kill) → the evaluator process exits WITHOUT emitting `RunCompleted`
+
+Then `record_agent_terminal_events` is called from `evolve.sh`, which calls `append_terminal_state_events.py`.
+
+Wait, but the previous transcript analysis says the evaluator timeout IS handled by the bash code - it calls `record_agent_terminal_events`. So what's the actual gap?
+
+Let me look at the evaluator code path in `evolve.sh` more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:230..330  ▶ read scripts/evolve.sh:740..960 ✓ (496ms)
+ ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me trace through the evaluator timeout case:
+
+1. `run_agent_with_completion_watch` is called for the evaluator
+2. The Python subprocess monitors the evaluator agent
+3. If deadline hits before completion pattern matches: kills process group with SIGTERM, then SIGKILL after 5s, then `sys.exit(124)`
+4. Back in bash, `$exit_code` is 124
+5. Bash enters `elif [ "$exit_code" -eq 124 ]` at line 923
+6. `record_agent_terminal_events` is called with proper arguments
+
+So the evaluator timeout IS handled by the bash code. The `record_agent_terminal_events` function calls `append_terminal_state_events.py`, which should close the open runs.
+
+So what's the actual gap? Let me think about what could go wrong...
+
+Wait, there's a subtlety. Look at the Python subprocess code more carefully. When the deadline hits:
+```python
+if now >= deadline:
+    kill_process_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill_process_group(proc, signal.SIGKILL)
+        proc.wait()
+    sys.exit(124)
+```
+
+The key issue: when `sys.exit(124)` is called, the `finally` block runs. But note that `sys.exit(124)` raises `SystemExit(124)`. In the `finally` block, only `stage_handle.close()` happens. But wait - does this `sys.exit(124)` go through the normal Python process exit, or does it propagate to the bash caller?
+
+Actually, `sys.exit(124)` in a Python script causes the process to exit with code 124. But the bash pipeline is: `python3 - ... <<'PY' || exit_code=$?`. So the exit code IS captured.
+
+Now, the critical question: between when the evaluator's RunStarted was emitted and when `record_agent_terminal_events` is called, is the state file intact?
+
+Actually, I think I need to look at this from a different angle. Let me look at what the `run_agent_with_completion_watch` does when the process exits NOT due to timeout or completion, but due to the process dying on its own (e.g., SIGHUP, SIGKILL from OOM, etc.).
+
+The loop at line 877:
+```python
+if proc.poll() is not None:
+    break
+```
+
+If the evaluator process dies on its own, the loop breaks. Then after draining, it hits `sys.exit(proc.wait())` at line 913. The exit code would be non-zero (e.g., -9 for SIGKILL). Then in bash, the `else` branch at line 931 handles it: `record_agent_terminal_events` is called.
+
+But what about THIS case: the evaluator process is killed by something external (not the Python timeout logic), but the evaluator binary might have buffered state events that never get flushed to disk. In that case, the RunStarted might have been flushed but RunCompleted is never emitted because the process died.
+
+However, `record_agent_terminal_events` IS still called, and it calls `append_terminal_state_events.py` which scans for open runs starting from `state_before_lines`. The RunStarted was emitted after `state_before_lines`, so it should be found. The script should close it.
+
+So... what's the actual bug? Let me re-read the task more carefully:
+
+"The evaluator timeout in Day 122 left runs permanently open in the state graph"
+
+Maybe the issue is not with `append_terminal_state_events.py` but with the fact that `state_run_incomplete_count` reports a run as incomplete even after it was closed by `append_terminal_state_events.py`. Perhaps the `RunCompleted` event appended by the post-hoc closer has a different format than expected, or the state graph tools don't recognize it.
+
+Or maybe the problem is simpler: `append_terminal_state_events.py` uses `after_line` to determine where to start scanning. If `state_before_lines` is wrong (because the state file was rebuilt between the evaluator start and the post-hoc close), the scan might miss the open run.
+
+But wait, the code already handles this case with the `fallback_after_line` parameter and the `full_after_line_exceeded_file` case.
+
+OK, let me just look at what the actual gap could be. Let me think about this from the task description's perspective:
+
+"runs that have a RunStarted but no RunCompleted and appends a RunCompleted with appropriate outcome (e.g., 'evaluator_timeout' or 'incomplete')"
+
+Currently, `append_terminal_state_events.py` calls `lifecycle_for_scope` which finds open runs, and then `append_terminal_events` appends RunCompleted events for them. This should work for the evaluator timeout case.
+
+BUT - what if there's a `FailureObserved` event that makes the run look "closed" to some consumers but not to `append_terminal_state_events`? The `FailureObserved` event type is NOT treated as a terminal event in `lifecycle_for_scope`. If the evaluator emits `FailureObserved` before dying, and some consumer treats that as terminal, there could be a mismatch.
+
+Actually, let me re-read the task's Fallback clause: "If no concrete lifecycle gap exists in the current code (the script already handles this case), write an obsolete note with the actual state and skip edits."
+
+I think that's exactly the case here. The `append_terminal_state_events.py` script already handles the evaluator timeout case - it detects open runs (RunStarted without RunCompleted) and closes them with RunCompleted events.
+
+The real gap might be elsewhere. Let me check if `FailureObserved` should be recognized as a terminal-like event. Let me search for how `FailureObserved` is used.
+
+Actually wait, let me look at the `record_agent_terminal_events` function in evolve.sh more carefully. It passes `--fallback-after-line "$STATE_BASE_LINES"`. What is `STATE_BASE_LINES`? It's the line count of the state file at the start of the session. So the fallback scan goes ALL the way back to the session start, not just to the agent invocation start (`state_before_lines`). This means the fallback can find runs from earlier in the session that need closing.
+
+Hmm, OK let me look at this from the FailureObserved angle. In `log_feedback.py` line 129, `FailureObserved` is listed in some set. Let me check the context.
+
+Let me look at how `FailureObserved` interacts with the lifecycle closure. Maybe `FailureObserved` is treated as a terminal event by some parts of the system but NOT by `append_terminal_state_events.py`, leading to a situation where:
+1. The evaluator crashes and emits `FailureObserved` 
+2. `append_terminal_state_events.py` sees the run as still open (because it only recognizes `RunCompleted` as terminal)
+3. Something else in the system sees `FailureObserved` and considers the run closed
+
+But that wouldn't cause runs to be "permanently open" - it would cause duplicate RunCompleted events. The opposite problem.
+
+Actually, you know what, let me just look at what `FailureObserved` means in the context of `log_feedback.py` and `build_evolution_dashboard.py`.
+
+Actually, I think I've been overthinking this. Let me re-read the task more carefully:
+
+"Ensure runs orphaned by evaluator timeout get proper RunCompleted terminal events during post-hoc lifecycle closure"
+
+The `append_terminal_state_events.py` already does this. But the task says there's a gap. Let me look for a concrete scenario where the gap exists.
+
+Maybe the issue is simpler than I think. Let me look at `run_agent_with_completion_watch` more carefully. Look at this section:
+
+```python
+if proc.poll() is not None:
+    break
+```
+
+If the evaluator process exits on its own (before the timeout), the loop breaks. Then:
+
+```python
+sys.exit(proc.wait())
+```
+
+The exit code of the evaluator process is returned. Then in bash:
+
+```bash
+elif [ "$exit_code" -eq 0 ]; then
+    record_agent_terminal_events ...
+else
+    record_agent_terminal_events ...
+fi
+```
+
+Both paths call `record_agent_terminal_events`. Good.
+
+But wait - what if `sys.exit(0)` is called but then... no, `sys.exit` triggers a `SystemExit` exception that propagates.
+
+Hmm, what about this scenario: the evaluator process hangs, and the Python subprocess is waiting in `selector.select(timeout=0.2)`. The timeout hits (deadline passed). But before the `now >= deadline` check runs (because we're still in `selector.select`), the process exits. Then `proc.poll()` returns non-None and we break. We drain, call `proc.wait()` which returns the exit code, and `sys.exit(code)`. 
+
+If the process exited with SIGKILL from an external source, `proc.wait()` returns -9. Bash sees -9, which is not 0, 124, and not a completion file match. So it goes to the `else` branch and calls `record_agent_terminal_events`. This handles it.
+
+OK, I'm becoming increasingly convinced that the code already handles this case. But the task says there's a gap. Let me think about this differently.
+
+Maybe the gap is that `FailureObserved` events should ALSO be recognized as terminal events by `append_terminal_state_events.py`. If the evaluator emits `FailureObserved` (instead of `RunCompleted`) when it crashes, and then `append_terminal_state_events.py` doesn't recognize `FailureObserved` as terminal, it would try to append a `RunCompleted` event. But that's actually fine - the appending of `RunCompleted` is correct behavior.
+
+Unless... the issue is the OPPOSITE: the current code DOES close the run, but the `state_run_incomplete_count` still shows it as incomplete because the `RunCompleted` was appended with `status: "error"` or something, and the metric filters out certain statuses?
+
+OR maybe the issue is even simpler: `append_terminal_state_events.py` DOES close the runs, but the `state_run_incomplete_count` gnome is computed BEFORE the post-hoc closure runs. Let me check...
+
+No, `record_agent_terminal_events` is called within the bash error handling, which runs before the gnome computation. And `merge_live_state_delta_snapshot` is called at the end of `record_agent_terminal_events`.
+
+Hmm, I think there might actually be a real bug that I'm not seeing. Let me look at the `append_event` function from `append_state_event.py`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 28.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_state_event.py ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `append_event` writes events in the yoagent-state format with `event_type`, `run_id`, `session_id`, etc. The `append_terminal_events` function in `append_terminal_state_events.py` calls `append_event` with `event_type="RunCompleted"` and `actor="harness"`.
+
+The `lifecycle_for_scope` function looks for `event_type` in the event (using the `event_type` function which checks both `event.event_type` and `event.payload._yoyo.event_type`). It correctly identifies `RunStarted` and `RunCompleted` events.
+
+Now, the evaluator yoyo binary emits events using the yoagent-state library. Let me check what event format the binary uses. The `event_type` function in `append_terminal_state_events.py` checks multiple fields:
+
+```python
+def event_type(event):
+    value = event.get("event_type") or event.get("kind")
+    if isinstance(value, str):
+        return value
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        meta = payload.get("_yoyo")
+        if isinstance(meta, dict) and isinstance(meta.get("event_type"), str):
+            return meta["event_type"]
+    return ""
+```
+
+And `payload`:
+```python
+def payload(event):
+    value = event.get("payload")
+    if not isinstance(value, dict):
+        return {}
+    wrapped = value.get("value")
+    if set(value.keys()).issubset({"_yoyo", "value"}) and isinstance(wrapped, dict):
+        return wrapped
+    return value
+```
+
+And `run_id`:
+```python
+def run_id(event, data):
+    for value in (
+        event.get("run_id"),
+        (event.get("payload") or {}).get("_yoyo", {}).get("run_id")
+        if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+        else None,
+        data.get("run_id"),
+        data.get("_yoyo", {}).get("run_id") if isinstance(data.get("_yoyo"), dict) else None,
+    ):
+        if isinstance(value, str) and value:
+            return value
+    return None
+```
+
+Now wait - there could be an issue with the `run_id` extraction from events emitted by the yoyo binary (which uses yoagent-state). The yoyo binary events might use a different field name or schema version. Let me check what the evaluator emits.
+
+Actually, I think I need to look at this from the opposite direction. The `append_terminal_state_events.py` script not only looks for RunStarted events but also ModelCallStarted events. For the evaluator timeout case, the evaluator might have:
+- RunStarted (emitted when evaluator starts)
+- ModelCallStarted (emitted when evaluator makes API calls)
+- FileEdited or other tool events
+- No RunCompleted (because it died)
+
+The script should detect this pattern and close the run. And looking at the code, it DOES detect this pattern. The `lifecycle_for_scope` function finds open runs and `append_terminal_events` closes them.
+
+So I'm leaning toward "the code already handles this case." But the task says there's a gap. Let me look at this from one more angle: What if `FailureObserved` is emitted by the evaluator's panic hook, and `FailureObserved` should be treated as a terminal event equivalent to `RunCompleted`?
+
+If the evaluator panics:
+1. Panic hook emits `FailureObserved` 
+2. `append_terminal_state_events.py` looks for `RunCompleted` and doesn't find it
+3. The run is considered "open"
+4. `append_terminal_state_events.py` appends `RunCompleted`
+
+This is actually correct behavior - the run IS open and SHOULD be closed. But what if there's a downstream consumer that counts `FailureObserved` runs as "closed" while `append_terminal_state_events.py` closes them again with `RunCompleted`? That would create duplicate terminal events.
+
+But the task says "runs permanently open," not "duplicate terminal events."
+
+OK, I think the real issue might be simpler than I've been making it. Let me look at what `run_agent_with_completion_watch` does when the evaluator process exits BEFORE the deadline but with a non-zero exit code:
+
+```python
+if proc.poll() is not None:
+    break
+```
+
+Then:
+```python
+sys.exit(proc.wait())
+```
+
+In bash:
+```bash
+else
+    record_agent_terminal_events \
+        "$state_before_lines" "${STAGE_NAME:-agent}" "error" "error" \
+        "agent_process_exited_nonzero" "nonzero_exit" "agent process exited with code ${exit_code}"
+fi
+```
+
+This IS handled. The `record_agent_terminal_events` calls `append_terminal_state_events.py` which closes open runs.
+
+BUT WAIT. Let me look at the `lifecycle_for_scope` function more carefully:
+
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+This skips session runs. The evaluator's run has `phase: "session"`? No, the evaluator is NOT a session run - it's a task evaluation run. Let me verify by checking what `is_session_run` checks:
+
+```python
+def is_session_run(data: dict[str, Any]) -> bool:
+    return data.get("phase") == "session"
+```
+
+The evaluator's RunStarted should have `phase` set to something OTHER than "session" (like "task_eval" or something). So it won't be skipped.
+
+OK I'm going in circles. Let me just look at whether there's a concrete bug by testing the script.
+
+Wait - there's one more possibility I haven't considered. What if the evaluator timeout scenario is NOT about `run_agent_with_completion_watch` at all? What if it's about the `TimeoutCmd` being used directly in `run_agent` (not `run_agent_with_completion_watch`)?
+
+Looking at `run_agent` (line 740+):
+```bash
+if [ "$exit_code" -eq 124 ]; then
+    record_agent_terminal_events \
+        "$state_before_lines" "${STAGE_NAME:-agent}" "error" "timeout" \
+        "timeout_after_seconds" "timeout" "agent timed out after ${timeout_val}s"
+```
+
+This IS handled - `record_agent_terminal_events` is called.
+
+OK let me try yet another angle. Let me look at whether `FailureObserved` is considered a terminal event by the state graph tools but NOT by `append_terminal_state_events.py`. If so, `state_run_incomplete_count` might count runs with `FailureObserved` as open (because `append_terminal_state_events.py` didn't close them, thinking `FailureObserved` IS a terminal event), while the metric counts them as closed. That would create a phantom gap.
+
+No wait, let me actually check how `state_run_incomplete_count` is computed. I searched earlier and found it in `log_feedback.py` but the search for `state_run_incomplete_count` returned no results there. Let me search more broadly.
+
+Hmm, actually let me look at `scripts/state_graph_tools.py` for the gnome computation and `state_run_incomplete_count`.
+
+Actually you know what, let me just try running the existing tests and see if they pass, and then think about what additional test case might expose a gap.
+
+Actually, I just had a new thought. Let me look at the `run_agent_with_completion_watch` Python code more carefully. When the deadline hits:
+
+```python
+if now >= deadline:
+    kill_process_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill_process_group(proc, signal.SIGKILL)
+        proc.wait()
+    sys.exit(124)
+```
+
+Note: `sys.exit(124)` raises `SystemExit(124)`. But look at the `finally` block:
+
+```python
+finally:
+    if stage_handle:
+        stage_handle.close()
+```
+
+The `finally` block runs when `SystemExit` is raised. But the `finally` block does NOT call `proc.wait()` again - it just closes the stage handle. But the process has already been waited on before `sys.exit(124)`. So this is fine.
+
+But there's actually a potential issue: when `sys.exit(124)` is called, the outer `try` block's `finally` runs, which closes the stage handle. Then `SystemExit` propagates out of the `with` blocks, which close stdin and log handles. Then the Python process exits with code 124.
+
+The bash code captures this:
+```bash
+python3 - ... <<'PY' || exit_code=$?
+```
+
+So `exit_code=124`. Then:
+```bash
+elif [ "$exit_code" -eq 124 ]; then
+    record_agent_terminal_events ...
+```
+
+This IS handled.
+
+I'm truly struggling to find a gap. Let me look at this from the perspective of the task: "Day 122 tasks #51 and #52 were reverted because 'Evaluator timed out without a verifier verdict' — the evaluator process exited without closing the run lifecycle."
+
+So the evaluator DID time out, and `record_agent_terminal_events` SHOULD have been called. But somehow the runs ended up permanently open. Why?
+
+Possibility: `append_terminal_state_events.py` WAS called but its output went to `$STATE_APPEND_LOG` and it failed silently. The `record_agent_terminal_events` function pipes output to `$STATE_APPEND_LOG` and only warns if the script fails. If the script fails, the runs stay open.
+
+Possibility: The `after_line` was wrong because the state file was rebuilt during the evaluator run.
+
+Possibility: The evaluator's `RunStarted` event had a different format that `append_terminal_state_events.py` couldn't parse properly.
+
+Actually, let me look at this from a completely new angle. What if `append_terminal_state_events.py` correctly closes the run, but the gnome computation doesn't recognize the post-hoc `RunCompleted` because it was added with `actor="harness"` instead of the evaluator's actor?
+
+Let me look at the gnome computation to understand how it detects incomplete runs.
+
+Actually, you know what, I think the most productive thing I can do is:
+1. Run the existing tests to confirm they pass
+2. Check whether `FailureObserved` should be recognized as a terminal event
+3. If the code is already correct, write test cases that specifically cover the evaluator-timeout scenario and write an obsolete task note
+
+Let me also look at how the state graph tools compute the incomplete count.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te…  ▶ search 'open_run|incomplete' in scripts/state_graph_tools.py ✓ (206ms)
+ ✓ (660ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, all 7 tests pass. The state_graph_tools.py doesn't contain "open_run" or "incomplete". Let me search for where `state_run_incomplete_count` is actually computed.
+
+Let me search more broadly. The task says "Assessment §Structured State Snapshot: state_run_incomplete_count=1, cause 'state_incomplete/open_after_SessionStarted'". Let me search for this.
+
+Actually, let me look at `log_feedback.py` where `state_run_incomplete_count` might be computed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete'  ▶ search 'open_after|lifecycle|incomplete' in scripts/log_feedback.py ✓ (134ms)
+ ✓ (413ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `state_run_incomplete_count` is computed. From the search results, it seems related to `summarize_state_gnomes.py` and `state_graph_tools.py`. Let me look at `summarize_state_gnomes.py` line 278 where the count seems to be computed.
+
+Also, I see `state_run_incomplete_count` maps to `"runs incomplete"` in state_graph_tools.py line 1266.
+
+Let me look at how the gnome computation works to understand what constitutes an "incomplete" run.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:265..295  ▶ read scripts/summarize_state_gnomes.py:80..140 ✓ (490ms)
+ ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `lifecycle` is computed - specifically how `runs["incomplete"]` is determined. Let me find where the lifecycle dict is built.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def state_lifecycle|lifecycle\b.*=|"incomplete"' in scripts/summarize_state_gnomes.py ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'lifecycle' in scripts/summarize_state_gnomes.py ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the function that computes the lifecycle summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:820..900 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where the `state_lifecycle` dict is built, since `lifecycle_gnomes` consumes `lifecycle["runs"]["incomplete"]`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_lifecycle' in scripts/summarize_state_gnomes.py ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `summarize_state_lifecycle` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:306..426 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see how `state_run_incomplete_count` is computed:
+
+```python
+run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+```
+
+So an incomplete run is one that has a `RunStarted` but no `RunCompleted`. The `run_completed_ids` only tracks `RunCompleted` events - NOT `FailureObserved` or other terminal-like events.
+
+Now, the `append_terminal_state_events.py` script also closes runs by appending `RunCompleted` events. If it works correctly, the runs should be closed.
+
+But wait: the `summarize_state_lifecycle` function uses `event_run_id` to extract the run_id from events. Let me check if `event_run_id` in `summarize_state_gnomes.py` might extract the run_id differently from `run_id` in `append_terminal_state_events.py`. If the extraction is different, the `RunStarted` event might have a run_id that doesn't match the `RunCompleted` event appended by `append_terminal_state_events.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_run_id' in scripts/summarize_state_gnomes.py ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me compare the `event_run_id` function in `summarize_state_gnomes.py` with the `run_id` function in `append_terminal_state_events.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:172..212 ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me compare `event_run_id` in `summarize_state_gnomes.py` with `run_id` in `append_terminal_state_events.py`:
+
+`append_terminal_state_events.py`:
+```python
+def run_id(event, data):
+    for value in (
+        event.get("run_id"),
+        (event.get("payload") or {}).get("_yoyo", {}).get("run_id")
+        if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+        else None,
+        data.get("run_id"),
+        data.get("_yoyo", {}).get("run_id") if isinstance(data.get("_yoyo"), dict) else None,
+    ):
+        if isinstance(value, str) and value:
+            return value
+    return None
+```
+
+`summarize_state_gnomes.py`:
+```python
+def event_run_id(event, data):
+    value = event.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    value = raw_meta.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    value = data.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    meta = data.get("_yoyo") if isinstance(data.get("_yoyo"), dict) else {}
+    value = meta.get("run_id")
+    if isinstance(value, str) and value:
+        return value
+    return None
+```
+
+Wait, the difference is subtle but important. In `append_terminal_state_events.py`, the `data` parameter is `payload(event)` which extracts from the payload. In `summarize_state_gnomes.py`, the `data` parameter is also `payload(event)`.
+
+Let me check `payload` in `summarize_state_gnomes.py`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def payload' in scripts/summarize_state_gnomes.py ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `payload` function in `summarize_state_gnomes.py`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:143..163 ✓ (136ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `payload` functions in both files are identical (the same extraction logic). So the `data` passed to `event_run_id` and `run_id` should be the same.
+
+Now, the key difference: when `append_terminal_state_events.py` appends a `RunCompleted` event via `append_event`, the event format is:
+
+```python
+event = {
+    "event_id": f"evt-harness-{hashlib.sha1(seed.encode()).hexdigest()[:16]}",
+    "event_type": event_type,
+    "schema_version": 1,
+    "timestamp_ms": now_ms,
+    "actor": actor,
+    "run_id": run_id or None,
+    "session_id": session_id or None,
+    "trace_id": trace_id,
+    "parent_event_ids": [],
+    "payload": payload,
+}
+```
+
+So the `run_id` is at the top level. And `summarize_state_gnomes.py`'s `event_run_id` checks `event.get("run_id")` first. So the run IDs should match.
+
+BUT WAIT. The `append_terminal_events` function in `append_terminal_state_events.py` passes `rid` as the `run_id` parameter to `append_event`. This `rid` comes from `open_runs` which was extracted by the `run_id` function. If the `run_id` function and the `event_run_id` function extract different run_ids for the same event, then the `RunCompleted` event would have a different run_id from the original `RunStarted` event.
+
+Let me verify:
+
+`append_terminal_state_events.py` `run_id` function:
+```python
+def run_id(event, data):
+    for value in (
+        event.get("run_id"),                                    # Check 1
+        (event.get("payload") or {}).get("_yoyo", {}).get("run_id")  # Check 2
+        if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+        else None,
+        data.get("run_id"),                                     # Check 3
+        data.get("_yoyo", {}).get("run_id") if isinstance(data.get("_yoyo"), dict) else None,  # Check 4
+    ):
+        if isinstance(value, str) and value:
+            return value
+    return None
+```
+
+`summarize_state_gnomes.py` `event_run_id` function:
+```python
+def event_run_id(event, data):
+    value = event.get("run_id")                                 # Check 1
+    if isinstance(value, str) and value:
+        return value
+    raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+    value = raw_meta.get("run_id")                              # Check 2
+    if isinstance(value, str) and value:
+        return value
+    value = data.get("run_id")                                  # Check 3
+    if isinstance(value, str) and value:
+        return value
+    meta = data.get("_yoyo") if isinstance(data.get("_yoyo"), dict) else {}
+    value = meta.get("run_id")                                   # Check 4
+    if isinstance(value, str) and value:
+        return value
+    return None
+```
+
+These look functionally equivalent. Both check the same four locations in the same order.
+
+Now, the critical thing I need to check is: what if the evaluator's RunStarted event has `run_id` at the top level (which both functions would read), but the evaluator's OTHER events (like ModelCallStarted) don't have `run_id` at the top level? In that case:
+
+- `lifecycle_for_scope` in `append_terminal_state_events.py` uses `run_id(event, data)` which checks all four locations
+- If the RunStarted has `run_id` at the top level, it's found
+- If the ModelCallStarted has `run_id` only in `payload._yoyo.run_id`, `run_id` should still find it
+
+But wait, there's a subtle bug in `append_terminal_state_events.py`'s `run_id` function. Look at the second check:
+
+```python
+(event.get("payload") or {}).get("_yoyo", {}).get("run_id")
+if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+else None,
+```
+
+The condition checks `isinstance((event.get("payload") or {}).get("_yoyo"), dict)`. But `get("_yoyo")` returns the value associated with the key, and `.get("_yoyo", {})` returns `{}` as default if the key is missing. The condition is checking `isinstance(event.get("payload").get("_yoyo"), dict)` — NOT the default case. If the key is missing, `.get("_yoyo")` returns `None`, and `isinstance(None, dict)` is `False`. So this is fine — but slightly different from `summarize_state_gnomes.py` which first checks if `raw_payload` is a dict, then gets `raw_meta`, which could be `{}` (if `_yoyo` is missing) or `dict` (if present), and then gets `run_id` from it. Both approaches work the same way.
+
+OK, I'm now fairly confident that the basic mechanics work. Let me think about edge cases.
+
+What if the evaluator creates MULTIPLE runs? The evaluator is a yoyo binary invoked for a specific task. It might create one run for the evaluation, but it could also spawn sub-agents or multiple model calls, each with their own run lifecycle. If the evaluator times out, multiple runs might be open.
+
+The `append_terminal_state_events.py` handles this — it closes ALL open runs found in the scan scope.
+
+Wait, what if the evaluator process exits, `run_agent_with_completion_watch` is supposed to call `record_agent_terminal_events`, but the evaluator process died with a signal that bash interprets differently?
+
+Let me trace through the scenario where the Python subprocess code has a bug. Actually, let me look at a different scenario: what if the evaluator process is killed by the OOM killer, but the Python subprocess code's `selector.select()` is still waiting? The OOM killer sends SIGKILL, which kills the child process. `selector.select()` returns because the pipe is closed. `proc.poll()` returns -9 (or the signal number). The loop breaks. `sys.exit(proc.wait())` returns... well, `proc.wait()` returns -9. `sys.exit(-9)`.
+
+In bash, `exit_code` would be... let me check. In bash, `$?` captures the exit code of the last command. For a Python process that calls `sys.exit(-9)`, the exit code would be 247 (256 - 9 = 247) on most systems, or maybe 143 (128 + 15) for SIGTERM, etc. Actually, `sys.exit(-9)` raises `SystemExit(-9)`, and the Python interpreter exits with code... it depends on the OS. On Linux, exit codes are typically `code & 0xFF`. -9 in two's complement as a byte would be... -9 & 0xFF = 247. So bash would see exit code 247.
+
+Then in bash:
+```bash
+elif [ "$exit_code" -eq 124 ]; then  # No
+elif [ "$exit_code" -eq 0 ]; then     # No
+else
+    record_agent_terminal_events ...   # YES
+fi
+```
+
+So `record_agent_terminal_events` IS called. The runs get closed.
+
+But what if `record_agent_terminal_events` FAILS? Let me look at the error handling:
+
+```bash
+if ! python3 scripts/append_terminal_state_events.py "${args[@]}" >>"$STATE_APPEND_LOG" 2>&1; then
+    echo "  WARNING: failed to append terminal state events for ${stage:-agent}" >&2
+fi
+```
+
+If it fails, it only prints a warning. The runs stay open.
+
+But why would it fail? Let me look more carefully at `append_terminal_state_events.py` for potential failure modes:
+
+1. The events file doesn't exist → `load_jsonl` returns empty list → `open_lifecycle` returns empty open_models and open_runs → nothing to close. That's fine.
+
+2. The `after_line` is wrong → `open_lifecycle` might not find the open run → run stays open. But the fallback handles this with `fallback_after_line`.
+
+3. The run_id extraction fails → the run's RunStarted isn't detected → run stays open.
+
+Wait, I think I finally found it! Let me look at the `run_id` function in `append_terminal_state_events.py` more carefully:
+
+```python
+def run_id(event: dict[str, Any], data: dict[str, Any]) -> str | None:
+    for value in (
+        event.get("run_id"),
+        (event.get("payload") or {}).get("_yoyo", {}).get("run_id")
+        if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+        else None,
+        data.get("run_id"),
+        data.get("_yoyo", {}).get("run_id") if isinstance(data.get("_yoyo"), dict) else None,
+    ):
+        if isinstance(value, str) and value:
+            return value
+    return None
+```
+
+The second expression is:
+```python
+(event.get("payload") or {}).get("_yoyo", {}).get("run_id")
+if isinstance(event.get("payload"), dict) and isinstance((event.get("payload") or {}).get("_yoyo"), dict)
+else None
+```
+
+Wait, `(event.get("payload") or {}).get("_yoyo", {}).get("run_id")` - this uses `.get("_yoyo", {})` which means if `_yoyo` is not in the dict, it returns `{}`. Then `.get("run_id")` on `{}` returns `None`. But the condition `isinstance((event.get("payload") or {}).get("_yoyo"), dict)` checks the SAME expression WITHOUT the default `{}` - just `.get("_yoyo")`. If `_yoyo` is missing, `.get("_yoyo")` returns `None`, and `isinstance(None, dict)` is `False`, so the condition is `False`, so the value is `None`. Then the loop tries `None` which is not `isinstance(None, str)`, so it skips.
+
+But wait, the actual expression computes `.get("_yoyo", {}).get("run_id")` even when `_yoyo` is missing. This is `{}.get("run_id")` = `None`. Then we check `isinstance(None, str)` → `False`. So no issue here.
+
+Now let me compare with `summarize_state_gnomes.py`'s `event_run_id`:
+```python
+value = event.get("run_id")     # checks top-level
+if isinstance(value, str) and value:
+    return value
+raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+raw_meta = raw_payload.get("_yoyo") if isinstance(raw_payload.get("_yoyo"), dict) else {}
+value = raw_meta.get("run_id")  # checks payload._yoyo.run_id
+if isinstance(value, str) and value:
+    return value
+value = data.get("run_id")      # checks unwrapped payload.run_id
+if isinstance(value, str) and value:
+    return value
+meta = data.get("_yoyo") if isinstance(data.get("_yoyo"), dict) else {}
+value = meta.get("run_id")      # checks unwrapped payload._yoyo.run_id
+if isinstance(value, str) and value:
+    return value
+return None
+```
+
+What if the RunStarted event has `run_id` only at the top level, but the event's payload structure is different from what `payload()` extracts?
+
+Wait, I think the actual issue might be different. Let me look at the `event_type` function:
+
+```python
+def event_type(event):
+    value = event.get("event_type") or event.get("kind")
+    if isinstance(value, str):
+        return value
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        meta = payload.get("_yoyo")
+        if isinstance(meta, dict) and isinstance(meta.get("event_type"), str):
+            return meta["event_type"]
+    return ""
+```
+
+This checks `event.event_type`, then `event.kind`, then `event.payload._yoyo.event_type`. But what about the format used by the evaluator binary? The yoyo binary uses yoagent-state which emits events in a format where the event_type might be in a different location.
+
+Actually, I just realized something. The `append_terminal_state_events.py` script currently ONLY checks for `RunStarted`/`RunCompleted` and `ModelCallStarted`/`ModelCallCompleted`. It does NOT treat `FailureObserved` as a terminal event for runs.
+
+But `summarize_state_gnomes.py`'s `summarize_state_lifecycle` also ONLY checks for `RunStarted` and `RunCompleted`. It doesn't treat `FailureObserved` as terminal either.
+
+So both systems should agree: if a run has `RunStarted` but no `RunCompleted`, it's incomplete.
+
+The question is: does `append_terminal_state_events.py` successfully close ALL open runs found after the evaluator timeout?
+
+I think the answer is YES, it should. The evaluator timeout passes through `record_agent_terminal_events` which calls `append_terminal_state_events.py`, which finds open runs in the scope between `after_line` (pre-evaluator state line count) and the current end of the file, and closes them.
+
+OK, let me now think about what specific scenario could cause the runs to stay open. 
+
+Scenario: The state events file gets rebuilt/reset DURING the evaluator invocation. In this case:
+- `state_before_lines` was saved at the start of the evaluator invocation (line count in old file)
+- During the evaluator run, the state file is reset (e.g., by `merge_live_state_delta_snapshot` from another invocation)
+- When `record_agent_terminal_events` is called, `after_line` points beyond the current file's length
+- `open_lifecycle` handles this: `after_line > len(events)` → full scan from line 0
+- If there are multiple open runs (from the reset), the function enters `ambiguous_reset_full_scan` and RETURNS EMPTY, closing NOTHING
+
+THAT'S THE BUG! If the state file is rebuilt during the evaluator invocation AND the rebuilt file contains multiple open runs, `append_terminal_state_events.py` refuses to close any of them (returns empty), leaving them permanently open.
+
+But wait, this is by design - closing historical open runs from a reset file would create ghost terminal events. But the CURRENT evaluator's run IS among those open runs (it was started after the file was rebuilt, so it's in the current file). The script can't distinguish between the evaluator's open run and historical open runs that were replayed during the reset.
+
+Hmm, but this is a rare edge case and the `ambiguous_reset_full_scan` behavior is intentional.
+
+Let me think about a simpler scenario. What if the evaluator yoyo binary uses a DIFFERENT event format than what `append_terminal_state_events.py` expects?
+
+Looking at `append_state_event.py`, the harness emits events in this format:
+```python
+{
+    "event_id": "...",
+    "event_type": "RunStarted",
+    "schema_version": 1,
+    "timestamp_ms": now_ms,
+    "actor": "harness",
+    "run_id": run_id,
+    "session_id": session_id,
+    "trace_id": trace_id,
+    "parent_event_ids": [],
+    "payload": {...},
+}
+```
+
+But the yoyo binary (evaluator) uses yoagent-state which might emit events in a DIFFERENT format. Let me check... The yoyo binary is a Rust binary that uses the yoagent crate. The yoagent crate might use the yoagent-state crate for state tracking. Let me check the state event format used by the yoyo binary.
+
+Actually, I don't have easy access to the state events file to check the format. Let me look at the code that generates these events.
+
+Actually, I need to step back and think about what evidence I have. The task says Day 122 had tasks #51 and #52 reverted because the evaluator timed out. And `state_run_incomplete_count=1`. This means ONE run is incomplete. 
+
+If `append_terminal_state_events.py` was called and worked correctly, there should be 0 incomplete runs. The fact that there's still 1 incomplete run means either:
+1. `append_terminal_state_events.py` was never called for this run
+2. `append_terminal_state_events.py` was called but failed
+3. `append_terminal_state_events.py` was called but couldn't find the open run
+4. `append_terminal_state_events.py` closed the run, but the gnome computation didn't recognize the closure
+
+Let me think about case 3: couldn't find the open run. This could happen if:
+- The RunStarted event doesn't have a `run_id` that `append_terminal_state_events.py`'s `run_id` function can extract
+- The RunStarted event has `phase: "session"` which causes it to be skipped
+
+Wait, let me check `is_session_run` again:
+```python
+def is_session_run(data: dict[str, Any]) -> bool:
+    return data.get("phase") == "session"
+```
+
+Where `data` is `payload(event)`. If the evaluator's RunStarted has `phase: "session"` in its payload, it would be skipped! But that seems unlikely - the evaluator should have a different phase.
+
+Actually, wait. Let me re-read the `lifecycle_for_scope` function more carefully:
+
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+if kind == "RunStarted":
+    lifecycle_start_count += 1
+    run_started.add(rid)
+elif kind == "RunCompleted":
+    lifecycle_completion_count += 1
+    run_completed.add(rid)
+```
+
+So if the evaluator's RunStarted event has `phase: "session"`, it's skipped entirely, not added to `run_started`. Then later, `append_terminal_events` won't find it in `open_runs` and won't close it.
+
+But the gnome computation in `summarize_state_gnomes.py` does NOT skip session runs:
+```python
+if kind == "RunStarted" and run_id:
+    run_started_ids.add(run_id)
+```
+
+It adds ALL RunStarted events, regardless of phase. So if the evaluator's RunStarted has `phase: "session"`:
+- `append_terminal_state_events.py` skips it → doesn't close it
+- `summarize_state_gnomes.py` counts it as started → counts it as incomplete
+
+This would explain the gap!
+
+But wait, this would be a design choice, not a bug per se. The evaluator's run should NOT have `phase: "session"`. The session run and evaluator run are different things.
+
+OK, I think I've been overthinking this. Let me just focus on making the improvement the task asks for:
+
+1. The task says `FailureObserved` should perhaps be treated as a terminal event equivalent to `RunCompleted`. Let me add `FailureObserved` to the set of terminal events in `lifecycle_for_scope`.
+
+But wait, the task doesn't mention `FailureObserved`. Let me re-read the task...
+
+Actually, the task says: "Add logic to detect such orphaned runs and append a RunCompleted event with an outcome field indicating the run was closed post-hoc (e.g., outcome: 'evaluator_timeout' or closed_by: 'post_hoc')."
+
+The current code already appends RunCompleted events. The "outcome field" is new - currently the RunCompleted has `status`, `terminal_reason`, `stage`, `error`, `error_detail` fields. Adding `closed_by: "post_hoc"` or `outcome: "evaluator_timeout"` would help distinguish post-hoc closures from normal closures.
+
+But this is cosmetic - it doesn't fix the actual gap of runs staying open.
+
+OK, I think the real improvement needed is: `FailureObserved` should be treated as a terminal event for runs. If a run has `FailureObserved` but no `RunCompleted`, the `FailureObserved` should be considered a terminal state, and `append_terminal_state_events.py` should:
+1. Either skip closing it (because `FailureObserved` is terminal enough)
+2. Or close it with a `RunCompleted` that references the `FailureObserved`
+
+But actually, the gnome computation in `summarize_state_gnomes.py` would still count the run as incomplete because it only looks for `RunCompleted`.
+
+So the fix should be in `append_terminal_state_events.py`: when it finds an open run, it should check if the run has a `FailureObserved` event. If so, it should still append a `RunCompleted` event (to satisfy the gnome computation), but with an appropriate status indicating it was closed post-hoc after a failure.
+
+Wait, but the current code ALREADY appends RunCompleted for ALL open runs. The issue isn't that `FailureObserved` runs aren't closed - they ARE closed. The issue is specifically about evaluator-timeout runs staying open.
+
+Let me look at this from yet another angle. What if the `record_agent_terminal_events` function in `evolve.sh` is called with the WRONG `after_line`? Let me trace through the evaluator case:
+
+```bash
+run_agent_with_completion_watch() {
+    ...
+    local state_before_lines=0
+    state_before_lines=$(wc -l < "$STATE_EVENTS" 2>/dev/null | tr -d '[:space:]' || echo 0)
+    ...
+    python3 - ... <<'PY' || exit_code=$?
+    ...
+    if [ -f "$completion_marker" ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" ...
+    elif [ "$exit_code" -eq 124 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" ...
+    elif [ "$exit_code" -eq 0 ]; then
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" ...
+    else
+        record_agent_terminal_events \
+            "$state_before_lines" "${STAGE_NAME:-agent}" ...
+    fi
+    return "$exit_code"
+}
+```
+
+`state_before_lines` is captured BEFORE the Python subprocess runs. It's the line count of `$STATE_EVENTS` at that point. During the evaluator invocation, new events are appended to `$STATE_EVENTS`. When `record_agent_terminal_events` is called, `after_line=state_before_lines` tells `append_terminal_state_events.py` to only scan events AFTER that line (i.e., events that were added during the evaluator invocation).
+
+This should work correctly: all events added during the evaluator invocation (including RunStarted) are scanned, and open runs are closed.
+
+UNLESS... the state file was rebuilt during the evaluator invocation, AND the line count was reset to fewer lines than `state_before_lines`. In that case, `open_lifecycle` enters the `full_after_line_exceeded_file` path, which has the `ambiguous_reset_full_scan` guard.
+
+But this scenario should be rare. Let me focus on what's more likely.
+
+Actually, I just realized I should look at the `run_agent` function (NOT `run_agent_with_completion_watch`) because the evaluator might use that path instead. Let me check...
+
+Actually, the task says the evaluator times out. Looking at `evolve.sh`, there should be code that runs the evaluator. Let me search for how the evaluator is invoked.
+
+OK I'm spending too much time on analysis. Let me take a step back and focus on what the task specifically asks me to do:
+
+1. Make `append_terminal_state_events.py` detect runs that have RunStarted but no RunCompleted
+2. Append RunCompleted with appropriate outcome
+3. Don't double-close runs
+4. Add tests
+
+The current code ALREADY does 1, 2 (partially - it appends RunCompleted but without a specific "evaluator_timeout" outcome), and 3.
+
+The improvement the task asks for is: add better detection of evaluator-timeout orphaned runs and add appropriate outcome marking.
+
+But the task also says: "If no concrete lifecycle gap exists in the current code (the script already handles this case), write an obsolete note with the actual state and skip edits."
+
+I think the code does handle the basic case (open runs get closed). The real improvement would be:
+1. Recognizing `FailureObserved` as a signal that the run had an error
+2. Adding more specific outcome classification (e.g., distinguishing "timeout" from "process_exited_nonzero")
+3. But this is more of a cosmetic improvement than fixing the actual gap
+
+Let me check once more: does `record_agent_terminal_events` get called for the evaluator timeout case? Looking at `run_agent_with_completion_watch`, the `sys.exit(124)` path leads to `record_agent_terminal_events` being called. So yes, it is called.
+
+OK, I'm now going to take the approach of writing a task_01_obsolete.md explaining that the basic lifecycle closure is already handled, but I'll also check if there's a specific edge case I can improve.
+
+Wait, before that, let me check one more thing. The task says: "Day 122 tasks #51 and #52 were reverted because 'Evaluator timed out without a verifier verdict' — the evaluator process exited without closing the run lifecycle."
+
+The key phrase is "the evaluator process exited without closing the run lifecycle." This means the evaluator yoyo binary exited normally (produced a verdict) but the run lifecycle wasn't closed. Or it means the evaluator timed out and the Python completion watch killed it, but the run lifecycle events weren't emitted.
+
+If the evaluator timed out, `sys.exit(124)`, then `record_agent_terminal_events` is called. But what if the evaluator process exited with a non-zero code that's NOT 124? Like if it crashed with a segfault? Then `exit_code` would be something like 139 (128 + 11 for SIGSEGV). Then:
+
+```bash
+else
+    record_agent_terminal_events ...
+fi
+```
+
+This is also handled.
+
+What if `sys.exit(proc.wait())` is called but `proc.wait()` returns a negative number? In Python, `proc.wait()` returns a negative number to indicate the process was killed by a signal (-N where N is the signal number). `sys.exit(-9)` would result in a negative exit code, which bash would see as... positive (256 - 9 = 247). So again, the `else` branch handles it.
+
+I'm convinced the code handles the basic case. Let me now look for the specific edge case the task is asking about and either fix it or write an obsolete note.
+
+Let me re-read the task once more:
+
+"Add logic to detect such orphaned runs and append a RunCompleted event with an outcome field indicating the run was closed post-hoc (e.g., outcome: 'evaluator_timeout' or closed_by: 'post_hoc')."
+
+The current code already detects orphaned runs and appends RunCompleted. What it doesn't do is add an `outcome` or `closed_by` field to distinguish post-hoc closures. This would be a useful enhancement for diagnostic purposes.
+
+Also: "Ensure the fix distinguishes between: (a) runs still in-progress (current session — do NOT close), (b) runs that already have a terminal event (skip), (c) runs orphaned by process death (close with explanatory outcome)."
+
+The current code handles (b) — it skips runs that have RunCompleted. But it doesn't handle (a) — it might close runs that are still in-progress in the current session.
+
+Wait, case (a) is about runs still in-progress. The current code scans events and finds open runs. If a run is still in-progress (the agent is still running), its RunCompleted hasn't been emitted yet. But `append_terminal_state_events.py` is called post-hoc (after the agent has exited), so there should be no "still in-progress" runs. Unless there's a concurrent agent running, but that shouldn't happen in the evolution pipeline.
+
+Hmm, but what if the session-level run is still in progress? The session run has `phase: "session"`, and `lifecycle_for_scope` skips session runs. So the session run won't be closed. Good.
+
+OK here's what I think I should do. The task asks for specific improvements. Let me check if there's a concrete edge case I should address:
+
+1. `FailureObserved` should be treated as a terminal run event. If a run has `FailureObserved` but no `RunCompleted`, it should still be considered "closed" for the purpose of not double-closing. AND the `FailureObserved` information should be reflected in the post-hoc `RunCompleted` event.
+
+2. The `RunCompleted` events appended post-hoc should include a `closed_by: "post_hoc"` field and a more specific `terminal_reason` field.
+
+Actually wait, let me re-read the lifecycle_for_scope function once more. It returns `open_models`, `open_runs`, and `diagnostics`. `open_models` are ModelCallStarted without ModelCallCompleted. `open_runs` are:
+
+```python
+active_runs = run_started | set(model_started) | model_completed
+open_runs = active_runs - run_completed
+```
+
+So `open_runs` includes:
+- run IDs from `run_started` (runs with RunStarted but no RunCompleted)
+- run IDs from `model_started` (runs with ModelCallStarted - these are the run IDs associated with model calls, not the model call IDs themselves)
+- run IDs from `model_completed` (runs with ModelCallCompleted - same)
+
+The `active_runs` = `run_started` ∪ keys(`model_started`) ∪ `model_completed`. This means even if a run doesn't have an explicit `RunStarted` event, it could still be in `open_runs` if it has a `ModelCallStarted` or `ModelCallCompleted` without `RunCompleted`.
+
+This is a KEY insight. An evaluator run might have:
+- ModelCallStarted (with run_id)
+- ModelCallCompleted (with run_id)
+- No RunCompleted (because the evaluator died)
+
+In this case, `active_runs` includes the run_id (from `model_started` or `model_completed`), and `run_completed` doesn't have it, so it's in `open_runs`. The `append_terminal_events` function would append a `RunCompleted` for it.
+
+But wait, what if the yoyo binary emits `ModelCallStarted` and `ModelCallCompleted` but the run_id extraction from those events fails? Then the model calls wouldn't be counted, and the run wouldn't be in `active_runs`.
+
+This is a potential issue. Let me check the `run_id` function for ModelCall events.
+
+The `run_id` function checks:
+1. `event.get("run_id")` - top level
+2. `event.get("payload").get("_yoyo", {}).get("run_id")` - payload._yoyo.run_id
+3. `data.get("run_id")` - unwrapped payload.run_id
+4. `data.get("_yoyo", {}).get("run_id")` - unwrapped payload._yoyo.run_id
+
+Where `data` = `payload(event)`, which unwraps `payload.value` if the payload has only `_yoyo` and `value` keys.
+
+If the yoyo binary emits ModelCall events with run_id in `payload.value.run_id` (not `payload.run_id`), then the `payload` function would return `payload.value` (the unwrapped value), and `data.get("run_id")` would find it. But if the payload has more than just `_yoyo` and `value` keys, the `payload` function returns the raw payload, and the run_id might be deep inside.
+
+Wait, looking at the `payload` function:
+```python
+def payload(event):
+    value = event.get("payload")
+    if not isinstance(value, dict):
+        return {}
+    wrapped = value.get("value")
+    if set(value.keys()).issubset({"_yoyo", "value"}) and isinstance(wrapped, dict):
+        return wrapped
+    return value
+```
+
+If `event.payload` has keys `_yoyo` and `value` (and nothing else), it returns `value`. Otherwise, it returns the raw payload.
+
+Now, `run_id` checks `data.get("run_id")`. If the yoyo binary's ModelCallCompleted has:
+```json
+{
+    "event_type": "ModelCallCompleted",
+    "run_id": "run-123",
+    "payload": {
+        "_yoyo": {"event_type": "ModelCallCompleted"},
+        "value": {"model": "deepseek-v4-pro", "status": "completed"}
+    }
+}
+```
+
+Then `payload(event)` returns `{"model": "deepseek-v4-pro", "status": "completed"}` (the unwrapped value). And `data.get("run_id")` returns `None` (there's no run_id in the value). But `event.get("run_id")` returns `"run-123"`. So `run_id` correctly returns `"run-123"`.
+
+OK this should work.
+
+But what about this format (yoagent-state format with `_yoyo` wrapper):
+```json
+{
+    "event_type": "ModelCallCompleted",
+    "payload": {
+        "_yoyo": {"event_type": "ModelCallCompleted", "run_id": "run-123"},
+        "value": {"model": "deepseek-v4-pro", "status": "completed"}
+    }
+}
+```
+
+Then `payload(event)` returns `{"model": "deepseek-v4-pro", "status": "completed"}`. `event.get("run_id")` returns `None`. The second check `event.get("payload").get("_yoyo", {}).get("run_id")` returns `"run-123"`. So `run_id` correctly returns `"run-123"`.
+
+OK, I'm confident that the run_id extraction works correctly.
+
+Let me now make a decision. I think the task has identified a real but narrow gap. The gap might be:
+1. `FailureObserved` events are not recognized as terminal → runs with `FailureObserved` get double-closed (not a problem per se, but not ideal)
+2. Post-hoc RunCompleted events don't have a distinguishing field like `closed_by: "post_hoc"` → harder to diagnose why runs were closed
+
+But the core lifecycle closure (open runs get RunCompleted appended) works correctly. The task says `state_run_incomplete_count=1` despite the presence of `append_terminal_state_events.py`. This suggests the script might not have been called, or might have failed.
+
+OK, let me look at the actual failure path for Day 122. Let me check if there's something in the `evolve.sh` that could cause the evaluator timeout to bypass `record_agent_terminal_events`.
+
+Hmm, actually, I just realized something. Let me re-read the Python subprocess code in `run_agent_with_completion_watch`:
+
+```python
+if now >= deadline:
+    kill_process_group(proc, signal.SIGTERM)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        kill_process_group(proc, signal.SIGKILL)
+        proc.wait()
+    sys.exit(124)
+```
+
+What if `kill_process_group` or `proc.wait()` raises an exception? For example, if the process group no longer exists. Then the exception would propagate out of the `with` blocks (which close file handles), and the Python process would exit with a non-zero exit code (probably 1).
+
+But `sys.exit(124)` is AFTER the try/except block, so if the `proc.wait()` succeeds, `sys.exit(124)` is called. If `proc.wait()` raises (or `kill_process_group` raises), the exception propagates.
+
+What about this scenario: `kill_process_group(proc, signal.SIGTERM)` succeeds, then `proc.wait(timeout=5)` also succeeds (the process dies within 5 seconds). Then `sys.exit(124)` is called. The bash code handles exit code 124 properly.
+
+But what if `kill_process_group(proc, signal.SIGTERM)` raises `ProcessLookupError`? The `kill_process_group` function catches that:
+```python
+def kill_process_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+```
+
+So `ProcessLookupError` is handled. The `proc.wait(timeout=5)` might then raise because the process is already dead. Wait, `proc.wait()` on an already-dead process returns the exit code immediately. It doesn't raise. So this is fine.
+
+What if the process group contains processes owned by a different user? `os.killpg` would raise `PermissionError`. But `kill_process_group` only catches `ProcessLookupError`, not `PermissionError`. So the exception would propagate.
+
+But in the evolution pipeline, the evaluator and the Python subprocess run as the same user, so `PermissionError` shouldn't occur.
+
+OK, I'm going to take action now. Let me improve the code to:
+1. Recognize `FailureObserved` as a terminal-like event in `lifecycle_for_scope` (so runs with `FailureObserved` are not treated as open)
+2. Add a `closed_by: "post_hoc"` field to RunCompleted events appended by the script
+3. Add detection of `FailureObserved` events to inform the terminal reason
+
+Actually wait, let me think about whether recognizing `FailureObserved` as terminal is correct. If a run has `FailureObserved` but no `RunCompleted`, should we:
+(a) Consider it "closed" and skip appending `RunCompleted`? 
+(b) Still append `RunCompleted` but with information from the `FailureObserved`?
+
+If we do (a), the gnome computation would still see it as incomplete (because it only counts `RunCompleted`). So (b) is better: append `RunCompleted` with information from `FailureObserved`.
+
+But the current code ALREADY appends `RunCompleted` for all open runs. So what we need to add is: when we find an open run, also check if there's a `FailureObserved` event for that run, and if so, include that information in the `RunCompleted` payload.
+
+Hmm, but this is an enhancement, not a fix for the `state_run_incomplete_count` metric.
+
+OK here's my plan:
+1. I will add `FailureObserved` recognition to `lifecycle_for_scope` - tracking which runs have `FailureObserved` events
+2. I will add a `closed_by: "post_hoc"` field to the RunCompleted payloads
+3. I will add tests for these new behaviors
+4. If there's genuinely an edge case where the script should be called but isn't (for the evaluator timeout), I'll document it
+
+Actually, let me take the simplest approach that actually addresses the task. Let me add:
+1. Tracking of `FailureObserved` in `lifecycle_for_scope` 
+2. A `closed_by` field in the RunCompleted payload
+3. Tests
+
+This way, the post-hoc nature of the closure is explicit in the state events, and `FailureObserved` evidence is preserved.
+
+Wait, but the task says the script already closes open runs. Adding `closed_by` and `FailureObserved` tracking doesn't fix the actual `state_run_incomplete_count` issue. 
+
+Let me re-read the task objective: "Ensure runs orphaned by evaluator timeout get proper RunCompleted terminal events during post-hoc lifecycle closure, so state_run_incomplete_count accurately reflects only truly-open runs."
+
+If the current code already closes open runs, why is `state_run_incomplete_count` still 1?
+
+Maybe the answer is: the evaluator timeout happened in a code path that doesn't go through `run_agent_with_completion_watch` (and thus doesn't call `record_agent_terminal_events`). Let me search for how the evaluator is invoked.
+
+Actually, you know what, I just realized I should check whether there's another code path for the evaluator that doesn't call `record_agent_terminal_events`. Let me search for "eval" in evolve.sh.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'eval\|EVAL\|evaluat' … ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the evaluator invocation:
+
+```bash
+EVAL_STAGE_NAME="eval_task${TASK_NUM}_attempt${EVAL_ATTEMPT}"
+STAGE_NAME="$EVAL_STAGE_NAME" \
+    "$EVAL_TIMEOUT" "$EVAL_PROMPT" "$EVAL_LOG" \
+    "session_plan/eval_task_${TASK_NUM}.md" '^Verdict:\s*(PASS|FAIL)\b' \
+    "--no-auto-watch" || EVAL_EXIT=$?
+```
+
+Wait, that's calling a function. Let me look at lines around 2620 to see the full invocation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:2550..2630 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full evaluator invocation. The evaluator uses `run_agent_with_completion_watch`, which calls `record_agent_terminal_events` for ALL exit paths (completion, timeout, zero, nonzero). So the evaluator timeout IS handled.
+
+BUT WAIT - what if the evaluator process exits with a verdict file written (e.g., "Verdict: PASS") but the completion pattern `^Verdict:\s*(PASS|FAIL)\b` matches? Then `completion_seen = True`, `kill_process_group(proc, signal.SIGTERM)`, and `sys.exit(0)` is called. Then in bash:
+
+```bash
+if [ -f "$completion_marker" ]; then
+    record_agent_terminal_events ...
+```
+
+`completion_marker` exists because the Python code writes it:
+```python
+if completion_seen:
+    completion_marker.parent.mkdir(parents=True, exist_ok=True)
+    completion_marker.write_text("completion_file_matched\n", encoding="utf-8")
+```
+
+So `record_agent_terminal_events` is called. The run is closed.
+
+But what if the Python code hits `sys.exit(0)` before writing the marker? Let me check: the marker is written before `sys.exit(0)`. So it's fine.
+
+What if the evaluator process is killed by SIGTERM (from `kill_process_group`) and THEN `sys.exit(0)` is called? The `kill_process_group` sends SIGTERM to the process group. Then `proc.wait(timeout=5)` waits for the process to die. Then `sys.exit(0)`. The marker is written before `sys.exit(0)`. So `record_agent_terminal_events` is called.
+
+OK I'm truly convinced the evaluator timeout path is handled by the existing code. But the task says there's a `state_run_incomplete_count=1`. Let me consider:
+
+Maybe the issue is NOT with the evaluator timeout but with a DIFFERENT kind of orphaned run. The assessment says the cause is "state_incomplete/open_after_SessionStarted". This means a run was started but never completed. The session itself started but never closed.
+
+Let me look at how the session run is created. The session run has `phase: "session"`. `lifecycle_for_scope` explicitly skips session runs. So if the session run is open, `append_terminal_state_events.py` won't close it.
+
+But the session run is the TOP-LEVEL run. It spans the entire session. It should be closed when the session ends. If the session run is open, there's a different gap.
+
+Let me look at where the session RunStarted and RunCompleted are emitted in evolve.sh.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'RunStarted\|RunComple… ✓ (350ms)
+
+
