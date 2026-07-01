@@ -1,0 +1,638 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for this session.
+
+## Evidence Summary
+
+**Trajectory shows**:
+- Day 123 had two sessions: both 0/2 tasks verified. Task states: `reverted_unlanded_source_edits=2` and `reverted_no_edit=1, reverted_unlanded_source_edits=1`
+- Day 122 had 1/3 and 1/2 tasks verified
+- Only 1 strict-verified task in the last 10 sessions (Day 121)
+- The dominant failure mode is **evaluator timeout without verdict**
+
+**Assessment findings**:
+- `cargo build` passes, basic tests pass
+- Integration test times out at 120s
+- 66,216 state events, 95.71% cache hit rate
+- Corrupted event line at position 58,599
+
+**Graph-derived pressure** (highest priority signals):
+1. **Raise verified task success rate** (task_success_rate=0.0) — dominant failure: source edits not landed
+2. **Bound evaluator checks** (evaluator_unverified_count=2) — evaluator timed out without verdict
+3. **Make source-edit outcomes land or explain reverts** (task_unlanded_source_count=2)
+4. **Break recurring log failure fingerprints** (recurring_failure_count=1)
+5. **Bound failing shell commands before retrying** (bash_tool_error=12)
+
+**Open issues**: #51, #52, #53 — all reverted tasks from Day 122. #37 — held-out eval coverage.
+
+**Key insight from the assessment**: Issues #51 and #52 may be self-resolved — both `cache-report` and `state why last-failure` completed successfully during self-test. The evaluator timeout that caused their reversion may have been a temporary resource issue. Issue #53 (evaluator-timeout resilience) is the upstream fix.
+
+## Task Selection
+
+Given the trajectory evidence, the most impactful tasks are:
+
+1. **Fix the evaluator-timeout-no-verdict cascade** — This is the primary throughput bottleneck. 5 of the last 7 attempted tasks were reverted because the evaluator timed out. If the evaluator catches a verdict file AND the completion pattern even after timeout, it should record the verdict. This is issue #53 but needs to be made smaller.
+
+2. **Address the reverted tasks #51 and #52** — Both may already work. Write an evidence-based obsolete note or implement a minimal sampling cap.
+
+3. Let me think about what makes sense...
+
+Actually, looking more carefully at the assessment:
+
+- `cache-report` completed in self-test (95.71% hit rate, 412 events)
+- `state why last-failure` completed in self-test
+- Both #51 and #52 may be self-resolved
+
+The biggest problem is the evaluator cascade. But issue #53 was attempted and reverted because the implementation agent got stuck in analysis. The task needs to be smaller.
+
+Let me think about what a smaller, more focused task would be:
+
+Looking at the evidence more carefully, I think the most impactful task is addressing the evaluator timeout. But the previous attempt (#53) got bogged down in understanding the full lifecycle closure logic.
+
+A better approach would be a focused task that adds a timeout to the evaluator itself or makes the verdict capture more resilient. But that's in `scripts/evolve.sh`, which is PROTECTED.
+
+Wait, let me re-read the assessment. It says the evaluator timed out at 120s for integration tests. The evaluator itself might be timing out because it tries to do too much.
+
+Actually, let me think about what concrete, verifiable tasks I can create:
+
+**Task 1: Close issues #51 and #52 as self-resolved**
+- Evidence: both commands completed successfully in Day 123 self-test
+- Write an obsolete note or close the issues
+- This doesn't touch src/ code, so it won't pass strict verification...
+
+**Task 2: Add a focused evaluator timeout fix**
+- But this touches `scripts/evolve.sh` which is protected
+
+**Task 3: Add held-out eval fixtures**
+- This is lower priority but additive and safe
+
+Let me re-read the seed task that should already exist...
+
+Actually, wait. The assessment says the seed task may have been created by the harness. Let me check if `session_plan/task_01.md` exists.
+
+The assessment mentions issue #53 was attempted as "Day 123, Task 1" — but the trajectory shows Day 123 sessions had 0/2 tasks verified. So the seed task from the harness may already be in `session_plan/`.
+
+Let me check what exists and then plan accordingly.
+
+Actually, let me think about what tasks would actually improve the situation vs. just spinning wheels:
+
+1. **The evaluator timeout cascade** is the #1 problem. But fixing it requires touching `scripts/evolve.sh` (protected) or `scripts/append_terminal_state_events.py`. The previous attempt at #53 got stuck. 
+
+2. **Issues #51 and #52** may be self-resolved. I should verify and close them.
+
+3. **Held-out eval fixtures** (#37) — additive, safe, improves fitness measurement.
+
+Given the constraints:
+- Max 3 tasks per session
+- At least 2 should be state-driven
+- Tasks must touch at most 3 source files
+- 20 minute completion target
+
+Let me plan:
+
+**Task 1**: Close stale reverted issues (#51, #52) with evidence they're self-resolved. This touches no source code but documents the state. Actually this won't pass strict verification since it doesn't touch src/...
+
+Hmm, let me think differently. What source-code tasks can I create?
+
+Looking at the assessment bugs:
+1. Corrupted event line in events.jsonl — fix the write-atomicity (touches state-writing code)
+2. Integration test timeout — fix the integration test to not call LLMs
+
+Wait, the corrupted event line fix would touch `yoagent-state` (upstream) or our own event-writing code. Let me check what owns event writing...
+
+Actually, let me focus on what I can actually do. Let me look at what's in session_plan/ first, then decide.
+
+Let me also consider: the recurrent failure fingerprints show `bash_tool_error=12` and `evaluator_unverified_count=2`. These are implementation-phase problems, not planning problems. The planner can't fix how bash commands are invoked during implementation.
+
+OK here's my plan:
+
+**Task 1**: Add a `--sample` flag to `yyds deepseek cache-report` to cap event reading. This addresses issue #52 but makes it smaller — just the sampling cap, not a full refactor. The assessment says cache-report already works at current scale (95.71% hit rate), so this is preventative. The task should be scoped to add the flag and wire it through, with the default being the current behavior (no sampling) so it doesn't break anything.
+
+Wait, but the assessment says `cache-report` already completed within 15s. So this is preventative, not fixing an active bug. And it would be a new feature, not fixing a regression. Lower priority.
+
+**Task 1 alternative**: Add a timeout guard to integration tests so they don't hang at 120s. This would fix the `cargo test --test integration` timeout. Touches `tests/integration.rs` or similar.
+
+Actually, let me just check if session_plan/ exists and has files.
+
+Let me plan my approach:
+1. Check if session_plan/ exists and has files
+2. If seed task exists, evaluate it against evidence
+3. Create task files based on highest-impact evidence
+
+Key decisions:
+- The #1 problem is evaluator timeout cascade → but fixing it touches protected files or is too complex
+- The #2 problem is that issues #51/#52 are stale → could close them with evidence
+- The #3 opportunity is adding eval fixtures (#37) — additive, safe, improves fitness measurement
+- The #4 problem is integration test timeout
+
+Let me pick tasks that are:
+1. Verifiable (touch src/ code, pass cargo build && cargo test)
+2. Small enough for 20 min
+3. State-driven
+
+Here's my refined plan:
+
+**Task 1**: Fix integration test timeout — find why `cargo test --test integration` times out at 120s and fix it. Touches the integration test file. This improves CI reliability.
+
+**Task 2**: Close issues #51 and #52 — verify they're self-resolved by running the commands, then close via `gh issue close`. But this doesn't touch src/...
+
+**Task 3**: Add held-out eval fixtures for DeepSeek-specific behaviors (#37) — this is additive and improves fitness measurement.
+
+Actually wait, the policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." Tasks that close issues don't really count unless they improve the harness.
+
+Let me reconsider. The graph pressure says:
+1. Raise verified task success rate — this is a meta-goal, not a concrete task
+2. Bound evaluator checks — this touches evolve.sh (protected)
+3. Make source-edit outcomes land — also meta
+4. Break recurring log failure fingerprints — diagnostic
+5. Bound failing shell commands — implementation concern
+
+None of these directly translate to a concrete source-code task except #2, which touches protected files.
+
+Hmm. Let me look at this from a different angle. What concrete, verifiable, src/-touching tasks can I create from the evidence?
+
+1. **Fix the corrupted event line issue**: The event writer in yoagent-state or our harness isn't crash-atomic. But this is likely in yoagent-state (upstream).
+
+2. **Add a `--sample` flag to cache-report**: Preventive, touches `src/commands_deepseek.rs`. Verifiable with `cargo build && cargo test`. Addresses the pattern behind #52.
+
+3. **Add eval fixtures**: Touches `eval/fixtures/`. Verifiable with `cargo test`. Addresses #37.
+
+4. **Fix integration test timeout**: Touches `tests/integration.rs`. Verifiable with `cargo test --test integration`.
+
+Let me go with a practical plan:
+
+**Task 1**: Add `--sample N` flag to `yyds deepseek cache-report` — this addresses the pattern behind #52 (read-everything timeout) even though it's currently working. The flag defaults to sampling the most recent events, making the command future-proof.
+
+**Task 2**: Add held-out eval fixtures for prompt layout determinism — addresses #37, improves fitness measurement, is additive.
+
+**Task 3**: Fix integration test timeout — investigate and fix why `cargo test --test integration` times out.
+
+Actually, let me check if there's a seed task first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "session_plan/ does not exist"  ▶ $ git ls-files tests/integration.rs tests/integration/ 2>/dev/null; ls tests/ 2>/d… ✓ (695ms)
+ ✓ (693ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+A seed task already exists. Let me read it and the assessment to understand what was pre-seeded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (50 lines) ✓ (544ms)
+ ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me analyze the seed task against the assessment evidence:
+
+**Seed Task 1**: "Repair evidence-backed planning after no-task sessions"
+- Files: `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, `scripts/test_task_manifest.py`
+- Origin: harness-seed
+- validated_against_assessment: true
+
+The seed task wants to touch Python scripts, not Rust source files. According to the assessment, the trajectory shows `task_unlanded_source_count=2` as a dominant problem — source edits aren't landing. The seed task itself doesn't touch src/ code, so it likely won't pass strict verification either.
+
+But wait — the seed task was pre-created by the harness and has `validated_against_assessment: true`. The instructions say: "The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+And also: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task's problem statement is: "The harness reached planning with no task artifacts." But the assessment and trajectory don't mention this as a current problem. The trajectory shows that Day 123 sessions HAD tasks (0/2 verified means 2 tasks were attempted, just not verified). And the assessment says "Day 123 (11:24) — Journal entry only. No code changes" — which might indicate the planning phase produced no tasks.
+
+Actually wait, let me re-read the trajectory:
+- day-123 (2026-07-01 12:19:28): tasks 0/2 — 0/2 strict verified; task states: reverted_unlanded_source_edits=2
+- day-123 (2026-07-01 04:43:02): tasks 0/2 — 0/2 strict verified; task states: reverted_no_edit=1, reverted_unlanded_source_edits=1
+
+So the earlier Day 123 sessions DID have tasks (2 each), but none passed strict verification. The most recent session (12:19) shows `reverted_unlanded_source_edits=2` — source edits happened but weren't landed.
+
+The assessment says "No-code sessions produce journal entries but no code" for the 11:24 and 04:00 sessions. But the 04:43 trajectory shows tasks were attempted.
+
+So the seed task's claim that "the harness reached planning with no task artifacts" is somewhat contradicted — tasks ARE being produced, they're just not landing. The issue is the evaluator timeout cascade, not the planning phase producing nothing.
+
+But the seed task is also valid in a meta sense: improving the planning/preseeding pipeline is always useful. And it's the harness's own seed — I should keep it.
+
+However, looking at the trajectory graph pressure:
+1. "Raise verified task success rate" — dominant failure: `task_unlanded_source_count=2`
+2. "Bound evaluator checks" — `evaluator_unverified_count=2`
+3. "Make source-edit outcomes land" — `task_unlanded_source_count=2`
+
+The seed task addresses none of these directly. It addresses a different problem (planning producing no tasks).
+
+Actually, let me re-read the seed task more carefully. It says "The harness reached planning with no task artifacts." This might refer to the CURRENT planning phase — the harness created this seed task because the planning phase started with no existing task files.
+
+I think the right approach is:
+1. Keep the seed task as task_01 (it's a harness safety net)
+2. Add task_02 that addresses the evaluator timeout cascade (the #1 trajectory pressure)
+3. Add task_03 for something smaller
+
+But the evaluator timeout fix touches `scripts/evolve.sh` which is PROTECTED. Let me check the protected files list...
+
+From CLAUDE.md safety rules: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So I can't touch `scripts/evolve.sh`. What about `scripts/append_terminal_state_events.py`? That's not protected. But issue #53 was already attempted and reverted — the implementation agent got stuck analyzing.
+
+Let me think about what concrete, verifiable tasks I can create:
+
+**Task 2 option A**: Add eval fixture for evaluator timeout resilience — tests that `append_terminal_state_events.py` handles orphaned runs. This is additive, touches `eval/fixtures/` and potentially `scripts/append_terminal_state_events.py`. Verifiable with `cargo test`.
+
+**Task 2 option B**: Fix integration test timeout — find and fix why `cargo test --test integration` times out. Touches `tests/integration.rs`. Verifiable.
+
+**Task 2 option C**: Close stale issues #51 and #52 with evidence they're self-resolved. Doesn't touch src/ code though.
+
+Let me think about what actually moves the needle...
+
+The trajectory says the #1 problem is evaluator timeout without verdict → tasks get reverted. The root cause is in `scripts/evolve.sh` (protected) — the evaluator invocation.
+
+But wait — maybe I can address this from the other side. Instead of fixing the evaluator timeout, I can fix the task verification to be more lenient or to capture partial evidence. But that's also in evolve.sh.
+
+Or I could add an eval fixture that tests the evaluator timeout scenario, making the problem visible in tests. That's additive and touches only eval fixtures.
+
+Actually, looking again at the trajectory graph pressure more carefully:
+
+"Bound evaluator checks so verdicts are not skipped (evaluator_unverified_count=2): Some task evals were unverified or timed out."
+
+This is calling for making evaluation more reliable. But the implementation lives in `scripts/evolve.sh` (protected).
+
+Let me pivot. What CAN I actually change?
+
+Files I can modify: src/*.rs, tests/, eval/fixtures/, scripts/ (except protected ones), skills/, memory/, journals/
+
+The most impactful non-protected changes:
+
+1. **Eval fixtures for harness behaviors** — This adds test coverage that can catch regressions. Additive, safe.
+
+2. **Source code improvements** — Any Rust source file. But what needs fixing? The assessment says build passes, basic tests pass, only integration test times out.
+
+3. **Integration test timeout fix** — This is a concrete bug. `cargo test --test integration` times out at 120s. Fixing this gives us back our integration test coverage.
+
+4. **Corrupted event line fix** — The event writing isn't crash-atomic. But this is likely in yoagent-state (upstream).
+
+Let me go with this plan:
+
+**Task 1**: Keep the harness seed task (refine it slightly to be more evidence-backed)
+
+**Task 2**: Fix integration test timeout — investigate why `cargo test --test integration` times out at 120s and apply a fix
+
+**Task 3**: Add held-out eval fixtures for DeepSeek prompt layout determinism (addresses #37, improves fitness measurement)
+
+Actually, let me first check if the integration test file reveals why it's timing out.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 26.1s (2 ✓)
+
+Let me check a few things before finalizing the plan — seed task evaluation, integration test structure, and eval fixture format.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ head -80 tests/integration.rs  ▶ $ wc -l tests/integration.rs  ▶ $ ls eval/fixtures/local-smoke/ | head -25 ✓ (408ms)
+ ✓ (1.1s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the integration test has something that would cause it to timeout — like tests that call eval fixtures which might invoke LLMs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[test\]' tests/integration.rs | head -30  ▶ $ grep -n 'eval\|fixture\|deepseek\|cache\|state why\|state tail\|state doctor\|st…  ▶ $ grep -n '#\[test\]' tests/integration.rs | tail -30 ✓ (996ms)
+ ✓ (1.2s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if any integration tests run eval fixtures (which might call LLMs and cause timeouts).
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.4s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'eval\|fixture\|timeout\|120\|\.json' tests/integration.rs | grep -i 'te…  ▶ $ grep -n 'yyds_cmd\|yoyo_cmd' tests/integration.rs | grep -A1 '#\[test\]' | head …  ▶ $ grep -B5 'eval\|fixture' tests/integration.rs | grep '#\[test\]\|fn ' | head -20 ✓ (1.1s)
+ ✓ (994ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.2s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'eval\|fixture' tests/integration.rs ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No eval/fixture references in integration.rs. Let me check what's actually slow by looking at some of the tests — particularly ones that might spawn subprocesses with long timeouts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read tests/integration.rs:2300.. ✓ (161ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the last few test functions are and if any of them call the binary in ways that might timeout. Let me look at tests that might spawn long-running subprocesses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn test_' tests/integration.rs | wc -l  ▶ $ grep -n 'fn test_' tests/integration.rs | tail -20 ✓ (707ms)
+ ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, only 2 test functions? Let me check — earlier I saw many `#[test]` annotations. Let me search more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c '#\[test\]' tests/integration.rs  ▶ $ grep -B1 '#\[test\]' tests/integration.rs | grep 'fn ' | head -20 ✓ (393ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -A1 '#\[test\]' tests/integration.rs | grep 'fn ' | head -20 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, 90 test functions. Let me check if any of them spawn the binary with commands that might be long-running, like `yyds eval` or `yyds deepseek` or `yyds state`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -B2 'yyds_cmd\|yoyo_cmd' tests/integration.rs | grep '#\[test\]' -A50 | gre… ✓ (344ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try a different approach to understand which tests might be slow. Let me look at tests that call the `eval` subcommand or `deepseek` subcommand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '\.arg("eval")\|\.arg("deepseek")\|\.arg("state")\|\.arg("cache-report")… ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No eval, deepseek, state, or cache-report subcommands are called in integration tests. So the timeout must be from some other test. Let me check what subcommands ARE tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -oP '\.arg\("([^"]+)"\)' tests/integration.rs | sort | uniq -c | sort -rn |… ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, integration tests mostly test CLI flags (--help, --provider, --model, --version, --no-color, --deny-dir, --allow, --yes). These are all fast subprocess invocations. No eval, state, deepseek, or other subcommands that might be slow.
+
+So why does `cargo test --test integration` timeout at 120s? Maybe it's not any individual test but the sheer volume — 90 tests each spawning a subprocess. Let me check if there's something else going on.
+
+Actually, let me think about this differently. The integration tests compile and link against the full binary. With 90 tests, each spawning a process, 120s should be plenty. Unless there's a deadlock or a test that hangs indefinitely.
+
+Let me check if there are tests that use `#[ignore]` or have explicit timeouts.
+
+Actually, I think the issue might be that the integration test binary itself is large and takes time to link, and then some of the subprocess tests might hang. But I can't reproduce this right now.
+
+Let me focus on creating the task files. Here's my refined plan:
+
+**Task 1** (seed, keep as-is): The harness seed task for planning reliability. I'll keep it but might need to add more concrete evidence.
+
+**Task 2**: Address evaluator timeout — but this touches protected files. 
+
+**Task 3**: Fix integration test timeout.
+
+Actually, wait. Let me reconsider. The trajectory pressure says the #1 problem is evaluator timeout cascade. But I can't fix `scripts/evolve.sh`. What I CAN do is:
+
+1. Add eval fixtures that test the evaluator timeout scenario — making the problem visible in CI
+2. Fix the state pipeline to handle orphaned runs better — this touches `scripts/append_terminal_state_events.py` (not protected)
+
+Actually, let me look at what `scripts/append_terminal_state_events.py` does and whether I can make a focused improvement.
+
+But first, let me step back. The planning instructions say:
+- "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task"
+
+The seed task says "The harness reached planning with no task artifacts." But the current assessment shows that:
+1. Earlier Day 123 sessions had tasks (0/2 verified means 2 tasks existed)
+2. The current session already has task_01.md (the seed itself)
+3. The problem is not "no tasks" but "tasks don't pass verification"
+
+The seed task's Files are all Python scripts (`scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, `scripts/test_task_manifest.py`). These don't touch src/ Rust code, so they won't pass strict verification either. The seed task itself would likely be reverted with `reverted_no_edit` or `reverted_unlanded_source_edits`.
+
+However, the instructions also say: "do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+I think the right approach is:
+1. Refine the seed task to be more evidence-backed and concrete
+2. Add task_02 and task_03 that address the trajectory's graph pressure
+
+But what concrete src/-touching tasks can I create?
+
+Let me think about what's actually fixable:
+
+**Option A**: Add a `--sample` flag to `yyds deepseek cache-report`. The assessment says it works now (95.71% hit rate, 412 events), but the read-everything pattern is fragile. This is preventative. Touches `src/commands_deepseek.rs` (or wherever `handle_cache_report` lives). But `deepseek.rs` is 3,994 lines...
+
+**Option B**: Fix the integration test timeout. Investigation task — find what's slow and fix it. Touches `tests/integration.rs`. 
+
+**Option C**: Add eval fixtures for prompt layout determinism. Additive, touches `eval/fixtures/`.
+
+**Option D**: Verify and close issues #51 and #52. Not a code task.
+
+Let me check what module handles cache-report:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'handle_cache_report\|render_cache_report\|cache.report\|cache-report' …  ▶ $ grep -rn 'fn test_.*timeout\|fn test_.*slow\|fn test_.*eval\|#\[ignore\]' tests/… ✓ (301ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `cache-report` is in `src/commands_deepseek.rs`, and from the assessment it's 3,994 lines. 
+
+Let me check if there are any `#[ignore]` tests and whether the integration test timeout is reproducible. Let me also check if there are any tests that might hang due to waiting on stdin or similar.
+
+Actually, let me focus on what's truly actionable. Let me think about what concrete changes I can plan that would pass strict verification (touch src/ code, pass cargo build && cargo test).
+
+Here's my revised plan:
+
+**Task 1** (refined seed): Make the seed task more evidence-backed. The current seed task is about "no task artifacts" but the actual problem is the evaluator timeout cascade. I should refine it to address a more concrete problem.
+
+Actually, wait — the instructions say "do not delete it unless you immediately write an equal-or-better evidence-backed task file." The seed task is already there. I should refine it rather than replace it. But the seed task touches only Python scripts, which won't pass strict verification. Should I add a src/ file to it?
+
+Hmm, let me re-read the seed task: "Repair evidence-backed planning after no-task sessions." This is about the planning pipeline. The planning phase DID produce the seed task, so arguably the seed task's stated problem ("no task artifacts") is NOT the current problem. The current problem is "tasks exist but don't pass verification."
+
+OK, I think the right move is:
+1. Keep task_01.md but refine it to be more concrete
+2. Add task_02.md for the evaluator timeout / integration test timeout fix
+3. Add task_03.md for something else
+
+Actually, let me just be practical. Let me create:
+
+**Task 1**: Refine the seed task — narrow it to a concrete preseed fix
+**Task 2**: Fix integration test timeout — investigate and fix
+**Task 3**: Add eval fixtures for evaluator timeout scenario
+
+Let me write these tasks now. I need to be specific about files and verification.
+
+For Task 2 (integration test timeout), I need to understand why it's timing out. Let me just write the task as an investigation with specific steps. The files would be `tests/integration.rs`.
+
+For Task 3 (eval fixtures), the files would be in `eval/fixtures/local-smoke/`.
+
+Let me also check: does `scripts/task_manifest.py` and `scripts/test_task_manifest.py` actually exist?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.4s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/task_manifest.py scripts/test_task_manifest.py 2>/dev/null || ech…  ▶ $ git ls-files scripts/task_manifest.py scripts/test_task_manifest.py 2>/dev/null … ✓ (689ms)
+ ✓ (745ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both files exist. Now let me finalize my plan.
+
+The seed task references `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, and `scripts/test_task_manifest.py` — all three exist. But all three are Python scripts, not Rust source. This means the seed task will likely fail strict verification (no src/ edits).
+
+However, I shouldn't delete it unless I have better evidence-backed tasks. Let me refine it to add a concrete Rust source target, or keep it as-is and add better src/-touching tasks.
+
+Actually, let me re-read the assessment one more time for concrete bug evidence:
+
+1. Integration test timeout — `cargo test --test integration` times out at 120s. This is a concrete, verifiable bug.
+2. Corrupted event line — position 58599 in events.jsonl. The resilience is good but write-atomicity could be improved. This touches event-writing code, likely in yoagent-state (upstream).
+3. Evaluator timeout cascade — this is the #1 problem but touches `scripts/evolve.sh` (protected).
+
+For the integration test timeout, I should investigate what's causing it. The tests are all fast CLI flag tests. Maybe the binary is just slow to link + 90 spawns = timeout. Or maybe one test hangs.
+
+Actually, wait. Let me check one more thing — how long does `cargo test --test integration` take with `-- --test-threads=1`? The harness gate uses `--test-threads=1`, which would serialize all 90 tests.
+
+OK, I have enough evidence. Let me write the task files now.
+
+**Final plan:**
+
+**Task 1 (refined seed)**: "Make preseed task selection prefer Rust source tasks when no-code pressure is active"
+- Keep the seed's Files but narrow the scope: teach `preseed_session_plan.py` to prefer tasks touching `src/*.rs` when recent sessions show `reverted_no_edit` or `reverted_unlanded_source_edits`. This addresses the trajectory's `task_unlanded_source_count=2` pressure.
+- The task manifest should warn when all selected tasks are script-only with recent no-code pressure.
+
+**Task 2**: "Diagnose and fix integration test timeout"
+- `cargo test --test integration` times out at 120s with `--test-threads=1`. Investigate which test(s) hang and apply a fix (timeout guard, test split, or skip slow tests).
+- Files: `tests/integration.rs`
+
+**Task 3**: "Add eval fixture for evaluator timeout resilience"
+- Addresses #37 (held-out eval coverage) AND the trajectory's evaluator_unverified_count pressure. Tests that `append_terminal_state_events.py` correctly closes orphaned runs.
+- Files: `eval/fixtures/local-smoke/` (new fixture JSON file)
+- But this doesn't touch src/ code either...
+
+Hmm, Task 3 doesn't touch src/ code. Let me think about something that does.
+
+Actually, let me check if there's a Rust-side fix for the integration test timeout. The integration test file itself is `tests/integration.rs` — that IS a Rust file and would pass strict verification.
+
+For Task 3, what about adding a `--timeout` flag to eval fixture running? That would touch `src/commands_eval.rs` and `src/eval_fixtures.rs`. But the assessment says these were already modified on Day 122 (default `--sample 5`).
+
+OK, let me go with a different Task 3. What about fixing the integration test timeout and making it concrete?
+
+Actually, let me step back and think about what's most impactful:
+
+The trajectory graph pressure says:
+1. Raise verified task success rate — too meta
+2. Bound evaluator checks — touches protected files
+3. Make source-edit outcomes land — too meta
+4. Break recurring log failure fingerprints — diagnostic
+5. Bound failing shell commands — implementation concern
+
+None of these translate directly to concrete src/ tasks except maybe fixing the integration test (which makes CI more reliable).
+
+Let me go with:
+- Task 1: Refined seed (Python scripts)
+- Task 2: Integration test timeout fix (tests/integration.rs)
+- Task 3: Add `--max-events` or `--sample` to `yyds deepseek cache-report` to prevent future timeouts (src/commands_deepseek.rs)
+
+Actually, let me check if `cache-report` already has a sampling mechanism:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'sample\|--limit\|max.event\|--max\|read_to_string\|BufReader\|load_even… ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `render_cache_report` more closely to see how it reads events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2040..2120 ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find `handle_cache_report` to see how it reads events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn handle_cache_report\|fn render_cache_report\|fn build_cache_report\|… ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `handle_cache_report` and `build_cache_report` to understand the event reading pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1861..1971 ✓ (150ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `cache-report` reads all events via `read_events` (which calls `crate::state::read_compatibility_events`), then filters for `CacheMetricsRecorded` events. The SQLite fallback is more efficient (it filters at the query level). 
+
+The issue is that `read_events` reads the ENTIRE 66K+ event file (67.9MB) before filtering. The SQLite fallback is smarter but only kicks in when the raw JSONL read fails.
+
+Now I have enough context. Let me create the task files.
+
+My plan:
+1. **Task 1**: Refine the seed task — narrow it to prefer Rust source tasks when no-code pressure is active
+2. **Task 2**: Fix integration test timeout — add a per-test timeout or split slow tests
+3. **Task 3**: Add `--sample N` flag to cache-report for bounded event reading
+
+Wait, actually, let me reconsider. The seed task's Files list includes only Python scripts. This won't pass strict verification. But the harness created it as a safety net. I think the right approach is:
+
+1. Keep the seed task as-is (it's a harness safety net)
+2. Add two more tasks that DO touch src/ code
+
+But the instructions also say I should refine the seed task. Let me refine it to add concrete evidence and narrow the scope while keeping its core purpose.
+
+Actually, let me just write the three task files now. I've been analyzing long enough.
+
+Here's my final concrete plan:
+
+**Task 1** (refined seed): "Teach preseed task selection to prefer Rust source tasks when no-code pressure is active"
+- Add logic to `preseed_session_plan.py` to detect `reverted_no_edit` / `reverted_unlanded_source_edits` pressure and prefer tasks touching `src/*.rs`
+- Files: `scripts/preseed_session_plan.py`
+
+**Task 2**: "Add --sample N flag to yyds deepseek cache-report"
+- Add `--sample N` flag to cap event reading, default to most recent N events via SQLite projection
+- Files: `src/commands_deepseek.rs`
+- Verifier: `cargo build && cargo test --lib commands_deepseek` + `timeout 15 cargo run -- yyds deepseek cache-report --sample 5000`
+
+**Task 3**: "Add eval fixture for integration test health check"
+- Add an eval fixture that validates integration tests complete within timeout
+- But this doesn't fix the actual timeout...
+
+Let me reconsider Task 3. A better task would be:
+
+**Task 3**: "Diagnose and fix integration test timeout"  
+- The `cargo test --test integration` times out at 120s with `--test-threads=1`. Add a diagnostic test or fix the hanging test.
+- Files: `tests/integration.rs`
+- But this is investigative — the agent needs to find what's slow
+
+Actually, I think the integration test timeout might just be a volume problem: 90 tests × 2s each = 180s > 120s timeout. With `--test-threads=1`, they're serialized. The fix might be to add `--test-threads=4` to the CI gate, or to increase the timeout, or to add a per-test timeout.
+
+But I can't change the CI gate (`.github/workflows/` is protected). What I CAN do is make individual tests faster or add `#[ignore]` to slow tests.
+
+Let me just check one more thing — how long individual integration tests take:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && timeout 60 cargo test --test i… ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+90 tests. Let me check how long a few individual tests take:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && timeout 60 cargo test --test i… ✓ (346ms)
+
+
