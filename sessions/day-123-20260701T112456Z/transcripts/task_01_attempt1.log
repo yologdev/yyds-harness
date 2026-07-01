@@ -1,0 +1,511 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix a timeout in `yyds deepseek cache-report` by adding an event read cap (sampling the last 20,000 events instead of reading the full history). Let me follow the evolve skill rules.
+
+First, let me read the evolve skill and the relevant source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_deepseek.rs ✓ (522ms)
+ ✓ (360ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `handle_cache_report` and `render_cache_report` functions in the file. I saw from the list that the file is 3149 lines but I've only read the first ~100 lines. Let me search for the specific functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_cache_report' in src/commands_deepseek.rs  ▶ search 'render_cache_report' in src/commands_deepseek.rs ✓ (214ms)
+ ✓ (340ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_cache_report` and `render_cache_report` functions, as well as the `build_cache_report` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1878..2078 ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. In `handle_cache_report`, it calls `read_events(&path)` which reads ALL events from the JSONL file. Then in `build_cache_report`, it iterates over all events filtering for `CacheMetricsRecorded` type. The fix is to only read the last 20,000 events (or rather, sample from the tail).
+
+Let me look at how `state doctor` (Day 117) and `state crashes` (Day 122) implemented their sampling to follow the same pattern. Let me search for those.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'take(20000)' in src  ▶ search 'rev().take' in src ✓ (185ms)
+ ✓ (312ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `commands_state.rs` to understand the sampling pattern used in `state doctor` and `state crashes`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'MAX_EVENTS' in src/commands_state.rs  ▶ search 'read_compatibility_events' in src/commands_state.rs ✓ (184ms)
+ ✓ (305ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the sampling cap pattern used in the other commands.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'sample' in src/commands_state.rs  ▶ search 'crashes' in src/commands_state.rs ✓ (210ms)
+ ✓ (334ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the sampling pattern used in `commands_state.rs` around the lines that use `sampled_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:140..220 ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the `read_tail_events` function to understand how it reads tail events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1367..1427 ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `read_tail` to see how it reads from the end of the file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1318..1368 ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the patterns. In `commands_state.rs`:
+
+1. `read_tail` reads the last N lines efficiently
+2. `read_tail_events` reads the last N events  
+3. `read_limited_events` reads all events then truncates to the last N
+
+But there's a problem: `read_tail` reads the entire file and keeps the last N lines. That's fine. But the main bottleneck is that `build_cache_report` iterates through ALL events anyway.
+
+For the cache-report, the approach should be to limit the events passed to `build_cache_report`. The task spec says to read at most the last 20,000 events. The simplest approach is to modify `handle_cache_report` to read only the last 20,000 events.
+
+But wait — the `read_events` function in `commands_deepseek.rs` calls `read_compatibility_events` which loads the whole file. The approach should be to add a sampling cap in `handle_cache_report`.
+
+Let me think about the right approach:
+
+1. The most straightforward: in `handle_cache_report`, after reading events, if there are more than 20,000, take the last 20,000.
+2. But the problem is that `read_events` reads ALL events first. The timeout is caused by reading 67.9MB of JSONL.
+
+Looking at `read_tail` in `commands_state.rs`, it reads the whole file as a string, then takes the last N lines. For a 67MB file, that's still memory-intensive but should be faster than JSON parsing all of them.
+
+Actually, the task says "read at most the last 20,000 events instead of the full event history." The key bottleneck is parsing 63K lines of JSON, not just reading the raw bytes.
+
+Let me look at how `read_compatibility_events` works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_compatibility_events' ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3164..3194 ✓ (125ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `read_compatibility_events` function reads the entire file as a string, then parses every line. The fix for cache-report should avoid reading/parsing all events.
+
+Looking at the task spec more carefully:
+- "read at most the last 20,000 events instead of the full event history"
+- "Follow the same sampling pattern used in state doctor (Day 117) and state crashes (Day 122): use `.rev().take(N)` on the event iterator or an equivalent approach that reads tail events efficiently"
+
+The pattern used in `state doctor` is:
+1. Read the raw file as string
+2. Use a `VecDeque` to keep only the last N lines
+3. Then parse those lines
+
+Let me use the same approach. In `handle_cache_report`, I'll:
+1. Read the file 
+2. Take the last 20,000 lines
+3. Parse only those lines
+4. Pass to `build_cache_report`
+
+But I also need to handle the `--json` flag case and add a "sampled" note.
+
+Let me also check how `state crashes` does it to see if it's the same pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs (100 lines) ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the pattern. The `state crashes` command uses:
+1. `read_tail_events_capped` which reads the file, keeps only the last N lines, then parses only those lines.
+2. It produces a `truncation_note` if the file was larger than the cap.
+3. The cap is `MAX_EVENTS_SCAN = 20_000`.
+
+I need to apply the same approach to `handle_cache_report` in `commands_deepseek.rs`.
+
+Key changes:
+1. Add a `const MAX_CACHE_REPORT_EVENTS: usize = 20_000;`
+2. Modify `handle_cache_report` to read only the last N lines, parse those, and add a sampling note.
+3. Make `build_cache_report` accept a sampling note parameter, or modify `render_cache_report` to include the note.
+
+Actually, looking more carefully at the task, it says "follow the same sampling pattern used in state doctor and state crashes." The simplest approach is:
+
+1. Add a tail-reading function similar to `read_tail_events_capped` (or reuse the `read_tail` approach from `commands_state.rs`)
+2. Modify `handle_cache_report` to use it
+3. Add a note in the output when sampling is applied
+
+Let me also check if `read_tail` is `pub(crate)` from `commands_state.rs`:
+
+Looking at the search results, `read_tail` is a private function in `commands_state.rs` (no `pub`). And `read_tail_events_capped` is also private in `commands_state_crashes.rs`.
+
+So I need to either:
+a) Make one of those functions public/pub(crate) and use it
+b) Add a similar function locally in `commands_deepseek.rs`
+
+Option (b) is simpler and avoids changing files outside the task scope. Let me go with that.
+
+Here's my plan:
+1. Add `use std::collections::VecDeque;` to `commands_deepseek.rs` (check if already imported)
+2. Add `const MAX_CACHE_REPORT_EVENTS: usize = 20_000;`
+3. Add a `read_tail_lines` helper function
+4. Modify `handle_cache_report` to use tail reading with cap
+5. Add sampling note to `render_cache_report` output
+
+Let me also check what existing imports are at the top of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs (10 lines) ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - I see `std::collections::BTreeMap` is already imported. I need to add `VecDeque` (or `use std::collections::VecDeque;`). 
+
+Now let me also look at the existing tests in the file to understand the test structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/commands_deepseek.rs ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2120..2180 ✓ (125ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me plan my changes:
+
+1. Add `use std::collections::VecDeque;` to the imports
+2. Add `const MAX_CACHE_REPORT_EVENTS: usize = 20_000;`
+3. Modify `handle_cache_report` to:
+   - Read the raw file
+   - Keep only the last 20K lines
+   - Parse those lines
+   - Add a sampling note when the file was larger
+   - Pass the note to `render_cache_report`
+4. Modify `render_cache_report` to accept and display the sampling note
+
+Wait, looking at how `state crashes` does it, the truncation note is appended separately before the report output. Let me follow that pattern.
+
+Let me also check the `CacheReport` struct to see if it has a note field or not:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct CacheReport' in src/commands_deepseek.rs ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the struct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1861..1881 ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding. Let me write the changes:
+
+1. Add `VecDeque` import
+2. Add a constant for the max events
+3. Add a `read_tail_lines` helper function
+4. Rewrite `handle_cache_report` to use tail reading with cap
+5. Modify `render_cache_report` to accept an optional note and display it
+
+Let me now implement this. The approach:
+
+In `handle_cache_report`:
+- Try to read the raw file
+- Count total lines
+- If total lines > MAX_CACHE_REPORT_EVENTS, keep only last MAX_CACHE_REPORT_EVENTS lines
+- Parse only those lines
+- Add a "sampled" note
+- Pass the note to the output
+
+For the `read_events_from_sqlite` fallback path, it already queries only `CacheMetricsRecorded` events, so it should be fine. But let me also check if SQLite reads could be slow — actually it's a SQL query with an index, so it should be fast. I'll leave that path alone.
+
+Let me write the code now.
+
+Actually, I also need to think about the `--json` output path. The task says to add a note "sampled last N events". In JSON mode, I should add it to the payload.
+
+Let me also check the `cache_report_payload` function.
+
+Now let me implement:
+
+```rust
+const MAX_CACHE_REPORT_EVENTS: usize = 20_000;
+
+fn read_tail_lines(path: &Path, cap: usize) -> Result<(Vec<String>, usize, usize), std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    let total: usize = raw.lines().count();
+    
+    let lines: Vec<String> = {
+        let mut deque = VecDeque::new();
+        for line in raw.lines() {
+            deque.push_back(line.to_string());
+            if deque.len() > cap {
+                deque.pop_front();
+            }
+        }
+        deque.into_iter().collect()
+    };
+    let scanned = lines.len();
+    
+    Ok((lines, total, scanned))
+}
+```
+
+Then in `handle_cache_report`:
+- Call `read_tail_lines` with the cap
+- Parse the lines as JSON values
+- Build cache report
+- If capped, add truncation note
+
+Let me now do the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the fix. I'll:
+
+1. Add `VecDeque` import
+2. Add a `MAX_CACHE_REPORT_EVENTS` constant 
+3. Add a `read_tail_lines` helper (same pattern as `state crashes`)
+4. Modify `handle_cache_report` to sample the last 20K events with a truncation note
+5. Add the note to both text and JSON output
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (80ms)
+  ▶ todo ✓ (206ms)
+  ▶ todo ✓ (203ms)
+  ▶ todo ✓ (200ms)
+  ▶ todo ✓ (143ms)
+  ▶ todo ✓ (201ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start making the edits. I need to be surgical and follow the patterns from state crashes and state doctor.
+
+Step 1: Add VecDeque import.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 3.4s (6 ✓)
+
+
+  - use std::collections::BTreeMap;
+  + use std::collections::{BTreeMap, VecDeque};
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (1 → 1 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (219ms)
+  ▶ edit src/commands_deepseek.rs (1 → 1 lines)
+  - use std::collections::BTreeMap;
+  + use std::collections::{BTreeMap, VecDeque};
+ ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now step 2: Add the constant and `read_tail_lines` helper function. I'll place them before `handle_cache_report`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  + /// Maximum events to read for cache-report before capping.
+  + /// Matching the state doctor and state crashes sampling cap of 20K events.
+  + const MAX_CACHE_REPORT_EVENTS: usize = 20_000;
+  + 
+  + /// Read only the last `cap` lines from a file, returning them as strings
+  + /// along with the total line count and how many were actually scanned.
+  + fn read_tail_lines(path: &Path, cap: usize) -> Result<(Vec<String>, usize, usize), std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let total: usize = raw.lines().count();
+  + 
+  +     let lines: Vec<String> = {
+  +         let mut deque = VecDeque::new();
+  +         for line in raw.lines() {
+  +             deque.push_back(line.to_string());
+  +             if deque.len() > cap {
+  +                 deque.pop_front();
+  +             }
+  +         }
+  +         deque.into_iter().collect()
+  +     };
+  ... (6 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (1 → 26 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (226ms)
+  ▶ todo ✓ (204ms)
+  ▶ edit src/commands_deepseek.rs (1 → 26 lines)
+  + /// Maximum events to read for cache-report before capping.
+  + /// Matching the state doctor and state crashes sampling cap of 20K events.
+  + const MAX_CACHE_REPORT_EVENTS: usize = 20_000;
+  + 
+  + /// Read only the last `cap` lines from a file, returning them as strings
+  + /// along with the total line count and how many were actually scanned.
+  + fn read_tail_lines(path: &Path, cap: usize) -> Result<(Vec<String>, usize, usize), std::io::Error> {
+  +     let raw = std::fs::read_to_string(path)?;
+  +     let total: usize = raw.lines().count();
+  + 
+  +     let lines: Vec<String> = {
+  +         let mut deque = VecDeque::new();
+  +         for line in raw.lines() {
+  +             deque.push_back(line.to_string());
+  +             if deque.len() > cap {
+  +                 deque.pop_front();
+  +             }
+  +         }
+  +         deque.into_iter().collect()
+  +     };
+  ... (6 more lines)
+ ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now step 3: Modify `handle_cache_report` to use tail sampling. Let me read the current state of the function to make sure I have the right text:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+Now let me modify `handle_cache_report` to use tail sampling:
+    fn handle_cache_report(args: &[String]) {
+        let path = default_events_path();
+  -     let events = match read_events(&path) {
+  -         Ok(events) => events,
+  +     let json_output = args.iter().any(|arg| arg == "--json");
+  + 
+  +     // Use capped tail read to avoid timeout on large event files.
+  +     // Matching the state doctor and state crashes approach: scan only the
+  +     // most recent MAX_CACHE_REPORT_EVENTS events when the log is larger.
+  +     let (events, truncation_note) = match read_tail_lines(&path, MAX_CACHE_REPORT_EVENTS) {
+  +         Ok((lines, total, scanned)) => {
+  +             let events: Vec<Value> = lines
+  +                 .iter()
+  +                 .filter(|l| !l.trim().is_empty())
+  +                 .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+  +                 .collect();
+  +             let note = if total > MAX_CACHE_REPORT_EVENTS {
+  +                 Some(format!(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (28 → 55 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (231ms)
+  ▶ todo ✓ (205ms)
+  ▶ edit src/commands_deepseek.rs (28 → 55 lines)
+    fn handle_cache_report(args: &[String]) {
+        let path = default_events_path();
+  -     let events = match read_events(&path) {
+  -         Ok(events) => events,
+  +     let json_output = args.iter().any(|arg| arg == "--json");
+  + 
+  +     // Use capped tail read to avoid timeout on large event files.
+  +     // Matching the state doctor and state crashes approach: scan only the
+  +     // most recent MAX_CACHE_REPORT_EVENTS events when the log is larger.
+  +     let (events, truncation_note) = match read_tail_lines(&path, MAX_CACHE_REPORT_EVENTS) {
+  +         Ok((lines, total, scanned)) => {
+  +             let events: Vec<Value> = lines
+  +                 .iter()
+  +                 .filter(|l| !l.trim().is_empty())
+  +                 .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+  +                 .collect();
+  +             let note = if total > MAX_CACHE_REPORT_EVENTS {
+  +                 Some(format!(
+  +                     "Sampled last {scanned} of {total} events"
+  +                 ))
+  ... (40 more lines)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now step 4: Update `render_cache_report` to accept an optional note, and update `cache_report_payload` to include it. Let me first update `render_cache_report`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+Now update `render_cache_report` to display the truncation note:
+  - fn render_cache_report(report: &CacheReport) -> String {
+  + fn render_cache_report(report: &CacheReport, sample_note: Option<&str>) -> String {
+        let mut out = format!(
+            "DeepSeek server-side cache report\n  events:      {}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
+            report.event_count,
+  ···
+                    model.hit_ratio * 100.0
+                ));
+            }
+  +     }
+  +     if let Some(note) = sample_note {
+  +         out.push_str(&format!("\n{DIM}  ({note}){RESET}"));
+        }
+        out
+    }
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (23 → 26 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (23 → 26 lines)
+  - fn render_cache_report(report: &CacheReport) -> String {
+  + fn render_cache_report(report: &CacheReport, sample_note: Option<&str>) -> String {
+        let mut out = format!(
+            "DeepSeek server-side cache report\n  events:      {}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
+            report.event_count,
+  ···
+                    model.hit_ratio * 100.0
+                ));
+            }
+  +     }
+  +     if let Some(note) = sample_note {
+  +         out.push_str(&format!("\n{DIM}  ({note}){RESET}"));
+        }
+        out
+    }
+ ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the test that calls `render_cache_report` — it currently calls `render_cache_report(&report)` with one argument, but now the function takes two. Let me find and fix all test call sites.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test call sites that use the old `render_cache_report` signature:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'render_cache_report(' in src/commands_deepseek.rs ✓ (78ms)
+
+

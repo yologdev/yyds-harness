@@ -1,0 +1,710 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix a timeout in `yyds state why last-failure` by adding an event sampling cap. Let me first read the evolve skill, then examine the relevant source code.
+
+Let me plan my approach:
+1. Read `skills/evolve/SKILL.md` for the contract
+2. Read `src/commands_state.rs` around the `build_why_report` function
+3. Understand how the state doctor and state crashes sampling patterns work
+4. Implement the fix
+5. Test and commit
+
+The file is 6712 lines - big. Let me start with targeted reads.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ search 'build_why_report' (*.rs)  ▶ search 'fn handle_state' (*.rs) ✓ (529ms)
+ ✓ (554ms)
+ ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the key areas of `commands_state.rs` - the `build_why_report` function and its call site, and the `handle_state_subcommand` function to understand the dispatch pattern.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:30..130  ▶ search 'fn build_why_report' (*.rs) ✓ (337ms)
+ ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `handle_why` function and `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' (*.rs)  ▶ read src/commands_state.rs:3112..3232 ✓ (206ms)
+ ✓ (630ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_why` function to understand how events are loaded and the dispatch flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1080..1180 ✓ (122ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow. The `handle_why` function:
+1. Reads events via `read_tail_events(&path, limit)` - already uses a limit (default 200 from the dispatch)
+2. Calls `build_why_report(&events, id)`
+
+The issue is: when `id == "last-failure"`, the default limit is 200 events. But `build_why_report` scans through all events passed to it. So if the limit is 200 and `find_target_event` can't find a failure in those 200, it still does a lot of scanning of the summary/metrics building path.
+
+Wait, actually let me re-read - the default limit is 200, but the task says it scans 67.9MB. Let me check what happens when no limit is explicitly given, and how `read_tail_events` works.
+
+Actually, looking more carefully at the dispatch:
+```rust
+"why" => {
+    let summary = args.iter().any(|a| a == "--summary");
+    let limit = args
+        .iter()
+        .position(|a| a == "--limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200);
+```
+
+Default limit is 200. But 200 events is small. Let me check `read_tail_events` to understand...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' (*.rs)  ▶ read src/commands_state.rs:1179..1194 ✓ (207ms)
+ ✓ (628ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `read_tail_events` to see how it handles the limit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1367..1427 ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key issue. When `limit == 0`, it calls `read_events_lenient` which reads the entire file. When limit > 0, it calls `read_tail` which reads the last N lines.
+
+So for `yyds state why last-failure` with the default limit of 200, it reads only the last 200 events. But wait - the task says it times out reading 67.9MB. Let me check `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail\b' (*.rs) ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe `read_tail` is in a different file. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' (*.rs) ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1318..1373 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly!
+
+`read_tail` reads the entire file into memory: `let raw = std::fs::read_to_string(path)?;` — that's 67.9MB loaded into a string. Then it iterates all lines, keeping the last `limit` in a VecDeque. So even with limit=200, it loads the entire 67.9MB file.
+
+But wait, the task description says to solve this in `build_why_report`, not in `read_tail`. Let me re-read the task more carefully...
+
+The task says:
+- The command reads the full 63K-line `.yoyo/state/events.jsonl` (67.9MB) without any sampling or limit
+- `build_why_report` scans all events to find a single failure event
+- The fix: add a sampling cap to the "last-failure" lookup path only
+
+But looking at the code, `read_tail` already loads the full file regardless of limit - it loads the whole thing then keeps only the last N lines. The default limit is 200, so `handle_why` only gets 200 events.
+
+Wait, but the task says it times out. Let me think about this differently. Maybe the issue is that `read_tail` with `std::fs::read_to_string` on a 67.9MB file is itself slow. Let me check what the state crashes fix looks like for comparison.
+
+Actually, looking again at the task: "The same read-everything pattern was already fixed in state doctor (Day 117, landed), state crashes (Day 122, landed)." Let me look at how state crashes handles this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:1..51 ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `state crashes` has the same issue! It also reads the entire file via `std::fs::read_to_string(path)?;`. The cap of 20,000 just limits how many lines it keeps in the VecDeque, but the entire file is still loaded into memory.
+
+But actually, the task says "The same read-everything pattern was already fixed in state doctor (Day 117, landed), state crashes (Day 122, landed), and eval fixtures score (Day 122, landed). All used the same proven approach."
+
+So the approach used in `state crashes` is considered "fixed" - meaning it uses a cap of 20,000 events, which the task deems sufficient. The issue with `state why` is that `read_tail` has no cap - it uses the limit parameter (200 by default), but `read_tail` still reads the entire file into memory.
+
+Actually wait, let me re-read the flow:
+
+1. `handle_why` calls `read_tail_events(&path, limit)` with limit=200 (default)
+2. `read_tail_events` calls `read_tail(path, limit)` which reads the ENTIRE file into a string, then keeps last 200 lines
+3. Then `build_why_report(&events, id)` scans through the 200 events
+
+So the timeout might be from `read_tail` loading the entire 67.9MB file. But 67.9MB should load in well under 15 seconds. Hmm. Unless the machine is slow or there's something else going on.
+
+Wait, maybe the timeout happens because someone runs `yyds state why last-failure --limit 0` which reads all events? Or maybe the real issue is that there might be a scenario where the limit is 0 (read all).
+
+Actually, re-reading the task more carefully: "The command reads the full 63K-line .yoyo/state/events.jsonl (67.9MB) without any sampling or limit — build_why_report scans all events to find a single failure event."
+
+This suggests either:
+1. Someone runs it with `--limit 0` or similar, OR
+2. The task is describing the underlying code path where `read_tail` still reads the whole file
+
+The task says the fix is to "add a sampling cap to the 'last-failure' lookup path only" and the approach is to use a constant like 20000, same as other commands.
+
+Let me look at the approach more carefully. The task says:
+- "In src/commands_state.rs, find build_why_report (around line 15756) and the handler that dispatches to it."
+- Wait, `build_why_report` is at line 3112, not 15756. The task was written against an older version. Let me check if there's another version.
+
+Actually 15756 was probably the old line number. The file is now 24724 lines. Let me just focus on the current code.
+
+The approach should be:
+1. In `handle_why`, when the query is "last-failure", use a sampling cap instead of the default limit
+2. Apply the cap at the event-reading level, similar to how `read_tail_events_capped` works
+
+But the task says: "follow the same sampling pattern used in state doctor (Day 117) and state crashes (Day 122): iterate from the end of the event stream, take at most N events, and search within that window."
+
+So the fix for `state why last-failure` is:
+1. When `id == "last-failure"`, use a cap of 20000 events (same as MAX_EVENTS_SCAN)
+2. Use the capped reader that also reports if events were capped
+3. In `build_why_report`, when no failure is found, report that only N events were scanned
+
+Actually, let me look more closely at what the task wants. It says to modify `build_why_report` and the handler. Let me re-read the implementation steps:
+
+"1. In src/commands_state.rs, find build_why_report (around line 15756) and the handler that dispatches to it. When the query is "last-failure" (not a specific event ID), add a sampling cap: read only the most recent 20,000 events."
+
+So the change should be in `handle_why` - when id is "last-failure", use a cap of 20000 instead of the default 200 limit. And in `build_why_report`, if no failure is found within the sampled window, report that.
+
+Let me also look at what `state crashes` does with the cap for the message about sampled events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:46..126 ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the pattern. Let me look at what `handle_why` currently does and plan the change:
+
+1. `handle_why` calls `read_tail_events(&path, limit)` with default limit=200
+2. Then calls `build_why_report(&events, id)`
+
+The fix should:
+1. When `id == "last-failure"`, use a cap of 20000 events instead of the default limit
+2. Use the capped reader approach from `state crashes` (or just increase the limit significantly)
+3. In `build_why_report` (or in the handler), when no failure is found, report that only the most recent N events were scanned
+
+Actually, let me look more carefully. The real issue may be even simpler. The default limit is 200. If the last failure is more than 200 events back, `find_target_event` won't find it. So maybe the fix is:
+- When `id == "last-failure"`, use a larger cap (20000) instead of 200
+
+Let me check the `find_target_event` function to understand:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn find_target_event' (*.rs) ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand how it searches for events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14175..14255 ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `find_target_event` function for "last-failure" iterates in reverse through the events slice and finds the first failure event.
+
+The issue is in `handle_why`: it calls `read_tail_events(&path, limit)` with the default limit of 200. So it only reads the last 200 events. But `read_tail` actually reads the ENTIRE 67.9MB file into a string, then keeps the last 200 lines. Reading 67.9MB into a string might be slow on some systems.
+
+But wait, the task says the approach is to "read only the most recent 20,000 events." But `read_tail` already reads the full file regardless of the limit. So the performance problem is `std::fs::read_to_string` on a 67.9MB file.
+
+Hmm, but 67.9MB should read in well under a second on any modern system. Let me check if there's something else going on. Let me look at the state doctor pattern to understand what "capped" looks like there.
+
+Actually, thinking about this differently: maybe the issue isn't `read_tail` reading the full file, but rather `build_why_report` doing expensive processing on the events. Or maybe the real issue is when `--limit 0` is passed (reading ALL events).
+
+Let me re-read the dispatch code:
+
+```rust
+"why" => {
+    let summary = args.iter().any(|a| a == "--summary");
+    let limit = args
+        .iter()
+        .position(|a| a == "--limit")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200);
+    let id_candidate = args
+        .get(3)
+        .filter(|a| !a.starts_with("--") && !a.chars().all(|c| c.is_ascii_digit()));
+    if id_candidate.is_none() {
+        handle_state_summary(args, limit);
+        return;
+    }
+    let id = id_candidate.unwrap();
+    handle_why(id, summary, limit);
+}
+```
+
+And in `handle_why`:
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+```
+
+If someone runs `yyds state why last-failure` without `--limit`, the default is 200. This gets passed to `read_tail_events`, which calls `read_tail(path, 200)` which reads the entire file then keeps last 200 lines.
+
+But if someone runs `yyds state why last-failure --limit 0` or if someone sets a high limit, then it reads all events.
+
+OK, I think the task is asking me to do the following:
+1. When `id == "last-failure"`, use a sampling cap of 20,000 events (like state crashes)
+2. Don't read more than 20,000 events from the file regardless of the limit parameter
+3. When no failure is found, report that only N events were sampled
+
+Let me now implement this. The approach:
+1. Add a constant `MAX_WHY_SCAN` (or similar) = 20,000
+2. In `handle_why`, when `id == "last-failure"`, use the capped reader instead of `read_tail_events`
+3. In `build_why_report` (or handle_why), when no failure found and events were capped, print a message
+
+Wait, but `read_tail_events_capped` is in `src/commands_state_crashes.rs` and is private to that module. I need to either:
+a. Make it public and import it
+b. Create a similar function in `commands_state.rs`
+c. Modify `read_tail_events` or `read_tail` to accept a cap
+
+Actually, the simplest approach matching the task description: just modify `handle_why` to increase the limit when `id == "last-failure"`. The default limit of 200 is tiny; changing it to 20,000 means that `read_tail` still reads the whole file (which takes a fraction of a second for 67.9MB) but then keeps 20,000 events.
+
+But wait, reading 67.9MB and then discarding most of it seems wasteful but shouldn't cause a 15-second timeout. Let me think about what's actually slow...
+
+Oh wait, let me look at the `build_why_report` function more carefully. It calls `related_events` and does a lot of scanning. But with only 200 events, this should be fast.
+
+Let me look at what `build_state_summary` does - that's called in the error path:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' (*.rs) ✓ (75ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `build_state_summary` to see if it does something expensive.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2844..2944 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a clear picture. The issue is that `read_tail` reads the entire 67.9MB file into a string before extracting the last N lines. Even though the limit is 200, the entire file is loaded. On a constrained CI runner, this might cause a timeout.
+
+The fix should follow the pattern from `state crashes` - use a cap of 20,000 events. But I also need to fix the underlying `read_tail` path so it doesn't need to load the entire file. 
+
+Actually, wait. Let me re-read the task more carefully:
+
+"The same read-everything pattern was already fixed in state doctor (Day 117, landed), state crashes (Day 122, landed), and eval fixtures score (Day 122, landed). All used the same proven approach."
+
+The "proven approach" in `state crashes` is:
+1. Use `MAX_EVENTS_SCAN = 20_000`
+2. Use `read_tail_events_capped` which still reads the entire file but keeps only the last N
+3. Reports a truncation note if total > cap
+
+So the approach is NOT to avoid reading the entire file. It's to cap the number of events processed. And the task says this was already "fixed" - meaning the approach of reading the full file with a cap is considered the fix.
+
+Wait, but if `read_tail_events_capped` also reads the full file... then how is it a fix? It still reads 67.9MB. The only difference is it keeps 20,000 lines instead of 200.
+
+Hmm, maybe the real performance issue is not `read_tail` but something in `build_why_report`. Let me look at what `build_why_report` does when it does find a failure event. Let me read more of that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3230..3430 ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a complete understanding of the code. Let me plan my approach:
+
+The real performance issue: `read_tail` at line 1318 reads the ENTIRE 67.9MB file into a string with `std::fs::read_to_string(path)?;` before filtering to the last N lines. For large event files, this can be slow on constrained systems.
+
+The fix approach (matching state crashes):
+1. Add a constant for max events to scan (20,000)
+2. In `handle_why`, when `id == "last-failure"`, use the capped reader
+3. When no failure is found and events were capped, report "No failure found in the most recent N events"
+
+Actually, I just realized: the `read_tail_events_capped` in `state_crashes` STILL reads the entire file. It does `std::fs::read_to_string(path)?;` just like `read_tail`. So the "capped" approach doesn't avoid reading the full file - it just limits how many lines are kept and parsed.
+
+But the task says this approach was already "proven" for state crashes. So perhaps the timeout wasn't in `read_tail` at all, but in something downstream. Or perhaps the performance fix needs to happen at a different level.
+
+Wait, let me re-read the task's evidence: "The command reads the full 63K-line .yoyo/state/events.jsonl (67.9MB) without any sampling or limit — build_why_report scans all events to find a single failure event."
+
+This says `build_why_report` "scans all events." But as I showed, `handle_why` only passes 200 events to `build_why_report` by default. Unless the user passes `--limit 0` (read all).
+
+Let me think about this differently. Maybe the problem is simpler: when the user runs `yyds state why last-failure`, the default limit is 200. If no failure exists in the last 200 events, `build_why_report` reports "No completed failure sessions found." But the real failure might be at event 201. So the user tries `--limit 0` to scan all, and THAT times out.
+
+The fix would be: when `id == "last-failure"`, use a cap of 20,000 events instead of the default 200. This way, the command scans a reasonable window without needing `--limit 0`.
+
+Actually, I think the simplest and most correct fix is:
+
+In `handle_why`, when `id == "last-failure"`:
+1. Use a larger cap (20,000) instead of the user-specified limit
+2. If no failure is found in the capped window, report that only the most recent N events were scanned
+
+Let me also check if there's a `DEFAULT_DOCTOR_LIMIT` constant:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'DEFAULT_DOCTOR_LIMIT' (*.rs) ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see `DEFAULT_DOCTOR_LIMIT = 20_000` at line 28. This is the same 20,000 cap. Let me check what's around line 28 for other constants.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1..31 ✓ (116ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me plan the implementation:
+
+The task says the fix should be in:
+1. `build_why_report` and the surrounding handler
+2. When query is "last-failure", add a sampling cap of 20,000 events
+
+My approach:
+1. Add a constant `MAX_WHY_SCAN: usize = 20_000` near the other constants
+2. In `handle_why`, when `id == "last-failure"`, override the limit to use the cap
+3. When no failure is found in the capped window, report "No failure found in the most recent N events"
+
+Let me now implement this. The cleanest approach:
+
+1. Add `const MAX_WHY_SCAN: usize = 20_000;` near line 28
+2. In `handle_why` (line 1080), when `id == "last-failure"`, use `MAX_WHY_SCAN` as the limit cap (take `min(limit, MAX_WHY_SCAN)` if limit is specified, else use `MAX_WHY_SCAN`)
+3. When `build_why_report` returns an error for "last-failure", add a note that only the most recent N events were scanned
+
+Actually wait, re-reading the task more carefully:
+
+"If no failure event exists in the sampled window, print 'No failure found in the most recent N events. Use --full to scan all history.' and exit cleanly with a non-error status."
+
+And: "Do NOT add a --full flag or CLI option — keep it minimal. The cap is a constant (20000), not a user-facing parameter."
+
+So there's a tension: the fallback says "Use --full" but the implementation says don't add --full. Maybe the fallback message should just say "Use --limit 0 to scan all history" or similar. Actually, I think the fallsback is a generic description, and the implementation notes take precedence.
+
+Let me also check - the task says "read only the most recent 20,000 events" and "When a concrete event ID is given (e.g., yyds state why evt-harness-...), do NOT apply the sampling cap — read the full event stream or do a targeted lookup by ID."
+
+So the sampling cap applies only to "last-failure", not to specific event IDs.
+
+Now, for the implementation:
+
+The simplest approach: modify `handle_why` to cap the limit when `id == "last-failure"`. The `read_tail` function will still read the full file into memory (67.9MB), but this is what the other "fixed" commands do too (state crashes, state doctor).
+
+Wait, actually the state doctor uses `handle_doctor(limit)` where the limit defaults to 20,000. Let me check how `handle_doctor` reads events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_doctor' (*.rs) ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`handle_doctor` in `commands_state.rs` at line 145.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:145..185 ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I see. `handle_doctor` calls `read_tail_events(&events_path, limit)` when `total_events > limit`. This reads the full file into a string then keeps the last N lines. The approach is the same.
+
+Now, for my implementation, I'll take the path of least disruption:
+
+1. In `handle_why`, when `id == "last-failure"`, cap the limit to 20,000 events
+2. When the events might have been capped (total > cap) and no failure found, print a helpful message
+3. Use the same `read_tail_events` function
+
+Actually, wait. The simplest approach: just modify `handle_why` to use a higher limit for "last-failure". The default is 200, which is tiny. Changing it to 20,000 means the command will scan much more history. But `read_tail` will still read the full 67.9MB file.
+
+Let me think about whether this actually fixes the timeout. The timeout is at 15 seconds. Reading 67.9MB into a string takes maybe 100-200ms on most systems. Parsing 20,000 JSON lines might take a bit longer. But 20,000 events should still be well under 15 seconds.
+
+The question is: does the current code with limit=200 timeout? If so, why? Reading 67.9MB + parsing 200 events should be nearly instantaneous.
+
+Unless the default limit of 200 is so small that the failure is never found, and the error path in `build_why_report` does something expensive like `build_state_summary` or the diagnostic lookups. But those should be fast with only 200 events.
+
+OK, I think the task is asking me to fix the case where someone runs `yyds state why last-failure --limit 0` (read all 63K events). With `--limit 0`, `read_tail_events` calls `read_events_lenient` which reads and parses the entire 67.9MB file. Then `build_why_report` scans all 63K events multiple times through `build_state_summary`, `find_target_event`, `related_events`, etc.
+
+With 20,000 events, this should complete much faster.
+
+Let me now implement the fix. I'll:
+
+1. Add a `MAX_WHY_SCAN` constant
+2. In `handle_why`, when `id == "last-failure"`, cap the limit at `MAX_WHY_SCAN`
+3. After `build_why_report` returns, if events were capped and no failure found, print a message
+
+Actually, I'll keep it even simpler. Since the default limit is 200 (which is too small for finding a failure that might be far back), I'll just increase the default when querying for "last-failure". The cap of 20,000 ensures it doesn't read ALL events.
+
+Let me write the code now.
+
+Here's my plan:
+1. Add `const MAX_WHY_SCAN: usize = 20_000;` near line 28
+2. In `handle_why`, modify the limit handling: when `id == "last-failure"`, use `MAX_WHY_SCAN` as the limit (or min of user-specified limit and MAX_WHY_SCAN)
+3. When `build_why_report` returns Err for "last-failure" and the events were sampled from a larger dataset, print "No failure found in the most recent N events"
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan and implement the fix.
+
+The issue: `handle_why` uses a default limit of 200 events. When the last failure is more than 200 events back, `find_target_event` doesn't find it. Users work around this with `--limit 0` which reads all 63K events (67.9MB), causing timeout. The fix: cap the "last-failure" search to 20,000 events, matching the proven pattern from `state doctor` and `state crashes`.
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (75ms)
+  ▶ todo ✓ (202ms)
+  ▶ todo ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. First, add the constant and modify `handle_why`.
+
+Looking at the code again:
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+```
+
+The `limit` parameter comes from the dispatch at line 88:
+```rust
+.unwrap_or(200);
+```
+
+And then at line 98:
+```rust
+handle_why(id, summary, limit);
+```
+
+My approach:
+1. Add `const MAX_WHY_SCAN: usize = 20_000;` after the existing `DEFAULT_DOCTOR_LIMIT`
+2. In `handle_why`, when `id == "last-failure"`, cap the effective limit and track whether it was capped
+3. When no failure is found and the limit was capped, add a note about the sampling window
+
+Let me implement this now.
+
+Actually, I should be more careful about the "no failure found" message. The task says:
+"If no failure event exists in the sampled window, print 'No failure found in the most recent N events. Use --full to scan all history.' and exit cleanly with a non-error status."
+
+But the implementation notes say: "Do NOT add a --full flag or CLI option — keep it minimal."
+
+So the message should not reference --full. Let me just say "No failure found in the most recent N events" and suggest using --limit 0 for full scan.
+
+Now let me write the code. First, add the constant:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.6s (3 ✓)
+
+Now let me implement the changes:
+    /// Default event scan limit for `state doctor` to prevent timeout with 50k+ events.
+    const DEFAULT_DOCTOR_LIMIT: usize = 20_000;
+  + 
+  + /// Maximum events to scan for `state why last-failure` to prevent timeout on large event logs.
+  + /// Same cap as DEFAULT_DOCTOR_LIMIT and MAX_EVENTS_SCAN in commands_state_crashes.
+  + const MAX_WHY_SCAN: usize = 20_000;
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 6 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 6 lines)
+    /// Default event scan limit for `state doctor` to prevent timeout with 50k+ events.
+    const DEFAULT_DOCTOR_LIMIT: usize = 20_000;
+  + 
+  + /// Maximum events to scan for `state why last-failure` to prevent timeout on large event logs.
+  + /// Same cap as DEFAULT_DOCTOR_LIMIT and MAX_EVENTS_SCAN in commands_state_crashes.
+  + const MAX_WHY_SCAN: usize = 20_000;
+ ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `handle_why` to cap the limit for "last-failure" and add the "no failure in window" message.
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `handle_why` to cap the limit for "last-failure":
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1080..1195 ✓ (134ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `handle_why` to:
+
+1. When `id == "last-failure"`, cap the limit at `MAX_WHY_SCAN` and track whether the effective limit was capped
+2. When no failure is found and events were sampled from a larger pool, print a clear message
+
+Let me think about the best way to implement this. I'll modify the function:
+
+1. Compute the effective limit: if `id == "last-failure"`, use `min(limit, MAX_WHY_SCAN)` with `MAX_WHY_SCAN` as default
+2. Read events with the effective limit
+3. Track whether the effective limit was reached (i.e., events.len() >= effective_limit) and whether the total file is actually larger
+
+Actually, looking at this more carefully, the simplest approach:
+
+When `id == "last-failure"`:
+- Use `MAX_WHY_SCAN` as the effective limit (or user-specified limit capped at `MAX_WHY_SCAN`)
+- Read events with this effective limit
+- If `build_why_report` returns Err, check if we were capped and print a message
+
+But wait, `read_tail_events` uses the limit to call `read_tail` which reads the FULL file then keeps the last N lines. So `events.len()` will be at most the limit. We can't tell if the file has more events than we read.
+
+The state crashes approach tracks total lines vs scanned lines. Let me think about whether I need to do that...
+
+The task says: "If no failure event exists in the sampled window, print 'No failure found in the most recent N events. Use --full to scan all history.' and exit cleanly with a non-error status."
+
+So I need to:
+1. Detect if the total events in the file exceed the cap
+2. When no failure found AND the file is larger than the cap, print the message
+
+For this, I need to know the total event count. The state crashes approach counts total lines without parsing. Let me use a similar approach.
+
+Let me modify `handle_why` as follows:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    
+    // For "last-failure" queries, cap the scan to MAX_WHY_SCAN events
+    // to prevent timeout on large event logs (matching state doctor/crashes pattern).
+    let (effective_limit, was_capped) = if id == "last-failure" {
+        let cap = MAX_WHY_SCAN;
+        if limit == 0 || limit > cap {
+            (cap, true)  // explicit cap applied
+        } else {
+            (limit, false)
+        }
+    } else {
+        (limit, false)
+    };
+    
+    let Ok(events) = read_tail_events(&path, effective_limit) else {
+        // ... existing error handling ...
+    };
+    
+    // ... build_why_report ...
+    
+    // When no failure found for last-failure and we were capped,
+    // print a clear message and exit with zero status
+    if id == "last-failure" && was_capped && events.len() >= effective_limit {
+        // Check if there's actually no failure
+        if find_target_event(&events, "last-failure").is_none() {
+            println!("No failure found in the most recent {} events.", effective_limit);
+            println!("Use --limit 0 to scan all history.");
+            return;
+        }
+    }
+```
+
+Wait, but this changes the behavior from returning an error to returning a success message. The task says "exit cleanly with a non-error status." Currently, when no failure is found, `build_why_report` returns an `Err`, which is printed as a yellow warning. The task wants it to print a clean message and exit 0.
+
+Let me re-read the flow:
+1. `build_why_report` returns `Ok(report)` → printed with `println!`
+2. `build_why_report` returns `Err(e)` → printed with `eprintln!` as a yellow warning
+
+The task wants: when no failure in sampled window for last-failure, print a clear message and exit cleanly.
+
+So the modification should be: BEFORE calling `build_why_report`, check if we have a capped scan for "last-failure" and if `find_target_event` finds nothing. If so, print the "no failure" message and return.
+
+Actually, this would change the behavior for ALL "last-failure" queries, not just capped ones. Let me think...
+
+The current behavior when no failure exists in the 200-event default limit:
+1. `find_target_event` returns None
+2. `build_why_report` builds an error message with summary and guidance
+3. The error is printed in yellow
+
+The task wants new behavior when no failure in 20,000-event cap:
+1. Don't go through `build_why_report`'s error path
+2. Print a clean "No failure found in the most recent N events" message
+3. Exit with zero status
+
+But I also need to handle the case where the limit is user-specified (e.g., `--limit 50`). In that case, the existing behavior (error with guidance) is fine.
+
+So the logic should be:
+- When `id == "last-failure"` AND the effective limit was capped by `MAX_WHY_SCAN` (not user-specified) AND no failure found → print clean message
+- Otherwise → existing behavior
+
+Let me restructure:
+
+1. Compute effective limit
+2. Read events
+3. If `id == "last-failure"` and we applied the cap and no failure found in the window:
+   - Print "No failure found in the most recent N events."
+   - Return
+4. Otherwise, proceed with existing `build_why_report` logic
+
+This is clean and minimal. Let me implement it.
+
+Actually, I realize I need to be more careful. Let me re-read the task: "read only the most recent 20,000 events." The key is the default behavior for `yyds state why last-failure` (no --limit flag). With the current code, default limit is 200. I should change the default to 20,000 for "last-failure".
+
+So the change in the dispatch code (around line 84-98) might be cleaner. But the task says to modify `build_why_report` and the handler, not the dispatch.
+
+Let me just modify `handle_why` to cap the limit for "last-failure". Here's my plan:
+
+In `handle_why`:
+1. When `id == "last-failure"`:
+   a. If `limit == 0`, cap to `MAX_WHY_SCAN`
+   b. If `limit > MAX_WHY_SCAN`, cap to `MAX_WHY_SCAN`
+   c. Otherwise, use the limit as-is
+2. Read events with the effective limit
+3. After reading events, check if the events file is actually larger than the effective limit (by counting total lines)
+4. If capped and no failure found, print clean message
+
+Let me implement this now. I'll need to check the total line count efficiently. One approach: count total lines in the file without parsing (like `handle_doctor` does).
+
+Actually, let me keep it simpler. The task says to read the last 20,000 events. I'll just modify the effective limit. If the effective limit is reached (events.len() >= effective_limit) and no failure found, print the message.
+
+Wait, `read_tail_events` with `limit=20000` will call `read_tail(path, 20000)` which reads the entire file and keeps the last 20000 lines. If the file has fewer than 20000 lines, `events.len()` will be < 20000. If the file has >= 20000 lines, `events.len()` will be exactly 20000.
+
+So I can check: if `events.len() >= effective_limit` and `effective_limit == MAX_WHY_SCAN`, we know the file is at least 20000 lines and the no-failure result is from the sampled window.
+
+But wait, `read_tail_events` parses JSON. Some lines might be empty or malformed. So `events.len()` could be less than `effective_limit` even if the file has >= 20000 lines. This edge case is acceptable though - the message is informational.
+
+Let me implement it now.
+
+Here's the edit for `handle_why`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+    fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, limit) else {
+  + 
+  +     // For "last-failure" queries, cap the scan to MAX_WHY_SCAN events
+  +     // to prevent timeout on large event logs (matching state doctor/crashes pattern).
+  +     // Specific event-ID lookups (e.g., evt-harness-...) are not capped.
+  +     let (effective_limit, scan_capped) = if id == "last-failure" {
+  +         if limit == 0 || limit > MAX_WHY_SCAN {
+  +             (MAX_WHY_SCAN, true)
+  +         } else {
+  +             (limit, false)
+  +         }
+  +     } else {
+  +         (limit, false)
+  +     };
+  + 
+  +     let Ok(events) = read_tail_events(&path, effective_limit) else {
+  ✓ Auto-approved: edit: src/commands_state.rs (3 → 17 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (3 → 17 lines)
+    fn handle_why(id: &str, show_summary: bool, limit: usize) {
+        let path = default_events_path();
+  -     let Ok(events) = read_tail_events(&path, limit) else {
+  + 
+  +     // For "last-failure" queries, cap the scan to MAX_WHY_SCAN events
+  +     // to prevent timeout on large event logs (matching state doctor/crashes pattern).
+  +     // Specific event-ID lookups (e.g., evt-harness-...) are not capped.
+  +     let (effective_limit, scan_capped) = if id == "last-failure" {
+  +         if limit == 0 || limit > MAX_WHY_SCAN {
+  +             (MAX_WHY_SCAN, true)
+  +         } else {
+  +             (limit, false)
+  +         }
+  +     } else {
+  +         (limit, false)
+  +     };
+  + 
+  +     let Ok(events) = read_tail_events(&path, effective_limit) else {
+ ✓ (189ms)
+
+

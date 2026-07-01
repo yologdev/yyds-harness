@@ -1,0 +1,141 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task. The task is about fixing `yyds state why last-failure` timeout by adding an event sampling cap. Let me check the current state:
+
+1. The git diff is empty (no changes shown)
+2. Build: PASS
+3. Tests: PASS
+
+But the diff is empty! This means either no changes were made, or the changes are already committed, or something else is going on.
+
+Let me check what's in the actual file and the git status to understand the situation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 --stat 2>/dev/… ✓ (686ms)
+ ✓ (705ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes to `src/commands_state.rs`. The diff shows 20 insertions, 2 deletions. Let me see the actual diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/command… ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me see the full diff including the rest of the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/command… ✓ (317ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff output is being truncated by the terminal. Let me read the actual function to see the full change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- src/command… ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated by the tool's output limit. Let me just read the actual file around the changed lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1080..1120 ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the change. Let me read more to see if there's a "No failure found" message when the cap is applied.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1119..1179 ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of the function to find where "No failure found in the most recent N events" message might be.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "No failure\|scan_capp… ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the area around line 1196-1210 where the "note: only the most recent" text is, and also the "No failure found" fallback around line 1204.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs:1185..1235 ✓ (127ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the implementation. Let me check the area around `build_why_report` to see how it handles the `scan_capped` variable and the "No failure found" message.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "scan_capped\|No failu… ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `scan_capped` variable is defined at line 1090 but I don't see it used elsewhere. Let me check if it's actually used to print the "No failure found in the most recent N events" message as specified in the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'scan_capped' in /home/runner/work/yyds-harness/yyds-harness/src/commands_state.rs ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`scan_capped` is defined but never used. The task says:
+
+> Fallback:
+> - If no failure event exists in the sampled window, print "No failure found in the most recent N events. Use --full to scan all history." and exit cleanly with a non-error status.
+
+But looking at the code, there IS already an existing error handling pattern at line 1192-1198 that prints a note about the limit. However:
+
+1. `scan_capped` is unused - a dead variable
+2. The "No failure found" message as specified in the task fallback doesn't seem to be explicitly printed when the cap is hit
+3. The error path at 1192 uses `eprintln!` (stderr), not a clean non-error status
+
+The task says: "If no failure event exists in the sampled window, print 'No failure found in the most recent N events...' and exit cleanly with a non-error status."
+
+But the current implementation:
+- Defines `scan_capped` but never uses it
+- When `build_why_report` fails for `last-failure`, it prints an error to stderr but the function doesn't exit with a non-error code (the function just returns)
+
+Wait, let me check the return type of `handle_why` - it's `fn handle_why(...)` which returns `()`. There's no process exit involved. So the error path at 1192-1198 uses `eprintln!` to show the error message, then continues with the fallback logic. This is "cleanly" handling the case where no failure was found.
+
+But the task specifically says:
+- "print 'No failure found in the most recent N events. Use --full to scan all history.' and exit cleanly with a non-error status."
+
+The current code prints: `"{YELLOW}  {e}{RESET}"` followed by `"\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"` 
+
+This is close to what the task asks for but not exactly. The task says "No failure found" explicitly, and mentions "non-error status". Since `handle_why` returns `()` and doesn't call `std::process::exit()`, the process exits with zero status. The existing logic already:
+1. Prints the error message (which is "No failure event found" based on `build_why_report`)
+2. Prints the note about only scanning recent events
+3. Handles it cleanly (no panic, returns normally)
+
+The unused `scan_capped` variable is a minor code quality issue but not a bug. The variable is computed but never read. However, the constant `MAX_WHY_SCAN` and the cap logic in `effective_limit` IS the core fix.
+
+Let me also check: the task says "Do NOT add a `--full` flag or CLI option — keep it minimal." And the existing code says "retry with --limit 0" which is an existing pattern that uses `--limit` (an existing flag). The task says not to add `--full`, but the code references `--limit` which is already an existing parameter. The task also says "The cap is a constant (20000), not a user-facing parameter." The implementation correctly uses a constant.
+
+Now, let me run the verifier commands:
+
+1. `cargo build` - stated as PASS
+2. `cargo test --lib commands_state` - stated as PASS
+3. `timeout 15 cargo run -- yyds state why last-failure` - need to verify
+4. `cargo run -- yyds state why evt-promote` - need to verify?
+
+Let me run the actual verifier to see if it completes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the key verifier. Let me first check if there's a state events file and test the actual command:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && timeout 15 cargo run -- yyds s… ✓ (15.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
