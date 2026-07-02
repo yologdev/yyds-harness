@@ -202,3 +202,9 @@ Each event is one stanza. See `skills/skill-evolve/SKILL.md` for the schema.
 - type: refused
 - parent-event: evt-0005
 - note: agent changed files but did not append the required skills/_journal.md event; harness reverted the changes
+
+## 2026-07-02T12:33:52Z evt-0025 NO-OP
+- ts: 2026-07-02T12:33:52Z
+- type: NO-OP
+- parent-event: evt-0005
+- note: agent completed without a diff or journal event; harness recorded this cycle so the counter reset is auditable
