@@ -72,7 +72,7 @@ def is_session_run(data: dict[str, Any]) -> bool:
 def lifecycle_for_scope(
     events: list[dict[str, Any]],
     scan_start: int,
-) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
     scoped = events[max(scan_start, 0) :]
     lifecycle_start_count = 0
     lifecycle_completion_count = 0
@@ -81,6 +81,8 @@ def lifecycle_for_scope(
     run_completed: set[str] = set()
     model_started: dict[str, dict[str, Any]] = {}
     model_completed: set[str] = set()
+    session_run_started: set[str] = set()
+    session_run_completed: set[str] = set()
     for event in scoped:
         kind = event_type(event)
         data = payload(event)
@@ -89,6 +91,10 @@ def lifecycle_for_scope(
             continue
         if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
             session_run_ignored_count += 1
+            if kind == "RunStarted":
+                session_run_started.add(rid)
+            elif kind == "RunCompleted":
+                session_run_completed.add(rid)
             continue
         if kind == "RunStarted":
             lifecycle_start_count += 1
@@ -105,6 +111,7 @@ def lifecycle_for_scope(
     open_models = {rid: data for rid, data in model_started.items() if rid not in model_completed}
     active_runs = run_started | set(model_started) | model_completed
     open_runs = active_runs - run_completed
+    open_session_runs = session_run_started - session_run_completed
     diagnostics = {
         "scan_start": max(scan_start, 0),
         "scanned_events": len(scoped),
@@ -113,15 +120,16 @@ def lifecycle_for_scope(
         "session_run_ignored_count": session_run_ignored_count,
         "open_model_count": len(open_models),
         "open_run_count": len(open_runs),
+        "open_session_run_count": len(open_session_runs),
     }
-    return open_models, open_runs, diagnostics
+    return open_models, open_runs, open_session_runs, diagnostics
 
 
 def open_lifecycle(
     events: list[dict[str, Any]],
     after_line: int,
     fallback_after_line: int | None = None,
-) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
     if after_line > len(events):
         # The live state file can be reset/rebuilt during an agent invocation.
         # In that case the saved pre-agent line number belongs to the old file,
@@ -134,7 +142,7 @@ def open_lifecycle(
     else:
         scan_start = max(after_line, 0)
         scope = "requested_after_line"
-    open_models, open_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+    open_models, open_runs, open_session_runs, diagnostics = lifecycle_for_scope(events, scan_start)
     diagnostics["event_count"] = len(events)
     diagnostics["requested_after_line"] = after_line
     diagnostics["scope"] = scope
@@ -143,13 +151,13 @@ def open_lifecycle(
         if len(visible_open_runs) > 1:
             diagnostics["scope"] = "ambiguous_reset_full_scan"
             diagnostics["ambiguous_open_run_count"] = len(visible_open_runs)
-            return {}, set(), diagnostics
+            return {}, set(), set(), diagnostics
     if (
         diagnostics["lifecycle_start_count"] == 0
         and fallback_after_line is not None
         and fallback_after_line < scan_start
     ):
-        fallback_models, fallback_runs, fallback_diagnostics = lifecycle_for_scope(events, fallback_after_line)
+        fallback_models, fallback_runs, fallback_session_runs, fallback_diagnostics = lifecycle_for_scope(events, fallback_after_line)
         if fallback_diagnostics["lifecycle_start_count"] > 0:
             fallback_diagnostics["event_count"] = len(events)
             fallback_diagnostics["requested_after_line"] = after_line
@@ -157,8 +165,8 @@ def open_lifecycle(
             fallback_diagnostics["primary_scan_start"] = scan_start
             fallback_diagnostics["primary_scanned_events"] = diagnostics["scanned_events"]
             fallback_diagnostics["scope"] = "fallback_after_line"
-            return fallback_models, fallback_runs, fallback_diagnostics
-    return open_models, open_runs, diagnostics
+            return fallback_models, fallback_runs, fallback_session_runs, fallback_diagnostics
+    return open_models, open_runs, open_session_runs, diagnostics
 
 
 def append_terminal_events(
@@ -175,9 +183,10 @@ def append_terminal_events(
     error_detail: str,
 ) -> dict[str, Any]:
     events = load_jsonl(events_path)
-    open_models, open_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+    open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
     completed_models: list[str] = []
     completed_runs: list[str] = []
+    completed_session_runs: list[str] = []
 
     for rid, started_payload in sorted(open_models.items()):
         payload = {
@@ -207,9 +216,24 @@ def append_terminal_events(
         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
         completed_runs.append(rid)
 
+    for rid in sorted(open_session_runs):
+        payload = {
+            "status": run_status,
+            "terminal_reason": reason,
+            "stage": stage or None,
+            "outcome": "post_hoc_closed",
+        }
+        if error:
+            payload["error"] = error
+        if error_detail:
+            payload["error_detail"] = error_detail
+        append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+        completed_session_runs.append(rid)
+
     return {
         "completed_model_calls": completed_models,
         "completed_runs": completed_runs,
+        "completed_session_runs": completed_session_runs,
         "diagnostics": diagnostics,
     }
 

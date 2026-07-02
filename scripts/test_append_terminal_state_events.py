@@ -249,7 +249,7 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertFalse(any(row["event_type"] == "RunCompleted" for row in rows))
             self.assertFalse(any(row["event_type"] == "ModelCallCompleted" for row in rows))
 
-    def test_fallback_after_line_closes_open_agent_run_without_closing_session_run(self):
+    def test_fallback_after_line_closes_open_agent_run_and_session_run(self):
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "events.jsonl"
             write_event(events, "RunStarted", "session-run", {"phase": "session"})
@@ -277,11 +277,76 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(result["diagnostics"]["session_run_ignored_count"], 1)
             self.assertEqual(result["completed_model_calls"], ["agent-run"])
             self.assertEqual(result["completed_runs"], ["agent-run"])
-            self.assertFalse(
-                any(
-                    row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
-                    for row in rows
-                )
+            self.assertEqual(result["completed_session_runs"], ["session-run"])
+            session_done = [
+                row
+                for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
+            ][0]
+            self.assertEqual(session_done["payload"]["outcome"], "post_hoc_closed")
+
+
+    def test_closes_session_scope_orphan_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "session-run", {"phase": "session"})
+            write_event(events, "SessionStarted", "session-run", {"phase": "session"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_session",
+                "completed",
+                "completed",
+                "post_hoc_closure",
+                "",
+                "session scope run was orphaned",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["completed_session_runs"], ["session-run"])
+            self.assertEqual(result["completed_runs"], [])
+            self.assertEqual(result["diagnostics"]["open_session_run_count"], 1)
+            run_done = [
+                row
+                for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
+            ][0]
+            self.assertEqual(run_done["payload"]["outcome"], "post_hoc_closed")
+            self.assertEqual(run_done["payload"]["terminal_reason"], "post_hoc_closure")
+            self.assertEqual(run_done["payload"]["status"], "completed")
+
+    def test_does_not_double_close_completed_session_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "session-run", {"phase": "session"})
+            write_event(events, "RunCompleted", "session-run", {"status": "completed", "phase": "session"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_session",
+                "completed",
+                "completed",
+                "post_hoc_closure",
+                "",
+                "no orphan to close",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            self.assertEqual(result["completed_session_runs"], [])
+            self.assertEqual(result["diagnostics"]["open_session_run_count"], 0)
+            self.assertEqual(
+                sum(1 for row in rows if row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"),
+                1,
             )
 
 
