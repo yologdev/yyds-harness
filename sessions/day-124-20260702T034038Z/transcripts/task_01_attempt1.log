@@ -1,0 +1,508 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix `yyds state why last-failure` timeout by adding an event sampling cap, following the pattern from `state crashes` (Day 122) and `state doctor` (Day 117). Let me first read the evolve skill, then examine the relevant code.
+
+Let me start by reading the evolve skill and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (287ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the relevant source code in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:3090..3170 ✓ (862ms)
+ ✓ (581ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of the `build_why_report` function and its callers. I need to find where it's called and how events are passed to it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report(' in src/commands_state.rs  ▶ search 'fn handle_state_why' in src/commands_state.rs  ▶ search 'fn handle_state_crashes' in src/commands_state.rs ✓ (877ms)
+ ✓ (890ms)
+ ✓ (892ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the main handler and the crashes handler patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state why' in src/commands_state.rs  ▶ search 'state crashes' in src/commands_state.rs ✓ (579ms)
+ ✓ (607ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the main handle_run function and the state crashes command's approach to sampling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_run' in src/commands_state.rs  ▶ search 'why_report' in src/commands_state.rs ✓ (707ms)
+ ✓ (833ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 1150-1200 to see how the `state why` command reads events and calls build_why_report.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1100..1220 ✓ (287ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see the beginning of this function to understand how `events` are loaded and where the `limit` is applied. Let me search back.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1020..1140 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the key insight. The `handle_why` function already uses `read_tail_events` with a `limit` parameter. Let me trace how `handle_why` is called to see what limit is passed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why(' in src/commands_state.rs ✓ (574ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how the limit is set at line 98 and the context around it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:60..110 ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. The `handle_why` function at line 1080-1082 already uses `read_tail_events` with the `limit` parameter. The default limit is 200 (line 88). So `read_tail_events` is supposed to read only the tail (most recent events). 
+
+But wait - the issue says the timeout is caused by reading the full 63K-line events file. Let me check what `read_tail_events` does - if it reads the whole file and then takes the tail, it would still be slow.
+
+Let me check `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also search for it in other files, especially state.rs since that might be where the state helpers are.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1367..1447 ✓ (697ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `read_tail_events` uses `read_tail(path, limit)`. Let me find `read_tail`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail(' in src/commands_state.rs ✓ (291ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also search for read_tail in the whole project, it might also be in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1318..1368 ✓ (321ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem. Both `read_tail` and `read_events` use `std::fs::read_to_string(path)` which reads the ENTIRE file into memory first and THEN takes only the tail. For a 63K-line events file, this is slow.
+
+The default limit for `handle_why` is 200 (line 88). But `read_tail` still reads ALL lines, stores them in a VecDeque, and then only the last 200 are kept.
+
+This is the root cause. `read_tail` reads the entire file. For a huge events file, this causes the timeout.
+
+Now let me look at what the `state crashes` command does (Day 122) to see the "sampling pattern" the task references.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs (80 lines) ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern in `state crashes` - it uses `read_tail_events_capped` which has a `MAX_EVENTS_SCAN = 20_000`. But wait - it still reads the ENTIRE file via `std::fs::read_to_string(path)`. 
+
+Hmm, so the "capped" approach reads the whole file and then takes the most recent `cap` events. But the issue says "read only the most recent N events (e.g., 5000) instead of the full 63K-line events file."
+
+Actually, looking more closely at the task:
+- "Sampling cap" - read only the most recent N events
+- The current default limit for `handle_why` is 200 (from line 88)
+- But the issue says it reads all 63K lines
+
+Wait - the default for `handle_why` is `limit = 200`. `read_tail` reads the WHOLE file and takes only last 200 lines. That's the problem - reading the whole file into memory is slow.
+
+But the "sampling cap" approach used in `state crashes` also reads the whole file: `read_tail_events_capped` also calls `std::fs::read_to_string(path)` at line 22.
+
+Let me re-read the task more carefully. The issue says:
+- "Same read-everything pattern was already fixed in `state doctor` (Day 117) and `state crashes` (Day 122)"
+- "`build_why_report` at src/commands_state.rs:3112 scans all events to find a single failure event"
+
+OK so the problem is in `build_why_report` itself - it scans all events passed to it. Even though `handle_why` passes only 200 events to it, those 200 events come from `read_tail` which reads the whole file.
+
+Wait, let me re-check. `handle_why` at line 1082: `let Ok(events) = read_tail_events(&path, limit) else {`. And `limit` defaults to 200. `read_tail_events` with limit=200 calls `read_tail(path, 200)` which reads the whole file and returns last 200 lines. Then `build_why_report(&events, id)` scans only those 200 events.
+
+So with 200 events, why would it time out? Unless... the slowness is in `read_tail` reading a 63K-line file, or in `build_why_report` doing something slow.
+
+Wait, let me re-read. The default limit is 200. But the issue says "the full 63K-line events file". Hmm. Let me re-check:
+
+Line 88: `limit` defaults to 200. 
+Line 1082: `read_tail_events(&path, limit)` is called with this limit.
+
+Actually, I wonder if there's something else going on. Let me look at the `build_why_report` function more carefully to see if it does something expensive even with 200 events.
+
+But wait - the task says "add event sampling cap" and "follow the sampling pattern from state crashes." The `state crashes` approach was to cap at 20K. But if the issue is `read_tail` reading the whole 63K-line file, then both commands have the same problem...
+
+Let me think about this differently. The task says:
+1. The caller decides which events to pass
+2. Add sampling: when the query is "last-failure", read only the most recent 5000 events
+3. Use `tail` semantics - read the file backwards
+
+So the fix is:
+- When querying for "last-failure" (not a specific event ID), cap the events at 5000
+- But for specific event IDs, still read the full stream
+
+Actually, looking at this more carefully - `read_tail_events` with limit=200 already caps to 200 events. But reading the whole file is still slow. The real fix should be to make `read_tail` actually read from the end of the file instead of reading the whole thing.
+
+But the task says "use the same sampling pattern from state crashes." State crashes uses `read_tail_events_capped` which... also reads the whole file and caps.
+
+Hmm wait, let me re-read `read_tail_events_capped` more carefully. It does `read_to_string` which reads the whole file, then counts lines, then takes only the last `cap` events. The improvement over `read_tail` is that it returns the total line count and a "scanned most recent N of M events" note. It's the same O(n) behavior but gives better output.
+
+So maybe the "fix" is more about changing the default limit from 200 to something bigger (like 5000) but with the truncated note from crashes. Let me re-read the task requirements:
+
+Success Criteria:
+- `timeout 15 cargo run -- yyds state why last-failure` completes and prints diagnostic output
+- When no failure exists in sampled events, prints a clear message
+
+The issue says the command timed out at 15s on Day 122. If the default limit is 200 and it reads only 200 events, how can it time out? Unless `read_tail` on a 63K-line file is slow...
+
+Let me check - `read_to_string` on a 63K JSONL file... each line might be large. A 63K-line JSONL file could be hundreds of megabytes. Reading that whole file and iterating through lines could easily take >15 seconds.
+
+So the problem IS `read_tail` reading the entire file. And `read_tail_events_capped` has the same problem - it also reads the entire file.
+
+OK, so what's the real fix? The task says "use `tail` semantics - read the file backwards." That would require using `seek` to read from the end of the file in chunks, which is a more complex change.
+
+But then it says "use the same sampling pattern from state crashes (Day 122)." Let me look more carefully...
+
+Actually wait, I think the approach is simpler than I'm making it. The task says:
+1. Change the default limit for `handle_why` from 200 to 5000 (still reads the whole file, but more events)
+2. Add a note when events are capped (like state crashes does)
+3. When no failure is found in the capped window, print a clear message to use `--full`
+
+But reading 5000 events from a 63K file is still going to be slow because `read_to_string` reads the whole file...
+
+Actually, let me look more carefully. Maybe the fix is to actually change `read_tail` to use file seeking? Or to use a different approach?
+
+Let me reconsider. The task says "add event sampling cap." The approach used in state crashes is:
+- Read the whole file 
+- Take the last `cap` events (20K for crashes)
+- Report how many were scanned vs total
+
+The task says for `state why`:
+- For "last-failure": scan only the most recent 5000 events
+- For specific event IDs: still read the full stream
+
+The current code already limits to 200 events, which is actually more restrictive. So we need to INCREASE the limit to 5000 but also add the "cap note."
+
+But wait - if 200 already reads the whole file and times out, then 5000 won't help with the timeout...
+
+Unless the timeout is caused by something else in `build_why_report`. Let me look at what it does with 200 events...
+
+Actually, let me just run the command and see if it times out in this repo.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me first check if the command actually times out in this environment, and look at the state crashes pattern more carefully.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ timeout 15 cargo run -- yyds state why last-failure 2>&1 || echo "EXIT CODE: $?" ✓ (15.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It does time out. Let me see what the events file size is and how long it takes to read.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l /home/runner/.local/share/yyds/events.jsonl 2>/dev/null || echo "no events… ✓ (666ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No events file. But the command still timed out at 15s. Let me see if there's a different path or what's happening. Let me check the default events path function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_events_path' in src/commands_state.rs ✓ (339ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check state.rs for the path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:11..31 ✓ (285ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there's an events file in `.yoyo/state/`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -lh .yoyo/state/events.jsonl 2>/dev/null && wc -l .yoyo/state/events.jsonl 2>… ✓ (662ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There it is - 72MB, 66,785 lines. That's the problem. Reading a 72MB file takes time. `read_tail` reads ALL of it into a string, then iterates through all lines, keeping only the last 200. This is what causes the timeout.
+
+Now let me understand the real fix needed. The `read_tail` function reads the entire file. Let me check if the `state crashes` pattern with `read_tail_events_capped` actually avoid reading the whole file... no, it also calls `read_to_string`. So both patterns still have the O(N) read issue.
+
+Wait, but the task says "follow the sampling pattern from state crashes (Day 122) — look at how that command caps its event reads and replicate." Let me look at state crashes more carefully.
+
+Actually, looking at the code again - `state crashes` has `MAX_EVENTS_SCAN = 20_000`. It reads the whole file, but caps at 20K lines. It still reads the whole file, but it also gives a helpful note.
+
+The key difference for the `state why` handler is that it currently uses `read_tail_events` with a limit of 200, which still reads the whole 72MB file. The timeout is from reading the file.
+
+But wait - `state crashes` also reads the whole file... and it works? Or does it also time out?
+
+Let me test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ timeout 15 cargo run -- yyds state crashes 2>&1 | head -20; echo "EXIT: $?" ✓ (14.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+State crashes also times out! So the fix applied in `state crashes` (Day 122) didn't actually fix the timeout for this events file size. Both `state crashes` and `state why` read the whole 72MB file.
+
+The real fix needs to make `read_tail` NOT read the whole file. Instead, it should use `seek` to read from the end.
+
+But that's a bigger change than what the task seems to suggest. Let me re-read the task more carefully:
+
+> Implementation:
+> 1. In `src/commands_state.rs`, find where `build_why_report` is called. The caller decides which events to pass. Add sampling: when the query is "last-failure" (not a specific event ID), read only the most recent 5000 events from the events file.
+> 2. The events file is append-only — the most recent events are at the end. Read the file backwards or use `tail` semantics.
+> 3. Use the same sampling pattern from `state crashes` (Day 122) — look at how that command caps its event reads and replicate.
+
+So the task is saying to read the file backwards or use tail semantics. The current `read_tail` reads the whole file and truncates. The fix should be to actually read from the end.
+
+Let me think about the simplest fix that would work:
+
+1. The simplest approach: use `std::io::Seek` to seek to near the end of the file, read the last chunk, and parse lines from there. This avoids reading the entire file.
+
+2. Or: use `std::process::Command` to run `tail -n 5000` on the file. This is simple but less portable.
+
+Actually, looking at the task description again:
+> "Use the same sampling pattern from state crashes (Day 122)"
+
+But state crashes also times out. Maybe the pattern is just "cap at a number and report the cap." But the real issue is that reading the whole file is slow.
+
+Let me look at what actual file-reading improvements could be made. The simplest would be to use `BufReader` + `seek` to read from near the end of the file.
+
+Actually wait. Let me re-read the state crashes code more carefully. It does:
+```rust
+let raw = std::fs::read_to_string(path)?;
+let total: usize = raw.lines().count();
+```
+
+This reads the entire file. So state crashes would also time out with a 72MB file.
+
+The task says "follow the sampling pattern from state crashes." Maybe the intent is to literally add the same capped approach for `handle_why`, even though it doesn't fix the actual timeout... No, that doesn't make sense.
+
+Let me think about this differently. Perhaps the fix is:
+1. Change `read_tail` to actually read from the end using `seek` instead of `read_to_string`
+2. This would fix both `state why` and `state crashes`
+
+Let me implement a proper tail-read using `seek`.
+
+Here's my plan:
+1. Rewrite `read_tail` to use `seek` to read from the end of the file
+2. Add a cap parameter similar to `state crashes`
+3. When no failure exists in the sampled window, print a clear message
+
+Actually, let me look more carefully. The task says "Keep the change to ~30 lines or fewer." So a minimal change.
+
+Let me look at what the falback says:
+> If the timeout is caused by per-event computation (not volume), add early termination after a fixed event window.
+
+So the task is acknowledging that the timeout might be from event VOLUME (reading the whole file) or from per-event COMPUTATION (what `build_why_report` does). The fix should address both.
+
+The simplest fix that addresses both:
+1. Modify `read_tail` to use `seek`-based reading from end of file (avoids reading whole 72MB file)
+2. The existing limit of 200 for `handle_why` is fine for computation, but reading must be efficient
+
+Let me implement a seek-based tail reader in `read_tail`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (378ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now plan the implementation:
+
+The root issue: `read_tail` reads the entire 72MB file via `read_to_string`, causing timeout. Both `state why` and `state crashes` are affected.
+
+The fix: Rewrite `read_tail` to use `BufReader` + `seek` to read from near the end of the file.
+
+Let me also look at how `read_tail_events` and `read_tail_events_capped` call it, and the `handle_why` function.
+
+Plan:
+1. Modify `read_tail` to use seek-based reading
+2. In `handle_why`, when query is "last-failure", set a higher cap like 5000 and add a note when events are capped
+3. Add proper messaging when no failure is found in the sampled window
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (343ms)
+  ▶ todo ✓ (445ms)
+  ▶ todo ✓ (309ms)
+  ▶ todo ✓ (289ms)
+  ▶ todo ✓ (420ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me first read the complete `read_tail` function and its surrounding context to understand all callers, then implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.4s (5 ✓)
+
+Let me read the full `read_tail` and `read_tail_events` area to understand all callers:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1310..1390 ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check all callers of `read_tail` and `read_tail_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail(' in src/commands_state.rs  ▶ search 'read_tail_events(' in src/commands_state.rs ✓ (585ms)
+ ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check both callers of `read_tail` at lines 484 and 1367 (the `read_tail_events` function). I already saw 1367 and 24445. Let me check 484:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:478..498 ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `read_tail` is called from:
+1. `handle_tail` (line 484) - state tail command
+2. `read_tail_events` (line 1372) - used by state why, state lineage, and others
+3. A test at line 24445
+
+Now, my approach: I'll rewrite `read_tail` to use seek-based reading. Instead of reading the entire file, I'll:
+1. Open the file
+2. Seek to near the end (e.g., last 1MB or last N*avg_line_size bytes)
+3. Read the tail portion
+4. Parse lines from it
+5. If we didn't get enough lines, seek further back
+
+But this is more complex than 30 lines. Let me think about the simplest approach that actually works.
+
+Alternative: Use `BufReader` and read from the end in chunks. This is a well-known pattern.
+
+Actually, the simplest approach that avoids reading the entire file:
+1. Get the file size
+2. Set a reasonable buffer (e.g., 1MB or last `limit * 1024` bytes)
+3. Seek to max(0, file_size - buffer_size)
+4. Read from there
+5. Parse lines
+
+Let me implement this. The key insight is that JSONL event lines are typically 100-500 bytes each, so for 5000 events we need at most ~2.5MB. We can start with a generous buffer.
+
+Actually, let me think more carefully. The task says "Keep the change to ~30 lines or fewer." But modifying `read_tail` is the right approach since it's the bottleneck for all commands.
+
+Let me implement a seek-based tail reader. Here's the plan:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+    
+    let file = std::fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
+    
+    // Estimate: each line is ~200 bytes, read enough to cover limit lines + safety margin
+    let est_bytes_needed = (limit as u64 * 512).min(file_size);
+    let read_start = file_size.saturating_sub(est_bytes_needed);
+    
+    let mut file = std::fs::File::open(path)?;
+    file.seek(SeekFrom::Start(read_start))?;
+    
+    let mut buf = String::new();
+    file.read_to_string(&mut buf)?;
+    
+    // If we started mid-file, skip the first partial line
+    let lines: Vec<String> = if read_start > 0 {
+        buf.lines()
+            .skip(1) // skip partial first line
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        buf.lines().map(|s| s.to_string()).collect()
+    };
+    
+    // If we didn't get enough lines, we might need to read more
+    // But for now, just take the last `limit` lines
+    if lines.len() <= limit {
+        Ok(lines)
+    } else {
+        Ok(lines[lines.len() - limit..].to_vec())
+    }
+}
+```
+
+Wait, but the existing function returns exactly `limit` lines (or fewer if the file is smaller). The above would be similar. Let me refine this.
+
+Actually, looking at the existing code, it already limits to `limit` lines. The only issue is reading the whole file. With seek-based reading, we read only the tail portion, which should be much faster even with a generous estimate.
+
+But wait - the `read_tail` function signature is `Result<Vec<String>, std::io::Error>`. The existing code returns the last `limit` lines. My new implementation should do the same.
+
+Let me also think about edge cases:
+1. File smaller than estimated buffer → read the whole file (fast anyway)
+2. No newlines at end → OK, `lines()` handles this
+3. Partial line at start → skip it
+4. Need to go back further if we didn't get enough lines
+
+For the 72MB file with 66K lines, average line is ~1KB. For 5000 lines, we need ~5MB. Let me use a generous estimate of 1KB per line.
+
+Actually, let me just read a fixed buffer like 10MB and see if we get enough lines. If not, we fall back to reading more. But that adds complexity.
+
+Let me keep it simple: read 8MB from the end, which should cover ~8K lines on average.
+
+Actually, I realize the simplest and most correct approach: use the file's own size to determine the read buffer. Read the last `limit * 2048` bytes (generous estimate of 2KB per JSONL line). If we don't get enough lines, retry with the whole file (rare case).
+
+Let me implement this now. Let me also think about what the task actually asks for vs what's the right fix:
+
+Task says:
+1. Add sampling cap to `handle_why` (default 5000 for last-failure)
+2. Follow the state crashes pattern (cap note)
+3. When no failure found in sampled window, print clear message
+
+But the real issue is `read_tail` reading the whole file. If I fix `read_tail`, then all commands benefit. So let me:
+
+1. Fix `read_tail` to use seek-based reading
+2. In `handle_why`, for "last-failure" queries, use a larger cap (5000) and add a note when events are capped
+3. Add message when no failure found
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the problem. `read_tail` reads the entire 72MB file into memory via `read_to_string`, causing the timeout. Both `state why` and `state crashes` are affected. Let me implement the fix.
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (288ms)
+
+

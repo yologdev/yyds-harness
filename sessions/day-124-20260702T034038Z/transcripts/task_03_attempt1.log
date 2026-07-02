@@ -1,0 +1,786 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to make `append_terminal_state_events.py` detect and close session-scope orphaned runs. Let me start by reading the skill file and the target script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (248ms)
+ ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. In `lifecycle_for_scope` at line 90-92:
+
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+This explicitly skips session-scope runs (where `data.get("phase") == "session"`). So session-scope runs that have `RunStarted` but no `RunCompleted` are never detected as open runs.
+
+The fix, as stated in the task, is to handle session-scope runs. Let me check the test file too.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+Now let me look at the existing test file and understand the helper module:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/test_append_terminal_state_events.py scripts/append_state_e… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both files exist. Let me read the test file and the helper module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py  ▶ read scripts/append_state_event.py ✓ (22ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me trace through the logic:
+
+1. `lifecycle_for_scope` at line 90-92 skips session-scope runs:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+    session_run_ignored_count += 1
+    continue
+```
+
+2. The `open_lifecycle` function calls `lifecycle_for_scope` for either the requested `after_line` or a fallback. The existing test `test_fallback_after_line_closes_open_agent_run_without_closing_session_run` verifies that a session run is NOT closed (which was the intended behavior when the test was written).
+
+Now, the task says:
+- Make `append_terminal_state_events.py` detect session-scope runs that have `RunStarted` but no `RunCompleted` and append a `RunCompleted` with `outcome: "post_hoc_closed"`.
+- Only close session-scope orphans, not a full rewrite.
+
+The approach:
+1. In `lifecycle_for_scope`, instead of fully skipping session runs, I should track session-scope runs separately. Add separate tracking: `session_run_started` and `session_run_completed` sets.
+2. Compute `open_session_runs = session_run_started - session_run_completed`.
+3. Return the open session runs alongside the existing open_models and open_runs.
+4. In `append_terminal_events`, close those open session runs with a different payload.
+
+Let me think about what changes minimally. The function signature is `lifecycle_for_scope(events, scan_start) -> tuple[dict, set, dict]`. The third element is diagnostics dict. I need to add a fourth return element for open session runs.
+
+Actually, looking more carefully, let me reconsider. The task says "~30 lines or fewer." The simplest approach:
+
+In `lifecycle_for_scope`, track session runs separately:
+- Add `session_run_started` and `session_run_completed` sets
+- Instead of `continue` on session runs, add them to the session sets
+- Compute `open_session_runs = session_run_started - session_run_completed`
+- Return them as a 4th element in the tuple
+
+Then in `open_lifecycle`, pass through the 4th element.
+Then in `append_terminal_events`, close the session runs with a different payload.
+
+Wait, but there's also the fallback path and the ambiguous scan path. Let me think about how these interact.
+
+For the fallback path: if the primary after_line returns no lifecycle starts but the fallback does, we use the fallback results. The session runs should be included in the fallback results too.
+
+For the ambiguous scan path: multiple open runs found when after_line exceeds file. We return early with `{}, set(), diagnostics`. I should also return empty session run set here.
+
+Let me now plan the precise changes:
+
+### Change 1: `lifecycle_for_scope` — track session runs separately
+
+```python
+def lifecycle_for_scope(
+    events: list[dict[str, Any]],
+    scan_start: int,
+) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+    ...
+    session_run_started: set[str] = set()
+    session_run_completed: set[str] = set()
+    ...
+    for event in scoped:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+            session_run_ignored_count += 1
+            if kind == "RunStarted":
+                session_run_started.add(rid)
+            elif kind == "RunCompleted":
+                session_run_completed.add(rid)
+            continue
+        ...
+    open_session_runs = session_run_started - session_run_completed
+    diagnostics = {..., "open_session_run_count": len(open_session_runs)}
+    return open_models, open_runs, open_session_runs, diagnostics
+```
+
+### Change 2: `open_lifecycle` — pass through open session runs
+
+Update the return type and pass through. For the ambiguous scan, return empty set. For the fallback, use the fallback's open session runs.
+
+### Change 3: `append_terminal_events` — close open session runs
+
+After closing regular runs, iterate open session runs and close them with `outcome: "post_hoc_closed"`.
+
+### Change 4: New test for session-scope orphan detection
+
+### Change 5: Update existing test `test_fallback_after_line_closes_open_agent_run_without_closing_session_run`
+
+This test explicitly asserts that session runs are NOT closed. With the new behavior, session runs WILL be closed. So I need to update this test. Actually wait — the task says "Does NOT close runs that already have a terminal event (no double-closing)". The session run in that test has `RunStarted` but no `RunCompleted`, so it would be closed. But... let me re-read:
+
+In the existing test:
+```
+write_event(events, "RunStarted", "session-run", {"phase": "session"})
+write_event(events, "RunStarted", "agent-run")
+write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})
+write_event(events, "FileEdited", "agent-run", {"path": "journals/JOURNAL.md"})
+after_line = len(...)  # after_line is 4, after all 4 events
+```
+
+Then `append_terminal_events(events, after_line, 0, ...)` is called. The primary scan (after_line=4) finds nothing, so it falls back to after_line=0. The fallback finds the session-run with `session_run_ignored_count: 1`, and the agent-run as open.
+
+With my change, the session run would also be detected as an open session run and would get a `RunCompleted`. The test asserts `self.assertFalse(any(row["event_type"] == "RunCompleted" and row["run_id"] == "session-run" for row in rows))`. This assertion would fail.
+
+I need to update this test. The new assertion should be that the session run IS closed with `post_hoc_closed` outcome.
+
+Wait, but there's a subtlety. The task says the session-scope orphan is from evaluator timeout. In the test, the session-run has RunStarted but no RunCompleted. This IS an orphan. The new behavior should close it. So I should update the test.
+
+Actually, wait. Let me re-read the task more carefully:
+
+> Does NOT close runs that already have a terminal event (no double-closing)
+
+This means: if a run already has RunCompleted, don't add another one. That's fine — `session_run_started - session_run_completed` handles this.
+
+> Appends a RunCompleted with a clear outcome field indicating post-hoc closure (e.g., "post_hoc_closed")
+
+OK so the payload for session-scope closures should have `outcome: "post_hoc_closed"` (not `status`).
+
+> Existing tests pass
+
+Hmm, the existing test `test_fallback_after_line_closes_open_agent_run_without_closing_session_run` currently asserts that session runs are NOT closed. With my change, they WOULD be closed. So either:
+1. I update the test to reflect the new behavior
+2. The task is wrong about "existing tests pass"
+
+Looking at the task's language: "Existing tests pass; new test covers the session-scope orphan case". I think this means "existing tests pass after adjusting for the new behavior." Or it might mean the existing tests shouldn't need changing... but that's impossible if we're changing behavior.
+
+I think the intent is: make the existing tests still valid (update them to match new behavior), and add a new test for the specific session-scope case. Let me update the existing test.
+
+Let me also check: is there a case where the session run should NOT be closed? The task says session-scope orphaned runs should be closed. The test has a session run with RunStarted but no RunCompleted — that's exactly an orphan. So it should be closed now.
+
+Let me now also consider: the existing test name is `test_fallback_after_line_closes_open_agent_run_without_closing_session_run`. After my change, the session run WILL be closed. I should rename the test to reflect this or update the assertions to check that the session run IS closed with `post_hoc_closed`.
+
+OK let me code this up.
+
+Actually, let me reconsider the simplest possible approach. The task says "~30 lines or fewer in the script itself." Let me count:
+
+1. Add two new sets in lifecycle_for_scope: ~5 lines
+2. Change the `continue` block to track session runs: ~5 lines  
+3. Compute open_session_runs: ~2 lines
+4. Add to diagnostics: ~1 line
+5. Return change: ~1 line
+6. Update open_lifecycle to pass through: ~5 lines
+7. Update append_terminal_events to close session runs: ~8 lines
+
+Total ~27 lines. Good.
+
+Let me also think about the fallback path in `open_lifecycle`:
+
+```python
+if (
+    diagnostics["lifecycle_start_count"] == 0
+    and fallback_after_line is not None
+    and fallback_after_line < scan_start
+):
+    fallback_models, fallback_runs, fallback_diagnostics = lifecycle_for_scope(events, fallback_after_line)
+```
+
+This would now return 4 values. I need to update this unpacking. And the same for the ambiguous scan branch:
+```python
+return {}, set(), diagnostics
+```
+This now returns 3 values but needs to return 4.
+
+And the final return:
+```python
+return open_models, open_runs, diagnostics
+```
+Also needs 4.
+
+Let me trace through all call sites:
+
+1. `open_lifecycle` line 137: `open_models, open_runs, diagnostics = lifecycle_for_scope(events, scan_start)`
+2. `open_lifecycle` line 146: `return {}, set(), diagnostics`
+3. `open_lifecycle` line 152: `fallback_models, fallback_runs, fallback_diagnostics = lifecycle_for_scope(events, fallback_after_line)`
+4. `open_lifecycle` line 160: `return fallback_models, fallback_runs, fallback_diagnostics`
+5. `open_lifecycle` line 161: `return open_models, open_runs, diagnostics`
+6. `append_terminal_events` line 178: `open_models, open_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)`
+
+All of these need updating. OK, let me now write the code.
+
+For the `append_terminal_events` function, I'll add a loop to close session runs. The payload for session runs should be:
+```python
+{
+    "status": run_status,
+    "terminal_reason": reason,
+    "stage": stage or None,
+    "outcome": "post_hoc_closed",
+}
+```
+
+Wait, the task says the payload should have `outcome: "post_hoc_closed"`. Let me make sure this is distinct from the regular run closure payload. Let me also check what the evaluator timeout case looks like in evolve.sh to understand what values get passed.
+
+Actually, I don't need to check evolve.sh — the `append_terminal_events` function receives `run_status`, `reason`, etc. as parameters. The session-scope closure should have an additional `outcome` field to distinguish it.
+
+Now let me also think about the `open_session_runs` set being included in the `open_runs` set for run closure. Wait, no — I want to keep them separate. The regular `open_runs` set is used to close regular runs with `RunCompleted` (status: error/completed). The `open_session_runs` set should be closed separately with `outcome: "post_hoc_closed"`.
+
+But wait, in `append_terminal_events`, after closing model calls, `open_runs` has the model call run IDs added to it:
+```python
+for rid, started_payload in sorted(open_models.items()):
+    ...
+    open_runs.add(rid)
+```
+
+Then:
+```python
+for rid in sorted(open_runs):
+    ...
+    append_event(events_path, "RunCompleted", "harness", rid, ...)
+```
+
+I should NOT add session run IDs to `open_runs`. I should handle them separately. Let me make sure the session run closure happens after both model and regular run closures, or alongside them but with different payload.
+
+OK, here's my plan:
+
+In `append_terminal_events`:
+```python
+open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(...)
+
+# ... existing model call completion ...
+
+# ... existing run completion ...
+
+# NEW: close session-scope orphaned runs
+for rid in sorted(open_session_runs):
+    payload = {
+        "status": run_status,
+        "terminal_reason": reason,
+        "stage": stage or None,
+        "outcome": "post_hoc_closed",
+    }
+    if error:
+        payload["error"] = error
+    if error_detail:
+        payload["error_detail"] = error_detail
+    append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+    completed_session_runs.append(rid)
+```
+
+And add `completed_session_runs` to the return dict.
+
+Now let me write the actual edits. Let me be precise.
+
+### Edit 1: `lifecycle_for_scope` — track session runs
+
+Old:
+```python
+def lifecycle_for_scope(
+    events: list[dict[str, Any]],
+    scan_start: int,
+) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+    scoped = events[max(scan_start, 0) :]
+    lifecycle_start_count = 0
+    lifecycle_completion_count = 0
+    session_run_ignored_count = 0
+    run_started: set[str] = set()
+    run_completed: set[str] = set()
+    model_started: dict[str, dict[str, Any]] = {}
+    model_completed: set[str] = set()
+    for event in scoped:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+            session_run_ignored_count += 1
+            continue
+        if kind == "RunStarted":
+            lifecycle_start_count += 1
+            run_started.add(rid)
+        elif kind == "RunCompleted":
+            lifecycle_completion_count += 1
+            run_completed.add(rid)
+        elif kind == "ModelCallStarted":
+            lifecycle_start_count += 1
+            model_started[rid] = data
+        elif kind == "ModelCallCompleted":
+            lifecycle_completion_count += 1
+            model_completed.add(rid)
+    open_models = {rid: data for rid, data in model_started.items() if rid not in model_completed}
+    active_runs = run_started | set(model_started) | model_completed
+    open_runs = active_runs - run_completed
+    diagnostics = {
+        "scan_start": max(scan_start, 0),
+        "scanned_events": len(scoped),
+        "lifecycle_start_count": lifecycle_start_count,
+        "lifecycle_completion_count": lifecycle_completion_count,
+        "session_run_ignored_count": session_run_ignored_count,
+        "open_model_count": len(open_models),
+        "open_run_count": len(open_runs),
+    }
+    return open_models, open_runs, diagnostics
+```
+
+New:
+```python
+def lifecycle_for_scope(
+    events: list[dict[str, Any]],
+    scan_start: int,
+) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+    scoped = events[max(scan_start, 0) :]
+    lifecycle_start_count = 0
+    lifecycle_completion_count = 0
+    session_run_ignored_count = 0
+    run_started: set[str] = set()
+    run_completed: set[str] = set()
+    model_started: dict[str, dict[str, Any]] = {}
+    model_completed: set[str] = set()
+    session_run_started: set[str] = set()
+    session_run_completed: set[str] = set()
+    for event in scoped:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+            session_run_ignored_count += 1
+            if kind == "RunStarted":
+                session_run_started.add(rid)
+            elif kind == "RunCompleted":
+                session_run_completed.add(rid)
+            continue
+        if kind == "RunStarted":
+            lifecycle_start_count += 1
+            run_started.add(rid)
+        elif kind == "RunCompleted":
+            lifecycle_completion_count += 1
+            run_completed.add(rid)
+        elif kind == "ModelCallStarted":
+            lifecycle_start_count += 1
+            model_started[rid] = data
+        elif kind == "ModelCallCompleted":
+            lifecycle_completion_count += 1
+            model_completed.add(rid)
+    open_models = {rid: data for rid, data in model_started.items() if rid not in model_completed}
+    active_runs = run_started | set(model_started) | model_completed
+    open_runs = active_runs - run_completed
+    open_session_runs = session_run_started - session_run_completed
+    diagnostics = {
+        "scan_start": max(scan_start, 0),
+        "scanned_events": len(scoped),
+        "lifecycle_start_count": lifecycle_start_count,
+        "lifecycle_completion_count": lifecycle_completion_count,
+        "session_run_ignored_count": session_run_ignored_count,
+        "open_model_count": len(open_models),
+        "open_run_count": len(open_runs),
+        "open_session_run_count": len(open_session_runs),
+    }
+    return open_models, open_runs, open_session_runs, diagnostics
+```
+
+### Edit 2: `open_lifecycle` — pass through open session runs
+
+Old lines 137-161. Multiple returns need updating.
+
+### Edit 3: `append_terminal_events` — close session runs
+
+Add parsing of 4th return value, loop to close session runs, add to diagnostics.
+
+### Edit 4: Test updates
+
+Now let me implement these changes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 48.5s (2 ✓)
+
+Good. Now I have a clear picture. Let me plan the changes:
+
+1. **`lifecycle_for_scope`**: Track session runs in separate `session_run_started`/`session_run_completed` sets, compute `open_session_runs`, return as 4th tuple element
+2. **`open_lifecycle`**: Plumb through the 4th return value (including fallback and ambiguous paths)
+3. **`append_terminal_events`**: Close open session runs with `outcome: "post_hoc_closed"`
+4. **Tests**: Update existing test that asserts session runs are NOT closed, add new test for session-scope orphan detection
+
+Let me implement this now:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (102ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue adding tasks and then start editing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the test task too, then start editing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me start with task #1: editing `lifecycle_for_scope`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+Now let me start editing. Task #1: `lifecycle_for_scope` — track session runs separately and return them.
+    def lifecycle_for_scope(
+        events: list[dict[str, Any]],
+        scan_start: int,
+  - ) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+  + ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+        scoped = events[max(scan_start, 0) :]
+        lifecycle_start_count = 0
+        lifecycle_completion_count = 0
+  ···
+        run_completed: set[str] = set()
+        model_started: dict[str, dict[str, Any]] = {}
+        model_completed: set[str] = set()
+  +     session_run_started: set[str] = set()
+  +     session_run_completed: set[str] = set()
+        for event in scoped:
+            kind = event_type(event)
+            data = payload(event)
+  ···
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (46 → 54 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (13ms)
+  ▶ edit scripts/append_terminal_state_events.py (46 → 54 lines)
+    def lifecycle_for_scope(
+        events: list[dict[str, Any]],
+        scan_start: int,
+  - ) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+  + ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+        scoped = events[max(scan_start, 0) :]
+        lifecycle_start_count = 0
+        lifecycle_completion_count = 0
+  ···
+        run_completed: set[str] = set()
+        model_started: dict[str, dict[str, Any]] = {}
+        model_completed: set[str] = set()
+  +     session_run_started: set[str] = set()
+  +     session_run_completed: set[str] = set()
+        for event in scoped:
+            kind = event_type(event)
+            data = payload(event)
+  ···
+                continue
+            if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+  ... (24 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task #2: update `open_lifecycle` to pass through the open session runs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now Task #2: update `open_lifecycle` — plumb through the 4th return value.
+        events: list[dict[str, Any]],
+        after_line: int,
+        fallback_after_line: int | None = None,
+  - ) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+  + ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+        if after_line > len(events):
+            # The live state file can be reset/rebuilt during an agent invocation.
+            # In that case the saved pre-agent line number belongs to the old file,
+  ···
+        else:
+            scan_start = max(after_line, 0)
+            scope = "requested_after_line"
+  -     open_models, open_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+  +     open_models, open_runs, open_session_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+        diagnostics["event_count"] = len(events)
+        diagnostics["requested_after_line"] = after_line
+        diagnostics["scope"] = scope
+  ···
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (42 → 42 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (6ms)
+  ▶ edit scripts/append_terminal_state_events.py (42 → 42 lines)
+        events: list[dict[str, Any]],
+        after_line: int,
+        fallback_after_line: int | None = None,
+  - ) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
+  + ) -> tuple[dict[str, dict[str, Any]], set[str], set[str], dict[str, Any]]:
+        if after_line > len(events):
+            # The live state file can be reset/rebuilt during an agent invocation.
+            # In that case the saved pre-agent line number belongs to the old file,
+  ···
+        else:
+            scan_start = max(after_line, 0)
+            scope = "requested_after_line"
+  -     open_models, open_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+  +     open_models, open_runs, open_session_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+        diagnostics["event_count"] = len(events)
+        diagnostics["requested_after_line"] = after_line
+        diagnostics["scope"] = scope
+  ···
+            if len(visible_open_runs) > 1:
+                diagnostics["scope"] = "ambiguous_reset_full_scan"
+  ... (21 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task #3: update `append_terminal_events` to close open session runs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+Now Task #3: update `append_terminal_events` to close open session runs.
+        error_detail: str,
+    ) -> dict[str, Any]:
+        events = load_jsonl(events_path)
+  -     open_models, open_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+  +     open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+        completed_models: list[str] = []
+        completed_runs: list[str] = []
+  +     completed_session_runs: list[str] = []
+    
+        for rid, started_payload in sorted(open_models.items()):
+            payload = {
+  ···
+                payload["error_detail"] = error_detail
+            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            completed_runs.append(rid)
+  + 
+  +     for rid in sorted(open_session_runs):
+  +         payload = {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (51 → 67 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (6ms)
+  ▶ edit scripts/append_terminal_state_events.py (51 → 67 lines)
+        error_detail: str,
+    ) -> dict[str, Any]:
+        events = load_jsonl(events_path)
+  -     open_models, open_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+  +     open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+        completed_models: list[str] = []
+        completed_runs: list[str] = []
+  +     completed_session_runs: list[str] = []
+    
+        for rid, started_payload in sorted(open_models.items()):
+            payload = {
+  ···
+                payload["error_detail"] = error_detail
+            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            completed_runs.append(rid)
+  + 
+  +     for rid in sorted(open_session_runs):
+  +         payload = {
+  +             "status": run_status,
+  +             "terminal_reason": reason,
+  ... (16 more lines)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the tests. Task #4.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Good. Now Task #4: update existing test and add new test for session-scope orphan.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to:
+1. Update `test_fallback_after_line_closes_open_agent_run_without_closing_session_run` to now expect session run IS closed with `post_hoc_closed`
+2. Add a new test `test_closes_session_scope_orphan_run` that explicitly tests session-scope orphan detection
+
+For the existing test update: the test name should change, and the assertion should change from `assertFalse` to `assertTrue` for session-run RunCompleted.
+
+Let me also add a test for the case where a session run already has RunCompleted (no double-closing).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+First, update the existing test that currently asserts session runs are NOT closed:
+  -     def test_fallback_after_line_closes_open_agent_run_without_closing_session_run(self):
+  +     def test_fallback_after_line_closes_open_agent_run_and_session_run(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                events = Path(tmp) / "events.jsonl"
+                write_event(events, "RunStarted", "session-run", {"phase": "session"})
+  ···
+                self.assertEqual(result["diagnostics"]["session_run_ignored_count"], 1)
+                self.assertEqual(result["completed_model_calls"], ["agent-run"])
+                self.assertEqual(result["completed_runs"], ["agent-run"])
+  -             self.assertFalse(
+  -                 any(
+  -                     row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
+  -                     for row in rows
+  -                 )
+  -             )
+  +             self.assertEqual(result["completed_session_runs"], ["session-run"])
+  +             session_done = [
+  +                 row
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (34 → 35 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (34 → 35 lines)
+  -     def test_fallback_after_line_closes_open_agent_run_without_closing_session_run(self):
+  +     def test_fallback_after_line_closes_open_agent_run_and_session_run(self):
+            with tempfile.TemporaryDirectory() as tmp:
+                events = Path(tmp) / "events.jsonl"
+                write_event(events, "RunStarted", "session-run", {"phase": "session"})
+  ···
+                self.assertEqual(result["diagnostics"]["session_run_ignored_count"], 1)
+                self.assertEqual(result["completed_model_calls"], ["agent-run"])
+                self.assertEqual(result["completed_runs"], ["agent-run"])
+  -             self.assertFalse(
+  -                 any(
+  -                     row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
+  -                     for row in rows
+  -                 )
+  -             )
+  +             self.assertEqual(result["completed_session_runs"], ["session-run"])
+  +             session_done = [
+  +                 row
+  +                 for row in rows
+  +                 if row["event_type"] == "RunCompleted" and row["run_id"] == "session-run"
+  ... (2 more lines)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the new test for session-scope orphan. I'll add it before the `if __name__ == "__main__":` block.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add two new tests: one for session-scope orphan closure, and one for no double-closing of already-completed session runs:
+  +     def test_closes_session_scope_orphan_run(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             after_line = 0
+  +             write_event(events, "RunStarted", "session-run", {"phase": "session"})
+  +             write_event(events, "SessionStarted", "session-run", {"phase": "session"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  +                 None,
+  +                 "session-1",
+  +                 "trace-1",
+  +                 "post_session",
+  +                 "completed",
+  +                 "completed",
+  +                 "post_hoc_closure",
+  +                 "",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (1 → 65 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (1 → 65 lines)
+  +     def test_closes_session_scope_orphan_run(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             after_line = 0
+  +             write_event(events, "RunStarted", "session-run", {"phase": "session"})
+  +             write_event(events, "SessionStarted", "session-run", {"phase": "session"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  +                 None,
+  +                 "session-1",
+  +                 "trace-1",
+  +                 "post_session",
+  +                 "completed",
+  +                 "completed",
+  +                 "post_hoc_closure",
+  +                 "",
+  +                 "session scope run was orphaned",
+  +             )
+  ... (45 more lines)
+ ✓ (257ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify everything works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now Task #5: run verification — tests, help, and git diff.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (91ms)
+  ▶ todo ✓ (5ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (210ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 tests pass. Let me also verify --help works.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+All 9 tests pass. Now verify help and run cargo fmt:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/append_termina…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (41ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass. Now let me check the git diff to verify the changes are correct and limited to the task scope.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+Both pass. Let me verify the git diff:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff touches exactly the two files listed in the task's Edit Surface. Let me review the full diff quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat 2>&1 ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The changes are limited to the two files in the Edit Surface. Let me now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now commit the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass, `--help` works, `cargo fmt` is clean. Committing:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:**
+
+• **`scripts/append_terminal_state_events.py`** — `lifecycle_for_scope()` now tracks session-scope runs (`phase: "session"`) in separate `session_run_started`/`session_run_completed` sets, computes `open_session_runs = session_run_started - session_run_completed`, and returns them as a 4th tuple element. `open_lifecycle()` passes the 4th element through (including fallback and ambiguous-reset paths). `append_terminal_events()` closes open session runs with `RunCompleted` carrying `outcome: "post_hoc_closed"`, returned as `completed_session_runs`.
+
+• **`scripts/test_append_terminal_state_events.py`** — Updated existing test (renamed to `test_fallback_after_line_closes_open_agent_run_and_session_run`) to assert session runs ARE now closed with `post_hoc_closed`. Added two new tests: `test_closes_session_scope_orphan_run` (session RunStarted without RunCompleted gets closed) and `test_does_not_double_close_completed_session_run` (already-completed session runs are left alone).
+
+**Verification:**
+• All 9 unit tests pass (`python3 -m unittest scripts.test_append_terminal_state_events`)
+• `--help` parses correctly
+• `cargo fmt -- --check` clean
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
