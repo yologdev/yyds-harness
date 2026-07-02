@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Maximum events to scan for cache-report before capping.
+/// Matching the state doctor and state crashes sampling cap of 20K events.
+const CACHE_REPORT_EVENT_CAP: usize = 20_000;
+
 fn default_events_path() -> PathBuf {
     let (config, _) = crate::config::load_deepseek_config_file();
     config
@@ -1877,12 +1881,26 @@ struct CacheModelReport {
 
 fn handle_cache_report(args: &[String]) {
     let path = default_events_path();
-    let events = match read_events(&path) {
-        Ok(events) => events,
+    let json_output = args.iter().any(|arg| arg == "--json");
+
+    // Use capped tail read to avoid timeout on large event files.
+    // Matching the state doctor's and state crashes' approach: scan only
+    // the most recent CACHE_REPORT_EVENT_CAP events when the log is larger.
+    let (events, sampling_note) = match read_tail_cache_events(&path, CACHE_REPORT_EVENT_CAP) {
+        Ok((events, total, scanned)) => {
+            let note = if total > CACHE_REPORT_EVENT_CAP {
+                Some(format!(
+                    "Sampled last {scanned} of {total} events (capped for performance). "
+                ))
+            } else {
+                None
+            };
+            (events, note)
+        }
         Err(_) => match read_events_from_sqlite(&path) {
             Ok(events) => {
                 eprintln!("{YELLOW}  events.jsonl unavailable - using SQLite projection{RESET}");
-                events
+                (events, None)
             }
             Err(e) => {
                 eprintln!(
@@ -1894,18 +1912,50 @@ fn handle_cache_report(args: &[String]) {
         },
     };
     match build_cache_report(&events) {
-        Ok(report) if args.iter().any(|arg| arg == "--json") => println!(
+        Ok(report) if json_output => println!(
             "{}",
-            serde_json::to_string_pretty(&cache_report_payload(&report))
+            serde_json::to_string_pretty(&cache_report_payload(&report, sampling_note.as_deref()))
                 .unwrap_or_else(|_| "{}".to_string())
         ),
-        Ok(report) => println!("{}", render_cache_report(&report)),
+        Ok(report) => println!("{}", render_cache_report(&report, sampling_note.as_deref())),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
 }
 
 fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
+}
+
+/// Read only the last `cap` non-empty lines from the events JSONL file,
+/// parse each as JSON, and return the parsed events along with the total
+/// line count and the number actually scanned.
+///
+/// Matching the `read_tail_events_capped` pattern from `state crashes`.
+fn read_tail_cache_events(path: &Path, cap: usize) -> Result<(Vec<Value>, usize, usize), String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read cache events '{}': {e}", path.display()))?;
+    let total: usize = raw.lines().count();
+
+    // Keep only the last `cap` lines in a sliding window.
+    let lines: Vec<&str> = {
+        let mut window: Vec<&str> = Vec::with_capacity(cap);
+        for line in raw.lines() {
+            if window.len() >= cap {
+                window.remove(0);
+            }
+            window.push(line);
+        }
+        window
+    };
+    let scanned = lines.len();
+
+    let events: Vec<Value> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+
+    Ok((events, total, scanned))
 }
 
 /// Fall back to the SQLite projection when the raw events.jsonl is unavailable.
@@ -2023,10 +2073,15 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
     })
 }
 
-fn render_cache_report(report: &CacheReport) -> String {
+fn render_cache_report(report: &CacheReport, sampling_note: Option<&str>) -> String {
+    let sampling_prefix = match sampling_note {
+        Some(note) if !note.is_empty() => format!("\n  note:        {note}"),
+        _ => String::new(),
+    };
     let mut out = format!(
-        "DeepSeek server-side cache report\n  events:      {}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
+        "DeepSeek server-side cache report\n  events:      {}{}\n  hit tokens:  {}\n  miss tokens: {}\n  hit ratio:   {:.2}%",
         report.event_count,
+        sampling_prefix,
         report.hit_tokens,
         report.miss_tokens,
         report.hit_ratio * 100.0
@@ -2047,7 +2102,7 @@ fn render_cache_report(report: &CacheReport) -> String {
     out
 }
 
-fn cache_report_payload(report: &CacheReport) -> Value {
+fn cache_report_payload(report: &CacheReport, sampling_note: Option<&str>) -> Value {
     json!({
         "diagnostic": "deepseek_cache_report",
         "event_count": report.event_count,
@@ -2055,6 +2110,7 @@ fn cache_report_payload(report: &CacheReport) -> Value {
         "miss_tokens": report.miss_tokens,
         "hit_ratio": report.hit_ratio,
         "hit_ratio_percent": report.hit_ratio * 100.0,
+        "sampling_note": sampling_note,
         "models": report.models.iter().map(|model| {
             json!({
                 "model": model.model,
@@ -2145,7 +2201,7 @@ mod tests {
             }),
         ];
         let report = build_cache_report(&events).unwrap();
-        let rendered = render_cache_report(&report);
+        let rendered = render_cache_report(&report, None);
         assert!(rendered.contains("events:      2"));
         assert!(rendered.contains("hit tokens:  100"));
         assert!(rendered.contains("miss tokens: 100"));
@@ -2189,7 +2245,7 @@ mod tests {
 
         let events = read_events(&path).unwrap();
         let report = build_cache_report(&events).unwrap();
-        let rendered = render_cache_report(&report);
+        let rendered = render_cache_report(&report, None);
 
         assert!(rendered.contains("events:      1"));
         assert!(rendered.contains("hit tokens:  90"));
@@ -2223,7 +2279,7 @@ mod tests {
             ],
         };
 
-        let payload = cache_report_payload(&report);
+        let payload = cache_report_payload(&report, None);
 
         assert_eq!(payload["diagnostic"], "deepseek_cache_report");
         assert_eq!(payload["event_count"], 2);
