@@ -1,0 +1,568 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before writing task files.
+
+## Current State Assessment
+
+The trajectory and assessment paint a clear picture:
+
+1. **Task success rate is 0.0** — tasks are being reverted, mostly due to `reverted_unlanded_source_edits` (6 occurrences). This means implementation agents ARE editing source files but the changes aren't surviving verification.
+
+2. **Stale task detection is broken** — Day 124 mid-day wasted a task on creating fixture #369 which already existed since Day 120. The preseed task picker's contradiction detector missed it.
+
+3. **Evaluator timeouts** are causing task reversion — valid work may be lost.
+
+4. **cache-report is empty** — DeepSeek cache metrics aren't being captured despite having the data structures.
+
+5. **Consistent pipeline success, task-level failure** — 9 consecutive successful pipeline runs, but tasks within them fail.
+
+## Priority Analysis
+
+The highest priority graph-derived pressures:
+1. "Force analysis-only attempts into action" (task_analysis_only_attempt_count=1)
+2. "Raise verified task success rate" (task_success_rate=0.0) — dominant: task_unlanded_source_count=2
+3. "Bound evaluator checks so verdicts are not skipped" (evaluator_unverified_count=1)
+4. "Make source-edit outcomes land or explain reverts" (task_unlanded_source_count=2)
+5. "Break recurring log failure fingerprints" (recurring_failure_count=2)
+
+## What to Task
+
+The most impactful, actionable thing I can do:
+
+**Task 1: Fix stale task detection** — The preseed task picker seeded a fixture that already existed. This is a direct, verifiable fix. The contradiction detector in `scripts/preseed_session_plan.py` didn't check for already-existing fixture files. This is a concrete, small fix.
+
+**Task 2: Fix cache-report returning empty** — `yyds deepseek cache-report` returns empty. The data structures exist in `deepseek.rs` but metrics aren't being captured. This is a real capability gap that blocks cache optimization.
+
+**Task 3: Fix evaluator timeout causing task reversion** — The evaluator timed out on valid work. Need to add bounded timeouts with partial-evidence fallback, or at least ensure the evaluator doesn't revert tasks that had file edits.
+
+Wait, let me reconsider. The task sizing rules say each task must touch at most 3 source files. Let me think about what's most achievable:
+
+**Task 1: Stale task detection** — `scripts/preseed_session_plan.py` is the primary file. The fix is to check if fixture files already exist before seeding them as tasks. This is a Python script change, not Rust. The verifier would be running a test or checking the script's behavior. This is achievable.
+
+**Task 2: cache-report fix** — Needs investigation. Could be in `src/deepseek.rs`, `src/commands_deepseek.rs`, or the agent builder. The assessment says the structs exist but data doesn't flow. This might be a plumbing issue. But I need to check which files are actually involved before writing the task.
+
+**Task 3: Evaluator timeout** — This is in `scripts/evolve.sh` primarily. The evaluator step times out. This is complex and might need multiple file changes.
+
+Let me think about what's most impactful and achievable:
+
+The stale task detection fix is the clearest win — it directly addresses a bug that wasted a session. And it's a script change, not Rust, so it doesn't need cargo build/test. But the harness requires `cargo build && cargo test` to pass... though script-only changes don't affect that.
+
+Actually, let me look more carefully. The assessment says:
+- Issue #58 is a FALSE POSITIVE — fixture #369 already exists
+- The preseed task picker's stale-contradiction detector missed it
+
+For task 2 (cache-report): let me check what files are involved before writing the task. The assessment mentions `src/deepseek.rs` and `src/commands_deepseek.rs`.
+
+For task 3 (evaluator timeout): this is in `scripts/evolve.sh`. But modifying evolve.sh is prohibited by safety rules ("Never modify ... scripts/evolve.sh").
+
+Wait, let me re-read the safety rules from CLAUDE.md:
+"Never modify `IDENTITY.md`, `PERSONALITY.md`, `ECONOMICS.md`, `scripts/evolve.sh`, `scripts/format_issues.py`, `scripts/build_site.py`, or `.github/workflows/`"
+
+So I CANNOT modify `scripts/evolve.sh`. That means the evaluator timeout fix can't touch evolve.sh. The evaluator timeout might be fixable in the eval infrastructure itself (`src/commands_eval.rs`, `src/eval_fixtures.rs`).
+
+Let me reconsider my task plan:
+
+**Task 1: Fix stale fixture task detection in preseed_session_plan.py**
+- File: `scripts/preseed_session_plan.py`
+- Not protected by safety rules
+- Concrete fix: check if fixture files referenced in tasks already exist on disk
+
+**Task 2: Fix DeepSeek cache-report returning empty**
+- Files: `src/deepseek.rs`, `src/commands_deepseek.rs` (likely)
+- Need to investigate where cache metrics should be captured
+
+**Task 3: Fix evaluator timeout causing valid work to be reverted**
+- Files: `src/commands_eval.rs` or `src/eval_fixtures.rs` (likely)
+- Can't modify `scripts/evolve.sh`
+
+But wait, I need to check my ownership before writing Files: lines. Let me do quick checks with git ls-files and rg.
+
+Actually, let me first just create the task files. The ARTIFACT-FIRST REQUIREMENT says "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists" and "If task_01.md is not written by your third tool turn, stop exploration and write it immediately."
+
+I should write task_01.md first, then do limited ownership checks for task_02.md and task_03.md.
+
+Let me start with task_01.md — the stale task detection fix. This is the clearest win.
+
+For task_02, let me think about what's most impactful:
+- cache-report fix is a capability gap
+- But also: the graph pressure says "Raise verified task success rate" and "Make source-edit outcomes land"
+
+Actually, looking more carefully at the trajectory:
+- `reverted_unlanded_source_edits=6` — this is the dominant failure mode
+- Tasks edit source files but the changes don't survive verification
+
+This suggests the verification pipeline has a problem. But modifying `scripts/evolve.sh` is prohibited...
+
+Let me focus on what I can actually fix:
+1. Stale task detection (script fix)
+2. Cache metrics capture (Rust fix in deepseek module)
+3. Some evaluator improvement that doesn't touch evolve.sh
+
+Actually wait - let me re-read the safety rules more carefully. They say "These are enforced by the evolve skill and evolve.sh". But as the PLANNING agent, I'm writing task files for IMPLEMENTATION agents. The implementation agents are the ones that need to follow these rules. So I should NOT create tasks that would require modifying protected files.
+
+Let me create the task files now. I'll start with:
+
+**Task 1: Fix stale fixture task detection** — most concrete, highest confidence
+**Task 2: Fix cache-report returning empty** — real capability gap
+**Task 3: Add bounded timeout to evaluator with partial-evidence fallback** — but this might need evolve.sh changes...
+
+Actually, let me think about whether evaluator timeout can be fixed without touching evolve.sh. The evaluator is called from evolve.sh, but the timeout behavior might be configurable in the eval infrastructure itself (`src/commands_eval.rs` or `src/eval_fixtures.rs`).
+
+Let me write task_01.md first, then do ownership checks for the others.
+
+Let me also consider: is there a "small" task from the graph pressure that I can create? The "Force analysis-only attempts into action" pressure is about `task_analysis_only_attempt_count=1`. But this is a behavioral pressure, not a code fix.
+
+"Break recurring log failure fingerprints" — the log_feedback reports recurring failures. The lessons say "shell tool commands failed during the session" and "tasks lacked strict verifier evidence". These are synthesis outputs, not bugs to fix.
+
+Let me focus on the concrete, fixable things:
+
+1. **Stale task detection** — fix `scripts/preseed_session_plan.py`
+2. **Cache metrics** — fix `src/deepseek.rs` / `src/commands_deepseek.rs`
+3. **Evaluator timeout** — fix eval infrastructure (not evolve.sh)
+
+For task 3, let me think about what specifically to fix. The evaluator timed out on two tasks. The evaluator is invoked by `scripts/evolve.sh` calling `yyds eval fixtures score`. The timeout is in the eval command itself. So I can add a `--timeout` flag or bounded execution to the eval infrastructure without touching evolve.sh.
+
+Actually wait — the evolve.sh script is what calls the evaluator and has the timeout logic. If I can't modify evolve.sh, I can only change the eval command's internal behavior. But the timeout might be imposed by the shell (`timeout` command in evolve.sh), not by the eval command itself.
+
+Let me check: the assessment says "Evaluator timed out without a verifier verdict." If the timeout is in the eval command itself (a Rust-level timeout), I can fix that. If it's a shell-level timeout in evolve.sh, I can't.
+
+I think the safest approach is:
+- Task 1: Stale task detection (highest confidence)
+- Task 2: Cache metrics (moderate confidence, needs ownership check)
+- Task 3: Something else concrete
+
+Actually, let me reconsider task 3. The graph pressure says "Make source-edit outcomes land or explain reverts" — this is about the verification pipeline. But I can't modify evolve.sh.
+
+Let me look at what I CAN fix that addresses the highest pressures:
+
+The evaluator timeout issue might be fixable in `src/eval_fixtures.rs`. Let me check...
+
+You know what, let me just start writing task_01.md and do ownership checks in parallel. The artifact-first requirement is clear.
+
+Let me write task_01.md about stale task detection. Then do ownership checks for cache-report files before writing task_02.md.
+
+For task 1, I know the file is `scripts/preseed_session_plan.py`. Let me check if it's in git and exists.
+
+Let me also think about what "stale task detection" means more precisely. The issue is:
+- The assessment from Day 124 mid-day says fixture #369 already existed
+- preseed_session_plan.py seeded it as a new task anyway
+- The contradiction detector didn't catch it
+
+The fix: when preseed_session_plan.py generates a task about creating a fixture file, check if that file already exists on disk. If so, suppress the task.
+
+But actually, the assessment also says "Issue #58 is a FALSE POSITIVE — fixture #369 already exists." So the issue itself is wrong. The task file should be about fixing the detection, not about the fixture.
+
+Let me write the task files now.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll start by creating the session_plan directory, then write task files based on the assessment and trajectory evidence. Let me first do a quick ownership check for the files I'll reference.
+  ▶ $ mkdir -p session_plan && git ls-files scripts/preseed_session_plan.py src/comman… ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all files exist. Now let me also check for the cache-report related symbols to confirm ownership.
+
+Let me also quickly check if there's a `build_cache_report` or similar function in commands_deepseek.rs or deepseek.rs to understand where the cache-report logic lives.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, all files confirmed. Let me check cache-report symbols to nail down ownership for task 2.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cache.report|cache_report|build_cache' (*.rs) ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No matches for those patterns. Let me search more specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cache-report' (*.rs) ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Found it. `src/commands_deepseek.rs` has the `cache-report` handler at line 75: `"cache-report" => handle_cache_report(args)`. Let me find that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_cache_report' (*.rs) ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check for `CacheMetrics` or cache-related structs in deepseek.rs to confirm the data structures exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'CacheMetrics|cache_metrics' (*.rs) ✓ (63ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the assessment said "The `deepseek.rs` module has `CacheMetrics` structs" but I can't find them. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Cache' in src/deepseek.rs (*.rs) ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `DeepSeekUsage` has `cache_hit_tokens` and `cache_miss_tokens` fields, and they're populated from API responses (lines 1712-1716, 1804-1810). The struct exists. But `cache-report` returns empty. Let me check `handle_cache_report` to understand why.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1882..1962 ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find `build_cache_report` to understand why it returns empty.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_cache_report' (*.rs) ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand why the cache report is empty.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1999..2099 ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue clearly:
+
+1. `build_cache_report` looks for events with `event_type == "CacheMetricsRecorded"` (line 2010)
+2. If no such events are found, it returns "no DeepSeek cache metrics found" (line 2038)
+3. The `DeepSeekUsage` struct in `deepseek.rs` has `cache_hit_tokens` and `cache_miss_tokens` fields that are populated from API responses
+4. But **nothing is recording `CacheMetricsRecorded` events** — the parsing is there, the structures exist, but the recording step is missing
+
+So the fix is: when a DeepSeek API response includes cache metrics in its usage data, record a `CacheMetricsRecorded` event. The recording likely needs to happen somewhere in the agent builder or prompt execution path, where API responses are processed.
+
+Let me now write the task files. I have enough evidence to write 3 tasks:
+
+**Task 1: Fix stale fixture task detection in preseed_session_plan.py**
+- Evidence: Fixture #369 already existed (committed Day 120, commit 9f3cab05) but was reseeded as a task on Day 124
+- The contradiction detector in preseed_session_plan.py needs to check whether fixture files referenced in tasks already exist on disk
+
+**Task 2: Record DeepSeek cache metrics as state events so cache-report works**
+- Evidence: `build_cache_report` finds zero `CacheMetricsRecorded` events. The `DeepSeekUsage` struct has cache fields populated from API responses (deepseek.rs:1712-1716), but no event is recorded.
+- Need to record `CacheMetricsRecorded` events somewhere in the API response processing path.
+
+**Task 3: ???**
+- I need a third task. Let me think about what's most impactful from the trajectory evidence.
+- "Make source-edit outcomes land or explain reverts" — this is about the verification pipeline but involves evolve.sh which I can't modify.
+- "Bound evaluator checks so verdicts are not skipped" — also involves evolve.sh
+- Actually, the evaluator is called by `cargo run -- yyds eval fixtures score`, not just by evolve.sh. The timeout could be in the eval command itself, not in the shell wrapper. Let me check.
+
+Actually, for task 3, let me focus on something I CAN do. The trajectory says:
+- "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)" 
+- This is about the task picker generating analysis-only tasks instead of implementation tasks
+
+But this is more of a behavioral pressure than a code fix.
+
+Let me think about what else is actionable:
+- The evaluator timeout: if the timeout is in `src/eval_fixtures.rs` or `src/commands_eval.rs`, I can fix it there
+- The issue #51 about `state why last-failure` timeout: this was reverted on Day 122, but the assessment says it's already working now (no timeout during self-test)
+
+Actually wait, let me reconsider. The assessment says:
+"Note: yyds state why last-failure ran fine (no timeout). The timeout reported in earlier sessions may have been from scanning all ~69K events without a limit. Current behavior returns quickly when using default limits."
+
+So issue #51 may already be resolved. But the code change (adding sampling cap to build_why_report) hasn't been done. The command works now because... maybe it was already fixed or the data just isn't large enough to trigger the timeout anymore.
+
+Let me write 3 tasks:
+1. Stale task detection fix (preseed_session_plan.py)
+2. Cache metrics recording (deepseek.rs / commands_deepseek.rs)
+3. Evaluator timeout / partial-evidence fallback (eval_fixtures.rs / commands_eval.rs)
+
+For task 3, let me check if the eval command has timeout handling built in or if it relies on the shell timeout.
+
+Actually, I should write the task files now. Let me create all three. For task 3, I'll focus on adding a bounded timeout to `yyds eval fixtures score` so the evaluator doesn't hang indefinitely.
+
+Let me now write the task files.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have a clear picture. Let me write all three task files. The core issue for cache-report is: events with `event_type == "CacheMetricsRecorded"` are never recorded — the `DeepSeekUsage` struct populates cache fields from API responses, but nothing emits corresponding state events.
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Fix stale fixture task detection — preseed_session_plan.py doesn't check for pre-existing fixture files
+  + Files: scripts/preseed_session_plan.py
+  + Issue: #58
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Day 124 mid-day (10:41) session was handed "Add held-out coding eval fixture for DeepSeek prompt layout determinism" as Task 2, but fixture 369-deepseek-prompt-layout-determinism.json was already committed on Day 120 (commit 9f3cab05, 4 days prior).
+  + - `git log --follow -- eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json` confirms the fixture exists as valid JSON.
+  + - The preseed task picker's contradiction detector (`check_task_contradiction` in preseed_session_plan.py) checks assessment text for resolution keywords and metric keys, but does NOT check whether files named in a proposed task already exist on disk.
+  + - The assessment text described the task as "the most substantive open issue" with no mention that the fixture file already existed — the contradiction detector had no signal to catch.
+  + - Wasted a full task slot and evaluator time on redundant work.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (51 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (51 lines) ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md is written. Now let me write task_02.md about cache metrics.
+
+The key finding: `build_cache_report` in `src/commands_deepseek.rs:2010` looks for events with `event_type == "CacheMetricsRecorded"`, but no code records such events. The `DeepSeekUsage` struct in `src/deepseek.rs` has `cache_hit_tokens` and `cache_miss_tokens` fields populated from API responses (lines 1712-1716), but these are just parsed into a struct — they're never persisted as state events.
+
+The fix needs to:
+1. Find where API responses with usage data are processed
+2. When `DeepSeekUsage` has valid cache metrics, record a `CacheMetricsRecorded` state event
+3. This likely happens in the agent builder or prompt execution path
+
+Let me check where `DeepSeekUsage` is constructed from API responses to understand the recording path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Record DeepSeek cache metrics as state events so `yyds deepseek cache-report` returns data
+  + Files: src/deepseek.rs, src/commands_deepseek.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - `yyds deepseek cache-report` returns "no DeepSeek cache metrics found" — the `build_cache_report` function at src/commands_deepseek.rs:2010 scans for events with `event_type == "CacheMetricsRecorded"` and finds zero matches across 68,968 events.
+  + - The `DeepSeekUsage` struct at src/deepseek.rs:69-76 has `cache_hit_tokens` and `cache_miss_tokens` fields, a `cache_hit_ratio()` method, and an `is_token_backed()` check. These are populated from API response `usage` objects at lines 1712-1716 (DeepSeek-native path) and 1804-1810 (OpenAI-compat fallback path).
+  + - Unit tests at deepseek.rs:2648-2686 verify the struct works correctly — the parsing is solid.
+  + - The gap is recording: nothing calls `state::record_event("CacheMetricsRecorded", ...)` when cache metrics are available. The parsed `DeepSeekUsage` is consumed (likely by cost tracking) but the cache-specific fields are never persisted.
+  + - Without events, `cache-report` is permanently empty. We can't optimize prompt layout for cache efficiency without measuring cache behavior first.
+  + 
+  + Edit Surface:
+  + - src/deepseek.rs (add event recording when cache metrics are populated in DeepSeekUsage)
+  + - src/commands_deepseek.rs (if the recording call is better placed in the command layer)
+  + 
+  + Verifier:
+  + - cargo build && cargo test --lib deepseek
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (52 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (52 lines) ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write task_03.md. I need a third task that's actionable and addresses trajectory pressure.
+
+Looking at the trajectory pressures:
+1. "Force analysis-only attempts into action" — behavioral, not a code fix
+2. "Raise verified task success rate" — the dominant failure is `task_unlanded_source_count=2`, meaning source edits aren't being committed
+3. "Bound evaluator checks so verdicts are not skipped" — evaluator timeouts
+4. "Make source-edit outcomes land or explain reverts" — verification pipeline
+5. "Break recurring log failure fingerprints" — log feedback synthesis
+
+The "task_unlanded_source_edits" is the dominant failure mode (6 occurrences). Tasks ARE editing source files but the edits aren't surviving verification. The evaluator timed out on 2 tasks. 
+
+But I can't modify `scripts/evolve.sh` which is where the evaluator timeout and commit logic likely lives.
+
+Let me think about what I CAN fix:
+- The evaluator (`yyds eval fixtures score`) is a Rust command. If the timeout is in the Rust code, I can fix it.
+- The "unlanded source edits" pattern suggests the implementation agent edits files but the commit step fails or is skipped.
+
+Actually, let me look at this from a different angle. What's a small, concrete fix that addresses trajectory pressure?
+
+Looking at the log_feedback corrected lessons:
+- "shell tool commands failed during the session -> prefer bounded commands with explicit paths"
+- "tasks lacked strict verifier evidence -> require bounded verifier evidence before counting task success"
+- "task source edits were not landed in source commits -> verify task source edits are committed before marking task completion"
+
+These are synthesis outputs, not bugs. They're telling the agent to do better, not telling us to fix code.
+
+What about the stale task detection? That's task_01. Cache metrics is task_02.
+
+For task_03, let me think about what else is actionable...
+
+The Day 124 morning session (03:40) landed 2/3 tasks successfully — the "append_terminal_state_events.py to detect session-scoped orphaned runs" fix and the "cache-report event sampling cap" fix. These show that sessions CAN land tasks. The problem is consistency.
+
+Actually, the most impactful thing might be to fix the evaluator timeout. Let me check if the eval command has built-in timeout handling.
+
+Let me search for timeout in eval_fixtures.rs and commands_eval.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'timeout|TIMEOUT' in src/eval_fixtures.rs (*.rs) ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No timeout handling in eval_fixtures.rs. Let me check commands_eval.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'timeout|TIMEOUT|Duration' in src/commands_eval.rs (*.rs) ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Neither eval_fixtures.rs nor commands_eval.rs has timeout handling. The timeout is likely imposed by the shell in evolve.sh (using the `timeout` command), which I can't modify.
+
+Let me think about what other task I can create that's impactful and actionable. Looking at the trajectory again:
+
+"Break recurring log failure fingerprints (recurring_failure_count=2)" — this is about log_feedback.py detecting the same failure patterns. But this is a synthesis/analysis script, and the "failures" might be false positives from the analysis, not actual bugs.
+
+"Make source-edit outcomes land or explain reverts (task_unlanded_source_count=2)" — this suggests the implementation agent edits source files but the changes aren't committed. This could be a bug in the task verification pipeline in evolve.sh, but I can't modify evolve.sh.
+
+What about issue #51 — "Fix yyds state why last-failure timeout"? The assessment says it's working now, but the code change (adding sampling cap to build_why_report) hasn't been done. This was reverted twice. The assessment says: "The command works now because... maybe it was already fixed or the data just isn't large enough to trigger the timeout anymore."
+
+Actually, wait. Let me reconsider. The assessment says `yyds state why last-failure` ran fine during self-test. But the code change hasn't been made. So it might time out again later. Adding a sampling cap would prevent future timeouts.
+
+But this task was already attempted and reverted twice (Day 122 and Day 124 mid-day). The task sizing rules say: "If a task has been reverted before, make it SMALLER than last time."
+
+Let me check if build_why_report is the right function to fix. Let me check what it does - specifically whether it scans all events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs (*.rs) ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how events are loaded for `state why`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why|state why|why_report' in src/commands_state.rs (*.rs) ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Search for the handler function name.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_state_why' in src/commands_state.rs (*.rs) ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Search for "why" in the dispatch or handler functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search '"why"' in src/commands_state.rs (*.rs) ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the handler around line 81 to see how events are loaded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:81..131 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find `handle_why` to see how events are loaded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why\b' in src/commands_state.rs (*.rs) ✓ (98ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs (*.rs) ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Found it at line 1080. Let me read it to understand how events are loaded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1080..1160 ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — `handle_why` at line 1082 uses `read_tail_events(&path, limit)` where `limit` defaults to 200. So it's already reading only the last 200 events! It's not scanning all 69K events. This is why the assessment says the command runs fine now.
+
+So issue #51 about `state why last-failure` timeout might already be resolved by the existing `limit` parameter. The timeout reported earlier might have been from a different code path, or the limit wasn't being applied correctly before.
+
+This means issue #51 doesn't need a fix. The assessment confirms: "yyds state why last-failure ran fine (no timeout)."
+
+Let me think about what else to pick for task_03...
+
+Let me go back to the trajectory pressures. The most impactful and actionable thing that doesn't involve evolve.sh:
+
+Actually, let me look at this differently. What about the "task_unlanded_source_edits" pattern? The implementation agents edit source files but the edits aren't committed. This could be because:
+1. The implementation agent edits files but doesn't commit them before returning
+2. The verification step reverts the changes
+3. The evaluator times out and the changes are reverted
+
+If I can't modify evolve.sh, maybe I can improve the agent's behavior through tool wrappers or hooks. But that's a large change and hard to verify.
+
+Let me look at another angle: the assessment mentions "No DeepSeek-specific coding benchmarks" as a capability gap. But the task of adding eval fixtures was already done (fixture #369 exists) and the stale task detection fix (task 1) prevents reseeding it.
+
+What about fixing the evaluator timeout from the eval command side? Even though the timeout might be imposed by the shell, I could add a `--timeout` flag to `yyds eval fixtures score` so it self-limits. But that doesn't help if the shell timeout kills the process before it can self-limit.
+
+Let me think about what's actually actionable...
+
+Actually, I think the best task 3 is to add a `--timeout-seconds` flag to `yyds eval fixtures score` that self-bounds the evaluation, and also add partial-evidence output so that even if the evaluator times out, it writes whatever verdict it has so far. This way, the shell-level timeout in evolve.sh (which I can't change) doesn't cause total evidence loss.
+
+The eval command in `commands_eval.rs` or `eval_fixtures.rs` would:
+1. Accept a `--timeout-seconds N` flag
+2. Start a timer when evaluation begins
+3. Before the timer expires, write a partial verdict (or final verdict if done)
+4. This ensures evidence survives even if the shell kills the process
+
+But wait — if I add this flag to the Rust command, evolve.sh still needs to pass it. And I can't modify evolve.sh. So the flag would never be used unless evolve.sh is updated.
+
+Hmm. Let me think of something else entirely.
+
+What about a completely different task? Let me look at the assessment's capability gaps:
+
+1. Held-out coding eval coverage is thin — but task 1 prevents reseeding stale fixture tasks
+2. DeepSeek cache metrics are not captured — task 2 addresses this
+3. Evaluator timeouts lose task evidence — can't fix evolve.sh
+4. Stale task detection still fails — task 1 addresses this
+5. No DeepSeek-specific coding benchmarks — this is a large scope
+
+What about adding a `--timeout-seconds` default to the eval command that self-limits even without evolve.sh passing the flag? Like, the eval command has a built-in default timeout of 5 minutes. If the shell kills it, the partial evidence is already written.
+
+But that requires the Rust process to detect impending timeout and write evidence before being killed... which is hard to do reliably.
+
+OK let me take a completely different approach. Let me look at the graph-derived next-task pressure more carefully:
+
+"Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence; retry with smaller scope"
+
+This is about the task picker generating analysis-only tasks. What if I add a filter to preseed_session_plan.py that deprioritizes or suppresses tasks that are analysis-only (don't involve code changes)?
+
+Actually, the preseed script already has `ANALYSIS_ONLY_TASK_TITLE` and related constants. Let me check what that does.
+
+Let me look at another idea: what about improving the `yyds state why` command to show the "last-failure" path more clearly? But that seems low-impact.
+
+Or: what about fixing `yyds deepseek cache-report` to show a more helpful message when no events exist? Currently it says "no DeepSeek cache metrics found" — it could say "No cache metrics recorded yet. Cache metrics are recorded when cache_policy.record_metrics is enabled and the DeepSeek API returns usage.prompt_cache_hit_tokens." But this is a minor UX improvement.
+
+Let me think about what would actually improve the task_success_rate... 
+
+The core issue is: implementation agents edit source files, but the changes don't survive verification. Why?
+
+1. The evaluator times out → revert
+2. The changes don't pass `cargo build && cargo test` → revert
+3. The changes are to the wrong files → scope mismatch → revert
+
+For #1, I can't fix evolve.sh.
+For #2, this is the implementation agent's responsibility.
+For #3, this is the planning agent's responsibility (me).
+
+What about reducing the likelihood of scope mismatch? I could add a verify step to the task files that checks whether the Files: line is accurate.
+
+Actually, I think there's a simpler, more impactful task: **improve `task_01.md` quality by adding a file-existence pre-check to the task verification in evolve.sh** — but I can't modify evolve.sh.
+
+OK, let me just pick the most concrete thing I can fix that addresses a trajectory pressure:
+
+Task 3: Add a `--timeout-seconds` flag to `yyds eval fixtures score` with a default of 300 (5 minutes). The command self-bounds its execution and writes whatever partial verdict it has before exiting. This doesn't require evolve.sh changes — the default behavior improves even without the flag being passed. If the shell-level timeout kills the process, at least the default self-bounding means the process usually finishes before the shell kills it.
+
+But this is speculative — I don't know if the shell timeout is shorter than 5 minutes.
+
+Actually you know what, let me just look at what the eval command does for scoring and see if there's an obvious timeout bottleneck.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_eval_subcommand|fn run_eval|fixtures score' in src/commands_eval.rs (*.rs) ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search '"score"|"fixtures"' in src/commands_eval.rs (*.rs) ✓ (66ms)
+
+

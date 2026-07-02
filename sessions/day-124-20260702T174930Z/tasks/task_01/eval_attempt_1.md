@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `_check_fixture_already_exists()` to `check_task_contradiction()` with two regex patterns (context-word + number, and bare NNN-description), resolves fixture numbers to `eval/fixtures/local-smoke/NNN-*.json` via glob, and suppresses tasks when files exist. Self-tests pass, fixture #369 is correctly detected as existing, nonexistent fixtures pass through, and unrelated tasks are unaffected.
