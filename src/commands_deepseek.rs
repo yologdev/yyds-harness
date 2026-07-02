@@ -1922,6 +1922,7 @@ fn handle_cache_report(args: &[String]) {
     }
 }
 
+#[cfg(test)]
 fn read_events(path: &Path) -> Result<Vec<Value>, std::io::Error> {
     crate::state::read_compatibility_events(path).map_err(std::io::Error::other)
 }
