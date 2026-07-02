@@ -1,0 +1,416 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Study existing DeepSeek eval fixtures to understand the format
+2. Create a new fixture file at `eval/fixtures/local-smoke/370-deepseek-prompt-layout-determinism-eval.json`
+3. The fixture should test DeepSeek prompt layout determinism under eval conditions
+
+Let me first read the evolve skill, then study existing fixtures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls eval/fixtures/local-smoke (369*)  ▶ ls eval/fixtures/local-smoke (355*)  ▶ ls eval/fixtures/local-smoke (356*) ✓ (552ms)
+ ✓ (598ms)
+ ✓ (1.1s)
+ ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me study the existing fixtures to understand the format. Let me read the closest precedent (369), and also the 355 and 356 fixtures.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.9s (4 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json  ▶ read eval/fixtures/local-smoke/355-deepseek-yoagent-model-config-boundary.json  ▶ read eval/fixtures/local-smoke/356-deepseek-cache-report-model-breakdown.json ✓ (945ms)
+ ✓ (756ms)
+ ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the eval fixture infrastructure. I need to understand how `yyds eval fixtures score` and `yyds eval fixtures list` work, and what the fixture format looks like for the eval system specifically. Let me look at `src/eval_fixtures.rs` and `src/commands_eval.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+Now let me understand the eval fixture infrastructure - how fixtures are run and what formats are supported.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn load_fixture_suite' (*.rs)  ▶ search 'fn run_fixture_task' (*.rs) ✓ (246ms)
+ ✓ (308ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant parts of eval_fixtures.rs to understand fixture format and how tasks are run.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs (200 lines) ✓ (163ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the fixture format. The BenchmarkTask struct has these fields:
+- task_id
+- category
+- repo_fixture
+- initial_commit
+- goal
+- tests (list of shell commands)
+- hidden_failure_mode
+- expected_files
+- risk_label
+
+And fixtures are loaded from `eval/fixtures/<suite>/` directory. The task described says to create a fixture at `eval/fixtures/local-smoke/370-deepseek-prompt-layout-determinism-eval.json`.
+
+Now I need to understand what the fixture should test. The task says: "Add held-out coding eval fixture for DeepSeek prompt layout determinism" - testing that repeated eval runs with identical input produce identical PromptSnapshot artifacts.
+
+But looking at the existing fixture format, the "tests" field contains shell commands that get run and checked for pass/fail. These can be Rust test commands, shell commands, etc.
+
+The challenge: the fixture infrastructure runs commands and checks if they pass (exit code 0). To test "prompt layout determinism across eval runs", I'd need to:
+1. Run a prompt through the system twice
+2. Compare the outputs
+
+But the fixture format doesn't have a built-in "run twice and compare" mechanism. The tests are just commands that run and succeed or fail.
+
+Let me think about what's actually testable in the fixture format:
+- I can run `cargo test` commands that test DeepSeek prompt behavior
+- I can run Rust tests that verify prompt layout determinism
+- I can test that tool schema ordering is deterministic
+
+Let me look at what tests already exist in `src/commands_deepseek.rs` and `src/deepseek.rs` for prompt layout determinism.
+
+Actually, wait - the fixture format is simply a set of commands to run. A fixture that tests "prompt layout determinism under eval conditions" could be a fixture that:
+1. Has tests that verify deepseek prompt layout related behavior
+2. The tests themselves are the determinism verification
+
+But looking at the task more carefully, it mentions "a complementary fixture that tests determinism at the eval level". The issue is that fixture #369 already tests prompt layout determinism at the CLI/command level. This new fixture should test it at the "eval level" - meaning the fixture itself, when run through `yyds eval fixtures score`, should verify prompt layout determinism.
+
+Let me look at what Rust tests already exist for deepseek prompt layout.
+
+Actually, I think the simplest approach is to check what tests exist already for prompt layout determinism, and then create a fixture that references those tests (similar to how 369 does it). But the task says "complementary" - so it should test something the 369 fixture doesn't already cover.
+
+Let me look at what tests are available in the deepseek module.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at what deepseek-related tests exist that I can reference in the fixture:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test_deepseek_prompt' (*.rs)  ▶ search 'fn test.*deepseek.*determin' (*.rs)  ▶ search 'stable_system_contract' (*.rs) ✓ (328ms)
+ ✓ (599ms)
+ ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the deepseek.rs tests related to prompt layout determinism and the stable_system_contract tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2610..2710  ▶ read src/deepseek.rs:1120..1170 ✓ (492ms)
+ ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the fixture format and what tests exist. Let me look at what else exists for deepseek-specific tests - particularly around tool schema ordering, cache prefix stability, and prompt layout determinism.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Let me find all the deepseek tests that could be relevant for a determinism fixture:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*deepseek.*schema' (*.rs)  ▶ search 'fn test.*deepseek.*cache' (*.rs)  ▶ search 'fn test.*deepseek.*layout' (*.rs) ✓ (437ms)
+ ✓ (504ms)
+ ✓ (536ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look more broadly for deepseek tests, and also check what tool schema ordering tests might exist.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool.*schema.*order' (*.rs)  ▶ search 'fn test.*strict_schema?' (*.rs)  ▶ search 'fn test.*prompt.*cache' (*.rs) ✓ (455ms)
+ ✓ (527ms)
+ ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `strict_schema_has_required_fields_and_no_extra_properties` test location and read it, as well as see if there are any tests for prompt cache prefix stability.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2698..2748  ▶ search 'prompt_cache' (*.rs) ✓ (360ms)
+ ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to look at the tool schema policy determinism tests. Let me look at the `harness_genome_constrains_default_mutation_surface` test and see what other genome tests exist, plus what tests exist for tool schema ordering.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me find all relevant deepseek tests - specifically the genome test, and also look at what `strict_schema` and `tool_schema_policy` tests exist:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*harness_genome' (*.rs)  ▶ search 'fn test.*tool_schema' (*.rs)  ▶ search 'fn test.*build_tools.*order' (*.rs) ✓ (432ms)
+ ✓ (551ms)
+ ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at all the deepseek test function names to see what's available:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn test' src/deepseek… ✓ (342ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me be more careful with the grep syntax.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn ' src/deepseek.rs | grep test | head -40 ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me just use the search tool instead.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn' in src (deepseek.rs) ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for all `#[test]` functions more precisely in deepseek.rs. Let me search with a broader scope - actually, let me try looking directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2550.. ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the full list of tests in the `mod tests` block of deepseek.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[test\]' src/deepseek.rs | head -40 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now identify the key relevant tests. The fixture should reference tests that verify DeepSeek prompt layout determinism at the eval level. Since the fixture infrastructure runs shell commands, I need to pick commands that verify prompt layout determinism.
+
+Looking at the available tests, here's what I can reference:
+
+1. `deepseek::tests::stable_system_contract_keeps_prompt_quality_rules` - already in 369
+2. `deepseek::tests::stable_system_contract_is_nonempty` - already in 369
+3. `deepseek::tests::strict_schema_has_required_fields_and_no_extra_properties` - verifies tool schema determinism
+4. `deepseek::tests::harness_genome_constrains_default_mutation_surface` - verifies genome (layout policy) constraints
+5. There are also cache-related tests
+
+For a complementary fixture that tests determinism "at the eval level" (meaning through the eval framework), the fixture should test things that 369 doesn't cover. 369 covers the stable system contract. The complementary fixture could cover:
+
+1. Tool schema ordering determinism (strict_schema test)
+2. Harness genome determinism
+3. Cache prefix stability
+
+Actually wait, let me re-read the task description more carefully: "A complementary fixture that tests determinism at the eval level — verifying that repeated eval runs with identical input produce identical PromptSnapshot artifacts"
+
+This implies the fixture should run the eval framework and verify prompt determinism. But the fixture infrastructure just runs shell commands. The fixture can't run "yyds eval" on itself - that would be circular.
+
+Let me think about this differently. The fixture format has a `tests` array of shell commands. Each command is run and succeeds (exit 0) or fails. The fixture can reference tests that verify:
+1. That the prompt system contract is maintained
+2. That tool schemas follow deterministic ordering  
+3. That the harness genome enforces layout constraints
+4. That cache prefix is stable across runs
+
+Let me look at the actual tests more carefully to determine which would make a good complementary fixture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2747..2847  ▶ read src/deepseek.rs:2838..3038 ✓ (535ms)
+ ✓ (405ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the fixture format and the available tests. Let me now understand what the task is asking for more precisely:
+
+The task says to create a "held-out coding eval fixture" for DeepSeek prompt layout determinism. The key difference from #369 is:
+- #369 tests at the "CLI/command level" - it references Rust unit tests that verify the system contract
+- This new fixture should test "at the eval level" - it should verify prompt layout determinism survives round-trip through the eval framework
+
+But looking at the fixture infrastructure, fixtures ARE the eval framework. A fixture IS a set of test commands that the eval framework runs. There's no separate "eval level" test that's different from what fixtures already do.
+
+Let me re-read the task: "A complementary fixture that tests determinism at the eval level — verifying that repeated eval runs with identical input produce identical PromptSnapshot artifacts"
+
+I think "eval level" means: the fixture itself, when run through `yyds eval fixtures score`, should verify that prompt layout remains deterministic. The key insight is that the eval framework runs commands and checks their exit codes. The fixture should run commands that test deterministic prompt behavior.
+
+Given that the fixture infrastructure just runs shell commands and checks exit codes, the fixture should include tests that verify:
+1. Tool schema ordering is deterministic (strict_schema tests)
+2. The harness genome creates consistent prompt layouts
+3. Cache prefix stability is maintained
+
+Let me pick the most relevant tests to create a complementary fixture. 369 already covers:
+- stable_system_contract_keeps_prompt_quality_rules
+- stable_system_contract_is_nonempty
+
+A complementary fixture should cover:
+- strict_schema_suite_covers_critical_state_mutations (tool schema determinism - schemas are ordered consistently)
+- harness_genome_constrains_default_mutation_surface (layout policy determinism)
+- Something about cache prefix stability
+
+But actually, let me re-read the task more carefully. The fallback says: "If the eval fixture infrastructure doesn't support the needed assertions (PromptSnapshot comparison across runs), write a smaller fixture that tests a simpler aspect of DeepSeek prompt behavior — such as cache prefix stability or tool schema ordering determinism."
+
+So the task already anticipates that the eval infrastructure may not support cross-run PromptSnapshot comparisons. The fallback is to test cache prefix stability or tool schema ordering determinism.
+
+Given this, I should create a fixture that tests:
+1. Tool schema ordering determinism (strict_schema tests)
+2. Harness genome layout determinism  
+3. Cache prefix stability
+
+These are complementary to #369 which tests the system contract.
+
+Let me now decide exactly which tests to include. The fixture should be small and fast. Let me look at which tests are most relevant.
+
+For tool schema ordering determinism:
+- `deepseek::tests::strict_schema_suite_covers_critical_state_mutations` - verifies all schemas are in fixed ordering
+- `deepseek::tests::strict_schema_has_required_fields_and_no_extra_properties` - verifies propose_harness_patch schema
+
+For harness genome layout constraints:
+- `deepseek::tests::harness_genome_constrains_default_mutation_surface` - verifies the genome has deterministic layout policy
+
+For cache prefix stability:
+- `deepseek::tests::cache_ratio_handles_missing_and_zero_totals`
+- `deepseek::tests::is_token_backed_true_only_when_both_cache_fields_populated`
+
+Let me look at what tests exist for `commands_deepseek` too:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.6s (2 ✓)
+
+Now let me check what deepseek-specific tests exist for tool ordering and prompt layout, and also understand the eval fixture validation better:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[test\]' src/commands_deepseek.rs | head -30 ✓ (316ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the command_deepseek tests more specifically for tests about cache, schema, or prompt-related behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2180..2240  ▶ read src/commands_deepseek.rs:2530..2580 ✓ (524ms)
+ ✓ (390ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me build the fixture. Based on my analysis:
+
+1. The fixture format is: `{task_id, category, repo_fixture, initial_commit, goal, tests: [shell commands], hidden_failure_mode, expected_files, risk_label}`
+
+2. The complementary fixture to #369 should test tool schema ordering determinism and harness genome layout determinism. These are the "eval-level" equivalents of the "CLI-level" system contract checks in #369.
+
+3. My fixture will reference these tests:
+   - `cargo test deepseek::tests::strict_schema_suite_covers_critical_state_mutations -- --nocapture` - verifies tool schemas are ordered deterministically
+   - `cargo test deepseek::tests::harness_genome_constrains_default_mutation_surface -- --nocapture` - verifies genome layout constraints
+   - `cargo test deepseek::tests::strict_schema_has_required_fields_and_no_extra_properties -- --nocapture` - verifies propose_harness_patch schema
+
+Wait, but let me also add a test that specifically checks tool schema ORDERING determinism. The `strict_schema_suite_covers_critical_state_mutations` test checks that `strict_schema_names()` returns a specific list - that IS a test of ordering determinism.
+
+Let me also check if there are any explicit tool ordering tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.0s (2 ✓)
+
+Let me check if there are explicit tests for tool schema ordering determinism:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'strict_schema_names' (*.rs) ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `strict_schema_names()` function to see what it returns - this is key to understanding tool schema ordering determinism.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2328..2368 ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `strict_schema_names()` returns a fixed ordered list of tool names and `strict_schema_suite()` returns the corresponding schemas in the same fixed order. These are critical for prompt layout determinism because tool schemas appear in the system prompt in this order.
+
+The test `strict_schema_suite_covers_critical_state_mutations` verifies that:
+1. The schemas match `strict_schema_names()`
+2. Every schema has `strict: true`
+3. Every schema has `additionalProperties: false`
+4. Every schema has `schema_version` in `required`
+5. Every schema has at least 3 required fields
+6. The version number matches `STRICT_SCHEMA_VERSION`
+
+This IS a test of tool schema ordering determinism at the eval level - it verifies that the suite of schemas loaded by the eval framework is exactly the canonical ordered list.
+
+Now, for my fixture, I should combine tests that complement #369. Here's my plan:
+
+Fixtures that complement #369 (which tests the system contract):
+1. Tool schema ordering: `deepseek::tests::strict_schema_suite_covers_critical_state_mutations`
+2. Harness genome determinism: `deepseek::tests::harness_genome_constrains_default_mutation_surface`
+3. Cache prefix stability: `deepseek::tests::harness_genome_applies_deepseek_config_routing_and_cache_policy`
+
+But actually, let me think about "eval level" more carefully. The eval framework runs `yyds eval fixtures score` which runs the tests in each fixture. The fixture #369 tests the system contract via `cargo test` commands. This new fixture should test things that are complementary - aspects of prompt layout determinism that #369 doesn't cover.
+
+369 tests:
+- `cargo test deepseek::tests::stable_system_contract_keeps_prompt_quality_rules`
+- `cargo test deepseek::tests::stable_system_contract_is_nonempty`
+
+These test the stable_system_contract() text content. The complementary fixture should test:
+1. Tool schema ordering - the schemas sent to the model have deterministic ordering
+2. Harness genome layout constraints - genome policy is deterministic
+
+Let me now create the fixture. Let me also make sure I use the correct test name format. The existing fixtures use the format `cargo test <module>::tests::<test_name> -- --nocapture`.
+
+For commands_deepseek tests, they use `commands_deepseek::tests::`.
+
+Let me finalize the fixture content. I'll use:
+1. `cargo test deepseek::tests::strict_schema_suite_covers_critical_state_mutations -- --nocapture` - Tool schema ordering determinism
+2. `cargo test deepseek::tests::harness_genome_constrains_default_mutation_surface -- --nocapture` - Genome layout determinism
+3. `cargo test deepseek::tests::strict_schema_has_required_fields_and_no_extra_properties -- --nocapture` - Individual schema determinism
+
+These are all fast unit tests that verify prompt layout determinism at the structural level (schemas, genome, policy) rather than the textual level (system contract) tested by #369.
+
+Let me also verify that the test names are correct by checking the module path format used in other fixtures. The existing fixtures use `deepseek::tests::` prefix. Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (85ms)
+  ▶ todo ✓ (185ms)
+  ▶ todo ✓ (187ms)
+  ▶ todo ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the exact test name format used in existing fixtures. Let me check how #369 references its tests.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.0s (4 ✓)
+
+Now let me verify the correct test module paths. Let me check what the test module is named in deepseek.rs:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'mod tests' src/deepseek.rs ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the test module is `tests` inside the deepseek module. The test names in existing fixtures use `deepseek::tests::<test_name>`. Let me now also quickly verify that the test names I'm using are correct by running one of them:
+
+Actually, let me just verify the cargo test path format. The existing 369 fixture uses:
+```
+"cargo test deepseek::tests::stable_system_contract_keeps_prompt_quality_rules -- --nocapture"
+```
+
+So my fixture should use the same format. Let me create the fixture now.
+
+Let me also make sure the eval directory exists:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (84ms)
+  ▶ todo ✓ (199ms)
+  ▶ todo ✓ (201ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the directory exists and then create the fixture.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls /home/runner/work/yyds-harness/yyds-harness/eval/fixtures/local-smoke/ | tail… ✓ (326ms)
+
+
