@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 import re
 import subprocess
@@ -33,6 +34,24 @@ PROTECTED_IMPLEMENTATION_FILES = (
     "scripts/build_site.py",
     "skills/self-assess/SKILL.md",
     "skills/evolve/SKILL.md",
+)
+
+_FIXTURE_DIR = "eval/fixtures/local-smoke"
+_FIXTURE_FILE_RE = re.compile(
+    r"""
+    (?:fixture|eval)[\s#]*  # Context words: "fixture" or "eval"
+    (\d{3,4})               # Fixture number (3-4 digits)
+    (?!\d)                   # Not part of a longer number
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+# Broader fallback: bare NNN-description pattern (e.g., "369-deepseek-prompt-layout")
+_BARE_FIXTURE_NUM_RE = re.compile(
+    r"""
+    \b(\d{3,4})              # 3-4 digit number at word boundary
+    -[\w-]{4,}                # followed by hyphen + at least 4 more word/hyphen chars
+    """,
+    re.VERBOSE,
 )
 
 
@@ -550,6 +569,42 @@ def _has_cold_start_failure_evidence(text: str) -> bool:
     return not any(phrase in lower for phrase in healthy_phrases)
 
 
+def _fixture_paths_for_number(num: str) -> list[str]:
+    """Return matching fixture paths for a fixture number."""
+    pattern = os.path.join(_FIXTURE_DIR, f"{num}-*.json")
+    return sorted(glob.glob(pattern))
+
+
+def _check_fixture_already_exists(task: dict[str, object]) -> tuple[bool, str]:
+    """Return (contradicted, reason) if the task references a fixture that already exists.
+
+    Scans the task title and objective for fixture number references (e.g. ``#369``,
+    ``fixture 369``, ``369-deepseek-prompt-layout-determinism``), resolves them
+    to ``eval/fixtures/local-smoke/NNN-*.json`` paths, and checks whether the
+    file already exists on disk.
+    """
+    title = str(task.get("title", ""))
+    objective = str(task.get("objective", ""))
+    combined = f"{title}\n{objective}"
+
+    # Collect fixture numbers from both patterns
+    fixture_nums: set[str] = set()
+    for match in _FIXTURE_FILE_RE.finditer(combined):
+        fixture_nums.add(match.group(1))
+    for match in _BARE_FIXTURE_NUM_RE.finditer(combined):
+        fixture_nums.add(match.group(1))
+
+    for num in sorted(fixture_nums):
+        paths = _fixture_paths_for_number(num)
+        if paths:
+            return True, (
+                f"fixture already exists: {paths[0]} — "
+                f"suppressing stale task '{task.get('title', '')}'"
+            )
+
+    return False, ""
+
+
 def check_task_contradiction(
     task: dict[str, object], assessment: str
 ) -> tuple[bool, str]:
@@ -557,7 +612,13 @@ def check_task_contradiction(
 
     Scans the assessment's Recent Changes and Self-Test Results sections for
     evidence that the task's problem domain has already been addressed.
+    Also checks whether fixture files referenced by the task already exist on disk.
     """
+    # Check fixture file existence before scanning assessment text
+    fixture_contradicted, fixture_reason = _check_fixture_already_exists(task)
+    if fixture_contradicted:
+        return True, fixture_reason
+
     task_keys = tuple(task.get("keys", ()))
     if not task_keys:
         return False, ""
@@ -1533,6 +1594,70 @@ no-edit revert pressure from prior session.
         # (not just scripts/evolve.sh or similar protected paths)
         assert task.get("files"), (
             f"Expected task with files, got {task}"
+        )
+        # --- Fixture existence contradiction tests ---
+        # Test: a task referencing an existing fixture (e.g., #369) is contradicted
+        fixture_task = {
+            "title": "Add held-out coding eval fixture for DeepSeek prompt layout determinism",
+            "keys": ("deepseek-prompt-layout",),
+            "objective": "Create eval fixture #369 for DeepSeek prompt layout determinism.",
+            "files": "eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json",
+        }
+        assert os.path.isfile(
+            "eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json"
+        ), "Test precond: fixture 369 must exist on disk"
+        contradicted, reason = check_task_contradiction(fixture_task, "dummy assessment")
+        assert contradicted, (
+            f"Task referencing existing fixture #369 should be contradicted, "
+            f"got contradicted={contradicted}, reason={reason}"
+        )
+        assert "fixture already exists" in reason.lower(), (
+            f"Contradiction reason should mention 'fixture already exists', "
+            f"got: {reason}"
+        )
+        assert "369" in reason, (
+            f"Contradiction reason should mention fixture number 369, got: {reason}"
+        )
+        # Test: a fixture task with a non-existent fixture number is not contradicted
+        nonexistent_task = {
+            "title": "Add eval fixture #99999 for some-future-feature",
+            "keys": ("some-future-feature",),
+            "objective": "Create fixture 99999-some-future-feature.",
+            "files": "eval/fixtures/local-smoke/99999-some-future-feature.json",
+        }
+        contradicted2, reason2 = check_task_contradiction(nonexistent_task, "dummy assessment")
+        assert not contradicted2, (
+            f"Task referencing nonexistent fixture #99999 should NOT be contradicted, "
+            f"got contradicted={contradicted2}, reason={reason2}"
+        )
+        # Test: bare NNN-description pattern (e.g., "369-deepseek-prompt-layout")
+        # in title triggers fixture detection even without "fixture" prefix
+        bare_task = {
+            "title": "369-deepseek-prompt-layout-determinism is missing coverage",
+            "keys": ("coverage",),
+            "objective": "Add tests for 369-deepseek-prompt-layout.",
+            "files": "src/placeholder.rs",
+        }
+        contradicted3, reason3 = check_task_contradiction(bare_task, "dummy assessment")
+        assert contradicted3, (
+            f"Task with bare 369-description pattern should be contradicted, "
+            f"got contradicted={contradicted3}, reason={reason3}"
+        )
+        assert "fixture already exists" in reason3.lower(), (
+            f"Contradiction reason should mention 'fixture already exists', "
+            f"got: {reason3}"
+        )
+        # Test: a task without fixture references is not contradicted by this check
+        normal_task = {
+            "title": "Fix a completely unrelated bug",
+            "keys": ("unrelated-bug",),
+            "objective": "This has nothing to do with fixtures.",
+            "files": "src/main.rs",
+        }
+        contradicted4, reason4 = check_task_contradiction(normal_task, "dummy assessment")
+        assert not contradicted4, (
+            f"Task without fixture references should NOT be contradicted, "
+            f"got contradicted={contradicted4}, reason={reason4}"
         )
         print("preseed_session_plan self-tests passed")
         return 0
