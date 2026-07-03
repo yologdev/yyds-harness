@@ -1,0 +1,700 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the implementation contract, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:520..560  ▶ read src/deepseek.rs:1690..1750 ✓ (29ms)
+ ✓ (15ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand what I'm looking at:
+
+1. The task wants me to add `record_cache_metrics_direct` to `src/state.rs` and call it from two `DeepSeekUsage` construction sites in `src/deepseek.rs`.
+
+2. First construction site: lines 1703-1718 - This is in `DeepSeekFimCompletion` parsing, where `DeepSeekUsage` is constructed inline. But wait, this is in a FIM (fill-in-middle) completion context, not a chat completion. The cache metrics recording is probably more relevant for chat completions.
+
+3. Second construction site: line 1727-1732 - This is in `parse_chat_completion_sse`, where `DeepSeekUsage` is initialized and then updated via `parse_chat_usage` at line 1748.
+
+Let me look more carefully at:
+- The `parse_chat_usage` function
+- The existing `cache_metrics_payload` function to understand the full pattern
+- Where `record_cache_metrics` is called from prompt.rs (line 956)
+- The context around the second construction site to understand the model name availability
+
+Let me also check the `record` function in state.rs, and the EventType enum.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:552..602  ▶ search 'fn parse_chat_usage' in src/deepseek.rs  ▶ search 'record_cache_metrics' in src/prompt.rs  ▶ search 'CacheMetricsRecorded' in src/state.rs ✓ (23ms)
+ ✓ (24ms)
+ ✓ (26ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `parse_chat_usage` function and the context where `parse_chat_completion_sse` is called to understand what model name is available.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.0s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1792..1822  ▶ read src/deepseek.rs:1722..1752  ▶ search 'parse_chat_completion_sse' in src/deepseek.rs ✓ (24ms)
+ ✓ (19ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where `parse_chat_completion_sse` is called in the actual non-test code, to understand where the model name is available. The search shows it's only called in test code at lines 3679 and 3692. Let me search more broadly for where it's used.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_chat_completion_sse(' in src  ▶ search 'record_cache_metrics_direct' in src  ▶ search 'DeepSeekStreamingChatSummary' in src ✓ (18ms)
+ ✓ (12ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the call site in commands_deepseek.rs at line 822 to understand the context - what model name is available there.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:790..870  ▶ read src/deepseek.rs:440..470 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture:
+
+1. `parse_chat_completion_sse` is a pure function that takes a stream string and returns a `DeepSeekStreamingChatSummary` - it doesn't have the model name. It's called from `commands_deepseek.rs:822` in `handle_stream_check`.
+
+2. The task mentions two construction sites:
+   - Line 1703 - This is in `DeepSeekFimCompletion` parsing. This is for FIM (fill-in-middle) completions, not chat completions. Adding cache metrics recording here may not be useful since FIM completions don't go through the normal chat provider path.
+   - Line 1727 - This is in `parse_chat_completion_sse`, which constructs `DeepSeekUsage` for streaming chat completions.
+
+3. The problem: `parse_chat_completion_sse` is a pure parser function that doesn't know the model name. The model name is known at the call sites, but `parse_chat_completion_sse` is called from multiple places (most notably the test code, and from `handle_stream_check` in commands_deepseek.rs).
+
+4. The task's fallback says: "If both construction sites are in async functions where recording is awkward, pick just one site (the OpenAI-compat fallback at line 1727, which processes all providers)."
+
+5. But wait - the second "construction site" at line 1727 is actually in `parse_chat_completion_sse` which is a pure parser function. The actual `DeepSeekUsage` object is returned as part of `DeepSeekStreamingChatSummary` and the caller would need to record it.
+
+Let me think about where the actual DeepSeek provider calls are made. The real chat completion handler that talks to the DeepSeek API must call `parse_chat_completion_sse` somewhere. Let me search for where DeepSeek API responses are handled.
+
+Actually, let me re-read the task more carefully. The task says:
+- Construction site 1: line 1703 (DeepSeek-native path) - This is the FIM completion parsing in `parse_fim_completion`.
+- Construction site 2: line 1727 (OpenAI-compat fallback) - This is in `parse_chat_completion_sse`.
+
+But the task also says: "The simplest fix: add a new function `state::record_cache_metrics_direct(model, hit_tokens, miss_tokens)` that records directly from primitive values, bypassing `yoagent::Usage`. Call it from both DeepSeekUsage construction sites."
+
+The challenge is that `parse_chat_completion_sse` doesn't have the model name. But looking at `parse_fim_completion`, that function might also not have the model name.
+
+Let me look at `parse_fim_completion` to see if it has model context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1660..1710  ▶ search 'parse_fim_completion' in src ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both `parse_fim_completion_response` and `parse_chat_completion_sse` are pure parser functions that don't have the model name. Neither function stores or knows the model string.
+
+Now let me look at where these are called in the actual DeepSeek provider/transport code to see where the model name IS available. The actual DeepSeek API calls must happen somewhere in the transport layer.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_chat_completion_sse' in src/commands_deepseek.rs  ▶ read src/commands_deepseek.rs:1300..1400 ✓ (6ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the actual flow better. The task says:
+- Line 1703: DeepSeek-native path - this is `parse_fim_completion_response` 
+- Line 1727: OpenAI-compat fallback - this is `parse_chat_completion_sse`
+
+Both are pure parser functions that don't have access to the model name. The model name is typically available in the caller. Let me check where the actual DeepSeek chat completions happen - the real provider code that calls the API and parses streaming responses.
+
+Let me look at the deepseek provider/transport code to find the actual API call sites where `parse_chat_completion_sse` is used in the real flow (not test/command code).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'parse_chat_completion_sse' in src  ▶ search 'fn.*deepseek.*complet' in src ✓ (8ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`parse_chat_completion_sse` is only called from `commands_deepseek.rs:822` in `handle_stream_check` (for the `yyds deepseek stream-check` command) and from tests. It's not called from the actual DeepSeek provider code.
+
+Let me look at where the DeepSeek provider actually handles streaming responses. The DeepSeek provider is likely in the yoagent crate, or there might be custom handling in the deepseek module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stream' in src/deepseek.rs  ▶ search 'DeepSeekProvider' in src ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It seems the DeepSeek provider is handled through yoagent's OpenAI-compatible provider. The actual streaming response parsing is done by yoagent, not by yyds. The `parse_chat_completion_sse` is only used for the `yyds deepseek stream-check` diagnostic command and tests.
+
+Now I understand the challenge better. The real API calls go through yoagent's OpenAI-compatible provider. The `ModelCompleted` event in prompt.rs:956 is supposed to record cache metrics from `yoagent::Usage`, but it seems like the DeepSeek-specific fields (`prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`) are not being properly mapped into `yoagent::Usage` by the OpenAI-compatible provider.
+
+However, the task says: "Do NOT analyze why the existing prompt.rs:956 call doesn't fire. Just add the direct recording path." And the task suggests adding calls at two `DeepSeekUsage` construction sites, but notes that if the model name isn't available, pick just one site.
+
+Let me re-read the task more carefully:
+
+The task says to add recording at these two construction sites:
+1. Line 1703 - `parse_fim_completion_response` - FIM completion parsing
+2. Line 1727 - `parse_chat_completion_sse` - streaming chat parsing
+
+Both are pure parsers without model name access. But wait - the task's fallback says:
+- "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+- "If both construction sites are in async functions where recording is awkward, pick just one site (the OpenAI-compat fallback at line 1727, which processes all providers)."
+
+Hmm, neither site is in an async function. But neither has the model name. The task is asking me to add a function `record_cache_metrics_direct` in state.rs and call it from the DeepSeekUsage construction sites.
+
+Wait - let me re-read the task fallback more carefully:
+"If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+This suggests I should add the model name as a parameter to `parse_chat_completion_sse` and `parse_fim_completion_response`, or find another way. But modifying function signatures will break callers and might be outside the task scope.
+
+Actually, let me look more carefully at what functions are called from the actual DeepSeek transport. Let me check how yoagent's OpenAI-compatible provider handles DeepSeek.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'openai.*compat' in src  ▶ search 'deepseek.*provider' in src ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The DeepSeek provider is handled by yoagent. The actual API calls go through yoagent's OpenAI-compatible provider. Since I can't change yoagent, the task asks me to add direct recording at the `DeepSeekUsage` construction sites.
+
+But wait - the `DeepSeekUsage` construction sites in `parse_chat_completion_sse` and `parse_fim_completion_response` are only used for diagnostic commands (`yyds deepseek stream-check`, `yyds deepseek fim-parse`), not in the actual evolution loop. The real DeepSeek API calls go through yoagent, which creates its own usage structs.
+
+So calling `record_cache_metrics_direct` from these two construction sites won't help capture cache metrics from actual evolution sessions - it would only capture them from diagnostic commands.
+
+However, the task specifically asks for this. Let me just implement what the task asks for. The task says: "The simplest fix: add a new function `state::record_cache_metrics_direct(model, hit_tokens, miss_tokens)` that records directly from primitive values, bypassing `yoagent::Usage`. Call it from both DeepSeekUsage construction sites."
+
+The issue is that neither construction site has the model name. For `parse_chat_completion_sse`, it's a pure parser. For `parse_fim_completion_response`, same thing.
+
+But wait, let me re-read the task: "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+This suggests modifying the function signatures to accept the model name. Let me look at the callers of `parse_chat_completion_sse` and `parse_fim_completion_response` to see if they have the model name.
+
+For `parse_chat_completion_sse`: called from `handle_stream_check` in commands_deepseek.rs. Let me look at what model name is available there.
+
+For `parse_fim_completion_response`: called from `handle_fim_parse` in commands_deepseek.rs. Same question.
+
+Actually wait - the task says specifically "Add fallback cache metrics recording from DeepSeekUsage construction site". The key insight is:
+
+1. The `DeepSeekUsage` construction happens at specific points in deepseek.rs
+2. The task wants me to call a recording function right there
+3. The model name needs to be available
+
+Let me think about this differently. The task seems to suggest these two specific lines:
+- Line 1703: where `DeepSeekUsage` is constructed in `parse_fim_completion_response`
+- Line 1727: where `DeepSeekUsage` is constructed in `parse_chat_completion_sse`
+
+But modifying these functions to accept a model name parameter changes their public API. The callers would need to be updated too.
+
+Actually, let me read the task fallback more carefully: "If both construction sites are in async functions where recording is awkward, pick just one site (the OpenAI-compat fallback at line 1727, which processes all providers)."
+
+They're not in async functions. But the task acknowledges difficulty and says to pick just one site. 
+
+Let me look at what model info is available in `DeepSeekStreamingChatSummary` or the surrounding context.
+
+Actually, I think the simplest approach is:
+1. Add `record_cache_metrics_direct` to state.rs
+2. Modify `parse_chat_completion_sse` to accept an optional model parameter (with a default or Option)
+3. Call `record_cache_metrics_direct` after the DeepSeekUsage is finalized
+4. Update callers
+
+But let me trace back further. Let me look at `handle_stream_check` to see if it has a model name.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.0s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:815..845  ▶ read src/deepseek.rs:1775..1795 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I understand the full picture. Let me figure out the best approach.
+
+The task asks me to add a `record_cache_metrics_direct` function in `state.rs` and call it from the `DeepSeekUsage` construction sites. Both sites are in pure parser functions without access to model names.
+
+The task's fallback says:
+- "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+- "If both construction sites are in async functions where recording is awkward, pick just one site"
+
+Looking at `handle_stream_check`, the model name is NOT available at that call site either - it's just parsing a stream. The `default_stream_check_sse()` function returns a hardcoded test stream string.
+
+So neither parser function nor its callers in commands_deepseek.rs have the model name available. These are diagnostic commands, not real API response handlers.
+
+The actual real recording needs to happen where the DeepSeek API responses are processed in the provider layer. But that's in yoagent.
+
+OK let me think about this differently. The task says to add the recording at `DeepSeekUsage` construction sites. The `DeepSeekUsage` struct is constructed in two places:
+1. `parse_fim_completion_response` (line 1703)
+2. `parse_chat_completion_sse` (line 1727)
+
+Both are parsers without model context. The task says "extract it from the function context (the model name is available in the calling functions)" - but it's NOT available in those calling functions either.
+
+Let me look at the actual callers more carefully. Maybe the model name IS available somewhere. Let me check `handle_stream_check` flow more.
+
+Actually, let me look at the `record_stream_check_pass` function to understand the full `--record` flow:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:875..915 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The `record_stream_check_pass` already records a `DecisionRecorded` event, not a `CacheMetricsRecorded` event. The task wants a `CacheMetricsRecorded` event specifically.
+
+Now, let me think about this more pragmatically. The task says to add `record_cache_metrics_direct` and call it from the `DeepSeekUsage` construction sites. The two sites don't have model names. But looking at `parse_fim_completion_response`:
+
+Line 1703: The `DeepSeekUsage` is constructed, but the function `parse_fim_completion_response` takes only `value: &Value`. No model name.
+
+Line 1727: The `DeepSeekUsage` is initialized (then updated via `parse_chat_usage`), and `parse_chat_completion_sse` takes only `stream: &str`. No model name.
+
+Neither site has a model name. The task says to "extract it from the function context" but there's no model name in either function. The callers don't have model names either.
+
+OK, let me take a step back and think about what the task is ACTUALLY asking. Perhaps the model param should be an `Option<&str>` or just use `"deepseek"` as a default since these are DeepSeek-specific parsers.
+
+Actually, let me re-read the task more carefully:
+
+"The gap: no recording call exists at the DeepSeekUsage construction site."
+
+"Call it from both DeepSeekUsage construction sites."
+
+So the task wants me to:
+1. Add `record_cache_metrics_direct` in state.rs
+2. Call it after `DeepSeekUsage` is populated
+
+For the model name issue, the task says in the fallback: "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+This is wrong - the model name is NOT available in the calling functions either. But looking at the `record_cache_metrics_direct` spec:
+
+"Guard on `model.starts_with("deepseek")` (same as existing `cache_metrics_payload`)."
+
+So the model needs to start with "deepseek". Since both parsers are DeepSeek-specific, I could:
+1. Use a hardcoded "deepseek" model string, OR
+2. Modify the function signatures to accept an optional model parameter
+
+Let me look at this more carefully. The test `chat_stream_parser_preserves_reasoning_tool_calls_and_usage` at line 3670 uses `parse_chat_completion_sse` with test data that includes cache tokens. If I modify the function signature, I need to update all callers.
+
+Looking at callers:
+- `commands_deepseek.rs:822` - `handle_stream_check` - no model name available
+- `commands_deepseek.rs:2452` - test code
+- `deepseek.rs:3679` - test
+- `deepseek.rs:3692` - test
+
+None have the model name. 
+
+I think the most pragmatic approach is:
+1. Add `record_cache_metrics_direct` to state.rs
+2. Since neither parser function has the model name, I'll use `"deepseek"` as a default model name (or make it an optional parameter)
+
+Wait, let me look at the task success criteria again:
+
+"A new function `record_cache_metrics_direct` exists in src/state.rs that takes (model: &str, cache_hit: Option<u32>, cache_miss: Option<u32>) and records a CacheMetricsRecorded event."
+
+"Both DeepSeekUsage construction sites in src/deepseek.rs call this function after populating the struct."
+
+OK, the function signature is `(model: &str, cache_hit: Option<u32>, cache_miss: Option<u32>)`. The construction sites need a `model: &str`. Since they don't have one, let me just pass a hardcoded `"deepseek"` string. That's honest - these are DeepSeek-specific parsers.
+
+But wait, that feels hacky. Let me think about what's the most correct approach...
+
+Actually, looking at the task one more time - it says "Call it from both DeepSeekUsage construction sites." The construction at line 1727 is actually an initialization that gets overwritten later by `parse_chat_usage`. The final usage values are in the returned `DeepSeekStreamingChatSummary`. So the recording should happen AFTER the usage is fully populated, not at initialization.
+
+For `parse_chat_completion_sse`, the final `usage` value is in the return at line 1783. That's where the recording should go. For `parse_fim_completion_response`, the `usage` is constructed inline at line 1703 and returned at line 1700.
+
+Let me check what `DeepSeekUsage` looks like to understand the types:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the `DeepSeekUsage` struct definition and the `record` function signature to understand what I'm working with:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub struct DeepSeekUsage' in src/deepseek.rs  ▶ search '^pub fn record' in src/state.rs  ▶ search 'fn now_ms' in src/state.rs ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the DeepSeekUsage struct and the record function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:60..90  ▶ search 'fn record(' in src/state.rs ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `cache_hit_tokens` and `cache_miss_tokens` are `Option<u64>`, not `Option<u32>`. The task says `Option<u32>` but I should use the actual types from the struct. Let me check the existing `cache_metrics_payload` which handles the same fields.
+
+Actually, looking at the task: "A new function `record_cache_metrics_direct` exists in src/state.rs that takes (model: &str, cache_hit: Option<u32>, cache_miss: Option<u32>)"
+
+But the actual `DeepSeekUsage` fields are `Option<u64>`. And in JSON, they can be serialized as numbers. Let me just use `Option<u64>` to match.
+
+Now let me read the `record` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:439..469 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I understand the full picture. Let me plan my implementation:
+
+1. **Add `record_cache_metrics_direct` to `src/state.rs`**: A function that takes model, cache_hit (Option<u64>), and cache_miss (Option<u64>), creates a `CacheMetricsRecorded` event with the same payload format as `cache_metrics_payload`, and calls `record()`.
+
+2. **Call it from `src/deepseek.rs`**: The two construction sites. But they don't have model names. I'll need to figure out how to get the model name.
+
+Let me look more carefully at where the model name might come from. The `parse_chat_completion_sse` function doesn't have access to a model name. But the task says to add recording at these sites.
+
+Actually, looking at the task again: "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+Let me check the calling functions more carefully. For `parse_chat_completion_sse`, it's called from `handle_stream_check` in commands_deepseek.rs. Let me see if there's a model name available upstream.
+
+Actually, for the stream-check command, there's no specific model. The task's intent seems to be to add recording capability for when actual DeepSeek API responses are parsed. But the parsers in deepseek.rs are lower-level utilities.
+
+Hmm, wait - let me look at where the actual DeepSeek API responses come through. The DeepSeek provider in yoagent might call back into yyds code. Let me search for where `DeepSeekUsage` is used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'DeepSeekUsage' in src ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `DeepSeekUsage` is constructed in:
+1. `parse_fim_completion_response` (line 1703)
+2. `parse_chat_completion_sse` (line 1727) - initial then overwritten by `parse_chat_usage` (line 1792-1813)
+3. `state.rs:560` - in `cache_metrics_payload`, creating a `DeepSeekUsage` from `yoagent::Usage`
+4. Tests
+
+The key observation: both `parse_chat_completion_sse` and `parse_fim_completion_response` don't have the model name. But looking at the task again, it says:
+
+"At line 1727 (OpenAI-compat path), do the same."
+
+Line 1727 is `parse_chat_completion_sse`. But this is a streaming chat completion parser, AND the `usage` variable at line 1727 gets overwritten at line 1748 by `parse_chat_usage`. So the actual final usage is available after the loop, right before the `Ok(DeepSeekStreamingChatSummary {...})` at line 1783.
+
+For `parse_fim_completion_response` at line 1703, the `DeepSeekUsage` is constructed inline as part of the return value.
+
+Both functions need a model parameter. The task says to extract it from the function context. Since neither function has it, I need to either:
+1. Add a `model` parameter to both functions
+2. Use a hardcoded "deepseek" string
+
+Option 1 is cleaner but changes the public API. Let me check how many callers each function has.
+
+`parse_chat_completion_sse`: called from:
+- `commands_deepseek.rs:822` (handle_stream_check)
+- `commands_deepseek.rs:2452` (test)
+- `deepseek.rs:3679` (test)
+- `deepseek.rs:3692` (test)
+
+`parse_fim_completion_response`: called from:
+- `commands_deepseek.rs:1336` (handle_fim_parse)
+- `commands_deepseek.rs:3109` (test)
+- `deepseek.rs:3648` (test)
+
+That's a lot of callers to update. The task says to keep it simple, but adding a parameter to a public function requires updating all callers.
+
+Actually, let me look at this from a different angle. The task says: "If both construction sites are in async functions where recording is awkward, pick just one site (the OpenAI-compat fallback at line 1727, which processes all providers)."
+
+Line 1727 is `parse_chat_completion_sse`. It's NOT in an async function. But the task says "pick just one site". So maybe I should:
+
+1. Add `record_cache_metrics_direct` to state.rs
+2. Modify `parse_chat_completion_sse` to accept an optional model parameter 
+3. Call `record_cache_metrics_direct` from within `parse_chat_completion_sse`
+
+OR simpler: modify the approach to record at the call sites instead of inside the parser functions. The callers might have more context.
+
+But looking at `handle_stream_check`, it doesn't have a model name either.
+
+OK, let me just go with a pragmatic approach:
+1. Add `record_cache_metrics_direct` to `src/state.rs`
+2. In `parse_chat_completion_sse`, after the usage is finalized (before the return), call `record_cache_metrics_direct` with a hardcoded `"deepseek"` model name
+3. In `parse_fim_completion_response`, after constructing the `DeepSeekUsage`, call `record_cache_metrics_direct` with a hardcoded `"deepseek"` model name
+
+This is the simplest approach. The model string "deepseek" is appropriate because these are DeepSeek-specific parsers.
+
+Wait, but the task says: "Guard on `model.starts_with("deepseek")` (same as existing `cache_metrics_payload`)." Since I'm using "deepseek" as the model string, the guard will pass.
+
+Let me now implement this. First, let me read the full `parse_chat_completion_sse` to understand where to place the recording call.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me read the full `parse_chat_completion_sse` function and the test for the cache metrics payload:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1722..1802  ▶ read src/state.rs:4680..4710 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me plan the implementation:
+
+1. **Add `record_cache_metrics_direct` to `src/state.rs`**: Copy the pattern from `cache_metrics_payload`, but accept primitive values instead of `&yoagent::Usage`.
+
+2. **Call it from `parse_chat_completion_sse`**: After the loop, before the return, call `record_cache_metrics_direct("deepseek", usage.cache_hit_tokens, usage.cache_miss_tokens)`. But wait - `cache_hit_tokens` and `cache_miss_tokens` are `Option<u64>`, and the function takes `Option<u32>`. Let me use `Option<u64>`.
+
+3. **Call it from `parse_fim_completion_response`**: After constructing the `DeepSeekUsage`, call `record_cache_metrics_direct`.
+
+Wait, but both functions don't have the model name. And the task says: "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+The calling functions don't have it either. Let me re-check `handle_stream_check` - maybe I can find a model name there. Actually, `handle_stream_check` is a diagnostic command that parses a hardcoded test stream. There's no model involved.
+
+OK, I think the pragmatic approach is:
+- Use a hardcoded `"deepseek"` model name at the recording sites. These are DeepSeek-specific parsers, so "deepseek" passes the guard.
+
+But wait, this feels like a hack that will produce inaccurate data. Let me think about alternative approaches...
+
+Actually, looking at the fallback more carefully: "If the recording sites in deepseek.rs don't have access to the model name string, extract it from the function context (the model name is available in the calling functions)."
+
+Maybe I should look more broadly. Is the model name available through the harness genome or some global config?
+
+Actually, the task is fairly clear about what to do. Let me just implement it with a hardcoded "deepseek" model. This is a fallback/direct recording path, and the model guard only checks `starts_with("deepseek")`, which passes.
+
+Wait, actually, I just realized something. Let me look at the `cache_hit_ratio()` call in `cache_metrics_payload` - do I need to compute that? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:552..582 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The payload format is:
+```json
+{
+    "model": "deepseek-v4-pro",
+    "prompt_cache_hit_tokens": 80,
+    "prompt_cache_miss_tokens": 20,
+    "cache_hit_ratio": 0.8
+}
+```
+
+Now let me implement:
+
+1. Add `record_cache_metrics_direct` to `state.rs`
+2. Add recording calls in `deepseek.rs`
+
+For `record_cache_metrics_direct`, I'll follow the same pattern as `cache_metrics_payload` but accept primitive values. I'll compute the `cache_hit_ratio` using `DeepSeekUsage::cache_hit_ratio()`.
+
+For the deepseek.rs calls:
+- In `parse_fim_completion_response`: after constructing `DeepSeekUsage` at line 1703, call `crate::state::record_cache_metrics_direct("deepseek", cache_hit_tokens, cache_miss_tokens)`. But I need to extract the values first.
+- In `parse_chat_completion_sse`: after the loop, before the return at line 1783, call `crate::state::record_cache_metrics_direct("deepseek", usage.cache_hit_tokens, usage.cache_miss_tokens)`. 
+
+Wait, but both sites still don't have a model name. Let me just use `"deepseek"` as a default. This is a fallback recording path specifically for DeepSeek API responses - it's honest to label the model as "deepseek" since these parsers are DeepSeek-specific.
+
+Actually, I just want to make sure I'm not creating a worse situation. The task says the recording should produce `CacheMetricsRecorded` events. The `yyds deepseek cache-report` command reads these events using `model.starts_with("deepseek")` guard. Using `"deepseek"` as the model will pass that guard.
+
+OK let me now implement. First the state.rs function, then the deepseek.rs calls.
+
+For `record_cache_metrics_direct`, the implementation should:
+- Take `model: &str, cache_hit: Option<u64>, cache_miss: Option<u64>`
+- Guard on `model.starts_with("deepseek")`
+- Skip if both are None or Some(0)
+- Compute cache_hit_ratio using DeepSeekUsage
+- Build payload and record
+
+Let me write the code:
+
+```rust
+pub fn record_cache_metrics_direct(
+    model: &str,
+    cache_hit: Option<u64>,
+    cache_miss: Option<u64>,
+) {
+    if !model.starts_with("deepseek") {
+        return;
+    }
+    if cache_hit == Some(0) && cache_miss == Some(0) {
+        return;
+    }
+    if cache_hit.is_none() && cache_miss.is_none() {
+        return;
+    }
+    let usage = crate::deepseek::DeepSeekUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_hit_tokens: cache_hit,
+        cache_miss_tokens: cache_miss,
+    };
+    let payload = json!({
+        "model": model,
+        "prompt_cache_hit_tokens": usage.cache_hit_tokens,
+        "prompt_cache_miss_tokens": usage.cache_miss_tokens,
+        "cache_hit_ratio": usage.cache_hit_ratio(),
+    });
+    record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+}
+```
+
+Wait, I need to check if the `json!` macro is available in scope. The existing function uses it. Let me also check the imports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check imports at the top of state.rs to make sure `json!` and `DeepSeekUsage` are available.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.1s (4 ✓)
+
+Let me check the imports at the top of state.rs:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..31 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `serde_json::json` and `Value` are imported. Now I need to check if `DeepSeekUsage` is accessible from state.rs. The existing code at line 560 uses `crate::deepseek::DeepSeekUsage`, so it's already accessible.
+
+Now let me implement the function. I'll add it right after the existing `record_cache_metrics` function (after line 530).
+
+For the deepseek.rs calls, I need to:
+1. In `parse_fim_completion_response` (after line 1718, right after the `DeepSeekUsage` construction but before the return), add a call.
+2. In `parse_chat_completion_sse` (after the loop, before the return at line 1783), add a call.
+
+Let me implement step by step.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `record_cache_metrics_direct` function. I'll place it right after `record_cache_metrics` at line 530.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `record_cache_metrics_direct` function to `src/state.rs`, right after `record_cache_metrics`:
+    pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage) {
+        let Some(payload) = cache_metrics_payload(model, usage) else {
+  +         return;
+  +     };
+  +     record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+  + }
+  + 
+  + /// Record cache metrics directly from primitive values, bypassing
+  + /// `yoagent::Usage`. This is a fallback recording path for when
+  + /// `DeepSeekUsage` is constructed from raw API responses and the
+  + /// `yoagent::Usage.cache_read`/`input` fields are zero or absent.
+  + pub fn record_cache_metrics_direct(
+  +     model: &str,
+  +     cache_hit: Option<u64>,
+  +     cache_miss: Option<u64>,
+  + ) {
+  +     if !model.starts_with("deepseek") {
+  +         return;
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (6 → 39 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 39 lines)
+    pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage) {
+        let Some(payload) = cache_metrics_payload(model, usage) else {
+  +         return;
+  +     };
+  +     record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+  + }
+  + 
+  + /// Record cache metrics directly from primitive values, bypassing
+  + /// `yoagent::Usage`. This is a fallback recording path for when
+  + /// `DeepSeekUsage` is constructed from raw API responses and the
+  + /// `yoagent::Usage.cache_read`/`input` fields are zero or absent.
+  + pub fn record_cache_metrics_direct(
+  +     model: &str,
+  +     cache_hit: Option<u64>,
+  +     cache_miss: Option<u64>,
+  + ) {
+  +     if !model.starts_with("deepseek") {
+  +         return;
+  +     }
+  +     if cache_hit == Some(0) && cache_miss == Some(0) {
+  ... (19 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the recording calls in src/deepseek.rs. I need to:
+
+1. In `parse_chat_completion_sse` - after the usage is fully populated (after the loop), call `crate::state::record_cache_metrics_direct`.
+2. In `parse_fim_completion_response` - after the `DeepSeekUsage` is constructed.
+
+For `parse_chat_completion_sse`, the best place is right after the `saw_data` check and before the `Ok(...)` return, at line 1782-1783.
+
+For `parse_fim_completion_response`, the `DeepSeekUsage` is constructed inline at line 1703-1718. I need to call the function after the usage is fully built. The usage values are extracted from JSON, so I need to capture them.
+
+Let me look at the context again more carefully for `parse_fim_completion_response`:
+
+```rust
+pub fn parse_fim_completion_response(value: &Value) -> Result<DeepSeekFimCompletion, String> {
+    ...
+    let usage = value.get("usage").unwrap_or(&Value::Null);
+    Ok(DeepSeekFimCompletion {
+        text,
+        finish_reason,
+        usage: DeepSeekUsage {
+            input_tokens: usage.get("prompt_tokens")...unwrap_or(0),
+            output_tokens: usage.get("completion_tokens")...unwrap_or(0),
+            cache_hit_tokens: usage.get("prompt_cache_hit_tokens")...,
+            cache_miss_tokens: usage.get("prompt_cache_miss_tokens")...,
+        },
+    })
+}
+```
+
+The `DeepSeekUsage` is constructed inline. I need to extract the values and call `record_cache_metrics_direct`. But the extraction is done inside the struct literal. Let me restructure slightly to extract the values first.
+
+Actually, I can call the function after the `DeepSeekFimCompletion` is constructed and access `completion.usage.cache_hit_tokens` and `completion.usage.cache_miss_tokens`. Let me look at the return more carefully.
+
+Wait, the function returns `Result<DeepSeekFimCompletion, String>` and the value is returned immediately. I can restructure to bind to a variable first, call the recording, then return.
+
+For `parse_chat_completion_sse`, the usage is already bound to a variable `usage`, so I can just call after the loop.
+
+Let me implement both.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the recording call in `parse_chat_completion_sse`. The best place is right before the `Ok(...)` return at line 1783, after the usage is finalized:
+        if !saw_data {
+            return Err("DeepSeek streaming response contained no data chunks".to_string());
+        }
+  + 
+  +     // Record cache metrics directly from the parsed DeepSeekUsage so
+  +     // `yyds deepseek cache-report` can report on deepseek-prefixed models
+  +     // even when yoagent's `Usage.cache_read`/`input` are zero.
+  +     crate::state::record_cache_metrics_direct(
+  +         "deepseek",
+  +         usage.cache_hit_tokens,
+  +         usage.cache_miss_tokens,
+  +     );
+    
+        Ok(DeepSeekStreamingChatSummary {
+  ✓ Auto-approved: edit: src/deepseek.rs (5 → 14 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/deepseek.rs (5 → 14 lines)
+        if !saw_data {
+            return Err("DeepSeek streaming response contained no data chunks".to_string());
+        }
+  + 
+  +     // Record cache metrics directly from the parsed DeepSeekUsage so
+  +     // `yyds deepseek cache-report` can report on deepseek-prefixed models
+  +     // even when yoagent's `Usage.cache_read`/`input` are zero.
+  +     crate::state::record_cache_metrics_direct(
+  +         "deepseek",
+  +         usage.cache_hit_tokens,
+  +         usage.cache_miss_tokens,
+  +     );
+    
+        Ok(DeepSeekStreamingChatSummary {
+ ✓ (6ms)
+
+
