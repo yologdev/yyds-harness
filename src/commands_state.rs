@@ -27,6 +27,9 @@ pub(crate) fn default_store_path(events_path: &Path) -> PathBuf {
 /// Default event scan limit for `state doctor` to prevent timeout with 50k+ events.
 const DEFAULT_DOCTOR_LIMIT: usize = 20_000;
 
+/// Default event scan limit for `state why last-failure` to prevent timeout with 70k+ events.
+const DEFAULT_WHY_LIMIT: usize = 10_000;
+
 pub fn handle_state_subcommand(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
     match sub {
@@ -80,21 +83,31 @@ pub fn handle_state_subcommand(args: &[String]) {
         "patches" => handle_patches(&args[3..]),
         "why" => {
             let summary = args.iter().any(|a| a == "--summary");
-            let limit = args
+            let user_limit = args
                 .iter()
                 .position(|a| a == "--limit")
                 .and_then(|i| args.get(i + 1))
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(200);
+                .and_then(|s| s.parse::<usize>().ok());
             // No explicit id? Show summary only (--summary without id path)
             let id_candidate = args
                 .get(3)
                 .filter(|a| !a.starts_with("--") && !a.chars().all(|c| c.is_ascii_digit()));
             if id_candidate.is_none() {
-                handle_state_summary(args, limit);
+                handle_state_summary(args, user_limit.unwrap_or(200));
                 return;
             }
             let id = id_candidate.unwrap();
+            // Determine effective limit: user-set limit always wins.
+            // For "last-failure", use a larger sampling window (DEFAULT_WHY_LIMIT)
+            // to avoid timing out on large 70K+ event logs. For specific event IDs
+            // (UUID-like), scan the full stream to guarantee the exact event is found.
+            let limit = if let Some(l) = user_limit {
+                l
+            } else if id == "last-failure" {
+                DEFAULT_WHY_LIMIT
+            } else {
+                0 // full scan for specific event IDs
+            };
             handle_why(id, summary, limit);
         }
         "lineage" => {
