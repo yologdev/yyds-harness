@@ -529,6 +529,35 @@ pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage) {
     record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
 }
 
+/// Record cache metrics directly from primitive values, bypassing
+/// `yoagent::Usage`. This is a fallback recording path for when
+/// `DeepSeekUsage` is constructed from raw API responses and the
+/// `yoagent::Usage.cache_read`/`input` fields are zero or absent.
+pub fn record_cache_metrics_direct(model: &str, cache_hit: Option<u64>, cache_miss: Option<u64>) {
+    if !model.starts_with("deepseek") {
+        return;
+    }
+    if cache_hit == Some(0) && cache_miss == Some(0) {
+        return;
+    }
+    if cache_hit.is_none() && cache_miss.is_none() {
+        return;
+    }
+    let usage = crate::deepseek::DeepSeekUsage {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_hit_tokens: cache_hit,
+        cache_miss_tokens: cache_miss,
+    };
+    let payload = json!({
+        "model": model,
+        "prompt_cache_hit_tokens": usage.cache_hit_tokens,
+        "prompt_cache_miss_tokens": usage.cache_miss_tokens,
+        "cache_hit_ratio": usage.cache_hit_ratio(),
+    });
+    record(EventType::CacheMetricsRecorded, Actor::Harness, payload);
+}
+
 /// Record a SessionStarted event at session initialization, before the first
 /// prompt or tool call. Provides diagnostic context for sessions that crash
 /// before producing any other events.

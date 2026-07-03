@@ -1697,6 +1697,13 @@ pub fn parse_fim_completion_response(value: &Value) -> Result<DeepSeekFimComplet
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     let usage = value.get("usage").unwrap_or(&Value::Null);
+    let cache_hit_tokens: Option<u64> = usage
+        .get("prompt_cache_hit_tokens")
+        .and_then(|v| v.as_u64());
+    let cache_miss_tokens: Option<u64> = usage
+        .get("prompt_cache_miss_tokens")
+        .and_then(|v| v.as_u64());
+    crate::state::record_cache_metrics_direct("deepseek", cache_hit_tokens, cache_miss_tokens);
     Ok(DeepSeekFimCompletion {
         text,
         finish_reason,
@@ -1709,12 +1716,8 @@ pub fn parse_fim_completion_response(value: &Value) -> Result<DeepSeekFimComplet
                 .get("completion_tokens")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
-            cache_hit_tokens: usage
-                .get("prompt_cache_hit_tokens")
-                .and_then(|v| v.as_u64()),
-            cache_miss_tokens: usage
-                .get("prompt_cache_miss_tokens")
-                .and_then(|v| v.as_u64()),
+            cache_hit_tokens,
+            cache_miss_tokens,
         },
     })
 }
@@ -1779,6 +1782,15 @@ pub fn parse_chat_completion_sse(stream: &str) -> Result<DeepSeekStreamingChatSu
     if !saw_data {
         return Err("DeepSeek streaming response contained no data chunks".to_string());
     }
+
+    // Record cache metrics directly from the parsed DeepSeekUsage so
+    // `yyds deepseek cache-report` can report on deepseek-prefixed models
+    // even when yoagent's `Usage.cache_read`/`input` are zero.
+    crate::state::record_cache_metrics_direct(
+        "deepseek",
+        usage.cache_hit_tokens,
+        usage.cache_miss_tokens,
+    );
 
     Ok(DeepSeekStreamingChatSummary {
         content,
