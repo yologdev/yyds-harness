@@ -1,0 +1,559 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix the `yyds state why last-failure` timeout by adding event sampling. Let me:
+
+1. First read the evolve skill
+2. Find `build_why_report` in `src/commands_state.rs`
+3. Understand the current code
+4. Implement the sampling fix
+5. Test and verify
+
+Let me start by reading the skill and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md  ▶ search 'build_why_report' in src/commands_state.rs ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `build_why_report` function and understand its current implementation. The search shows it's around line 1172 for the call site and also at line 15756 (mentioned in the task). Let me find the function definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3112..3212 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of `build_why_report` and also the handler around line 1172.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3211..3331  ▶ read src/commands_state.rs:1140..1240 ✓ (23ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture. The handler around lines 1168-1239 already has `limit` support — it shows "(searched last {limit} events of {all_count} total, use --limit 0 for full scan)". I need to understand where `limit` comes from and how `events` are loaded. Let me look further up in the handler to find where events are loaded and `limit` is used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1000..1120 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the architecture:
+
+1. `handle_why(id, show_summary, limit)` at line 1080 takes a `limit` parameter
+2. It calls `read_tail_events(&path, limit)` to load events with a limit
+3. It then passes events to `build_why_report(&events, id)` at line 1172
+4. At line 1232-1239, it prints "(searched last {limit} events of {all_count} total, use --limit 0 for full scan)"
+
+So the handler already has sampling via `read_tail_events`. The problem seems to be that `handle_why` is called with `limit=0` (no limit) by default for `last-failure`. Let me check how `handle_why` is dispatched.
+
+Let me find the dispatch point for the `why` subcommand to see what default limit is passed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_why' in src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see around line 98 to find how `handle_why` is called and how `limit` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:60..120 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The default limit when someone runs `yyds state why last-failure` is 200 (line 88). 200 is quite small but should be fast. That's odd -- if the limit is already 200, why would it be timing out?
+
+Wait, let me re-read the code. `read_tail_events(&path, limit)` - let me check what that function does with `limit`. If `limit` is 200, does it read the last 200 events or the last 200 lines? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' in src ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1367..1407 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `read_tail_events` calls `read_tail(path, limit)` which reads the last N lines. With limit=200, it reads the last 200 lines from the events file. That should be fast even for a 70K event file.
+
+But wait - let me check what `read_tail` does. It might be reading the entire file to get the tail.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `read_tail`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1318..1368 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly. `read_tail` at line 1318 reads the ENTIRE file with `std::fs::read_to_string(path)` and then keeps only the last `limit` lines. For a 70K event file, this could be quite large — reading the whole file into memory could take a while.
+
+The default limit for `handle_why` is 200 (line 88). So it reads the whole file, keeps the last 200 lines of text, parses them into events. This should be fast for a 200-line tail from a file.
+
+Wait, but the task says it times out. Let me re-examine. Maybe the file is really huge — hundreds of MB. `read_to_string` of a 500MB file could take multiple seconds. And the "last-failure" path might need to scan further back than 200 events to find a failure.
+
+Actually wait — I re-read the handler at line 1082: `let Ok(events) = read_tail_events(&path, limit)`. With limit=200, it reads the last 200 lines. That should be fast. But then `build_why_report` iterates over those events. 200 events is nothing.
+
+Hmm, let me reconsider. Maybe the issue is that `read_tail` reads the entire file into memory first (`read_to_string`). For a 70K+ event JSONL file, this could be a large file (maybe 50-100MB). Reading that all into memory could be slow, even if we only keep the last 200 lines.
+
+But wait — the task says the fix is to add "event sampling cap" mirroring what was done for other diagnostic commands. Let me check what the other commands (state doctor, state crashes, cache-report) do differently.
+
+Let me look at `read_tail_events_capped` in `commands_state_crashes.rs` and `DEFAULT_DOCTOR_LIMIT` to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:1..41  ▶ search 'DEFAULT_DOCTOR_LIMIT' in src/commands_state.rs ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. The state doctor uses `DEFAULT_DOCTOR_LIMIT: usize = 20_000` and `read_tail_events_capped` which also reads the whole file but caps at 20K lines. The crashes command uses `MAX_EVENTS_SCAN: usize = 20_000`.
+
+So the issue is that:
+1. `read_tail` reads the entire file into memory every time
+2. The default limit for `handle_why` is only 200 lines, but still reads the whole file
+
+Wait, but reading the whole file and keeping 200 lines should still be fast... unless the file is huge. Let me think again.
+
+Actually, let me re-read the task. It says "The command scans the full 70K-event JSONL stream to find a single failure event." This implies the `--limit` is set to 0 (full scan) or the default 200 isn't enough to find a failure.
+
+Looking at the dispatch code (line 88): `.unwrap_or(200)` — so the default is 200. That should be fast. But maybe the tasks' self-tests or assessments run with `--limit 0`? Or maybe the issue is that the file read itself is expensive because it's a large file.
+
+But wait — the task says other commands got the "sampling-cap fix." Let me check what exactly was changed. The fix pattern may involve changing `read_tail` to be more efficient, or adjusting the default limit to be larger but still bounded.
+
+Actually, I think I understand now. The real issue is likely that when `id == "last-failure"`, and no failure exists in the last 200 events (because failures are rare), the function falls through to the "no failure found" path which then iterates over ALL events to build a summary. Let me look at `build_state_summary`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.7s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_summary' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `build_state_summary` is called with the already-filtered `events` (after `read_tail_events`). Since we only read 200 tail events, this should be fast.
+
+Actually, wait. Let me re-read the handler more carefully. When the events file can't be read (`read_tail_events` fails), different handling happens. Let me re-read lines 1080-1170.
+
+Actually, I think the issue may be subtler. The limit default is 200. With `read_tail`, it reads the entire file, then keeps the last 200 lines. For a large file, the `read_to_string` is the bottleneck.
+
+But the task specifically says the fix is to "mirror what was done for state doctor, state crashes, cache-report, and terminal-state script." Let me look at how state doctor uses its limit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_state_doctor' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where the doctor handler reads events and uses the limit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_doctor' in src/commands_state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `handle_doctor`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:145..205 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I see the pattern. The state doctor:
+1. Counts total events fast (without parsing JSON)
+2. If `limit > 0 && total_events > limit`, reads only the tail
+3. Uses `read_tail_events` for sampling
+
+The important insight is that `read_tail_events` with a limit reads the entire file as a string, but then only processes the last N lines.
+
+Now the key question for the handler: with `--limit 0` (or a very large limit), `read_tail_events` reads ALL events via `read_events_lenient` which also reads the entire file and parses every line. With a large file of 70K events, that's a lot of JSON parsing.
+
+But with the default limit of 200, it should be fast even though it reads the entire file as a string.
+
+OK let me reconsider. I think the real issue might be:
+1. The default limit is 200 events from the tail
+2. If no failure exists in those 200 events, `build_why_report` returns an error
+3. The handler prints the error and shows fallback diagnostics
+4. This fallback might be doing expensive operations
+
+OR maybe the issue is that when running in assessment mode or test mode, someone runs `yyds state why last-failure` with `--limit 0` (full scan) to be thorough.
+
+Actually, let me look at `read_tail` again. It reads the ENTIRE file with `read_to_string`. For a 70K-event file, each event line might be 200-500 bytes, so the file is roughly 14-35 MB. Reading 35MB into a string and iterating over all lines just to keep the last 200 is wasteful but shouldn't cause a timeout (it should take <1 second).
+
+Hmm, but maybe in the CI environment with slower I/O, or if the file is much larger (hundreds of MB), this could be an issue.
+
+Wait, let me reconsider the task description: "The command scans the full 70K-event JSONL stream to find a single failure event." This suggests that the current behavior IS scanning the full stream — maybe the limit is set to 0 somewhere, or maybe the assessment self-tests deliberately run `--limit 0`.
+
+Let me look at the task again: "The command handler dispatches at src/commands_state.rs:1172; `build_why_report` is around line 15756 and scans all events unconditionally when `id == "last-failure"`."
+
+Wait, the task says `build_why_report` is around line 15756, but we found it at line 3112. The task draft may be inaccurate. But the key insight is: maybe `build_why_report` scans all events, and the issue is that with `--limit 0` (or the default limit being small), the function iterates many times.
+
+Actually looking at the code again — `build_why_report` takes `&[Value]` (already-loaded events). It can only scan what it's given. The issue is NOT in `build_why_report` scanning too many events — it's in how the events are loaded.
+
+Let me check if there's a path where `read_tail_events` is bypassed and all events are loaded. Let me look at `read_events`:
+
+The `read_events` function at line 1330 delegates to `crate::state::read_compatibility_events`. And `read_tail_events(limit=0)` calls `read_events_lenient` which reads and parses ALL events. But with limit=200 (default), `read_tail` is called, which reads the whole file as a string.
+
+OK, I think the real fix the task wants is simpler than I initially thought:
+
+1. The `read_tail` function reads the entire file which is wasteful for large files
+2. The fix should make the "last-failure" path use bounded read (like reading only the last N KB or last N lines via seek) instead of reading the whole file
+
+But the task says "mirror what was done for state doctor, state crashes, cache-report, and terminal-state script." Looking at those, they all use `read_tail_events` with a cap (like 20K). So the fix pattern is: increase the default limit and add a cap.
+
+Wait — let me re-read the task one more time: "When no failure exists in the sampled window, print 'No failure found in recent events (sampled last N events). Use --full to scan all history.'"
+
+And: "build_why_report scans at most N recent events (e.g., 5,000-10,000) when searching for 'last-failure.'"
+
+And: "yyds state why <specific-event-id> still scans the full stream (event-ID lookups need precision, not sampling)."
+
+So the fix is:
+1. For `id == "last-failure"`, use a sampling cap (like 5000 or 10000 events)
+2. For specific event IDs, scan the full stream (limit=0 or a large limit)
+3. When no failure found in the sampled window, print a clear message
+
+But wait, the current code already has a limit of 200. The task wants to INCREASE it to 5000-10000? That seems counterintuitive for a timeout fix. Unless the timeout is happening because the file read itself is slow, and the fix should be to use a more efficient reading method.
+
+Hmm, let me look at this from the CI/assessment perspective. In the assessment phase, the self-tests probably run commands like `yyds state why last-failure` with default settings. The default limit is 200. With 70K events, the tail of 200 events likely doesn't contain any failures. So the command would print "No completed failure sessions found" and then maybe scan more or timeout.
+
+Actually wait, I need to re-read `build_state_summary`. Let me check — maybe it's doing something slow.
+
+Let me also look at whether the assessment self-tests intentionally run with `--limit 0`.
+
+Actually, I think I'm overcomplicating this. Let me look at the `read_tail` function one more time:
+
+```rust
+fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
+    let raw = std::fs::read_to_string(path)?;
+    ...
+}
+```
+
+The `read_to_string` reads the entire file into memory. For a large events file, this IS the bottleneck. The fix should be to use a more efficient tail-reading method that doesn't read the whole file.
+
+But the task says the fix should mirror what was done for state doctor etc. And state doctor also uses `read_tail_events` which calls `read_tail` which calls `read_to_string`. So they all have the same issue.
+
+Unless... the real difference is that state doctor, crashes, etc. have been modified to use a different reading method. Let me check if `read_tail_events_capped` in `commands_state_crashes.rs` is different from `read_tail_events`.
+
+Looking at `read_tail_events_capped` in crashes (line 18-41): it also calls `read_to_string`! So it has the same issue.
+
+I think the fix is actually simpler: the assessment self-test might be running `yyds state why last-failure` without any limit flags, and the default 200 might not be finding failures, causing it to fall through to the summary building which iterates the (small) events slice. But the bottleneck is the `read_to_string` of the whole file.
+
+Actually, let me reconsider. Maybe the issue is that the assessment self-tests run with some flag that causes a full scan. Or maybe the CI machine has slow I/O.
+
+Let me just focus on implementing the fix as described in the task:
+
+1. For `id == "last-failure"`, increase the default sampling cap to something like 5,000-10,000 events
+2. For specific event IDs, keep the full scan
+3. Add a clear message when no failure is found in the sampled window
+4. The task also mentions making `read_tail` more efficient, but the primary change is in the dispatcher/handler
+
+Actually, looking more carefully at the code structure, I think the issue is that the `read_tail` function at line 1318 reads the entire file. The fix should be to use a different approach for reading the tail that doesn't read the whole file.
+
+Let me look at whether there's a `BufRead` based approach, or if we should use `seek` to read from the end of the file.
+
+Let me think about what the actual change should be:
+
+Looking at the handler at line 1080-1231:
+- It reads events with `read_tail_events(&path, limit)` where `limit` defaults to 200
+- This calls `read_tail(path, limit)` which reads the entire file as a string → SLOW for large files
+
+The fix should make the `read_tail` function more efficient for large files. One approach is to read from the end using `seek`. But the task says to follow the established pattern from other diagnostic commands.
+
+Actually, let me look at the cache-report command to see its pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'cache.*report|handle_cache' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for the cache command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_cache' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read handle_cache to see if it has any sampling pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:927..1007 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I see that `handle_cache` actually reads ALL events with `read_events_lenient` (no tail-based sampling). And `handle_evals` uses `read_tail_events` with a default of 500.
+
+Let me step back and think about what the actual fix should be:
+
+The core issue: `read_tail` reads the entire file into a string, which is O(file_size). For a 70K+ event file, this is slow.
+
+The fix pattern from "state doctor, state crashes, cache-report, terminal-state script":
+- State doctor: Uses `DEFAULT_DOCTOR_LIMIT = 20_000` and then `read_tail_events`
+- State crashes: Uses `MAX_EVENTS_SCAN = 20_000` and `read_tail_events_capped`
+- Cache report: Uses `read_events_lenient` (reads all)
+- Terminal state script: Likely uses `read_tail_events`
+
+None of these actually fix the `read_tail` bottleneck of reading the whole file. They just cap the number of events parsed after reading.
+
+So the task's proposed approach is:
+1. For `id == "last-failure"`, use a sampling cap (e.g., 5,000-10,000 events)
+2. When no failure found, print a clear message
+3. For specific event IDs, still scan full stream
+
+But this doesn't fix the underlying `read_tail` performance issue. The default limit is already 200, which should be fast even with `read_to_string` of a large file.
+
+Hmm, let me think about this differently. Maybe the issue is that when the assessment self-tests run, they call `yyds state why last-failure --summary` or with some flag that causes a full scan. Or maybe the file is extremely large and even reading it as a string takes too long.
+
+Actually, let me look at how the "terminal-state script" handles this. Let me search for it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK let me take a different approach. Let me look at this from the perspective of the handler flow and understand where the timeout actually happens. Let me look at what `read_tail_events` does when the limit is 0.
+
+Actually, I wonder if the issue is that the assessment self-tests run `state why last-failure` with `--limit 0` (intentionally scanning everything) to be thorough. And the 70K events take a while to parse.
+
+Let me look at the task description again: "make `yyds state why last-failure` complete within 15 seconds by sampling only the most recent events rather than scanning all 70K+ events."
+
+And: "The command handler dispatches at src/commands_state.rs:1172; `build_why_report` is around line 15756 and scans all events unconditionally when `id == "last-failure"`."
+
+The "scans all events unconditionally" part is interesting. But `build_why_report` takes `&[Value]` — it can only scan what it's given. Unless the handler loads all events when `id == "last-failure"`.
+
+Wait, let me re-read handler lines 1080-1090 more carefully:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok(events) = read_tail_events(&path, limit) else {
+```
+
+The limit is passed from the dispatch (line 88), default 200. So it should only load 200 tail lines. But `read_tail` reads the entire file.
+
+OK, I think I need to just look at the actual problem from a practical standpoint. Let me:
+
+1. Check the events file size
+2. Time the command
+3. See if there's a real timeout issue
+
+But wait — I'm in a CI environment. Let me check what state files exist.
+
+Actually, I should focus on implementing the fix. The task clearly describes what to do. Let me just implement it:
+
+1. Make the `handle_why` function smarter about sampling for "last-failure" vs specific event IDs
+2. For "last-failure": use a higher cap (10000 events) instead of the tiny 200 default, but make `read_tail` faster by using a more efficient approach
+3. Print clear messages when no failure is found in the sample
+
+Actually wait, 200 is already small. If the file read is the bottleneck, the fix should be to make `read_tail` faster, not to change the limit.
+
+Let me look at the size of the events file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -c ~/.yoyo-state/events.jsonl 2>/dev/null || echo "no events file" ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No events file exists locally (expected in CI). Let me focus on implementing the fix based on the task description.
+
+The task says:
+1. For `id == "last-failure"`, use a sampling cap (5000-10000 events)
+2. When no failure found in the sampled window, print clear message
+3. For specific event IDs, scan full stream
+
+Looking at the current code:
+- Default limit is 200 (from dispatch at line 88)
+- `build_why_report` scans events for failure, and if not found, prints "No completed failure sessions found"
+
+The key insight from the task might be: The default limit of 200 means only 200 events are scanned. If failures happened 201 events ago, they're missed. So the fix might be to INCREASE the limit for "last-failure" to something like 10,000, while still keeping it bounded.
+
+But increasing the limit makes the command SLOWER, not faster. So the real bottleneck must be something else.
+
+OK let me look at the task one more time: "Previous attempt (Day 122) was reverted due to evaluator timeout — the code was likely correct but the verifier command (timeout 15 cargo run -- yyds state why last-failure) itself timed out in the evaluator. This time the fix should be smaller and the verifier should use a shorter timeout or check that the sampling logic exists rather than running the full command."
+
+So the evaluator ran `timeout 15 cargo run -- yyds state why last-failure` and it timed out. This means the command takes >15 seconds even with the default limit of 200. That's surprising.
+
+Unless... the events file in the CI/assessment environment is much larger, or the `read_to_string` is genuinely slow.
+
+But 15 seconds for reading a file? Even a 1GB file should read faster than that...
+
+Wait, maybe it's not the `read_to_string` that's the bottleneck. Maybe the `build_why_report` function or the fallback path is doing something expensive that iterates over all events. Let me look at the error path more carefully.
+
+In `build_why_report`, when `find_target_event` returns `None` (no failure found), it calls:
+- `build_state_summary(events)` — should be fast with 200 events
+- Various counts over events — fast with 200 events
+- `crate::state::take_diagnostic_error()` — should be fast
+
+Then back in `handle_why`, when `build_why_report` returns an error, it calls `find_incomplete_runs(&events)`.
+
+None of these should be slow with 200 events.
+
+Unless... the limit is 0 somewhere. Let me check if there's a special path for `--summary`:
+
+Line 82-83: `let summary = args.iter().any(|a| a == "--summary");` and then `handle_why(id, summary, limit)`.
+
+`show_summary` is separate from `limit`. Let me check what `--summary` does — it calls `build_state_summary` before `build_why_report` (line 1169). That should still be fast.
+
+OK, I think maybe the issue is something I'm not seeing because the file is large and the tests/assessment in production have a large events file (70K+ events). Let me check if maybe there's a specific path where `read_events` (full scan) is called instead of `read_tail_events`.
+
+Actually, let me re-check lines 1082-1167 more carefully:
+
+```rust
+let Ok(events) = read_tail_events(&path, limit) else {
+    // ... error handling when events file can't be read ...
+    // At line 1148: if id == "last-failure" { ... }
+    return;
+};
+if show_summary {
+    println!("{}", build_state_summary(&events));
+    println!();
+}
+match build_why_report(&events, id) {
+```
+
+So when `read_tail_events` succeeds, it uses those events (with the limit). But when it FAILS, it shows a different error message. So the main path uses the limit.
+
+Let me now look at `read_tail` one more time. The issue is `std::fs::read_to_string(path)` which reads the entire file. For a big file, this is slow.
+
+The fix should be to use a more efficient tail-reading approach. But the task says to follow the pattern from other commands, which also use `read_tail`. 
+
+OK, I think the fix is to:
+
+1. For `id == "last-failure"`, set a higher default sampling cap (e.g., 10,000 instead of 200) 
+2. Make `read_tail` faster by reading from the end of the file instead of reading the whole file
+
+Wait, but increasing from 200 to 10,000 would make it SLOWER, not faster.
+
+Let me reconsider. Maybe the fix for "other commands" was to use streaming reads or byte-level tail reads. Let me check if there's a `read_tail_bytes` or similar function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_bytes' in src  ▶ search 'read_tail_bytes\|tail_bytes\|seek.*end' in src ✓ (8ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No efficient tail-reading function exists. Let me check if there's an existing function that reads from a specific position:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BufRead\|BufReader\|Seek\|seek' in src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No Seek/BufReader usage exists. So the existing "fix" for other commands was likely just adding a larger default limit with a note. Let me reconsider.
+
+Actually, I realize I need to step back and read the task's implementation instructions again more carefully:
+
+> 1. In `src/commands_state.rs`, find `build_why_report` (around line 15756). The function loads events and scans for a failure. When `id == "last-failure"`, add a sampling cap: read only the most recent N events (e.g., 5000 or 10000). The sampling approach should mirror what was done for state doctor, state crashes, and cache-report.
+> 
+> 2. The cap can be implemented as:
+>    - An `events.truncate()` call with a char-boundary-safe limit (see CLAUDE.md safety rule about byte indexing on strings — use `is_char_boundary`).
+>    - Or reading only the last N lines of the events file.
+>    - Or a `take(N)` iterator over events.
+
+Wait — option 1 says "An `events.truncate()` call with a char-boundary-safe limit." This suggests truncating the raw string content after reading it. But `events` in `build_why_report` is `&[Value]` — a slice of parsed JSON values, not a string.
+
+So the truncation would happen at the loading stage, not in `build_why_report`.
+
+> 3. When no failure event is found in the sampled window, print: "No failure found in the most recent N events. Use --full to scan all history."
+
+> 4. Ensure `yyds state why <specific-event-id>` is NOT affected — it should still scan the full event stream when a concrete event ID is given.
+
+> 5. The verifier for this task should NOT run `cargo run -- yyds state why last-failure` with a tight timeout (that's what caused the previous evaluator timeout). Instead, verify the code change statically: confirm sampling logic exists in the right code path, and run unit tests.
+
+OK so the implementation plan is:
+
+1. In `handle_why`, when `id == "last-failure"`, use a sampling cap. When `id` is a specific event ID, use full scan (limit=0).
+2. The sampling should read only the last N events from the file efficiently.
+3. Add a clear message when no failure found in sample.
+
+Now, the actual fix for making `read_tail` faster: instead of reading the entire file, we should read from the end. But the task doesn't ask us to rewrite `read_tail`. It says to add a sampling cap.
+
+Looking at the `read_tail` function: it reads the entire file into a string, then processes only the last `limit` lines. For a 70K-event file, the entire read itself is O(file_size). 
+
+I think the highest-impact fix, following the task description, is:
+
+1. Change `handle_why` to use a larger sampling window for "last-failure" (like 5000-10000) but use a faster reading approach
+2. Add the fallback message when no failure is found
+
+But actually, let me re-read the task description once more. The task says the command "scans the full 70K-event JSONL stream to find a single failure event." This implies the current code doesn't use the limit correctly, or the limit is set to 0.
+
+Let me check if maybe there's a path where `limit` ends up being 0:
+
+At line 82-88:
+```rust
+let summary = args.iter().any(|a| a == "--summary");
+let limit = args
+    .iter()
+    .position(|a| a == "--limit")
+    .and_then(|i| args.get(i + 1))
+    .and_then(|s| s.parse::<usize>().ok())
+    .unwrap_or(200);
+```
+
+So if `--limit` is not provided, it defaults to 200. If `--limit 0` is provided, it becomes 0 (full scan).
+
+With limit=0, `read_tail_events` calls `read_events_lenient` which reads and parses ALL events. That's the full scan.
+
+So the scenario might be: some assessment or self-test calls `yyds state why last-failure --limit 0` to ensure a thorough search, and that causes the timeout.
+
+The fix: when `id == "last-failure"`, always use a cap (don't allow limit=0 to mean "full scan"), and provide `--full` as the explicit way to get a full scan.
+
+Let me implement this now. Here's my plan:
+
+1. In the dispatcher (lines 82-98), for `"why"` subcommand: if `id == "last-failure"`, enforce a max limit (e.g., 10,000) unless `--full` flag is present
+2. In `handle_why`, add the sampling cap and the error message for "No failure found in recent events"
+3. For specific event IDs, allow full scan (limit=0 or `--full`)
+
+Let me now check what tests exist for the state why command.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a good understanding of the code. Let me look at the existing tests for `build_why_report` and `handle_why`:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17800..18000 ✓ (6ms)
+
+

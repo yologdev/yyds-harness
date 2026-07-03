@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The diff only adds an unused constant `DEFAULT_WHY_LIMIT` that is never referenced anywhere in the code. None of the required logic changes are present — no sampling cap in `build_why_report`, no differentiation between "last-failure" and specific event-IDs, and no fallback message when no failure exists in the sampled window. The constant definition has zero functional impact.
