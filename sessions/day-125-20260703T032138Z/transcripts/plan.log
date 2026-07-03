@@ -1,0 +1,563 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evidence and plan the tasks for this session. 
+
+## Current State Assessment
+
+From the trajectory and assessment:
+
+1. **Build Status**: PASS — cargo build and test both green
+2. **No CI failures** to fix (priority 0 is clear)
+3. **Key evidence points**:
+   - `task_unlanded_source_count=1` — tasks touch source but don't land commits
+   - `task_success_rate=0.5` — only 50% of tasks succeed
+   - `task_verification_rate=0.5` — only 50% are verified
+   - `yyds deepseek cache-report` returns empty (issue #61)
+   - Four tools independently reimplement event sampling — no shared utility
+   - 370 eval fixtures but only thin coverage
+
+4. **Open agent-self issues**:
+   - #61: Record cache metrics (reverted, unlanded_source_edits)
+   - #58: Add held-out eval fixture (reverted, unlanded_source_edits)
+   - #51: Fix state why timeout (may be already fixed)
+   - #37: Add held-out eval coverage (open, tracking)
+
+## Task Selection
+
+Let me think about what's most impactful:
+
+### Task 1: Cache metrics recording (#61)
+This directly addresses a capability gap — cache-report returns empty. The DeepSeek harness needs cache visibility to optimize prompt layout. The assessment confirms it's still broken. The previous attempt was reverted (evaluator timeout). I need to make this smaller — focus just on finding the right insertion point and adding recording.
+
+### Task 2: Shared bounded-event-read utility
+Four tools independently reimplemented event sampling. The assessment notes this as a pattern. Building a shared utility would prevent future tools from inheriting the unbounded-read assumption. This is a structural improvement.
+
+### Task 3: Alternative — eval fixture or fix state why
+
+Let me check: #51 (state why timeout) — the assessment says "this may already be fixed by Day 124's sampling work, the state why command ran fine today." So this is likely already resolved. I should note this in issue responses.
+
+Let me prioritize:
+- Task 1: #61 — cache metrics recording (directly impacts DeepSeek harness capability)
+- Task 2: Shared bounded-event-read utility (structural fix, prevents recurrence)
+- Task 3: Either the graph-pressure task about unlanded source edits, or an eval fixture
+
+Actually, let me re-read the trajectory graph pressure:
+1. Force analysis-only attempts into action
+2. Raise verified task success rate (0.5) 
+3. Make source-edit outcomes land or explain reverts
+4. Require strict verifier evidence for tasks
+5. Break recurring log failure fingerprints
+
+These are meta-level issues about how tasks are verified. They're important but hard to fix in a single task.
+
+Let me focus on concrete, verifiable tasks:
+
+**Task 1**: Record cache metrics (#61) — but make it smaller than the previous attempt. The previous attempt tried to add recording + update cache-report. I should scope it to just the recording point.
+
+**Task 2**: Shared bounded-event-read utility — extract the pattern from the four tools into a shared function in `state.rs`.
+
+For Task 3, I could do the eval fixture (#58/#37) but those are aspirational. Or I could address the unlanded-source pattern — but that's a verification pipeline issue, hard to fix in 20 minutes.
+
+Let me check if session_plan/task_01.md already exists.
+
+Actually, wait — the instructions say "First: mkdir -p session_plan" and then check if task_01.md exists. Let me do that.
+
+But first, let me plan my tasks:
+
+**Task 1**: Record DeepSeek cache metrics as state events (issue #61, smaller scope)
+- Files: `src/deepseek.rs`, `src/state.rs`
+- This directly improves cache visibility, which is core to the DeepSeek harness
+
+**Task 2**: Add shared bounded-event-read utility to state.rs
+- Files: `src/state.rs`
+- Extract the "sample from tail, cap at N events" pattern into a shared function
+- This prevents future tools from inheriting the unbounded-read assumption
+
+**Task 3**: Address task unlanded source pattern — add diagnostic for why tasks fail verification
+- Files: `scripts/log_feedback.py` or `scripts/evolve.sh`
+- Actually this is too meta. Let me think...
+
+Actually for Task 3, I think the most useful thing is to address the `task_verification_rate=0.5` issue. The trajectory says "tasks lacked strict verifier evidence → require bounded verifier evidence before counting task success." But this is a harness-level change, not a code change.
+
+Let me reconsider. What's the most actionable thing that moves a fitness gnome?
+
+The cache metrics (#61) is clearly the highest priority. Let me make that Task 1.
+
+For Task 2, the shared bounded-read utility — this is a cleanup that prevents future bugs but doesn't directly move a fitness gnome. It's worth doing but lower priority.
+
+For Task 3, let me think about what would actually improve `task_success_rate` or `task_verification_rate`. The assessment says the dominant failure is `task_unlanded_source_count=1` — tasks touch source but don't land. The root cause isn't clear. Adding better diagnostics for why tasks fail verification could help, but that's meta.
+
+Let me look at this differently. The trajectory graph pressure says:
+1. "Force analysis-only attempts into action" — this is about task selection, not code
+2. "Raise verified task success rate" — the dominant failure is unlanded source edits
+3. "Make source-edit outcomes land or explain reverts" — need to understand why
+
+Actually, I think #61 (cache metrics) is the most concrete and directly impactful task. Let me also consider: is the "shared bounded-read utility" actually worth a task slot? It's a cleanup. The assessment says it's a "LOW" priority bug.
+
+Let me go with:
+- Task 1: #61 — Cache metrics recording (HIGHEST priority, directly improves DeepSeek harness)
+- Task 2: Shared bounded-event-read utility (MEDIUM, structural cleanup)
+- Task 3: Maybe the eval fixture #58 or something about the unlanded-source pattern
+
+Actually, wait. Let me re-read the seed task instruction: "The harness may have already created session_plan/task_01.md from assessment evidence before you started." I need to check if that exists first.
+
+Let me start by creating the directory and checking if seed tasks exist.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll check if a seed task already exists, then plan the session.
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null  ▶ $ git status --short session_plan/ 2>/dev/null; cat session_plan/task_01.md 2>/dev… ✓ (787ms)
+ ✓ (763ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The harness has already created a seed task (`task_01.md`) about repairing evidence-backed planning after no-task sessions. Let me analyze this:
+
+The seed task targets `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, and `scripts/test_task_manifest.py`. It says "The harness reached planning with no task artifacts." But looking at my current evidence:
+
+1. I DO have an assessment with clear evidence
+2. The trajectory shows tasks were attempted in recent sessions (not no-task)
+3. The assessment identifies concrete bugs and gaps
+
+Wait, let me re-read. The seed task says "The harness reached planning with no task artifacts." But there IS an assessment and task_01.md exists. Maybe the harness is saying that previous sessions had no-task issues? Let me check the trajectory again:
+
+- day-123 (2026-07-01 18:20:15): tasks 0/0 • — no tasks attempted
+- day-123 (2026-07-01 12:19:28): tasks 0/2 — reverted
+- day-123 (2026-07-01 04:43:02): tasks 0/2 — reverted
+
+So there were sessions where tasks were reverted (no landed tasks). And one "no tasks attempted" session. The seed task is trying to fix the planning pipeline so this doesn't happen.
+
+But the assessment I have is RICH with evidence. It identifies:
+- #61: Cache metrics recording
+- Shared bounded-event-read utility
+- Eval fixture coverage gap
+- #51: state why timeout
+
+The seed task about planning repair seems like a meta-fix. Let me evaluate whether it's the right priority.
+
+Actually, looking at the trajectory graph pressure:
+- "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)"
+- "Raise verified task success rate (task_success_rate=0.5)"
+
+The seed task DOES address the "analysis-only" pattern — it's trying to fix the planning pipeline. But the assessment identifies more concrete, directly-impactful tasks like #61 (cache metrics).
+
+The instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+Let me think about whether the seed task's problem is actually contradicted. The seed task says "The harness reached planning with no task artifacts." But:
+- Day 123 had one session with no tasks attempted
+- Days 123-124 had multiple sessions with reverted tasks
+- The CURRENT assessment is rich and identifies concrete bugs
+
+The seed task is not exactly "contradicted" — the planning pipeline may still benefit from improvements. But I think there are higher-priority tasks based on the evidence.
+
+Let me decide: should I keep the seed task as task_01 and add two more tasks, or should I replace it?
+
+The instruction says I "may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+I think the seed task is reasonable but not the highest priority. Let me:
+1. Keep task_01 as-is (it addresses the no-task pattern)
+2. Add task_02 for #61 cache metrics (highest impact)
+3. Add task_03 for the shared bounded-event-read utility
+
+Actually wait — the seed task touches 3 files: `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, `scripts/test_task_manifest.py`. Let me check if these files actually exist.
+
+Also, I need to check if `task_manifest.py` and `test_task_manifest.py` exist — the seed task might be referencing files that don't exist.
+
+Let me do quick existence checks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.2s (2 ✓)
+
+Good, a seed task exists. Let me verify the files it references and do quick ownership checks before finalizing the plan.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/preseed_session_plan.py scripts/task_manifest.py scripts/te…  ▶ $ # Quick ownership check - does state.rs have existing bounde… (2 lines)  ▶ $ # Check what the cache-report command actually does and wher… (2 lines) ✓ (350ms)
+ ✓ (1.2s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search commands are failing because `rg` might not be available. Let me use the `search` tool instead.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'CacheMetricsRecorded' in src  ▶ search 'build_cache_report' in src/commands_deepseek.rs  ▶ search 'fn sample_tail\|fn bounded_read\|fn read_events_tail\|MAX_EV…' in src/state.rs ✓ (389ms)
+ ✓ (395ms)
+ ✓ (880ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting findings:
+
+1. **CacheMetricsRecorded** already exists as an event type in `src/state.rs`! There's already:
+   - `EventType::CacheMetricsRecorded` defined at line 147
+   - A recording function at line 529
+   - The `build_cache_report` function in `commands_deepseek.rs` already scans for these events
+   
+   So the infrastructure exists — the question is: is anything actually CALLING the recording function? Let me check line 529 in state.rs to see what it does, and whether it's called from the deepseek API response handling path.
+
+2. **No shared bounded-read utility** exists in `state.rs` — confirmed.
+
+This changes my assessment of task #61. The event type and recording infrastructure already exist. The gap might be:
+- Nothing calls `record_cache_metrics` during API response processing
+- Or the recording happens but the data is empty/missing
+
+Let me investigate further to understand whether #61 is actually still a live bug, or if it's already been partially fixed.
+
+Actually, I don't need to deep-dive for planning. The assessment confirms `yyds deepseek cache-report` returns empty. The self-test says "FAIL — Returns 'no DeepSeek cache metrics found'". So the recording is NOT happening. The infrastructure exists but the call site doesn't.
+
+Now let me plan my three tasks:
+
+**Task 1 (seed)**: Repair evidence-backed planning — this is a harness-seeded task about fixing the planning pipeline. It touches `scripts/preseed_session_plan.py`, `scripts/task_manifest.py`, `scripts/test_task_manifest.py`. These are Python scripts, not Rust code. The assessment says this is about "fallback task selection and manifest validation." I'll keep it as task_01 since the harness seeded it.
+
+**Task 2**: Record DeepSeek cache metrics (#61) — wire up the existing `CacheMetricsRecorded` event recording to the DeepSeek API response path in `src/deepseek.rs`. The infrastructure exists but the call site is missing.
+
+**Task 3**: Add shared bounded-event-read utility — extract the tail-sampling pattern into a shared function in `src/state.rs`.
+
+Wait, but the seed task touches Python scripts. The assessment identifies the "task_unlanded_source_count=1" pattern as the dominant failure. The seed task is trying to fix planning so tasks land. Let me check whether this seed task is actually well-founded or if it's a self-referential cycle (like the Day 115 lesson warned about).
+
+The seed task says "The harness reached planning with no task artifacts." But actually, there IS an assessment and task artifacts DO exist (the assessment.md and task_01.md are in session_plan/). The seed seems to be preemptively trying to fix a problem that may not be current. 
+
+Hmm, but the instructions say "do not delete it unless you immediately write an equal-or-better evidence-backed task file." So I should either keep it or write an obsolete note.
+
+Let me think about what's the most impactful set of tasks:
+
+1. **Cache metrics (#61)**: HIGHEST priority. Directly impacts DeepSeek harness capability. The infrastructure already exists — just need to find the call site. This is a concrete, verifiable task.
+
+2. **Seed task (planning repair)**: MEDIUM priority. Addresses the no-task pattern but is meta. The trajectory shows tasks ARE being attempted in recent sessions (just reverted, not missing). The seed may be overfitting to a transient pattern.
+
+3. **Shared bounded-read utility**: LOW-MEDIUM priority. Cleanup that prevents future bugs.
+
+Let me go with:
+- **Task 1**: Keep the seed task but refine it — actually, I should check if there's a genuine contradiction with the assessment.
+
+Looking at the assessment again: it says all recent sessions had tasks attempted. day-123 had one no-task session, but days 122-124 had tasks. The trajectory shows `tasks 0/2`, `tasks 2/3`, etc. — tasks were selected and attempted, just not all landed.
+
+The seed task says "The harness reached planning with no task artifacts." But the session DID produce an assessment and task_01.md. So the seed task's premise might be wrong for THIS session. However, it could be right for future sessions.
+
+I think the right move is:
+- Keep task_01 as the seed task (it addresses a real pattern)
+- Add task_02 for #61 cache metrics (highest impact, directly improves DeepSeek harness)
+- Add task_03 for the shared bounded-read utility
+
+But wait — task_01 touches Python scripts. The assessment says "Prefer tasks touching src/*.rs files when no-edit pressure is active" (Day 114 lesson). And the trajectory graph pressure says "Force analysis-only attempts into action" and "Make source-edit outcomes land or explain reverts."
+
+The seed task is about PLANNING scripts, which is exactly the kind of meta-task that doesn't pass through cargo build/test. This could contribute to the `task_unlanded_source_count` pattern.
+
+Let me decide: I'll keep the seed task as task_01 but I should also create truly impactful tasks. Let me go with:
+
+- **Task 1 (seed, refined slightly)**: Repair evidence-backed planning
+- **Task 2**: Record DeepSeek cache metrics (#61) — SMALLER scope than last attempt
+- **Task 3**: Add shared bounded-event-read utility to state.rs
+
+Actually, let me check one more thing: what's the actual recording call at state.rs line 529? That will tell me if this is already connected or not.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 27.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:520..550  ▶ read session_plan/task_01.md ✓ (587ms)
+ ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have clear evidence:
+
+1. **`record_cache_metrics` already exists** at `src/state.rs:525-530`. It takes a model name and `yoagent::Usage`, checks if cache metrics are available via `cache_metrics_payload()`, and records a `CacheMetricsRecorded` event. The infrastructure is already built.
+
+2. **The gap is the call site** — nothing in `src/deepseek.rs` actually calls `record_cache_metrics()` during API response processing. The assessment confirms: `yyds deepseek cache-report` returns empty because no events are being recorded.
+
+3. **The seed task** touches Python scripts, not Rust source. It's about fixing the planning pipeline's task selection. Given the trajectory evidence (tasks are being selected and attempted, just reverted), this seed task seems like a meta-fix that won't directly improve the harness.
+
+Now for my plan:
+
+**Task 1 (refined seed)**: I'll refine the seed task slightly but keep its core. Actually, the instructions say I may refine it. Let me keep it as-is since it addresses a real pattern (no-task sessions) and the harness explicitly seeded it.
+
+**Task 2**: Record DeepSeek cache metrics (#61). The recording function exists. The task is to find where `yoagent::Usage` is available during API response processing in `src/deepseek.rs` and insert the `record_cache_metrics()` call. This is a small, focused task.
+
+**Task 3**: Add shared bounded-event-read utility to `src/state.rs`. The assessment identifies four tools that independently reimplement tail-sampling. A shared utility prevents future tools from inheriting the unbounded-read assumption.
+
+For issue responses:
+- #61: Implement as Task 2
+- #58: Defer — eval fixture for prompt layout determinism is lower priority
+- #51: Already resolved — state why works now (per assessment self-test)
+- #37: Defer — tracking issue
+
+Let me now create the task files. I need to write task_02.md and task_03.md, and create issue_responses.md.
+
+Let me also check how `record_cache_metrics` is supposed to be called and where the `yoagent::Usage` is available in the deepseek path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.6s (2 ✓)
+
+Good. The recording infrastructure for cache metrics already exists (`record_cache_metrics` at state.rs:525), but nothing calls it during API response processing. Now let me create the remaining task files and issue responses.
+  + # Issue Responses — Day 125
+  + 
+  + ## #61 — Task reverted: Record DeepSeek cache metrics as state events
+  + **Action**: Implement as Task 2 (smaller scope than previous attempt).
+  + The `record_cache_metrics()` function already exists in `src/state.rs:525`. The gap is the call site in `src/deepseek.rs` where API responses are processed. Previous attempt was reverted (evaluator timeout). This attempt narrows scope to only the call-site insertion.
+  + 
+  + ## #58 — Task reverted: Add held-out coding eval fixture for prompt layout determinism
+  + **Action**: Defer. The eval fixture infrastructure is healthy but the immediate bottleneck is cache visibility (#61) and structural cleanup (Task 3). Eval fixtures are additive and can be done in any session.
+  + 
+  + ## #51 — Task reverted: Fix `yyds state why last-failure` timeout
+  + **Action**: Close as resolved. The assessment self-test confirms `yyds state why last-failure` completed successfully during Day 125 preflight. Day 124's event-sampling work (applied to state doctor, crash scanner, benchmark scorer, and cache-report) likely resolved this as a side effect. If it times out again, a new issue with fresh evidence should be filed.
+  + 
+  + ## #37 — Add held-out coding eval coverage for DeepSeek harness gnomes
+  + **Action**: Defer. This is a tracking issue. Incremental eval fixtures can be added when fitness gnomes have clear gaps. The current priority is making existing diagnostics (cache-report) functional before expanding eval coverage.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (14 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (14 lines) ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create task_02.md for the cache metrics recording. This needs to be smaller than the previous attempt. The previous attempt tried to add recording + update cache-report. I should focus ONLY on adding the call site.
+
+Let me first check where `yoagent::Usage` is available in `src/deepseek.rs` to understand the call site.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics' in src/deepseek.rs  ▶ search 'fn.*usage.*Usage\|cache_hit_tokens\|cache_miss_tokens' in src/deepseek.rs ✓ (249ms)
+ ✓ (372ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the flow:
+
+1. `DeepSeekUsage` struct at line 69 has `cache_hit_tokens` and `cache_miss_tokens`
+2. At line 1712-1716, the DeepSeek-native path parses cache metrics from the `usage` JSON
+3. At line 1792, `parse_chat_usage` parses the OpenAI-compat path
+4. At line 204-205, there's a comment about recording cache metrics
+
+Now I need to find where `DeepSeekUsage` instances are created and where the API response is fully processed — that's where I'd add the `record_cache_metrics` call. Let me look at lines around 1710 and 1790 more carefully, and where the usage struct is consumed.
+
+Actually, for planning purposes I don't need to read the full source. The assessment already tells me:
+- `record_cache_metrics` exists in state.rs:525
+- The DeepSeek usage struct is populated at lines 1712-1716 (native) and 1804-1810 (OpenAI-compat)
+- Nothing calls `record_cache_metrics` from the deepseek response path
+
+The key question is: where in the deepseek API response processing flow should the recording call go? It needs to be after the usage struct is fully populated and before it's consumed/discarded. Let me look at the broader context around line 1712 to understand the function structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1695..1735  ▶ read src/deepseek.rs:1790..1830 ✓ (601ms)
+ ✓ (399ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow. The `DeepSeekUsage` struct with cache metrics is created:
+1. In `parse_fim_completion` (line 1700-1719) — FIM path
+2. In `parse_chat_completion_sse` (line 1727-1731) — streaming chat path, accumulates usage
+3. In `parse_chat_usage` (line 1792-1813) — non-streaming chat path
+
+The question for the implementation agent is: where should `record_cache_metrics()` be called? The `DeepSeekUsage` struct doesn't carry the model name — that needs to come from context. The recording function signature is `record_cache_metrics(model: &str, usage: &yoagent::Usage)`. But the harness uses `DeepSeekUsage`, not `yoagent::Usage`.
+
+Wait, let me check the actual signature again. Line 525: `pub fn record_cache_metrics(model: &str, usage: &yoagent::Usage)`. This takes `yoagent::Usage`, not `DeepSeekUsage`. So there's a conversion needed, OR the call site needs to be different from what I assumed.
+
+Let me check what `cache_metrics_payload` does and what `yoagent::Usage` looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.2s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:500..530  ▶ search 'fn cache_metrics_payload' in src/state.rs ✓ (411ms)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — `record_cache_metrics` takes `yoagent::Usage`, not `DeepSeekUsage`. The implementation agent will need to figure out where `yoagent::Usage` is available in the API response processing path. Let me check where `yoagent::Usage` is accessible and where DeepSeek API calls complete.
+
+Let me also look at the `cache_metrics_payload` function to understand what it needs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:550..576 ✓ (198ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `record_cache_metrics` in `state.rs:525` takes `yoagent::Usage` — this is yoagent's native usage struct
+2. `cache_metrics_payload` in `state.rs:552` converts `yoagent::Usage` fields to cache metrics. Key insight from the comment (line 556-559): yoagent maps `prompt_cache_hit_tokens` → `cache_read` and `prompt_cache_miss_tokens` → `input`. This is the OpenAPI-compat mapping.
+3. The function only records for models starting with "deepseek"
+4. It skips if both hit and miss are 0
+
+So the recording call needs to happen where `yoagent::Usage` is available, not `DeepSeekUsage`. The most likely place is in an agent callback/hook where the API response usage is available through yoagent's event system.
+
+Let me search for where `yoagent::Usage` is accessed or where `record_cache_metrics` should be called. Actually, the implementation agent will figure this out. For planning, I just need to specify the right files and verifier.
+
+The task needs to be:
+1. Find where `yoagent::Usage` is available after a DeepSeek API response completes
+2. Call `crate::state::record_cache_metrics(model, usage)` at that point
+3. Verify with `cargo build && cargo test`
+
+The key files are:
+- `src/state.rs` — already has `record_cache_metrics` (read-only context)
+- `src/deepseek.rs` — where DeepSeek API response processing happens (the call site)
+- Maybe `src/prompt.rs` or `src/agent_builder.rs` — where agent callbacks/hooks are set up, where `yoagent::Usage` might be accessible
+
+Actually, I should look at where `yoagent::Usage` is accessible. Let me search for `on_after_turn` or hooks since that's where usage data would be available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'on_after_turn\|on_before_turn\|after.*prompt\|record_cache_m…' in src ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+CRITICAL FINDING: Line 956 in `src/prompt.rs`:
+
+```rust
+crate::state::record_cache_metrics(model, &state.usage);
+```
+
+This already exists! The call is ALREADY in the codebase. Let me read the context around line 956 to understand why it's not working.
+────────────────────────────────────────────────────────────────────────────────
+
+The call site already exists! Let me understand why it's not producing events.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:945..970 ✓ (183ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the call IS already there at `prompt.rs:956`. It's inside the `AgentEvent::ModelCallCompleted` handler. This means:
+1. The recording code exists and is called
+2. But `cache_metrics_payload` returns `None` because of one of these conditions:
+   - The model name doesn't start with "deepseek" (line 553)
+   - Both `cache_hit_tokens` (mapped from `usage.cache_read`) and `cache_miss_tokens` (mapped from `usage.input`) are 0 (line 566)
+
+Let me check what the model name looks like and what the usage values are. The issue might be:
+- The model name doesn't start with "deepseek" — if using OpenAI-compat path, the model might be passed as "deepseek-chat" or similar
+- The `usage.cache_read` field is 0 because yoagent doesn't expose cache metrics through the standard `Usage` struct fields
+
+The comment at state.rs:556-559 explains the mapping:
+- yoagent maps `prompt_cache_hit_tokens` → `cache_read` 
+- yoagent maps `prompt_cache_miss_tokens` → `input`
+
+But wait, the condition at line 566 is:
+```rust
+if deepseek_usage.cache_hit_tokens == Some(0) && deepseek_usage.cache_miss_tokens == Some(0) {
+    return None;
+}
+```
+
+This returns None when BOTH hit and miss are 0. But during a session, most prompts would have some cache miss tokens (the non-cached part). So in practice, `cache_miss_tokens = usage.input` (which would be > 0 for any real prompt), so this condition would rarely be the blocker.
+
+The more likely issue is the model name check at line 553: `if !model.starts_with("deepseek")`. Let me check what model name is being passed.
+
+Actually, let me look at the surrounding context of line 956 to see what `model` is at that point. Let me look at a broader range.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:900..950 ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `record_cache_metrics` call at line 956 receives `model` from the `AgentEvent::AgentEnd` handler. The `model` variable comes from the agent configuration. Let me check where `model` is defined in this function context.
+
+The key question is: what model name is being passed? If it's "deepseek-chat" or "deepseek-v4-pro" or similar, the `starts_with("deepseek")` check would pass. But if the model name is something else (e.g., configured through a provider alias), it might not match.
+
+Let me look at the function signature and where `model` comes from.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*handle.*event\|fn.*stream.*event\|fn.*process.*agent.*ev…' in src/prompt.rs ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `handle_prompt_events` to understand the model variable.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:762..792 ✓ (175ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see where `handle_prompt_events` is called and what `model` is passed. Let me look at the callers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' in src/prompt.rs ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:305..335 ✓ (171ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where `model` comes from for `run_prompt_once`. Let me look at the callers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_prompt_once\(' in src/prompt.rs ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The parentheses might be special. Let me use literal search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_prompt_once' in src/prompt.rs ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `model` is passed through the call chain. Let me see where it originates in the public API. Let me check `run_prompt` at line 1191.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1191..1221 ✓ (197ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full chain. The `model` parameter comes from the caller (e.g., CLI, REPL) and flows through `run_prompt` → `run_prompt_with_changes` → `run_prompt_once` → `handle_prompt_events`, where it's finally passed to `record_cache_metrics(model, &state.usage)`.
+
+The key question is: what value does `model` have? If it's something like `"deepseek-chat"` or `"deepseek-v4-pro"`, then the `starts_with("deepseek")` check passes. But, importantly, the `cache_metrics_payload` function has another issue:
+
+```rust
+cache_hit_tokens: Some(usage.cache_read),
+cache_miss_tokens: Some(usage.input),
+```
+
+Wait — this maps `usage.input` to `cache_miss_tokens`. But `usage.input` is the TOTAL prompt tokens, not specifically cache miss tokens. The comment says "yoagent maps `usage.prompt_cache_miss_tokens` to `input`" — that sounds wrong. Let me re-read the comment:
+
+```
+// yoagent's OpenAI-compatible provider maps DeepSeek
+// `usage.prompt_cache_hit_tokens` to `cache_read` and
+// `usage.prompt_cache_miss_tokens` to `input`. DeepSeek does not expose
+// Anthropic-style cache creation/write tokens for request-side markers.
+```
+
+Wait — this comment says that for the OpenAI-compatible provider, yoagent puts `prompt_cache_miss_tokens` into the `input` field? That doesn't sound right for `Usage.input` which should be total prompt/input tokens.
+
+Actually, I think the comment is describing a mapping issue: in the OpenAI-compatible provider path, yoagent might be putting the cache miss token count into the `input` field of `Usage` (because the OpenAI API doesn't have a separate field for cache miss tokens, and yoagent reuses the `input` field). But this would mean that `usage.input` would hold cache miss tokens, not total input tokens — which would make the total token count wrong.
+
+This is getting into implementation details that the implementation agent should investigate. Let me focus on planning tasks.
+
+Actually, wait. Let me re-read the condition:
+
+```rust
+if deepseek_usage.cache_hit_tokens == Some(0) && deepseek_usage.cache_miss_tokens == Some(0) {
+    return None;
+}
+```
+
+If `usage.input` is always > 0 for a real prompt, then `deepseek_usage.cache_miss_tokens = Some(usage.input)` would also be > 0, so this condition would NOT trigger. The function should record events for each turn.
+
+So if `record_cache_metrics` IS being called at line 956, and the model starts with "deepseek", and usage.input > 0, then events SHOULD be recorded. But the assessment says cache-report returns empty!
+
+The most likely explanation: `model` does NOT start with "deepseek". Perhaps the harness passes the model name as something like "deepseek-chat" which does start with "deepseek"... or perhaps it uses a different naming convention.
+
+Actually, let me look at the default model. The DeepSeek genome should have a model name.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'default_model\|DEFAULT_MODEL\|DEEPSEEK.*MODEL\|model.*deepse…' in src ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the DEFAULT_MODEL.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'DEFAULT_MODEL' in src/deepseek.rs ✓ (85ms)
+
+
