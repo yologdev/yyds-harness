@@ -784,7 +784,7 @@ def _has_src_files(task: dict[str, object]) -> bool:
     return False
 
 
-def choose_task(assessment: str) -> dict[str, object]:
+def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
     metrics = numeric_metrics(lower)
@@ -873,6 +873,16 @@ def choose_task(assessment: str) -> dict[str, object]:
     if not _candidate_files_exist(fallback):
         # Guarantee at least one existing file
         fallback["files"] = "scripts/preseed_session_plan.py"
+
+    if assessment_was_missing:
+        fallback["files"] = "scripts/preseed_session_plan.py"
+        fallback["assessment_missing_note"] = True
+        fallback["objective"] = (
+            "The assessment phase failed to produce assessment.md. "
+            "Improve harness planning reliability with a narrow, verifiable fix "
+            "scoped to a single file."
+        )
+        return fallback
 
     if _assessment_is_healthy_codebase(lower, current):
         return _healthy_codebase_fallback()
@@ -1675,7 +1685,9 @@ no-edit revert pressure from prior session.
     if not assessment.strip():
         return 0
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    task = choose_task(assessment)
+    task = choose_task(assessment, assessment_was_missing=(
+        args.assessment is not None and args.assessment.name == "assessment_missing.md"
+    ))
     (args.output_dir / "task_01.md").write_text(
         render_task(task, args.day, args.session_time),
         encoding="utf-8",
