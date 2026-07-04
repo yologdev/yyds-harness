@@ -1918,7 +1918,35 @@ fn handle_cache_report(args: &[String]) {
                 .unwrap_or_else(|_| "{}".to_string())
         ),
         Ok(report) => println!("{}", render_cache_report(&report, sampling_note.as_deref())),
-        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        Err(e) if json_output => {
+            let diag_note = e.lines().next().unwrap_or(&e).to_string();
+            let avail_paths: Vec<&str> = e
+                .lines()
+                .skip_while(|l| !l.contains("stream-check"))
+                .filter(|l| l.trim().starts_with("- "))
+                .map(|l| l.trim().trim_start_matches("- "))
+                .take_while(|l| !l.contains("Use one of"))
+                .collect();
+            let payload = json!({
+                "diagnostic": "deepseek_cache_report",
+                "limitation": "no_cache_metrics_for_agent_chat",
+                "diagnostic_note": diag_note,
+                "reason": "yoagent Usage struct drops DeepSeek cache token fields (cache_read_input_tokens, cache_creation_input_tokens)",
+                "available_diagnostic_paths": avail_paths,
+                "event_count": 0,
+                "hit_tokens": 0,
+                "miss_tokens": 0,
+                "hit_ratio": 0.0,
+                "hit_ratio_percent": 0.0,
+                "sampling_note": sampling_note,
+                "models": [],
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
+            );
+        }
+        Err(e) => println!("{e}"),
     }
 }
 
@@ -2035,7 +2063,16 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
     }
 
     if event_count == 0 {
-        return Err("no DeepSeek cache metrics found".to_string());
+        return Err(
+            "no DeepSeek cache metrics recorded from agent chat completions\n  \
+             Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
+             (cache_read_input_tokens, cache_creation_input_tokens).\n  \
+             Cache metrics ARE recorded for these diagnostic paths:\n  \
+               - yyds deepseek stream-check  (chat completion SSE parsing)\n  \
+               - yyds deepseek fim-complete   (FIM completion parsing)\n  \
+             Use one of those commands to populate metrics, then re-run this report."
+                .to_string(),
+        );
     }
 
     let total = hit_tokens + miss_tokens;
@@ -2219,7 +2256,18 @@ mod tests {
     #[test]
     fn cache_report_handles_missing_metrics() {
         let err = build_cache_report(&[json!({"event_type": "RunStarted"})]).unwrap_err();
-        assert_eq!(err, "no DeepSeek cache metrics found");
+        assert!(
+            err.contains("no DeepSeek cache metrics recorded"),
+            "error should explain the limitation, got: {err}"
+        );
+        assert!(
+            err.contains("yoagent"),
+            "error should name yoagent as the upstream limitation, got: {err}"
+        );
+        assert!(
+            err.contains("stream-check"),
+            "error should point to stream-check as a diagnostic path, got: {err}"
+        );
     }
 
     #[test]
