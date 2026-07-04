@@ -7379,4 +7379,222 @@ mod tests {
             "RunCompleted count should not increase when already closed: {raw_after}"
         );
     }
+
+    // ── read_events_bounded ──────────────────────────────────────────
+
+    /// Helper: write `count` events to a temp file via `append_event`,
+    /// returning the tempdir (keeps the file alive) and its path.
+    fn write_test_events(count: usize) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        for i in 0..count {
+            let event = StateEvent {
+                event_id: format!("evt-{i:04}"),
+                event_type: EventType::RunStarted,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some("run-read-bounded".into()),
+                session_id: None,
+                trace_id: format!("trace-{i:04}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"index": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn read_events_bounded_empty_file() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        assert!(events.is_empty(), "empty file should yield 0 events");
+        assert!(
+            note.is_empty(),
+            "note should be empty when no sampling needed"
+        );
+    }
+
+    #[test]
+    fn read_events_bounded_under_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(3);
+
+        let (events, note) = read_events_bounded(&path, 10).unwrap();
+        assert_eq!(events.len(), 3, "all 3 events should be returned");
+        assert!(note.is_empty(), "no sampling note when file fits in limit");
+
+        // Verify event order: events should be in file order
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(
+                event["payload"]["index"].as_u64().unwrap(),
+                i as u64,
+                "events should be in order"
+            );
+        }
+    }
+
+    #[test]
+    fn read_events_bounded_exactly_at_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(5);
+
+        let (events, note) = read_events_bounded(&path, 5).unwrap();
+        assert_eq!(events.len(), 5, "all events returned when exactly at limit");
+        assert!(note.is_empty(), "no sampling note when exactly at limit");
+    }
+
+    #[test]
+    fn read_events_bounded_exceeds_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(10);
+
+        let (events, note) = read_events_bounded(&path, 5).unwrap();
+        assert_eq!(events.len(), 5, "should return exactly limit events");
+        assert!(
+            note.contains("sampled from last"),
+            "sampling note expected: {note}"
+        );
+        assert!(
+            note.contains("10 total"),
+            "note should mention total: {note}"
+        );
+
+        // Should have the last 5 events (indices 5-9), not the first 5
+        for (i, event) in events.iter().enumerate() {
+            let payload_index = event["payload"]["index"].as_u64().unwrap();
+            assert_eq!(
+                payload_index,
+                (5 + i) as u64,
+                "should receive last 5 events (5-9), got index {payload_index} at position {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_events_bounded_corrupted_lines_skipped() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+
+        // Write 3 valid events
+        for i in 0..3 {
+            let event = StateEvent {
+                event_id: format!("evt-{i:04}"),
+                event_type: EventType::RunStarted,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some("run-test".into()),
+                session_id: None,
+                trace_id: format!("trace-{i:04}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"index": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+
+        // Append corrupted lines after the valid events
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        // Garbage that isn't valid JSON at all
+        raw.push_str("this is definitely not json\n");
+        // Truncated JSON (missing closing brace and field)
+        raw.push_str("{\"event_id\":\"partial\", \"event_type\":\"RunStarted\"\n");
+        std::fs::write(&path, &raw).unwrap();
+
+        // Should return only the 3 valid events (corrupted lines are skipped
+        // with eprintln! warnings, not errors)
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        assert_eq!(
+            events.len(),
+            3,
+            "corrupted lines should be skipped, expected 3 valid events"
+        );
+        assert!(note.is_empty(), "no sampling note when all events fit");
+    }
+
+    #[test]
+    fn read_events_bounded_nonexistent_file_is_error() {
+        let _guard = state_global_test_lock();
+        let result = read_events_bounded(Path::new("/nonexistent/path/events.jsonl"), 100);
+        assert!(
+            result.is_err(),
+            "nonexistent file should produce an error, not empty results"
+        );
+    }
+
+    #[test]
+    fn read_events_bounded_multi_byte_payloads() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+
+        // Write events with multi-byte UTF-8 in payloads
+        let multi_byte_data = vec![
+            "café ☕",      // 2-byte + 4-byte grapheme
+            "🚀 launch",    // 4-byte grapheme
+            "日本語テスト", // Japanese (3-byte chars)
+            "✓ checked",    // 3-byte char
+        ];
+
+        for (i, text) in multi_byte_data.iter().enumerate() {
+            let event = StateEvent {
+                event_id: format!("evt-mb-{i:04}"),
+                event_type: EventType::RunStarted,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some("run-mb".into()),
+                session_id: None,
+                trace_id: format!("trace-mb-{i:04}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"text": text, "index": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        assert_eq!(events.len(), 4, "all multi-byte events should parse");
+        assert!(note.is_empty());
+
+        // Verify the multi-byte text survived the round-trip
+        assert_eq!(events[0]["payload"]["text"].as_str().unwrap(), "café ☕");
+        assert_eq!(events[1]["payload"]["text"].as_str().unwrap(), "🚀 launch");
+        assert_eq!(
+            events[2]["payload"]["text"].as_str().unwrap(),
+            "日本語テスト"
+        );
+        assert_eq!(events[3]["payload"]["text"].as_str().unwrap(), "✓ checked");
+    }
+
+    #[test]
+    fn read_events_bounded_only_blank_lines() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blank.jsonl");
+        std::fs::write(&path, "\n\n   \n\t\n\n").unwrap();
+
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        assert!(events.is_empty(), "blank-only file should yield 0 events");
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn read_events_bounded_zero_limit_with_data() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(5);
+
+        // With limit=0, we should get 0 events and a sampling note
+        let (events, note) = read_events_bounded(&path, 0).unwrap();
+        assert!(events.is_empty(), "limit=0 should return no events");
+        assert!(
+            note.contains("sampled from last"),
+            "should have sampling note: {note}"
+        );
+    }
 }
