@@ -1,0 +1,554 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Wire cache metrics recording into the agent chat completion flow so `yyds deepseek cache-report` shows real metrics
+2. The existing `record_cache_metrics_direct` calls are in `parse_fim_completion_response` and `parse_chat_completion_sse`, but neither is called during normal agent chat completions
+3. The key interception point is probably `finish_prompt_epilogue` in `src/prompt.rs` which receives a `&Usage` from yoagent
+
+Let me start by reading the evolve skill, then the relevant source files.
+
+I need to:
+1. Read `skills/evolve/SKILL.md`
+2. Read `src/prompt.rs` around `finish_prompt_epilogue`
+3. Check yoagent's `Usage` struct for cache fields
+4. Check `src/deepseek.rs` for `record_cache_metrics_direct`
+5. Check `src/commands_deepseek.rs` for cache-report
+6. Determine the right approach and implement
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me start by reading the evolve skill and the key source files to understand the problem.
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:230..260  ▶ read src/deepseek.rs:1690..1810 ✓ (993ms)
+ ✓ (793ms)
+ ✓ (601ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I need to understand more context. Let me check several things:
+
+1. How is `finish_prompt_epilogue` called and where does the `Usage` come from?
+2. What does yoagent's `Usage` struct look like?
+3. What does `record_cache_metrics_direct` look like?
+4. What does `cache-report` look like?
+
+Let me look at all these in parallel.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+Now let me check the yoagent `Usage` struct and several other key areas in parallel:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct Usage' (*.rs)  ▶ search 'finish_prompt_epilogue' (*.rs)  ▶ search 'record_cache_metrics_direct' (*.rs)  ▶ $ find ~/.cargo/registry/src -path '*/yoagent-*/src/*' -name '*.rs' 2>/dev/null | … ✓ (803ms)
+ ✓ (1.0s)
+ ✓ (957ms)
+ ✓ (960ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the yoagent `Usage` struct. It might be named differently.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.2s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src -path '*/yoagent-0.8.4/src/*' -name '*.rs' -exec grep…  ▶ read src/state.rs:530..560  ▶ read src/prompt.rs:1325..1375 ✓ (208ms)
+ ✓ (811ms)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at yoagent's `Usage` struct to see if it has cache fields.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub struct Usage\|cache_read\|cache_creation\|cache\|prompt_cache\|cach…  ▶ read src/prompt.rs:1530..1610 ✓ (193ms)
+ ✓ (969ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. yoagent's `Usage` struct HAS cache fields! Let me read the full struct:
+
+```
+pub struct Usage {
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub fn cache_hit_rate(&self) -> f64 { ... }
+}
+```
+
+So yoagent's `Usage` has `cache_read` and `cache_write` fields. But the question is: are these populated for DeepSeek? The key concern is whether `cache_read` represents DeepSeek's `prompt_cache_hit_tokens` and some equivalent for `prompt_cache_miss_tokens`.
+
+Let me read the full `Usage` struct from yoagent to understand the fields better.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/types.rs:174..214  ▶ search 'cache_read|cache_write' in src (*.rs) ✓ (357ms)
+ ✓ (405ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture:
+
+yoagent's `Usage` struct has `cache_read: u64` and `cache_write: u64` fields. But these are generic/Anthropic-oriented fields. The key question is: when using the DeepSeek provider, does yoagent populate `cache_read` with `prompt_cache_hit_tokens` and some other mapping for `prompt_cache_miss_tokens`?
+
+Let me check how yoagent's DeepSeek provider maps the API response to `Usage`. Let me also look at how `total_usage` gets built in `src/prompt.rs`.
+
+The plan says: "If yoagent's Usage HAS cache fields: call record_cache_metrics_direct in finish_prompt_epilogue with the available cache data."
+
+But `record_cache_metrics_direct` takes `cache_hit: Option<u64>, cache_miss: Option<u64>` while yoagent's `Usage` has `cache_read: u64, cache_write: u64` (non-optional, default 0).
+
+I need to understand the semantic mapping:
+- DeepSeek `prompt_cache_hit_tokens` → `cache_read` (tokens served from cache)
+- DeepSeek `prompt_cache_miss_tokens` → no direct yoagent equivalent; `cache_write` is about writing to cache
+
+So yoagent's `Usage` has `cache_read` (which would map to cache hits), but `cache_write` is not the same as cache misses. This is the issue: yoagent's `Usage` doesn't have a `cache_miss` field.
+
+Let me check: can I check how yoagent's DeepSeek provider maps the API response?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src -path '*/yoagent-0.8.4/src*' -name '*.rs' -exec grep … ✓ (364ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the provider models to see how they map API responses to `Usage`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'cache_read\|cache_write\|prompt_cache\|Usage {' ~/.cargo/registry/src/i…  ▶ $ find ~/.cargo/registry/src -path '*/yoagent-0.8.4/src/provider*' -name '*.rs' -e… ✓ (809ms)
+ ✓ (812ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look more broadly at how yoagent maps usage from API responses.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'cache_read\|cache_write\|prompt_cache' ~/.cargo/registry/src/index.cra… ✓ (387ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find how yoagent maps API usage to the `Usage` struct for each provider. This will tell me whether `cache_read` is populated for DeepSeek.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'cache_read' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoa…  ▶ $ grep -rn 'Usage\s*{.*}' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/y… ✓ (397ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the search doesn't find any place where `cache_read` is actually assigned. Let me search more broadly for where Usage structs are constructed in the yoagent providers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'Usage {' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagen…  ▶ $ grep -rn 'prompt_tokens\|completion_tokens\|input_tokens\|output_tokens' ~/.carg… ✓ (773ms)
+ ✓ (794ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the provider files that might handle DeepSeek and see how they construct Usage. Let me look at the openai_compat.rs file since DeepSeek is likely an OpenAI-compatible provider.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'cache_read\|cache_write\|prompt_cache\|cache_hit\|cache_miss' ~/.cargo… ✓ (361ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It seems like yoagent's providers may not populate `cache_read` and `cache_write` for DeepSeek. Let me look at the Anthropic provider for comparison since that's where caching is most developed, and at the OpenAI compat provider to see if there's any caching.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'cache_read\|cache_write\|prompt_cache' ~/.cargo/registry/src/index.crat…  ▶ $ grep -n 'cache_read\|cache_write\|prompt_cache\|Usage ' ~/.cargo/registry/src/in… ✓ (412ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Excellent! Now I can see the full picture:
+
+In yoagent's `openai_compat.rs` (which is the provider DeepSeek uses since DeepSeek has an OpenAI-compatible API), the code at line 88-99 does:
+
+```rust
+let cache_read = u.prompt_cache_hit_tokens.unwrap_or(0);
+usage.input = u.prompt_cache_miss_tokens.unwrap_or_else(|| {
+    u.prompt_tokens.saturating_sub(cache_read)
+});
+usage.cache_read = cache_read;
+```
+
+So:
+- `usage.cache_read` = `prompt_cache_hit_tokens` (cache hits)
+- `usage.input` = `prompt_cache_miss_tokens` if available, otherwise `prompt_tokens - cache_read`
+- `usage.cache_write` = not populated (defaults to 0)
+
+This is perfect! yoagent's `Usage` struct DOES have `cache_read` populated with DeepSeek's `prompt_cache_hit_tokens`. And `usage.input` contains cache misses (either directly from the API or computed).
+
+But there are two issues:
+1. `cache_write` is always 0 for DeepSeek (no equivalent field)
+2. The `cache_read` is already populated in `total_usage` when it reaches `finish_prompt_epilogue`
+
+So the issue is: does `record_cache_metrics_direct` get called with this data?
+
+Looking at `finish_prompt_epilogue`, it receives `total_usage: &Usage` but doesn't call `record_cache_metrics_direct`. So the fix is: call `record_cache_metrics_direct` in `finish_prompt_epilogue` using `total_usage.cache_read` (cache_hit_tokens) and `total_usage.input` (which represents cache miss tokens in the DeepSeek case).
+
+Wait, but `total_usage.input` for the DeepSeek provider represents `prompt_cache_miss_tokens` (not total input tokens). Let me verify...
+
+In the openai_compat.rs mapping:
+```rust
+usage.input = u.prompt_cache_miss_tokens.unwrap_or_else(|| {
+    u.prompt_tokens.saturating_sub(cache_read)
+});
+```
+
+So `usage.input` IS set to cache miss tokens specifically (or computed: total prompt tokens minus cache hits). This is somewhat non-standard but it's what yoagent does.
+
+And `total_usage` accumulates across turns. After accumulation, `session_total.input` would be the sum of all cache miss tokens across turns.
+
+So I can call `record_cache_metrics_direct` with:
+- `cache_hit` = `total_usage.cache_read` 
+- `cache_miss` = `total_usage.input` (since in DeepSeek's case, input = cache_miss_tokens)
+
+But wait, there's a subtlety. The `record_cache_metrics_direct` function checks if model starts with "deepseek". We need the model identifier to be passed through. Let me check if "deepseek" prefix is available...
+
+Looking at `finish_prompt_epilogue`:
+```rust
+async fn finish_prompt_epilogue(
+    agent: &mut Agent,
+    total_usage: &Usage,
+    session_total: &mut Usage,
+    model: &str,
+    prompt_start: Instant,
+)
+```
+
+The `model` parameter is available! So I need to add a call to `record_cache_metrics_direct` in `finish_prompt_epilogue`.
+
+But there's a consideration: `accumulate_usage(session_total, total_usage)` has already been called by line 243. Let me check whether this modifies `total_usage` or `session_total`:
+
+Let me look at `accumulate_usage`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.1s (2 ✓)
+
+Now I see the full picture. yoagent's `openai_compat.rs` provider maps DeepSeek API responses to `Usage` with:
+• `cache_read` = `prompt_cache_hit_tokens` (cache hits)  
+• `input` = `prompt_cache_miss_tokens` (cache misses)
+
+So the `Usage` reaching `finish_prompt_epilogue` already has cache data! Let me check `accumulate_usage` and then look at the cache-report command:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn accumulate_usage' in src (*.rs)  ▶ search 'cache-report\|handle_cache_report\|build_cache_report' in src (*.rs) ✓ (188ms)
+ ✓ (481ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Searching for the cache report code in commands_deepseek.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:24..44  ▶ $ grep -n 'cache.report\|cache_report\|CacheMetrics' src/commands_deepseek.rs | he… ✓ (603ms)
+ ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `handle_cache_report` and `build_cache_report` functions fully:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1882..2002 ✓ (187ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The solution is straightforward:
+
+1. In `finish_prompt_epilogue` (src/prompt.rs), call `record_cache_metrics_direct` with the available cache data from `total_usage`
+2. `total_usage.cache_read` maps to DeepSeek's `prompt_cache_hit_tokens` (cache hits)
+3. For cache misses: `total_usage.input` in yoagent's DeepSeek provider mapping represents `prompt_cache_miss_tokens`
+
+Wait, actually let me re-read the mapping more carefully:
+
+```rust
+let cache_read = u.prompt_cache_hit_tokens.unwrap_or(0);
+usage.input = u.prompt_cache_miss_tokens.unwrap_or_else(|| {
+    u.prompt_tokens.saturating_sub(cache_read)
+});
+usage.cache_read = cache_read;
+```
+
+So: `usage.cache_read` = cache hit tokens; `usage.input` = cache miss tokens (from API field or computed).
+
+But `total_usage` accumulates across all turns. And `session_total` accumulates across all prompts. Let me think about which to use...
+
+Actually, the task says to record after each agent prompt turn. So I should record in `finish_prompt_epilogue` using `total_usage` (the per-prompt usage). But that would double-count if we use cumulative session total. Let me use `total_usage` which is the usage from this one prompt.
+
+However, there's a subtlety: `accumulate_usage` is already called BEFORE `finish_prompt_epilogue`. Let me look at the callers more carefully.
+
+Looking at lines 1336 and 1545:
+```rust
+finish_prompt_epilogue(agent, &total_usage, session_total, model, prompt_start).await;
+```
+
+And in `finish_prompt_epilogue`:
+```rust
+accumulate_usage(session_total, total_usage);
+```
+
+So `total_usage` still has the per-prompt values at the time we'd call `record_cache_metrics_direct`. Good.
+
+But wait - do we want to record per-prompt or per-session? Let me look at `record_cache_metrics_direct` again:
+
+```rust
+pub fn record_cache_metrics_direct(model: &str, cache_hit: Option<u64>, cache_miss: Option<u64>) {
+    if !model.starts_with("deepseek") { return; }
+    if cache_hit == Some(0) && cache_miss == Some(0) { return; }
+    if cache_hit.is_none() && cache_miss.is_none() { return; }
+    ...
+}
+```
+
+It accepts `Option<u64>`. So I need to convert `total_usage.cache_read` (u64) to `Option<u64>`. I can use `Some(total_usage.cache_read)` and `Some(total_usage.input)` (since input for DeepSeek = cache miss tokens).
+
+But wait, `total_usage.input` might include non-cache input tokens from API calls other than DeepSeek. And `total_usage.input` might not ONLY represent cache misses if the model isn't deepseek. But the `record_cache_metrics_direct` already has the `model.starts_with("deepseek")` guard.
+
+Hmm, but `total_usage.input` for DeepSeek - let me verify: does yoagent's `input` for DeepSeek ONLY represent cache miss tokens? Let me look at the openai_compat.rs code more carefully.
+
+Actually, the key mapping is:
+- `usage.input` = `prompt_cache_miss_tokens.unwrap_or_else(|| prompt_tokens.saturating_sub(cache_read))`
+
+So `usage.input` IS essentially the cache miss count. This is different from Anthropic where `usage.input` = total input tokens and cache info is separate.
+
+So for DeepSeek: `usage.input` ≈ cache_miss_tokens, `usage.cache_read` ≈ cache_hit_tokens.
+
+But this is a bit fragile - if yoagent ever changes the mapping, it would break. And there's also the case where `prompt_cache_miss_tokens` is absent from the API response (older DeepSeek versions?), in which case it computes `prompt_tokens - cache_hit`. In that case `usage.input` = total prompt tokens minus cache hits. This is still "cache miss tokens" effectively.
+
+OK let me now implement the fix. The change is:
+
+1. In `finish_prompt_epilogue` in `src/prompt.rs`, add a call to `state::record_cache_metrics_direct` with:
+   - `model`: the model parameter already available
+   - `cache_hit`: `Some(total_usage.cache_read)` (but only if >0 or we might hit the both-zero guard)
+   - `cache_miss`: `Some(total_usage.input)` (same consideration)
+
+Wait, looking at the guard more carefully:
+```rust
+if cache_hit == Some(0) && cache_miss == Some(0) { return; }
+```
+
+So if both are 0, it won't record. That's fine - the first prompt turn won't have cache hits/misses. But subsequent turns (within the same session) might.
+
+Actually wait: for DeepSeek, `total_usage.input` for the first prompt turn would be non-zero (it includes all input tokens as "cache miss" tokens). So the guard wouldn't filter it out.
+
+But I should be more careful. Let me think about what happens:
+- First prompt: no caching, all tokens are "misses". `cache_read=0, input=N` (where N = some non-zero value)
+- The guard: `cache_hit == Some(0) && cache_miss == Some(0)` → false (cache_miss is non-zero). So it would record. Good.
+
+But actually, does `record_cache_metrics_direct` need to be called differently - maybe only recording cache-specific data would be more useful? Let me look at what the cache-report does with the data:
+
+```rust
+fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
+    let mut event_count = 0u64;
+    let mut hit_tokens = 0u64;
+    ...
+```
+
+It aggregates hit/miss tokens across events. So recording per-prompt is fine.
+
+Now, there's a problem: `total_usage.input` for DeepSeek is NOT the same as `prompt_cache_miss_tokens` semantically. It's just that yoagent happens to use that field for cache misses. But conceptually, this is fragile. A better approach might be to use `prompt_tokens` as the total and `cache_read` as hits, then compute misses. But we don't have `prompt_tokens` separately in the Usage struct - it's been consumed into `input` and `cache_read`.
+
+Actually wait, for DeepSeek the total input tokens would be `total_usage.input + total_usage.cache_read`. And the cache miss tokens would be `total_usage.input`. And the cache hit tokens would be `total_usage.cache_read`.
+
+Let me go ahead with this approach. Let me also think about what exact values to pass:
+
+For `cache_hit`: `Some(total_usage.cache_read)` — this is `prompt_cache_hit_tokens`
+For `cache_miss`: `Some(total_usage.input)` — this is `prompt_cache_miss_tokens` (or computed equivalent)
+
+But wait, there's an important case: if neither field is available (e.g., model doesn't support caching), `cache_read` would be 0 and `input` would just be the total prompt tokens. In that case, recording `cache_hit=0, cache_miss=total_tokens` is a bit misleading - it makes it seem like there are cache metrics but with 0 hits. But the guard checks `cache_hit == Some(0) && cache_miss == Some(0)` — so it WOULD record it if cache_miss is non-zero.
+
+Hmm, I think a safer approach would be: only record if `total_usage.cache_read > 0`, because that definitively means the DeepSeek API returned cache metrics. Let me think... 
+
+Actually, the simplest and most correct approach: pass `Some(total_usage.cache_read)` as cache_hit and `Some(total_usage.input)` as cache_miss. The `record_cache_metrics_direct` function already guards on deepseek model prefix. If the API didn't return cache metrics:
+- `cache_read` = 0 (from `unwrap_or(0)`)
+- `input` = some non-zero value (total prompt tokens)
+- Both-0 guard is not triggered, so it would record
+- But this is fine — it's accurate: 0 cache hits for this prompt
+
+Let me just implement it. The change is minimal.
+
+Actually wait, one more thing. The order matters: `accumulate_usage(session_total, total_usage)` is called first (line 243), modifying `session_total`. But `total_usage` is borrowed as `&Usage`, so its values are unchanged. Good.
+
+Now, we need to think about `total_usage.input`. For non-DeepSeek models, would this accidentally record metrics? No, because `record_cache_metrics_direct` checks `model.starts_with("deepseek")`.
+
+For DeepSeek models, `total_usage.input` = cache miss tokens. But if we also use Anthropic or other providers, their `usage.input` = total input tokens (different semantics). But the model prefix guard handles that.
+
+Let me implement this now.
+
+The change is in `src/prompt.rs` in `finish_prompt_epilogue`:
+
+```rust
+async fn finish_prompt_epilogue(
+    agent: &mut Agent,
+    total_usage: &Usage,
+    session_total: &mut Usage,
+    model: &str,
+    prompt_start: Instant,
+) {
+    accumulate_usage(session_total, total_usage);
+    print_usage(total_usage, session_total, model, prompt_start.elapsed());
+    // Record DeepSeek cache metrics from the yoagent Usage struct.
+    // In yoagent's OpenAI-compatible provider, Usage.input carries
+    // prompt_cache_miss_tokens and Usage.cache_read carries
+    // prompt_cache_hit_tokens (see yoagent openai_compat.rs).
+    crate::state::record_cache_metrics_direct(
+        model,
+        Some(total_usage.cache_read),
+        Some(total_usage.input),
+    );
+    agent.finish().await;
+    ...
+}
+```
+
+But wait, I need to make sure `record_cache_metrics_direct` is imported and available. Let me check what's already imported in prompt.rs.
+
+Also, I should check whether there are tests I should write first, as the evolve skill says "Write a test first if possible."
+
+Let me look at what tests exist for cache metrics.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. The fix is simple: yoagent already passes `cache_read` ( = `prompt_cache_hit_tokens`) and `input` ( = `prompt_cache_miss_tokens` in the DeepSeek provider) through its `Usage` struct to `finish_prompt_epilogue`. We just need to call `record_cache_metrics_direct` there. Let me check imports and existing tests:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1..21  ▶ $ grep -n 'cache_report\|record_cache_metrics\|CacheMetrics' src/commands_deepseek… ✓ (571ms)
+ ✓ (604ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `use yoagent::*;` on line 10 should bring `Usage` into scope. And `crate::state::record_cache_metrics_direct` should be accessible since this is inside the crate.
+
+Let me check the existing cache tests to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2185..2285 ✓ (179ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me implement the change.
+
+The change is straightforward:
+1. In `finish_prompt_epilogue` in `src/prompt.rs`, call `crate::state::record_cache_metrics_direct` with the available `total_usage.cache_read` and `total_usage.input`.
+
+But wait, there's a subtlety: `total_usage.input` for DeepSeek = cache miss tokens. For non-DeepSeek models, `input` means total input tokens. The `record_cache_metrics_direct` function already guards on `model.starts_with("deepseek")`, so this is safe.
+
+Let me now implement this. I'll:
+1. Edit `finish_prompt_epilogue` to record cache metrics
+2. Run `cargo fmt -- --check`
+3. Run `cargo build` 
+4. Run the specific test `cache_report_aggregates_state_events`
+5. Think about whether a test is needed for this specific wiring
+
+For a test: the evolve skill says "Write a test first if possible." The test would need to verify that `finish_prompt_epilogue` calls `record_cache_metrics_direct`. But `finish_prompt_epilogue` is an async function that takes an `Agent`, which is complex to construct. And `record_cache_metrics_direct` writes to a global state. So a unit test is tricky.
+
+Instead, I can add a test in `commands_deepseek.rs` that exercises the full flow. But actually, the existing `cache_report_reads_canonical_yoagent_state_events` test already tests the cache-report rendering with properly formed events. The gap is that events aren't RECORDED during agent turns.
+
+The real verification will be the functional test described in the task: "After one agent prompt turn, yyds deepseek cache-report either shows cache metrics."
+
+Let me go ahead with the edit. The change is surgical and in-scope.
+
+Actually, let me think about edge cases more carefully. `total_usage.cache_read` will be 0 for the first prompt turn (no caching) for DeepSeek, and `total_usage.input` will be non-zero (all input tokens are misses). The `record_cache_metrics_direct` will record it. This is correct behavior — it tells us "0 cache hits, N cache misses" for this turn.
+
+But what about models that return `prompt_cache_hit_tokens=0` and `prompt_cache_miss_tokens=None` (older API versions)? In that case:
+- `cache_read` = 0 (from `unwrap_or(0)`)
+- `input` = `prompt_tokens - 0` = `prompt_tokens` (from the fallback computation in openai_compat.rs)
+
+So it would record `cache_hit=0, cache_miss=N`. This is fine.
+
+OK, let me implement now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full understanding. The fix is to call `record_cache_metrics_direct` inside `finish_prompt_epilogue` since yoagent already passes cache data through its `Usage` struct (via the openai_compat provider). Let me implement it:
+    ) {
+        accumulate_usage(session_total, total_usage);
+        print_usage(total_usage, session_total, model, prompt_start.elapsed());
+  +     // Record DeepSeek cache metrics from the yoagent Usage struct.
+  +     // In yoagent's OpenAI-compatible provider (openai_compat.rs),
+  +     // Usage.input maps prompt_cache_miss_tokens and Usage.cache_read
+  +     // maps prompt_cache_hit_tokens from the DeepSeek API response.
+  +     // This enables `yyds deepseek cache-report` to show real cache
+  +     // metrics from normal agent chat completions.
+  +     crate::state::record_cache_metrics_direct(
+  +         model,
+  +         Some(total_usage.cache_read),
+  +         Some(total_usage.input),
+  +     );
+  ✓ Auto-approved: edit: src/prompt.rs (9 → 20 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (9 → 20 lines)
+    ) {
+        accumulate_usage(session_total, total_usage);
+        print_usage(total_usage, session_total, model, prompt_start.elapsed());
+  +     // Record DeepSeek cache metrics from the yoagent Usage struct.
+  +     // In yoagent's OpenAI-compatible provider (openai_compat.rs),
+  +     // Usage.input maps prompt_cache_miss_tokens and Usage.cache_read
+  +     // maps prompt_cache_hit_tokens from the DeepSeek API response.
+  +     // This enables `yyds deepseek cache-report` to show real cache
+  +     // metrics from normal agent chat completions.
+  +     crate::state::record_cache_metrics_direct(
+  +         model,
+  +         Some(total_usage.cache_read),
+  +         Some(total_usage.input),
+  +     );
+ ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the edit looks correct:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit looks right:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:236..271 ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run `cargo fmt -- --check` and then `cargo build`:
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me run verification:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt passes. Now build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run the specific cache-report tests to make sure nothing is broken:
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the cache-report tests:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test cache_report -- --t… ✓ (28.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 5 cache-report tests pass. Let me also run a broader test to make sure nothing in prompt.rs is broken:
+────────────────────────────────────────────────────────────────────────────────
+
+All 5 cache-report tests pass. Let me also run the prompt-related tests:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test prompt -- --test-th… ✗ (1m 59s)
+    │ Command timed out after 120s
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test timed out. Let me run a narrower test set - just the `yyds` binary tests directly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (347ms)
+
+
