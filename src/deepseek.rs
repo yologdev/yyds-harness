@@ -3993,6 +3993,45 @@ mod tests {
         assert!(err.contains("unknown strict schema"));
     }
 
+    #[test]
+    fn harness_genome_prompt_layout_is_deterministic() {
+        let genome1 = DeepSeekHarnessGenome::default();
+        let genome2 = DeepSeekHarnessGenome::default();
+
+        let policy1 = &genome1.prompt_layout_policy;
+        let policy2 = &genome2.prompt_layout_policy;
+
+        // Version must be stable and positive
+        assert!(policy1.version > 0, "prompt layout version must be > 0");
+        assert_eq!(
+            policy1.version, policy2.version,
+            "prompt layout version must be deterministic"
+        );
+
+        // Stable prefix blocks must be non-empty and in a fixed order
+        assert!(
+            !policy1.stable_prefix_blocks.is_empty(),
+            "stable_prefix_blocks must not be empty"
+        );
+        assert_eq!(
+            policy1.stable_prefix_blocks, policy2.stable_prefix_blocks,
+            "stable_prefix_blocks must be deterministic"
+        );
+
+        // Dynamic suffix blocks must be non-empty and in a fixed order
+        assert!(
+            !policy1.dynamic_suffix_blocks.is_empty(),
+            "dynamic_suffix_blocks must not be empty"
+        );
+        assert_eq!(
+            policy1.dynamic_suffix_blocks, policy2.dynamic_suffix_blocks,
+            "dynamic_suffix_blocks must be deterministic"
+        );
+
+        // Full genomes must be equal (deterministic construction)
+        assert_eq!(genome1, genome2, "harness genome must be deterministic");
+    }
+
     fn default_transport_policy() -> DeepSeekTransportPolicy {
         DeepSeekTransportPolicy {
             connect_timeout_ms: 10_000,
