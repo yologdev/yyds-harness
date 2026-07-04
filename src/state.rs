@@ -3233,6 +3233,38 @@ pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
     Ok(events)
 }
 
+/// Read state events from a JSONL file, tail-sampling to at most `limit`
+/// events when the file is larger. Returns `(events, sampling_note)` where
+/// `sampling_note` is empty when all events fit within the limit.
+///
+/// This encodes the lesson from Days 117-125: event-reading must be bounded
+/// to prevent timeouts with large event histories (50k+ events). Six
+/// diagnostic tools were individually patched with the same pattern before
+/// this utility was extracted.
+pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+    let total_lines = raw.lines().filter(|l| !l.trim().is_empty()).count();
+    if total_lines <= limit {
+        let events = read_compatibility_events(path)?;
+        Ok((events, String::new()))
+    } else {
+        // Tail-sample: read only the last `limit` lines
+        let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+        let start = lines.len().saturating_sub(limit);
+        let mut events = Vec::new();
+        for line in &lines[start..] {
+            let normalized = compatibility_event_json_line(line)?;
+            match serde_json::from_str::<Value>(&normalized) {
+                Ok(v) => events.push(v),
+                Err(e) => eprintln!("warning: skipping unparseable event: {e}"),
+            }
+        }
+        let note = format!("sampled from last {limit} of {total_lines} total");
+        Ok((events, note))
+    }
+}
+
 fn compatibility_event_value(event: &StateEvent) -> Value {
     json!({
         "event_id": event.event_id,
