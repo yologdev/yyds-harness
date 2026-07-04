@@ -169,6 +169,61 @@ def open_lifecycle(
     return open_models, open_runs, open_session_runs, diagnostics
 
 
+def find_stale_orphaned_runs(
+    events: list[dict[str, Any]],
+) -> tuple[set[str], set[str], dict[str, Any]]:
+    """Scan ALL events for runs that have RunStarted but no RunCompleted.
+
+    Unlike lifecycle_for_scope which only scans from an ``after_line`` offset,
+    this scans the entire event file.  It catches orphaned runs from previous
+    sessions — e.g. a GitHub Actions cancellation where RunStarted was written
+    but the harness never reached RunCompleted.
+
+    Only runs that have at least one ModelCallStarted event are considered —
+    bare RunStarted entries without model activity are not real orphaned runs.
+
+    Returns (orphaned_runs, orphaned_session_runs, diagnostics).
+    """
+    run_started: set[str] = set()
+    run_completed: set[str] = set()
+    runs_with_model_calls: set[str] = set()
+    session_run_started: set[str] = set()
+    session_run_completed: set[str] = set()
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+            if kind == "RunStarted":
+                session_run_started.add(rid)
+            elif kind == "RunCompleted":
+                session_run_completed.add(rid)
+        elif kind == "RunStarted":
+            run_started.add(rid)
+        elif kind == "RunCompleted":
+            run_completed.add(rid)
+        elif kind == "ModelCallStarted":
+            runs_with_model_calls.add(rid)
+    # Only consider runs that have model activity as real orphans.
+    # Bare RunStarted entries without ModelCallStarted are not
+    # indicative of an interrupted agent invocation.
+    orphaned_runs = (run_started - run_completed) & runs_with_model_calls
+    orphaned_session_runs = session_run_started - session_run_completed
+    diagnostics = {
+        "full_scan_events": len(events),
+        "full_scan_run_started": len(run_started),
+        "full_scan_run_completed": len(run_completed),
+        "full_scan_orphaned_runs": len(orphaned_runs),
+        "full_scan_session_run_started": len(session_run_started),
+        "full_scan_session_run_completed": len(session_run_completed),
+        "full_scan_orphaned_session_runs": len(orphaned_session_runs),
+        "full_scan_runs_with_model_calls": len(runs_with_model_calls),
+    }
+    return orphaned_runs, orphaned_session_runs, diagnostics
+
+
 def append_terminal_events(
     events_path: Path,
     after_line: int,
@@ -229,6 +284,48 @@ def append_terminal_events(
             payload["error_detail"] = error_detail
         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
         completed_session_runs.append(rid)
+
+    # Full-scan orphan detection: find any runs in the entire event file
+    # that have RunStarted but no RunCompleted, regardless of position.
+    # This catches orphans from previous sessions (e.g., GitHub Actions
+    # cancellations) that the incremental after_line scan cannot see.
+    # Only runs that have at least one ModelCallStarted are considered
+    # (bare RunStarted entries are not real orphaned runs).
+    # The scan is skipped when the scope is ambiguous (events file was
+    # reset/rebuilt) to avoid closing historical replayed runs.
+    if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+        stale_orphaned_runs, stale_orphaned_session_runs, orphan_diag = find_stale_orphaned_runs(events)
+        diagnostics["full_scan_orphan_diagnostics"] = orphan_diag
+
+        # Only close orphans that weren't already closed by the incremental scan above.
+        already_closed = set(completed_runs + completed_session_runs)
+        new_orphan_runs = stale_orphaned_runs - already_closed
+        new_orphan_session_runs = stale_orphaned_session_runs - already_closed
+
+        for rid in sorted(new_orphan_runs):
+            payload = {
+                "status": "error",
+                "terminal_reason": "orphaned_previous_session",
+                "stage": stage or None,
+                "outcome": "post_hoc_closed",
+            }
+            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            completed_runs.append(rid)
+
+        for rid in sorted(new_orphan_session_runs):
+            payload = {
+                "status": "error",
+                "terminal_reason": "orphaned_previous_session",
+                "stage": stage or None,
+                "outcome": "post_hoc_closed",
+            }
+            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            completed_session_runs.append(rid)
+    else:
+        diagnostics["full_scan_orphan_diagnostics"] = {
+            "skipped": True,
+            "reason": "ambiguous_reset_full_scan",
+        }
 
     return {
         "completed_model_calls": completed_models,

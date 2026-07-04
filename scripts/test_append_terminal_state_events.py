@@ -349,6 +349,107 @@ class AppendTerminalStateEvents(unittest.TestCase):
                 1,
             )
 
+    def test_detects_and_closes_orphaned_run_from_previous_session(self):
+        """Full-scan orphan detector closes an interrupted run that predates after_line.
+
+        Simulates a GitHub Actions cancellation: a run has RunStarted +
+        ModelCallStarted but the harness was killed before writing
+        RunCompleted.  The orphaned run sits *before* after_line so the
+        incremental scan ignores it, but the full-scan orphan detector
+        identifies and closes it.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # Write an orphaned run that was interrupted (has model activity
+            # but no RunCompleted).
+            write_event(events, "RunStarted", "orphaned-run")
+            write_event(events, "ModelCallStarted", "orphaned-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FileEdited", "orphaned-run", {"path": "src/main.rs"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            # Write a current run that completed normally.
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # The orphaned run should be detected and closed.
+            orphan_diag = result["diagnostics"]["full_scan_orphan_diagnostics"]
+            self.assertEqual(orphan_diag["full_scan_orphaned_runs"], 1)
+            self.assertIn("orphaned-run", result["completed_runs"])
+            # The already-completed current-run should not be double-closed.
+            self.assertNotIn("current-run", result["completed_runs"])
+            # Verify the terminal event payload.
+            orphan_done = [
+                row
+                for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "orphaned-run"
+            ][0]
+            self.assertEqual(orphan_done["payload"]["status"], "error")
+            self.assertEqual(orphan_done["payload"]["terminal_reason"], "orphaned_previous_session")
+            self.assertEqual(orphan_done["payload"]["outcome"], "post_hoc_closed")
+            # The original events + 1 orphan closure = 8 lines.
+            self.assertEqual(len(rows), 8)
+
+    def test_orphan_detector_skips_bare_run_started_without_model_calls(self):
+        """A bare RunStarted without ModelCallStarted is not a real orphaned run.
+
+        Some test fixtures and edge cases produce isolated RunStarted events
+        that should not be treated as orphaned agent invocations.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "bare-run")
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # The bare run should NOT be closed — it has no model activity.
+            self.assertNotIn("bare-run", result["completed_runs"])
+            self.assertFalse(
+                any(
+                    row["event_type"] == "RunCompleted" and row["run_id"] == "bare-run"
+                    for row in rows
+                )
+            )
+            # The current-run should also not be touched.
+            self.assertNotIn("current-run", result["completed_runs"])
+            orphan_diag = result["diagnostics"]["full_scan_orphan_diagnostics"]
+            self.assertEqual(orphan_diag["full_scan_orphaned_runs"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
