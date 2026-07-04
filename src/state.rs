@@ -3241,6 +3241,7 @@ pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
 /// to prevent timeouts with large event histories (50k+ events). Six
 /// diagnostic tools were individually patched with the same pattern before
 /// this utility was extracted.
+#[allow(dead_code)]
 pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
