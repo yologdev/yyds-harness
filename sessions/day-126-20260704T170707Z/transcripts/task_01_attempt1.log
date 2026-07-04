@@ -1,0 +1,580 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix orphaned-run detection in the terminal-state script. Let me first read the relevant files and understand the current logic.
+
+Let me:
+1. Read the evolve skill first (as instructed)
+2. Read the current script and test files
+3. Understand why the orphaned run isn't being caught
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (2.3s)
+ ✓ (1.9s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current logic and the detection gap.
+
+Looking at `lifecycle_for_scope()`:
+
+1. For `RunStarted` and `RunCompleted` events with `phase: "session"` in their payload, they go into `session_run_started` / `session_run_completed` sets and are tracked separately.
+
+2. For non-session `RunStarted` / `RunCompleted`, they go into `run_started` / `run_completed`.
+
+3. Open runs = `active_runs - run_completed`, where `active_runs = run_started | set(model_started) | model_completed`.
+
+4. Open session runs = `session_run_started - session_run_completed`.
+
+Now the issue: the orphaned run `github-actions-28319290130` has a `RunStarted` event but no `RunCompleted`. Let me check what type of run this is.
+
+Looking at the `run_id` function - it looks for `run_id` in several places. The run `github-actions-28319290130` is a GitHub Actions run ID.
+
+The question is: does the `RunStarted` event for this run have `phase: "session"`? If so, it would be in `session_run_started` and tracked as `open_session_runs`. If not, it would be in `run_started` and tracked as `open_runs`.
+
+Let me look at the `append_terminal_events` function more carefully. It closes:
+1. `open_models` (ModelCallStarted without ModelCallCompleted)
+2. `open_runs` (RunStarted without RunCompleted, non-session)
+3. `open_session_runs` (session-scoped RunStarted without RunCompleted)
+
+So the detection *should* work for both cases. Let me check if there's an issue with how the script is called.
+
+Looking at `open_lifecycle()`: it uses `after_line` to only scan events after a certain line number. If the orphaned run's `RunStarted` event is BEFORE the `after_line`, it won't be detected.
+
+Let me look at how this script is called in `evolve.sh`...
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.3s (3 ✓)
+
+Now let me check how the script is called in `evolve.sh` and understand the `--after-line` mechanism:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'append_terminal_state_events' in scripts  ▶ search 'after.line' in scripts/evolve.sh ✓ (526ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for how it's called in evolve.sh, focusing on the --after-line argument.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'after-line' in scripts/evolve.sh ✓ (439ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full context of how this is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:230..290 ✓ (425ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the flow better. The `after_line` is passed in - let me find where `record_agent_terminal_events` is called to understand what `after_line` value is being used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_agent_terminal_events' in scripts/evolve.sh ✓ (486ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at calls to understand what `after_line` value is being used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:755..785 ✓ (422ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key insight. The `after_line` being passed is `$state_before_lines` - the line count of the state events file before the agent run. Let me understand this better. Let me search for `state_before_lines`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_before_lines' in scripts/evolve.sh ✓ (414ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the mechanism:
+
+1. Before each agent run, `state_before_lines` is saved (the current line count of `$STATE_EVENTS`)
+2. After the agent run, `record_agent_terminal_events` is called with `--after-line` set to `state_before_lines`
+3. The script scans events AFTER that line for open runs/models
+
+So the orphan detection ONLY looks at events written DURING the most recent agent run (after `state_before_lines`). It does NOT scan earlier events looking for orphaned runs from previous sessions.
+
+This means: if a GitHub Actions run was cancelled in a previous session, its `RunStarted` event is before the current `after_line`, and the orphan detection will NEVER find it.
+
+The orphaned run `github-actions-28319290130` was started ~6.3 days ago, which means its `RunStarted` event is old. Each subsequent session's `after_line` moves forward, so the orphan is never in the scan window.
+
+So the fix needs to be: **the script should also scan ALL events (from line 0) for orphaned runs, not just events after `after_line`**. But we need to be careful — we can't just switch `after_line` to 0 because that could cause issues with the "ambiguous_reset_full_scan" case.
+
+Wait, let me re-read `open_lifecycle`. When `after_line > len(events)`, it falls back to `scan_start = 0` with scope "full_after_line_exceeded_file", and if there are multiple open runs, it returns empty (ambiguous). That seems designed to handle the case where the state file was rebuilt mid-invocation.
+
+The real fix should be: add a separate orphan scan that looks at ALL events (from line 0) and finds runs that have `RunStarted` but no `RunCompleted` or `RunCompletedWithError`, for runs that are older than some threshold (like >1 hour old, or >1 session old).
+
+But wait - looking at the task more carefully:
+
+> "The terminal-state script's orphan detector may not be catching single-session-scoped runs from cancelled GitHub Actions."
+
+Let me check the current `append_terminal_events` function flow more carefully. The problem is:
+
+1. Session 1 starts, writes `RunStarted` for `github-actions-28319290130`
+2. Session 1 gets cancelled by GitHub Actions before writing `RunCompleted`
+3. Session 2 starts, writes `RunStarted` for a new run
+4. Session 2 completes normally, calls `append_terminal_events` with `after_line` set to state_before_lines from before Session 2's run
+5. The script only scans events after that `after_line`, which means it only sees Session 2's events — both `RunStarted` and `RunCompleted` are present, everything looks clean
+6. Session 1's orphaned `RunStarted` is never seen again
+
+So the fix is: in addition to the current `after_line` scan, we need a **full-scan orphan detector** that looks at ALL events to find runs with `RunStarted` but no terminal event.
+
+But there's a subtlety. The `open_lifecycle` function already handles the case where `after_line > len(events)` by doing a full scan, and returns empty if there are multiple open runs (to avoid closing runs from replayed state snapshots). 
+
+Let me think about the right approach:
+
+Option A: Add a separate full-scan orphan detection that runs independently, filtering for runs that are "old enough" (e.g., started > X hours ago).
+
+Option B: Change the existing `open_lifecycle` to also do a full scan for runs.
+
+I think Option A is cleaner and safer. Let me look at the events to understand the data shape better.
+
+Actually, let me re-examine. The `open_lifecycle` function is called every time. The `after_line` mechanism is designed to only look at new events since the agent started. The idea is that `record_agent_terminal_events` is called after each agent run to close any runs/models that were started but not completed during that run.
+
+But what about runs from PREVIOUS sessions that were never closed? They're before `after_line` and thus invisible.
+
+The fix should be to add a full-scan orphan check. Let me design this:
+
+1. After the existing `open_lifecycle` scan, do a separate full scan (from line 0) to find "stale" orphaned runs.
+2. A "stale" orphan is a RunStarted without RunCompleted where the RunStarted event is more than some threshold old (e.g., 2 hours, or 1 day).
+3. Close these stale orphans with an appropriate terminal event.
+
+But wait - we don't have timestamps in a simple way. Let me check if events have timestamps.
+
+Actually, looking at the `write_event` helper in the test file:
+```python
+row = {
+    "event_id": f"evt-{event_type}-{run_id}-{line_count}",
+    "event_type": event_type,
+    "run_id": run_id,
+    "payload": payload or {},
+}
+```
+
+There's no timestamp field in the test events. But real events likely have timestamps. Let me check what real events look like.
+
+Actually, I should focus on the practical fix. Let me look at what the state doctor sees. The orphan is `github-actions-28319290130`, started ~6.3 days ago. The simplest approach: after the existing `after_line`-based scan, also do a full-pass scan (from line 0 through the entire file) looking for any RunStarted events that have no matching RunCompleted (of any kind). If found and the run isn't already in the set of runs being closed by the primary scan, close it too.
+
+But we need to be careful about the "ambiguous_reset_full_scan" case. Let me think...
+
+Actually, the cleanest approach is: modify `append_terminal_events` to also scan all events (0 to end) for orphaned runs, separate from the `after_line` scan. The full scan finds all RunStarted events and all RunCompleted/RunCompletedWithError events across the entire file, and any RunStarted without a terminal event is an orphan.
+
+The concern about "replayed historical state snapshots" from the existing code only applies to the `after_line` scan — when the state file is rebuilt mid-invocation, `after_line > len(events)` triggers a full scan, and multiple open runs are considered ambiguous. But for a dedicated full-scan orphan check, we want to find ALL orphans regardless.
+
+Let me write the fix. I'll:
+
+1. Add a new function `find_orphaned_runs(events)` that scans ALL events (from line 0) and returns runs with RunStarted but no RunCompleted/RunCompletedWithError.
+2. In `append_terminal_events`, after closing the current open_runs and open_session_runs, also check for orphaned runs and close them.
+
+Wait, but there's a naming issue. Let me check what event types exist. Looking at the code:
+- `RunStarted` / `RunCompleted` - these are what we check
+- `RunCompletedWithError` - mentioned in success criteria but not in the code!
+
+Let me search for RunCompletedWithError.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompletedWithError' in scripts  ▶ search 'RunCompletedWithError' in src ✓ (819ms)
+ ✓ (878ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`RunCompletedWithError` doesn't exist yet. The task mentions it but it's not in the codebase. Let me check `src/state.rs` for what events exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RunCompleted' in src/state.rs ✓ (496ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `src/state.rs` already has orphan detection logic! Let me read the relevant parts more carefully. The `EventType::RunCompleted` is what's used, there's no `RunCompletedWithError` event type.
+
+Let me look at the existing orphan detection in `src/state.rs` more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:300..400 ✓ (413ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture! `src/state.rs` has `close_orphaned_run_if_needed()` which is called at the start of every new run. It scans backward from the end of the events file to find a dangling `RunStarted` without matching `RunCompleted`. This should close orphaned runs.
+
+But why didn't this catch `github-actions-28319290130`? Let me look at where `close_orphaned_run_if_needed` is called and if there might be cases where it fails.
+
+Wait - looking more carefully, the scan stops at the FIRST lifecycle event (RunStarted or RunCompleted) when scanning backward. If the most recent event is already a `RunStarted` (from a current run that just started), it would detect THAT as a potential orphan - but there might be a timing issue.
+
+Let me think about the scenario:
+1. Session 1: RunStarted for `run-A` → gets cancelled, no RunCompleted
+2. Session 2: RunStarted for `run-B` → `close_orphaned_run_if_needed()` scans backward from end, hits `run-B`'s RunStarted first... 
+
+Wait, but `close_orphaned_run_if_needed` is called BEFORE the new RunStarted is written. Let me find where it's called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'close_orphaned_run_if_needed' in src/state.rs ✓ (432ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 412 - let me read the context around there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:405..435 ✓ (486ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the flow is:
+1. `init_global` is called at startup
+2. First it calls `close_orphaned_run_if_needed` to close any orphaned run
+3. Then it writes `RunStarted` for the current run
+
+The orphan detection in `close_orphaned_run_if_needed` scans backward from the end and stops at the first lifecycle event. If the last event is `RunCompleted`, it returns early (no orphan). If the last lifecycle event is `RunStarted`, it checks if there's any `RunCompleted` for that run_id, and if not, it emits a retroactive `RunCompleted`.
+
+But there's a problem: what if there are MULTIPLE orphaned runs? The scan stops at the FIRST (most recent) lifecycle event. If the most recent lifecycle event is `RunStarted` for run-B (which was then properly completed with `RunCompleted`), the scan would stop, say "no orphan", and return. Meanwhile, run-A's orphaned `RunStarted` is further back, hidden behind run-B's properly closed pair.
+
+Actually wait, let me re-read the scan logic:
+```rust
+for event in events.iter().rev() {
+    if event_type == "RunCompleted" {
+        return Ok(());
+    }
+    if event_type == "RunStarted" {
+        ...
+    }
+}
+```
+
+If the most recent lifecycle event is `RunCompleted`, it returns early. So if run-B properly closed, the last lifecycle event is `RunCompleted`, and the scan returns early. run-A's orphan is never found.
+
+But that should be rare - in practice, `close_orphaned_run_if_needed` is called at startup BEFORE the new `RunStarted` is written. So the last event in the file should be either:
+- `RunCompleted` (if the previous run closed properly) → returns, no orphan to close
+- `RunStarted` (if the previous run didn't close) → finds the orphan, closes it
+- Neither (non-lifecycle events after the last lifecycle event) → scan skips these until it finds a lifecycle event
+
+So the detection is: "is the most recent run closed?" It only catches the most recent orphan.
+
+Now, what about the case where:
+1. Run-A starts, gets cancelled → RunStarted but no RunCompleted
+2. Run-B starts, `close_orphaned_run_if_needed` scans backward → finds RunStarted for Run-A → closes it
+3. Run-B runs normally → RunCompleted
+
+That should work fine. But what if `close_orphaned_run_if_needed` somehow doesn't run? Like, what if state recording fails during init but the agent still runs?
+
+Actually, the more likely scenario is: there are multiple concurrent sessions, and the events file gets interleaved. Like:
+1. Session 1: RunStarted for run-A
+2. Session 2: RunStarted for run-B (before run-A completes!)
+3. Session 1: gets cancelled → no RunCompleted for run-A
+4. Session 2: RunCompleted for run-B
+
+Now `close_orphaned_run_if_needed` at startup scans backward, finds RunCompleted for run-B, returns "no orphan". Run-A stays orphaned.
+
+Or even simpler: the `close_orphaned_run_if_needed` in `src/state.rs` handles the MOST RECENT orphan but could miss older ones. The `append_terminal_state_events.py` script handles the CURRENT session's open runs (those after `after_line`).
+
+The Python script doesn't do a full-scan for ancient orphans. And the Rust code only checks the most recent one.
+
+So if there are N orphaned runs and only the most recent one gets closed each time, orphaned runs can accumulate.
+
+But wait, let me re-check - the task says there's only 1 orphaned run. So maybe the issue is simpler. Let me think about what could have happened.
+
+Actually, let me look at the actual events file to understand this specific orphan. But I can't access the production events file. Let me think about the logic more carefully.
+
+The Python script's `lifecycle_for_scope` function:
+1. For session-scoped runs (`phase: "session"`), it tracks `session_run_started` / `session_run_completed`
+2. For non-session runs, it tracks `run_started` / `run_completed`
+3. `open_runs = (run_started | set(model_started) | model_completed) - run_completed`
+
+But wait - the Python script is CALLED with `--after-line` set to the line count BEFORE the agent run. So it only looks at events written during the most recent agent run. Any orphaned run from before that is invisible.
+
+So the full picture:
+- `src/state.rs::close_orphaned_run_if_needed()` catches the MOST RECENT orphan at startup
+- `scripts/append_terminal_state_events.py` catches open runs from the CURRENT agent run
+- Neither catches older orphans that slipped through
+
+The gap: if `close_orphaned_run_if_needed` misses an orphan (e.g., because another properly-closed run happened after it), the Python script can't see it either (because it only scans after `after_line`).
+
+The fix should be in the Python script: add a full-scan orphan check that looks for ANY RunStarted events across the entire file that have no matching RunCompleted. This would catch orphans that the Rust code missed.
+
+Let me now look more carefully at what `run_id` returns for the orphaned run. The run ID is `github-actions-28319290130`. Let me check if there's any issue with session-scoped vs non-session-scoped runs...
+
+Actually, let me also check what `append_state_event.py` looks like since it's imported.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_state_event.py ✓ (427ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me design the fix.
+
+The core issue: `append_terminal_events` only scans events after `after_line`. Orphaned runs from previous sessions (before `after_line`) are invisible. The Rust code in `src/state.rs` handles the MOST RECENT orphan, but if that orphan is hidden behind a properly-closed run (or the Rust orphan detection failed for some other reason), it remains orphaned forever.
+
+The fix for the Python script:
+1. Add a full-scan function that finds ALL run_ids with `RunStarted` but no `RunCompleted` (regardless of event position in the file)
+2. In `append_terminal_events`, after closing the current-scope open runs, also check for any fully-orphaned runs and close them too
+
+Let me also look at the current test cases to understand the test patterns better.
+
+Looking at the existing tests:
+- `test_closes_open_model_and_run_after_line` - tests that events after `after_line` get closed
+- `test_leaves_already_completed_invocation_unchanged` - tests no double-close
+- `test_closes_session_scoped_run` - tests session-scoped orphan closure
+- `test_does_not_double_close_completed_session_run` - tests no double-close for session runs
+- `test_does_not_close_completed_runs_before_after_line` - tests that completed runs before `after_line` aren't touched
+- `test_catches_orphaned_run_across_sessions` - ?? Let me read this one!
+
+Wait, there's a test called `test_catches_orphaned_run_across_sessions`? That sounds like exactly the test I need. Let me find it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'orphaned_run_across' in scripts/test_append_terminal_state_events.py ✓ (435ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That test doesn't exist yet. Let me read the rest of the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:100..200 ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:200.. ✓ (419ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me also read the remaining part of the test file that I may have missed (between line 100 and where I started reading at 200).
+
+Actually, I already read lines 100-199. Let me also check if there's a test I might have missed: `test_does_not_close_completed_runs_before_after_line`. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def test_' in scripts/test_append_terminal_state_events.py ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, 9 tests total. I've seen all of them. 
+
+Now let me plan the fix:
+
+The core problem: `append_terminal_events` only scans events after `--after-line`. If an orphaned run's `RunStarted` event is before that line, it's never detected. The Rust code in `src/state.rs` has `close_orphaned_run_if_needed()` which handles the MOST RECENT orphan, but:
+1. It only catches the most recent orphan (scans backward until first lifecycle event)
+2. If a properly-closed run happened after the orphan, the orphan is hidden
+3. If the orphan's `RunStarted` is followed by non-lifecycle events and then a `RunCompleted` for a different run, it's hidden
+
+The fix: Add a full-scan orphan check in `append_terminal_state_events.py` that:
+1. Scans ALL events (from line 0) for `RunStarted` events
+2. For each `RunStarted`, checks if there's a matching `RunCompleted` anywhere in the file
+3. Returns orphaned run_ids that aren't already in the current-scope open_runs/open_session_runs
+
+Then in `append_terminal_events`, after closing current-scope open runs, also close any orphaned runs found by the full scan.
+
+Let me design the implementation:
+
+1. Add `find_all_orphaned_runs(events)` that returns `(orphaned_runs, orphaned_session_runs)` by scanning the full event list
+2. In `append_terminal_events`, call this and close any orphans not already handled
+
+Wait, but there's a subtlety. The existing `lifecycle_for_scope` already scans from `scan_start` and finds open runs. If I do a full scan separately, I need to make sure I don't double-close runs.
+
+Actually, looking more carefully at `lifecycle_for_scope`:
+- It scans from `scan_start` to end
+- It finds `run_started`, `run_completed`, `session_run_started`, `session_run_completed`
+- `open_runs = (run_started | model_started | model_completed) - run_completed`
+- `open_session_runs = session_run_started - session_run_completed`
+
+The issue is that if a RunStarted is BEFORE `scan_start`, it's NOT in `run_started`, so it won't be in `open_runs`. Even if its RunCompleted is also missing, it's invisible.
+
+But if a RunStarted is BEFORE `scan_start` and its RunCompleted is AFTER `scan_start`, the RunCompleted IS in `run_completed`, but the matching RunStarted is NOT in `run_started`. So the `open_runs` calculation (which subtracts `run_completed` from a set that doesn't include this run_id) won't be affected... wait, `open_runs = (run_started | ...) - run_completed`. If run_id X has RunStarted before scan_start but RunCompleted after scan_start:
+- X is NOT in run_started (before scan_start)
+- X IS in run_completed
+- X is NOT in open_runs
+
+OK, that seems correct — if the RunCompleted is found, the run is considered closed.
+
+But what if RunStarted is before scan_start and RunCompleted is ALSO before scan_start? Both are invisible, so they don't affect open_runs. And the run stays orphaned.
+
+The fix: do a full-scan to find runs where RunStarted exists but RunCompleted doesn't, anywhere in the file.
+
+Let me implement this. I need to be careful to:
+1. Not double-close runs that are already being closed by the current logic
+2. Not create "ambiguous_reset" confusion — the full-scan orphan check is separate from the after_line scan
+3. Handle session-scoped runs too
+
+Let me write the code now.
+
+Here's my plan:
+1. Add `find_stale_orphaned_runs(events)` function that scans all events and returns orphaned run_ids
+2. Modify `append_terminal_events` to also close these orphans
+3. Add a test case for the cross-session orphan scenario
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me set up my task tracking and implement the fix.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (326ms)
+  ▶ todo ✓ (498ms)
+  ▶ todo ✓ (442ms)
+  ▶ todo ✓ (430ms)
+  ▶ todo ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the fix. The key insight:
+
+**Root cause**: `append_terminal_events` only scans events AFTER `--after-line`. Orphaned runs from previous sessions (whose `RunStarted` is before `--after-line`) are invisible. The Rust code `close_orphaned_run_if_needed()` only catches the most recent orphan. If a properly-closed run followed the orphan, or the Rust startup couldn't initialize (fail-soft), the orphan persists forever.
+
+**Fix**: Add a full-scan function that finds ALL `RunStarted` events with no matching `RunCompleted` anywhere in the file, then close them in `append_terminal_events`.
+
+Let me write the code now.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.2s (5 ✓)
+
+Let me implement the fix. The root cause is clear: `append_terminal_events` only scans events after `--after-line`, so orphaned runs from previous sessions are invisible. The Rust `close_orphaned_run_if_needed()` only catches the most recent orphan.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (438ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the fix. I need to add a `find_stale_orphaned_runs` function that does a full scan of all events to find runs with `RunStarted` but no `RunCompleted`.
+
+Key design decisions:
+1. The function scans ALL events (from line 0)
+2. It collects all `run_started` and `run_completed` sets
+3. It returns the difference: runs with RunStarted but no RunCompleted
+4. In `append_terminal_events`, after closing the current-scope open runs, also close any stale orphans that aren't already being closed
+
+Let me also handle the "ambiguous" case carefully. The full-scan orphan check is different from the `after_line`-based scan: we're not worried about "historical state snapshots" because we're explicitly looking for runs that have `RunStarted` but no `RunCompleted` at all. If a run truly has no terminal event, it's an orphan regardless.
+
+But I should be careful: if the events file was rebuilt from a historical snapshot, there could be multiple orphaned runs that are actually from different sessions. In that case, closing them all is actually the right thing to do — they're all orphans.
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me add the `find_stale_orphaned_runs` function to the script:
+                fallback_diagnostics["scope"] = "fallback_after_line"
+                return fallback_models, fallback_runs, fallback_session_runs, fallback_diagnostics
+        return open_models, open_runs, open_session_runs, diagnostics
+  + 
+  + 
+  + def find_stale_orphaned_runs(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[set[str], set[str], dict[str, Any]]:
+  +     """Scan ALL events for runs that have RunStarted but no RunCompleted.
+  + 
+  +     Unlike lifecycle_for_scope which only scans from an ``after_line`` offset,
+  +     this scans the entire event file.  It catches orphaned runs from previous
+  +     sessions — e.g. a GitHub Actions cancellation where RunStarted was written
+  +     but the harness never reached RunCompleted.
+  + 
+  +     Returns (orphaned_runs, orphaned_session_runs, diagnostics).
+  +     """
+  +     run_started: set[str] = set()
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (42 → 87 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (42 → 87 lines)
+                fallback_diagnostics["scope"] = "fallback_after_line"
+                return fallback_models, fallback_runs, fallback_session_runs, fallback_diagnostics
+        return open_models, open_runs, open_session_runs, diagnostics
+  + 
+  + 
+  + def find_stale_orphaned_runs(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[set[str], set[str], dict[str, Any]]:
+  +     """Scan ALL events for runs that have RunStarted but no RunCompleted.
+  + 
+  +     Unlike lifecycle_for_scope which only scans from an ``after_line`` offset,
+  +     this scans the entire event file.  It catches orphaned runs from previous
+  +     sessions — e.g. a GitHub Actions cancellation where RunStarted was written
+  +     but the harness never reached RunCompleted.
+  + 
+  +     Returns (orphaned_runs, orphaned_session_runs, diagnostics).
+  +     """
+  +     run_started: set[str] = set()
+  +     run_completed: set[str] = set()
+  +     session_run_started: set[str] = set()
+  ... (28 more lines)
+ ✓ (421ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify `append_terminal_events` to also call `find_stale_orphaned_runs` and close any stale orphans.
+────────────────────────────────────────────────────────────────────────────────
+
+Now modify `append_terminal_events` to also close stale orphans from the full scan:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (464ms)
+  ▶ todo ✓ (413ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now modify `append_terminal_events` to also call `find_stale_orphaned_runs` and close stale orphans.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.4s (2 ✓)
+
+
+                payload["error"] = error
+            if error_detail:
+                payload["error_detail"] = error_detail
+  +         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         completed_session_runs.append(rid)
+  + 
+  +     # Full-scan orphan detection: find any runs in the entire event file
+  +     # that have RunStarted but no RunCompleted, regardless of position.
+  +     # This catches orphans from previous sessions (e.g., GitHub Actions
+  +     # cancellations) that the incremental after_line scan cannot see.
+  +     stale_orphaned_runs, stale_orphaned_session_runs, orphan_diag = find_stale_orphaned_runs(events)
+  +     diagnostics["full_scan_orphan_diagnostics"] = orphan_diag
+  + 
+  +     # Only close orphans that weren't already closed by the incremental scan above.
+  +     already_closed = set(completed_runs + completed_session_runs)
+  +     new_orphan_runs = stale_orphaned_runs - already_closed
+  +     new_orphan_session_runs = stale_orphaned_session_runs - already_closed
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (67 → 99 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (67 → 99 lines)
+                payload["error"] = error
+            if error_detail:
+                payload["error_detail"] = error_detail
+  +         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         completed_session_runs.append(rid)
+  + 
+  +     # Full-scan orphan detection: find any runs in the entire event file
+  +     # that have RunStarted but no RunCompleted, regardless of position.
+  +     # This catches orphans from previous sessions (e.g., GitHub Actions
+  +     # cancellations) that the incremental after_line scan cannot see.
+  +     stale_orphaned_runs, stale_orphaned_session_runs, orphan_diag = find_stale_orphaned_runs(events)
+  +     diagnostics["full_scan_orphan_diagnostics"] = orphan_diag
+  + 
+  +     # Only close orphans that weren't already closed by the incremental scan above.
+  +     already_closed = set(completed_runs + completed_session_runs)
+  +     new_orphan_runs = stale_orphaned_runs - already_closed
+  +     new_orphan_session_runs = stale_orphaned_session_runs - already_closed
+  + 
+  +     for rid in sorted(new_orphan_runs):
+  +         payload = {
+  ... (18 more lines)
+ ✓ (330ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test for cross-session orphan detection.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test. First, let me verify the current state of the script:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (529ms)
+  ▶ todo ✓ (664ms)
+  2 tools completed in 1.7s (2 ✓)
+
+

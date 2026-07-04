@@ -1,0 +1,443 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. The assessment is available and comprehensive
+2. The trajectory shows recent success (Day 126 10:11 had 2/2 tasks ✅)
+3. Graph-derived next-task pressure exists
+4. There are open issues (#58, #37)
+5. I need to check if session_plan/task_01.md already exists
+
+Let me first check what's in session_plan/ already, then plan tasks based on the evidence.
+
+Key evidence to act on:
+- state_run_incomplete_count=1 (orphaned run)
+- recurring_failure_count=2 (log failure fingerprints)
+- bash_tool_error=10 (recurring pressure)
+- Issue #58: eval fixture for prompt layout determinism (was reverted, make smaller)
+- Issue #37: tracking issue for eval coverage
+- read_events_bounded has no unit tests (from assessment)
+
+Priority ordering:
+0. No CI failures
+1. State evidence: state_run_incomplete_count=1 (orphaned run detector)
+2. Eval coverage: Issue #58 (make it smaller this time)
+3. bash_tool_error=10 or read_events_bounded tests
+
+Let me check what's already in session_plan/ first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty" ✓ (656ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+A seed task_01.md already exists. Let me read it to understand what was pre-seeded, then decide whether to refine it or create task_02/task_03.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (321ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to evaluate the seed task against the current assessment evidence.
+
+The seed task claims "The harness reached planning with no task artifacts" and "recent runs reached planning without durable task files." But looking at the trajectory:
+- day-126 (2026-07-04 11:08:11): tasks 2/2 ✅ — 2/2 strict verified; build OK, tests OK
+- day-126 (2026-07-04 03:47:33): tasks 0/1 ⚠️ — 0/1 strict verified; task states: reverted_unlanded_source_edits=1
+- day-125 (2026-07-03 18:05:20): tasks 2/2 ✅
+- day-125 (2026-07-03 11:20:51): tasks 1/2 ⚠️
+- day-125 (2026-07-03 03:43:42): tasks 0/0 • — no tasks attempted
+- day-124 (2026-07-02 18:29:34): tasks 1/2 ⚠️
+
+So there IS one session where no tasks were attempted (Day 125 03:43), but the last two sessions (Day 126 10:11 and Day 125 18:05) both had 2/2 success. The most recent session was healthy. The seed task's claim that "recent runs reached planning without durable task files" is partially true but the evidence also shows the pipeline recovered — the very next session after the no-task one landed 2/2 tasks.
+
+However, looking at the graph-derived pressure more carefully:
+1. **Close state and model lifecycle gaps** (`state_run_incomplete_count=1`) — orphaned run
+2. **Break recurring log failure fingerprints** (`recurring_failure_count=2`)
+3. **Bound failing shell commands before retrying** (`bash_tool_error=10`)
+4. **Reconcile transcript-only tool failures** (4 mismatches)
+5. **Reconcile state-only tool failures** (53 mismatches)
+
+And from the assessment:
+- read_events_bounded has no unit tests
+- Issue #58: eval fixture for prompt layout determinism (reverted, should be made smaller)
+- Issue #37: tracking for eval coverage
+
+The seed task is about planning reliability but the evidence shows the pipeline is currently healthy (2/2 tasks landed last session). The graph pressure points are about state lifecycle gaps, recurring failures, and bash tool errors.
+
+Let me think about what tasks to select:
+
+1. **Task 1 (refine seed)**: I think the seed task has some validity — the preseed_session_plan.py is a recurring source of issues (Day 125 fixed its contradiction detector). But it's not the highest-priority issue right now since the pipeline is healthy.
+
+2. **Task 2**: The orphaned run (`state_run_incomplete_count=1`) is a graph-recommended task. The assessment says: "The terminal-state script's orphan detector may not be catching single-session-scoped runs from cancelled GitHub Actions. Need to verify whether Day 124's fix actually handles this case." This is in `scripts/append_terminal_state_events.py`.
+
+3. **Task 3**: Issue #58 — the eval fixture for prompt layout determinism. It was reverted on Day 124 because the evaluator timed out. Should make it smaller.
+
+Actually, let me re-read the assessment more carefully. The assessment says the stale seed task's evidence ("recent runs reached planning without durable task files") is contradicted by the current trajectory which shows the latest session landed 2/2 tasks. But there was one no-task session (Day 125 03:43). 
+
+Looking at the stale seed contradiction detector: the seed task file came from the harness, and the assessment says it validated_against_assessment: true. But the assessment itself notes that the pipeline is healthy (4 of 5 completed runs succeeded). The seed task's "Why this matters" says "The harness reached planning with no task artifacts" — but the current session clearly has assessment + task files.
+
+I think the seed task is stale. The assessment shows:
+- Build passes
+- 2/2 tasks landed in the most recent session  
+- Pipeline is healthy
+- Graph pressure is about different things (state lifecycle, bash errors, eval coverage)
+
+I should write task_01_obsolete.md explaining the contradiction, then write fresh tasks based on current evidence.
+
+Let me plan:
+
+**Task 01**: Replace the seed with a task about the orphaned run detector (highest graph pressure + assessment confirms it's a real issue).
+
+**Task 02**: Issue #58 — eval fixture for prompt layout determinism, but SMALLER than before. The previous attempt timed out. Make it a minimal fixture.
+
+**Task 03**: Add unit tests for read_events_bounded (assessment flag + low risk, easy win).
+
+Wait, let me check what the task sizing rules say. Each task must touch at most 3 source files and complete in 20 minutes.
+
+For Task 01 (orphaned run): The files would be `scripts/append_terminal_state_events.py` and possibly its test file `scripts/test_append_terminal_state_events.py`. That's 2 files.
+
+For Task 02 (eval fixture): This is a new file only: `eval/fixtures/local-smoke/370-deepseek-prompt-layout-determinism-eval.json`. That's 1 file. The assessment says to make it smaller — maybe test just one assertion, not multiple.
+
+For Task 03 (read_events_bounded tests): The function is in `src/state.rs` (32 lines). Tests would go in the same file or in a test file. That's 1 file.
+
+All three are within the 3-file limit. 
+
+But wait — should I keep the seed task? The policy says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says the problem is "The harness reached planning with no task artifacts" and the assessment shows the pipeline is healthy with 2/2 tasks landed. The seed's evidence is: "Current assessment matched this harness seed: The harness reached planning with no task artifacts." But the current assessment explicitly shows the pipeline is healthy. The seed was written before the assessment was generated.
+
+The contradiction: seed claims planning is broken, assessment shows planning is healthy (2/2 tasks last session, 4/5 completed runs successful). The seed task would be modifying preseed_session_plan.py based on a stale reading.
+
+I'll write task_01_obsolete.md first, then create three fresh tasks.
+
+Let me also think about what the issue_responses.md should say:
+
+- #58: Will implement as Task 02 (smaller eval fixture)
+- #37: Will defer — tracking issue, partially addressed by Task 02
+
+Now let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed task_01.md claims planning is broken, but the assessment clearly contradicts this: the most recent session landed 2/2 verified tasks, the pipeline is healthy, and graph pressure points at state lifecycle gaps and eval coverage — not planning reliability. I'll obsolete the seed and write fresh evidence-backed tasks.
+  + # Task 01 OBSOLETE — Stale Seed Contradiction
+  + 
+  + ## What the seed claimed
+  + 
+  + "Recent runs reached planning without durable task files" — proposing modifications to `scripts/preseed_session_plan.py` to fix planning reliability.
+  + 
+  + ## What the evidence actually shows
+  + 
+  + - **Day 126 10:11**: 2/2 tasks ✅ — 2/2 strict verified; build OK, tests OK
+  + - **Day 125 18:05**: 2/2 tasks ✅ — 2/2 strict verified; build OK, tests OK
+  + - **Day 125 11:20**: 1/2 tasks ⚠️ — 1/2 strict verified
+  + - **Day 125 03:43**: 0/0 tasks — no tasks attempted (one session, 6 sessions ago)
+  + - **Day 124 18:29**: 1/2 tasks ⚠️ — 1/2 strict verified
+  + 
+  + The pipeline has recovered. Only 1 of the last 5 sessions had zero tasks, and the very next session landed 2/2. The seed task's framing ("The harness reached planning with no task artifacts") is based on a stale snapshot that predates the current healthy state.
+  + 
+  + ## Contradiction proof
+  + 
+  + - Seed claims: "recent runs reached planning without durable task files"
+  + - Assessment shows: most recent run (Day 126 10:11) had `task_artifact_coverage=1.0`, `task_lineage_capture_coverage=1.0`, `task_success_rate=1.0`
+  ... (13 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (33 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (33 lines) ✓ (322ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to remove the stale task_01.md and create three fresh task files. Let me write all three now.
+
+Let me verify the file ownership for each task before writing:
+
+Task 1 (orphaned run): scripts/append_terminal_state_events.py — need to verify this exists
+Task 2 (eval fixture): eval/fixtures/local-smoke/ — new file
+Task 3 (read_events_bounded tests): src/state.rs
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rm session_plan/task_01.md && git ls-files scripts/append_terminal_state_events.… ✓ (654ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All files exist. Now let me write the three task files. Let me also verify the existing eval fixture #369 to understand the format for task 2.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.js… ✓ (642ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, fixture 369 exists. Now let me write all three task files and the issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll write all three task files and issue responses.
+  + Title: Fix orphaned-run detection gap in terminal-state script
+  + Files: scripts/append_terminal_state_events.py, scripts/test_append_terminal_state_events.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - State doctor shows 1 incomplete run: `github-actions-28319290130`, started ~6.3 days ago, no RunCompleted event. Cause: `state_incomplete/open_after_SessionStarted=1`.
+  + - Graph-derived pressure row 1: "Close yyds state and model lifecycle gaps (state_run_incomplete_count=1): Lifecycle causes: state_incomplete/open_after_SessionStarted=1"
+  + - Assessment: "The terminal-state script's orphan detector may not be catching single-session-scoped runs from cancelled GitHub Actions. Need to verify whether Day 124's fix actually handles this case or whether this run predates that fix."
+  + - `yyds state why last-failure` confirms: "1 incomplete run: github-actions-28319290130, started 9,038 minutes ago (~6.3 days), no RunCompleted event. This is an orphaned run — likely from a GitHub Actions cancellation."
+  + 
+  + Edit Surface:
+  + - scripts/append_terminal_state_events.py (orphan detection logic)
+  + - scripts/test_append_terminal_state_events.py (test for orphan detection)
+  + 
+  + Verifier:
+  + - python3 -m pytest scripts/test_append_terminal_state_events.py -v
+  + - python3 scripts/append_terminal_state_events.py --help
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (49 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (49 lines) ✓ (499ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02 for the eval fixture. Let me check the existing fixture 369 to understand format conventions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json (80 lines) ✓ (322ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check another eval fixture to understand the format better, especially one with an evaluator/commands field rather than just tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/ | head -5 && echo "---" && pyt… (11 lines) ✓ (648ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was truncated with exit 141 (SIGPIPE from head). Let me just check a couple of key fixtures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (12 lines) ✓ (654ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fixtures are simple JSON with test assertions. The issue #58 says the previous attempt timed out because the evaluator was testing prompt layout determinism across two runs. Let me make a simpler fixture: just test that the stable_system_contract function produces deterministically ordered output (which fixture 369 already partially covers), but add a test specifically about prompt layout determinism for the DeepSeek harness genome — making sure the active_harness_genome() produces deterministic prompt layout.
+
+Actually, looking at the fixture format, they just run `cargo test` with specific test names. The previous attempt (#58) tried to create a fixture that runs the agent twice and compares output, which is too complex. Let me make it simpler: test that the DeepSeek prompt layout policy functions (from deepseek.rs) produce deterministic output.
+
+Let me check what tests already exist in deepseek.rs related to prompt layout.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n "fn test.*prompt\|fn test.*layout\|fn test.*determinis\|fn test.*contract\… ✓ (742ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test' in src/deepseek.rs ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for "test" in deepseek.rs with case insensitive.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[test\]' in src/deepseek.rs ✓ (428ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests in deepseek.rs? Let me check where the tests are.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'stable_system_contract' ✓ (331ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the tests are in `deepseek::tests::`. Fixture 369 already covers `stable_system_contract`. Let me look at what tests exist near line 2634 to understand what additional determinism test could be added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:2625..2705 ✓ (327ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the test structure. Let me check what other DeepSeek-specific functions could use more test coverage. The assessment mentions:
+- active_harness_genome()
+- route_for_task()
+- PromptLayoutPolicy
+
+Let me look at what functions exist that affect prompt layout determinism.
+
+Actually, for the eval fixture task (Issue #58), I should make it simpler than the original attempt. The original tried to create a fixture that ran the agent twice and compared outputs — that's too complex. Instead, I should add a test in deepseek.rs for a prompt layout determinism function, then create an eval fixture that runs that test.
+
+Let me look at what prompt layout functions exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'PromptLayoutPolicy' in src/deepseek.rs ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:193..233 ✓ (323ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the active_harness_genome function and where it's used to understand what prompt layout determinism tests would be valuable.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn active_harness_genome' in src/deepseek.rs ✓ (616ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:782..842 ✓ (333ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me write the remaining task files.
+
+For Task 03 (eval fixture, Issue #58): I'll make it a minimal fixture that adds a test for prompt layout determinism. The simplest approach: add a test that verifies `active_harness_genome()` produces a `PromptLayoutPolicy` with a stable prefix that includes the expected blocks. Or even simpler: add a test that verifies the `stable_system_contract()` output is identical across two calls (determinism). The fixture 369 already covers some of this with `stable_system_contract_keeps_prompt_quality_rules` and `stable_system_contract_is_nonempty`. 
+
+A more useful addition would be testing that the prompt layout policy's stable prefix blocks are in a deterministic order. But the best approach given the "make it smaller" directive: create an eval fixture that tests `active_harness_genome()` produces a consistent `PromptLayoutPolicy` (version, stable_prefix_blocks ordering). This is a single test, not two runs of the agent.
+
+Let me now write task_03.md (which was task_02 in my plan, but I wrote task_02 as the orphaned run task). Actually, I named the files:
+- task_01_obsolete.md (done)
+- task_02.md (orphaned run) - done
+- Need: task_03.md (eval fixture)
+- Need: task_04.md (read_events_bounded tests)
+
+Wait, but task_01.md was removed. So I have task_02, task_03, task_04. But the convention is task_01, task_02, task_03. Let me rename. Actually no — the harness will pick up task_*.md files. Let me check if they need to be sequential.
+
+Looking at the evolve.sh, it processes task_01.md, task_02.md, etc. sequentially. So I should use task_01.md (new), task_02.md, task_03.md.
+
+But I've already written task_02.md. Let me write task_01.md (the eval fixture, since it addresses the reverted issue #58 and is the highest priority after state lifecycle) and task_03.md (read_events_bounded tests).
+
+Wait, actually I need to rethink task ordering. The graph-derived pressure says:
+1. state_run_incomplete_count=1 (highest)
+2. recurring_failure_count=2
+3. bash_tool_error=10
+
+But issue #58 was reverted and I want to retry it smaller. The assessment also flags read_events_bounded has no tests.
+
+Let me make:
+- task_01.md = orphaned run detection (highest graph pressure)
+- task_02.md = eval fixture for prompt layout determinism (issue #58, reverted, made smaller)
+- task_03.md = read_events_bounded unit tests (assessment flag, easy win)
+
+I need to rename my existing task_02.md to task_01.md and adjust numbering.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ mv session_plan/task_02.md session_plan/task_01.md ✓ (654ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_02.md (eval fixture) and task_03.md (read_events_bounded tests). And issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add held-out eval fixture for DeepSeek harness genome determinism
+  + Files: eval/fixtures/local-smoke/370-deepseek-harness-genome-determinism.json, src/deepseek.rs
+  + Issue: #58, #37
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Issue #58 (OPEN): Task was reverted Day 124 — "Add held-out coding eval fixture for DeepSeek prompt layout determinism." Evaluator timed out without verdict. The previous attempt tried to run the agent twice and compare output — too complex, too slow.
+  + - Issue #37 (OPEN): Tracking issue for held-out coding eval coverage. 48 fixtures exist but none test harness genome determinism at the unit-test level.
+  + - Assessment: "The previous approach was too ambitious — simplify, don't retry the same scope." "48 DeepSeek eval fixtures exist but issue #37/#58 tracking more held-out coverage is still open."
+  + - Graph pressure row: none directly, but this addresses the capability fitness gap — fitness_score=1.0 is derived entirely from task success rate, not from coding-capability evaluations.
+  + 
+  + Edit Surface:
+  + - eval/fixtures/local-smoke/370-deepseek-harness-genome-determinism.json (new file)
+  + - src/deepseek.rs (add one #[test] that the fixture references)
+  + 
+  + Verifier:
+  + - cargo test deepseek::tests::harness_genome_prompt_layout_is_deterministic -- --nocapture
+  + - cargo run -- yyds eval fixtures score --fixture 370-deepseek-harness-genome-determinism
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (65 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (65 lines) ✓ (332ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_03.md for read_events_bounded unit tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add unit tests for read_events_bounded utility
+  + Files: src/state.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Assessment flag: "read_events_bounded has no unit tests. The function is simple (32 lines) and the state doctor uses it, but there's no direct test coverage for edge cases (empty file, files smaller than limit, etc.)."
+  + - Day 126 Task 2 added `read_events_bounded()` — a shared bounded reader that six prior tool patches had been copy-pasting individually. The state doctor now uses it.
+  + - Function is in src/state.rs, added recently, no test coverage.
+  + - This is a low-risk, high-confidence task: additive only (new tests, no behavior changes), verifiable with `cargo test`.
+  + 
+  + Edit Surface:
+  + - src/state.rs (add tests in existing #[cfg(test)] mod, probably near the read_events_bounded definition)
+  + 
+  + Verifier:
+  + - cargo test state::tests::read_events_bounded -- --nocapture
+  + 
+  + Fallback:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (50 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (50 lines) ✓ (403ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 126 Planning
+  + 
+  + ## #58 — Task reverted: Add held-out coding eval fixture for DeepSeek prompt layout determinism
+  + **Action**: Implement as Task 02 (smaller scope).
+  + 
+  + The previous attempt (Day 124) tried to run the full agent twice and compare outputs — that timed out. This retry does the opposite: a single `active_harness_genome()` call tested at the unit level, verifying that the PromptLayoutPolicy has deterministic stable_prefix_blocks ordering. The eval fixture references a fast unit test, not an agent spawn. If this lands, #58 can close.
+  + 
+  + ## #37 — Add held-out coding eval coverage for DeepSeek harness gnomes
+  + **Action**: Defer — tracking issue, partially addressed by Task 02.
+  + 
+  + Task 02 adds one eval fixture (harness genome determinism), which checks off one target area from #37's list. The remaining areas (FIM routing correctness, transport error recovery, cache hit/miss behavior, state event coverage) stay tracked. No action this session beyond the one fixture.
+  + 
+  + ## No other issues to respond to
+  + The trusted owner issues (ISSUES_TODAY.md) contained only #58 and #37, both addressed above.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (14 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (14 lines) ✓ (549ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify everything is in place:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "---" && wc -l session_plan/*.md ✓ (966ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the task_01.md content is correct (the renamed orphaned run task).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -3 session_plan/task_01.md && echo "---" && head -3 session_plan/task_02.md… ✓ (909ms)
+
+

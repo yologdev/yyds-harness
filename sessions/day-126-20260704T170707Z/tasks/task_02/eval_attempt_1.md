@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Test `harness_genome_prompt_layout_is_deterministic` exists at src/deepseek.rs:3997 and passes, verifying that `DeepSeekHarnessGenome::default()` produces deterministic PromptLayoutPolicy with positive version, non-empty stable_prefix_blocks and dynamic_suffix_blocks, and full genome equality across two constructions. Fixture file at eval/fixtures/local-smoke/370-deepseek-harness-genome-determinism.json is valid JSON with correct task_id, category, risk_label, and hidden_failure_mode fields.

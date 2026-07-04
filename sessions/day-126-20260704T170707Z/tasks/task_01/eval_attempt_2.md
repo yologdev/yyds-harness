@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation adds `find_stale_orphaned_runs()` with full-scan orphan detection and two new tests (`test_detects_and_closes_orphaned_run_from_previous_session`, `test_orphan_detector_skips_bare_run_started_without_model_calls`). All 11 tests pass, `--help` works, and the logic correctly identifies orphans with model activity while skipping bare RunStarted entries and respecting the ambiguous_reset guard.

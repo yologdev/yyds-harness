@@ -1,0 +1,514 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. I need to add unit tests for `read_events_bounded()` in `src/state.rs`
+2. This is a low-risk, high-confidence task: additive only (new tests, no behavior changes)
+3. I need to cover: empty file, file smaller than limit, file exactly at limit, file larger than limit, invalid UTF-8 / truncated JSON lines, char-boundary safety logic
+
+Let me first read the evolve skill, then look at the `read_events_bounded` function and existing tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'fn read_events_bounded' in src/state.rs ✓ (11ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `read_events_bounded` function and the surrounding code to understand its signature and implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3240..3320  ▶ search '#\[cfg\(test\)\]' in src/state.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the search for `#[cfg(test)]` returned no matches. Let me search more carefully - maybe it's `cfg(test)` or `#[cfg(test)]` with different escaping.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cfg(test)' in src/state.rs  ▶ search 'mod tests' in src/state.rs ✓ (21ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what's around line 3371 - the test module near `read_events_bounded`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3365..  ▶ read src/state.rs:600.. ✓ (16ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the function and the test infrastructure. Let me also look at `read_compatibility_events` and `compatibility_event_json_line` to understand what they do, since `read_events_bounded` calls them.
+
+Key observations:
+1. `read_events_bounded` takes a path and a limit (line count limit, not byte limit)
+2. If `total_lines <= limit`, it delegates to `read_compatibility_events`
+3. If `total_lines > limit`, it tail-samples the last `limit` lines
+4. It parses each line via `compatibility_event_json_line` and then `serde_json::from_str::<Value>()`
+5. Invalid JSON lines are skipped with a warning
+6. The function returns `(Vec<Value>, String)` where the string is empty or a sampling note
+
+Wait, looking at this more carefully, I see:
+- The `limit` is a line count limit, NOT a byte limit. The function counts lines, not bytes.
+- The char-boundary concern mentioned in the task description doesn't apply to this function — it truncates by line count, not by byte count.
+- But wait, let me re-read the task: "char-boundary truncation logic (finding a safe UTF-8 boundary before truncating)"
+
+Actually looking at the function again — it doesn't do byte-level truncation at all. It uses line-based sampling. The `saturating_sub(limit)` is on line count.
+
+Hmm, but the task says: "the char-boundary truncation logic (finding a safe UTF-8 boundary before truncating) is exactly the kind of subtle correctness that tests catch and code review misses." This doesn't actually seem to be present in the current function. Let me check if there's something I'm missing.
+
+Let me look at `read_compatibility_events` and `compatibility_event_json_line` to see if there's truncation logic there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_compatibility_events' in src/state.rs  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (10ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both of those functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3181..3246 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `read_events_bounded` works with **line counts**, not byte counts. The `limit` parameter is the number of events (lines), not bytes.
+
+2. The task description mentions char-boundary truncation, but the actual function doesn't do byte-level truncation — it does line-level tail-sampling. So I should test what the function actually does, not what the task description incorrectly assumes.
+
+3. The function:
+   - Reads the file to a string
+   - Counts non-empty lines
+   - If `total_lines <= limit`: delegates to `read_compatibility_events`
+   - If `total_lines > limit`: tail-samples the last `limit` lines, parsing each with `compatibility_event_json_line` then `serde_json::from_str::<Value>()`
+   - Returns `(events, sampling_note)` where `sampling_note` is empty or the note
+
+Now, let me look at `parse_state_event_line` and `compatibility_event_value` to understand the full format.
+
+Actually, I have enough to write the tests. Let me also check what `parse_state_event_line` and `compatibility_event_value` do to understand the expected format.
+
+Let me plan my test cases:
+
+1. **empty_file**: empty file → 0 events, empty note
+2. **small_file_under_limit**: file with 3 lines, limit=10 → all 3 events returned, empty note
+3. **file_exceeds_limit**: file with 100 lines, limit=50 → 50 events returned (last 50), note contains sampling info
+4. **file_exactly_at_limit**: file with 10 lines, limit=10 → all 10 events returned, empty note
+5. **corrupted_lines**: file with valid + corrupted lines → corrupted lines skipped
+6. **empty_lines**: file with blank lines mixed in → blank lines filtered out
+
+Wait, the task mentions:
+- "file exactly at limit" → covered by `total_lines <= limit` branch
+- "file larger than limit (truncation)" → line-based tail sampling, not byte truncation
+- "invalid UTF-8 / truncated JSON lines" → corrupted line handling
+- "char-boundary safety logic" → The function doesn't actually do byte-level truncation; it does line-level. Let me check if there's actually any byte truncation...
+
+Actually, looking more carefully at the function:
+```rust
+pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+    let raw = std::fs::read_to_string(path)...
+```
+
+`std::fs::read_to_string` requires valid UTF-8, so if the file has invalid UTF-8, it would return an `Err`. That's a case to test.
+
+Let me now check what valid JSONL lines look like. I need to understand the format expected by `parse_state_event_line`.
+
+Let me look at `parse_state_event_line`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn parse_state_event_line' in src/state.rs ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand the expected JSONL format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:850..900 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the format. Let me look at the existing test patterns to understand how to create valid event lines. The events need at minimum `event_id`, `event_type`/`kind`, `timestamp_ms`, and `actor`.
+
+Let me look at the existing tests around line 3410+ to see the test pattern. I already saw the `event_append_writes_jsonl` test. Let me create my test cases.
+
+Now, the key question: the `read_events_bounded` function operates on LINE counts, not byte counts. The task description mentions char-boundary truncation, but the actual function doesn't do byte truncation. So I should test:
+1. Empty file
+2. File with fewer lines than limit
+3. File with more lines than limit (tail-sampling)
+4. File exactly at limit
+5. Corrupted lines being skipped
+6. Non-existent file (error case)
+
+For the multi-byte / char-boundary concern: since the function does line-based truncation, not byte-based, the char-boundary issue doesn't arise in the `read_events_bounded` function itself. The function reads the entire file with `read_to_string` and then splits by lines. The only char-boundary concern would be if someone tried to use byte-offset truncation on the result, which this function doesn't do.
+
+Let me now write the tests. I need to create a helper to write a line as a valid event, and then test the function.
+
+Let me create the test cases in the existing `mod tests` block. I'll add them near the end, before the closing `}`.
+
+For creating event JSONL lines, I can use `append_event` which uses `tempfile::tempdir`. Or I can write raw JSONL directly. Let me check what a valid line looks like by looking at the output format.
+
+Actually, looking at the existing tests more carefully:
+
+```rust
+fn append_event(path: &Path, event: &StateEvent) -> Result<(), String> {
+    append_event_with_projection(path, None, event)
+}
+```
+
+This calls through to the yoagent-state store which writes JSONL. Let me use `append_event` to create test files since it's already available as `super::append_event`.
+
+Wait, `append_event` is defined in `#[cfg(test)]` at line 606, and is `pub`. Let me check: the `mod tests` at line 3372 uses `use super::*;`, so `append_event` would be available.
+
+Actually wait, let me re-read more carefully. At line 606:
+```rust
+#[cfg(test)]
+pub fn append_event(path: &Path, event: &StateEvent) -> Result<(), String> {
+```
+
+This is outside the `mod tests`, in the main module but with `#[cfg(test)]`. So it's available to `mod tests` via `use super::*`.
+
+Let me now write the tests. I'll use `append_event` to create test files.
+
+Here are my test cases:
+
+1. `read_events_bounded_empty_file` - empty file returns 0 events
+2. `read_events_bounded_under_limit` - file with 3 events, limit=10, returns all 3
+3. `read_events_bounded_exceeds_limit` - file with 10 events, limit=5, returns last 5 with note
+4. `read_events_bounded_exactly_at_limit` - file with 5 events, limit=5, returns all 5 with empty note
+5. `read_events_bounded_corrupted_lines` - file with valid+invalid lines, corrupted lines skipped
+6. `read_events_bounded_nonexistent_file` - error on missing file
+
+Let me write the code now. I'll add these tests near the end of the test module, before the closing `}` at line 7382.
+
+For the test event creation, I'll use `append_event` to write events, then call `read_events_bounded` on the same file.
+
+Let me also create a helper function to write N events to a temp file.
+
+Now, let me also think about the multi-byte character concern. Since the function does line-based truncation, the char-boundary issue is not directly relevant. But I could still test that the function handles multi-byte characters in event payloads correctly — i.e., that events with multi-byte chars are parsed correctly.
+
+Let me now write the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me read the end of the test module to find where to insert new tests.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7370.. ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the tests. Let me also quickly look at how `append_event` works to understand what the generated JSONL lines look like. Let me check the `compatibility_event_value` function output - it produces a JSON object with these fields:
+- event_id (string)
+- event_type (string label)
+- schema_version (number)
+- timestamp_ms (number)
+- actor (string label)
+- run_id (optional string)
+- session_id (optional string)
+- trace_id (optional string)
+- parent_event_ids (array)
+- payload (object)
+
+So when I write events using `append_event`, each line will be a JSON object with these fields. When `read_events_bounded` calls `read_compatibility_events`, it reads those lines and parses them back.
+
+Let me write the tests now.
+
+For the tests, I'll create a helper function that writes N events to a temp file, then tests read_events_bounded against it.
+
+Let me add the tests before the closing `}` of the module. I'll insert them between line 7381 (`    }`) and line 7382 (`}`).
+
+Wait, looking at the indentation, line 7381 closes the last test function, and line 7382 closes the module. Let me add tests between them.
+
+Here's my plan:
+
+```rust
+    /// Helper: write `count` events to a temp file, returning the path and tempdir.
+    fn write_test_events(count: usize) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        for i in 0..count {
+            let event = StateEvent {
+                event_id: format!("evt-{i:04}"),
+                event_type: EventType::RunStarted,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some("run-test".into()),
+                session_id: None,
+                trace_id: format!("trace-{i:04}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"index": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+        (dir, path)
+    }
+
+    #[test]
+    fn read_events_bounded_empty_file() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        assert!(events.is_empty());
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn read_events_bounded_under_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(3);
+        let (events, note) = read_events_bounded(&path, 10).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn read_events_bounded_exceeds_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(10);
+        let (events, note) = read_events_bounded(&path, 5).unwrap();
+        assert_eq!(events.len(), 5, "should return exactly limit events");
+        assert!(note.contains("sampled from last"));
+        assert!(note.contains("10 total"));
+        // Verify we got the last 5 events (indices 5-9)
+        for (i, event) in events.iter().enumerate() {
+            let payload_index = event["payload"]["index"].as_u64().unwrap();
+            assert_eq!(payload_index, (5 + i) as u64, "should be last 5 events");
+        }
+    }
+
+    #[test]
+    fn read_events_bounded_exactly_at_limit() {
+        let _guard = state_global_test_lock();
+        let (_dir, path) = write_test_events(5);
+        let (events, note) = read_events_bounded(&path, 5).unwrap();
+        assert_eq!(events.len(), 5);
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn read_events_bounded_corrupted_lines() {
+        let _guard = state_global_test_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        // Write 3 valid events
+        for i in 0..3 {
+            let event = StateEvent {
+                event_id: format!("evt-{i:04}"),
+                event_type: EventType::RunStarted,
+                schema_version: 1,
+                timestamp_ms: i as u128,
+                actor: Actor::Harness,
+                run_id: Some("run-test".into()),
+                session_id: None,
+                trace_id: format!("trace-{i:04}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"index": i}),
+            };
+            append_event(&path, &event).unwrap();
+        }
+        // Append a corrupted line (not valid JSON)
+        let mut raw = std::fs::read_to_string(&path).unwrap();
+        raw.push_str("this is not json at all\n");
+        raw.push_str("{\"event_id\":\"partial\", \"event_type\":\"RunStarted\"\n"); // truncated
+        std::fs::write(&path, &raw).unwrap();
+        
+        let (events, note) = read_events_bounded(&path, 100).unwrap();
+        // We should get 3 valid events; corrupted lines are skipped
+        assert_eq!(events.len(), 3, "corrupted lines should be skipped");
+        assert!(note.is_empty());
+    }
+
+    #[test]
+    fn read_events_bounded_nonexistent_file() {
+        let _guard = state_global_test_lock();
+        let result = read_events_bounded(Path::new("/nonexistent/path/events.jsonl"), 100);
+        assert!(result.is_err());
+    }
+```
+
+Wait, I need to check: does the `append_event` path inside the test module (at line 606 is `pub fn append_event`) work properly? Let me check.
+
+Look at line 606-609:
+```rust
+#[cfg(test)]
+pub fn append_event(path: &Path, event: &StateEvent) -> Result<(), String> {
+    append_event_with_projection(path, None, event)
+}
+```
+
+But wait - this calls `append_with_yoagent_state_store` which spawns a thread with a tokio runtime. In unit tests, this might work or might not. Let me look at the existing tests that use `append_event`:
+
+Line 3410: `event_append_writes_jsonl` - uses `append_event` and works fine.
+
+Line 3436: `event_log_is_readable_by_yoagent_state_store` - also uses `append_event`.
+
+OK, so `append_event` works in tests. Let me use it.
+
+Now let me also think about the task description vs reality:
+- Task says: "char-boundary truncation logic (finding a safe UTF-8 boundary before truncating)" - but the function doesn't do byte-level truncation; it does line-level. I should mention this but still test edge cases.
+- I should test multi-byte characters in event payloads to ensure they're handled correctly.
+
+Let me add one more test for multi-byte payloads.
+
+Let me finalize my test plan and write the edits.
+
+Actually, wait - let me re-examine one thing. `append_event` writes JSONL but through the yoagent_state store. Let me check what format the JSONL is actually written in. Looking at the `compatibility_event_value` function:
+
+```rust
+fn compatibility_event_value(event: &StateEvent) -> Value {
+    json!({
+        "event_id": event.event_id,
+        "event_type": event_type_label(&event.event_type),
+        "schema_version": event.schema_version,
+        "timestamp_ms": i64_ms(event.timestamp_ms),
+        "actor": actor_label(&event.actor),
+        "run_id": event.run_id,
+        "session_id": event.session_id,
+        "trace_id": event.trace_id,
+        "parent_event_ids": event.parent_event_ids,
+        "payload": event.payload,
+    })
+}
+```
+
+But `append_event_with_projection` actually calls `append_with_yoagent_state_store` which writes via `yoagent_state::JsonlEventStore::new(&path).append(vec![event])`. The event passed to this is `to_yoagent_state_event(&safe_event)`, not the compatibility format.
+
+So the file written by `append_event` is yoagent-state format, not the compatibility format. But `read_compatibility_events` expects the compatibility format...
+
+Hmm, let me check `to_yoagent_state_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn to_yoagent_state_event' in src/state.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand the format written to the events file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3127..3187 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full format. The events file created by `append_event` is in yoagent-state format. `read_compatibility_events` calls `compatibility_event_json_line` which calls `parse_state_event_line` which handles both formats:
+- `event_id` + `actor` (compatibility format)
+- OR `kind` + `_yoyo` metadata (yoagent-state format)
+
+So the events written by `append_event` CAN be read by `read_events_bounded` because `parse_state_event_line` recognizes both formats.
+
+Let me now write the tests. I'll add a helper function and several test cases.
+
+Let me create the edit. I'll insert the tests before the closing `}` of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding. Let me write the tests. I'll add them before the closing `}` of the test module.
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     // ── read_events_bounded ──────────────────────────────────────────
+  + 
+  +     /// Helper: write `count` events to a temp file via `append_event`,
+  +     /// returning the tempdir (keeps the file alive) and its path.
+  +     fn write_test_events(count: usize) -> (tempfile::TempDir, PathBuf) {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let path = dir.path().join("events.jsonl");
+  +         for i in 0..count {
+  +             let event = StateEvent {
+  +                 event_id: format!("evt-{i:04}"),
+  +                 event_type: EventType::RunStarted,
+  +                 schema_version: 1,
+  +                 timestamp_ms: i as u128,
+  +                 actor: Actor::Harness,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 213 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 213 lines)
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     // ── read_events_bounded ──────────────────────────────────────────
+  + 
+  +     /// Helper: write `count` events to a temp file via `append_event`,
+  +     /// returning the tempdir (keeps the file alive) and its path.
+  +     fn write_test_events(count: usize) -> (tempfile::TempDir, PathBuf) {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let path = dir.path().join("events.jsonl");
+  +         for i in 0..count {
+  +             let event = StateEvent {
+  +                 event_id: format!("evt-{i:04}"),
+  +                 event_type: EventType::RunStarted,
+  +                 schema_version: 1,
+  +                 timestamp_ms: i as u128,
+  +                 actor: Actor::Harness,
+  +                 run_id: Some("run-read-bounded".into()),
+  +                 session_id: None,
+  ... (193 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to see if they compile and pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::read_… ✓ (26.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 tests pass. Now let me run `cargo fmt` to check formatting, then run the full test suite as required.
+────────────────────────────────────────────────────────────────────────────────
+
+All 9 tests pass. Let me now run `cargo fmt` and the broader checks:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to fix formatting. Let me run `cargo fmt` to auto-format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatting applied. Now run the tests again to verify they still pass, then run the full test suite.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::read_… ✓ (25.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 tests pass after formatting. Now let me run the full test suite to check for regressions:
+────────────────────────────────────────────────────────────────────────────────
+
+All 9 tests pass after formatting. Now run the full test suite:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 35s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was truncated but I can see tests are running and passing. Let me check the final result.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 32s)
+
+
