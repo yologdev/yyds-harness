@@ -7535,7 +7535,7 @@ mod tests {
         let path = dir.path().join("events.jsonl");
 
         // Write events with multi-byte UTF-8 in payloads
-        let multi_byte_data = vec![
+        let multi_byte_data = [
             "café ☕",      // 2-byte + 4-byte grapheme
             "🚀 launch",    // 4-byte grapheme
             "日本語テスト", // Japanese (3-byte chars)
