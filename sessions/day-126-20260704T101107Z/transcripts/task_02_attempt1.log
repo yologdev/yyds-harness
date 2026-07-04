@@ -1,0 +1,233 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me break down this task:
+
+1. Add a `read_events_bounded` function to `src/state.rs`
+2. Use it in `src/commands_state.rs` `handle_doctor`
+3. Verify with build/tests
+
+Let me start by reading the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me read the relevant parts of `src/state.rs` and `src/commands_state.rs` to understand the existing code structure.
+
+Key things to look at:
+1. `read_compatibility_events` function in `src/state.rs`
+2. The `compatibility_event_json_line` function
+3. The `handle_doctor` function in `src/commands_state.rs` (lines 164-196)
+4. Existing imports in `src/commands_state.rs`
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the relevant source files in parallel.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3180..3260  ▶ read src/commands_state.rs:140..220  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (8ms)
+ ✓ (9ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the current code structure. Now let me also check:
+1. The `read_events` and `read_tail_events` functions in `commands_state.rs` 
+2. The imports in `commands_state.rs`
+3. The `use` statements at the top of `commands_state.rs`
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+Let me find `read_events` and `read_tail_events` in `commands_state.rs`, and check the imports.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events' in src/commands_state.rs  ▶ search 'fn read_tail_events' in src/commands_state.rs  ▶ read src/commands_state.rs (30 lines) ✓ (4ms)
+ ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `read_events` and `read_tail_events` functions in `commands_state.rs` to understand their implementations.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1343..1413  ▶ read src/commands_state.rs:28..48 ✓ (13ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check how the doctor is invoked (to see the `--limit` flag handling):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Let me find the doctor invocation handler to understand the `--limit` flag parsing:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"doctor"' in src/commands_state.rs ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the doctor invocation handler.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:126..141 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context I need. Let me plan the implementation:
+
+1. **Add `read_events_bounded` to `src/state.rs`**: Right after `read_compatibility_events` (around line 3234). This function will:
+   - Read the raw file
+   - Count total non-empty lines
+   - If total ≤ limit: call `read_compatibility_events` and return with empty note
+   - If total > limit: tail-sample the last `limit` lines using `compatibility_event_json_line` + `serde_json::from_str`
+   - Return `(Vec<Value>, String)` where the string is empty or a sampling note
+
+2. **Refactor `handle_doctor` in `src/commands_state.rs`**: Replace the inline tail-sampling logic (lines 164-196) with a call to the new helper.
+
+The fallback says: "If the `handle_doctor` refactor would touch more than 10 lines or the existing `read_events` / `read_tail_events` functions are deeply coupled to their current callers, add only the `read_events_bounded` helper to `src/state.rs` as a standalone function and leave `handle_doctor` unchanged."
+
+Looking at the `handle_doctor` code (lines 158-196), the refactor would replace about 38 lines (the whole sampling block at 164-196) with about 12 lines. That's more than 10 lines of change but it's a simplification. However, the fallback says "touch more than 10 lines" - this means modifying more than 10 lines. Let me count:
+
+Current lines 164-196 = 33 lines. The replacement would be about 8 lines. So we'd be touching/removing ~33 lines and adding ~8 lines. That's definitely touching more than 10 lines.
+
+Wait, the fallback says "If the `handle_doctor` refactor would touch more than 10 lines". Let me re-read: "If the `handle_doctor` refactor would touch more than 10 lines or the existing `read_events` / `read_tail_events` functions are deeply coupled to their current callers, add only the `read_events_bounded` helper to `src/state.rs` as a standalone function and leave `handle_doctor` unchanged."
+
+So the fallback is: if the handle_doctor refactor touches >10 lines, just add the helper and leave handle_doctor alone. The refactor definitely touches more than 10 lines. So per the fallback, I should just add the helper and leave handle_doctor unchanged.
+
+Wait, but the task also says: "The helper alone is useful for future consumers even without retrofitting existing callers." and "Do NOT refactor any other diagnostic command beyond handle_doctor."
+
+So the fallback seems to be the intended path here - the refactor would touch >10 lines, so just add the helper. Let me re-read more carefully...
+
+Actually, re-reading the fallback: "If the `handle_doctor` refactor would touch more than 10 lines or the existing `read_events` / `read_tail_events` functions are deeply coupled to their current callers, add only the `read_events_bounded` helper to `src/state.rs` as a standalone function and leave `handle_doctor` unchanged."
+
+The task says the fallback is the path to take if the refactor would touch >10 lines. It would. So let me go with the fallback: add only `read_events_bounded` to `src/state.rs` and leave `handle_doctor` unchanged.
+
+Wait, but the task says "Implementation: ... In src/commands_state.rs, refactor handle_doctor..." - this seems like the primary path, and the fallback is only if it would touch >10 lines. The refactor of handle_doctor would indeed touch ~33 lines to replace with ~8 lines. That's >10 lines touched.
+
+But actually, "touch more than 10 lines" could mean "the diff is more than 10 lines". The diff would be: remove ~33 lines, add ~8 lines = 41 lines of diff. That's way more than 10.
+
+So I should follow the fallback: just add the helper function and leave `handle_doctor` unchanged.
+
+Let me now implement:
+
+1. Add `pub fn read_events_bounded` to `src/state.rs` after `read_compatibility_events`
+2. Add a `use` for `Path` if not already imported
+3. Build and test
+
+Let me check if `Path` is already imported in `state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full context. Let me check the imports at the top of `state.rs` to see what's already available:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs (30 lines) ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `Path` is already imported via `use std::path::{Path, PathBuf};`. Now let me implement the `read_events_bounded` function.
+
+Since the fallback says the refactor of `handle_doctor` would touch >10 lines (it would replace ~33 lines with ~8 — total diff of ~41 lines), I'll follow the fallback: add only the `read_events_bounded` helper to `src/state.rs` as a standalone function and leave `handle_doctor` unchanged.
+
+Let me now write the function. Let me insert it after `read_compatibility_events` (after line 3234).
+
+The function signature from the task:
+```rust
+pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String>
+```
+
+Wait, looking at the task's return type, it uses `String` for the error. But `read_compatibility_events` also returns `Result<Vec<Value>, String>`. Let me match that pattern.
+
+Actually, the task says: "Result<(Vec<Value>, String), String>" which uses String for both the error and the sampling note. Let me implement it exactly as specified.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the information I need. The fallback applies because the `handle_doctor` refactor would touch ~33 lines (exceeding the 10-line threshold). I'll add only the `read_events_bounded` helper as a standalone function in `src/state.rs` and leave `handle_doctor` unchanged.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the function. I'll insert it right after `read_compatibility_events` (after line 3234, before the blank line).
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the function. I'll insert it after `read_compatibility_events` closing brace (line 3234) and before the blank line + `compatibility_event_value`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        Ok(events)
+  + }
+  + 
+  + /// Read state events from a JSONL file, tail-sampling to at most `limit`
+  + /// events when the file is larger. Returns `(events, sampling_note)` where
+  + /// `sampling_note` is empty when all events fit within the limit.
+  + ///
+  + /// This encodes the lesson from Days 117-125: event-reading must be bounded
+  + /// to prevent timeouts with large event histories (50k+ events). Six
+  + /// diagnostic tools were individually patched with the same pattern before
+  + /// this utility was extracted.
+  + pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+  +     let raw = std::fs::read_to_string(path)
+  +         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+  +     let total_lines = raw.lines().filter(|l| !l.trim().is_empty()).count();
+  +     if total_lines <= limit {
+  +         let events = read_compatibility_events(path)?;
+  +         Ok((events, String::new()))
+  +     } else {
+  +         // Tail-sample: read only the last `limit` lines
+  ... (16 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 36 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 36 lines)
+        Ok(events)
+  + }
+  + 
+  + /// Read state events from a JSONL file, tail-sampling to at most `limit`
+  + /// events when the file is larger. Returns `(events, sampling_note)` where
+  + /// `sampling_note` is empty when all events fit within the limit.
+  + ///
+  + /// This encodes the lesson from Days 117-125: event-reading must be bounded
+  + /// to prevent timeouts with large event histories (50k+ events). Six
+  + /// diagnostic tools were individually patched with the same pattern before
+  + /// this utility was extracted.
+  + pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+  +     let raw = std::fs::read_to_string(path)
+  +         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+  +     let total_lines = raw.lines().filter(|l| !l.trim().is_empty()).count();
+  +     if total_lines <= limit {
+  +         let events = read_compatibility_events(path)?;
+  +         Ok((events, String::new()))
+  +     } else {
+  +         // Tail-sample: read only the last `limit` lines
+  ... (16 more lines)
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run `cargo fmt` and then `cargo build` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt && cargo build 2>&1 ✓ (16.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. The `dead_code` warning is expected since `read_events_bounded` is a `pub` utility that hasn't been used yet by any caller. Since it's a public function intended for future consumers (and the fallback says not to refactor `handle_doctor`), the warning is acceptable. 
+
+Let me now run the tests. The task says `cargo test -- --test-threads=1`. Let me run it now.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. The `dead_code` warning is expected — it's a `pub` utility for future consumers per the fallback path. Let me run tests now:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 55s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me get the final summary lines from the test output to see if all tests passed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (4m 29s)
+
+

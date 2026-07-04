@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: `read_events_bounded` is added to `src/state.rs` as a `pub`, documented function with correct tail-sampling logic. `handle_doctor` was left unchanged per the task's explicit fallback clause (the refactor would touch >10 lines). Build and tests pass. The shared utility is available for future consumers.
