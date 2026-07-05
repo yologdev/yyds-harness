@@ -1,0 +1,751 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user wants me to create a session plan for Day 127. Let me analyze the assessment and trajectory evidence to pick the highest-impact tasks.
+
+Key evidence from the assessment and trajectory:
+
+1. **State/transcript reconciliation gap** — 59 state-only failures, 4 transcript-only failures. This is the most actionable signal.
+2. **9 incomplete runs in lifecycle** — Day 126 Task 1 fixed single-session scope; broader pipeline-scoped incomplete runs may still exist.
+3. **Missing FailureObserved events** — 78 error sessions without FailureObserved.
+4. **Graph-derived pressure**: Close lifecycle gaps, bound failing shell commands, reconcile transcript-only tool failures, reconcile state-only tool failures.
+5. **Issue #37** — Add held-out eval coverage for DeepSeek harness gnomes (partially addressed by Day 126 Task 2).
+
+The trajectory says 5 consecutive green runs, 5/5 strict-verified tasks on Day 126. The codebase is healthy.
+
+Let me prioritize based on harness policy:
+- Priority 1: yoagent-state DeepSeek feedback — recurring failures, weak gnomes/KPIs
+- The state/transcript reconciliation gap (59 state-only + 4 transcript-only failures) is the clearest yoagent-state feedback
+
+Let me check what the preseed task is first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null  ▶ $ cat session_plan/task_01.md 2>/dev/null || echo "NO PRESEED TASK" ✓ (804ms)
+ ✓ (839ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this seed task against current evidence:
+
+The assessment shows Day 126 had 5/5 strict-verified tasks, 2 sessions with build OK + tests OK. Day 125 had 3/4 (1 reverted_no_edit). The trajectory says "Five consecutive green runs. No reverts, no API errors, no cascade failures since Day 125. This is the healthiest stretch since the Day 114-119 diagnostic spiral was broken."
+
+The seed task claims "Recent evo evidence showed implementation attempts ending with no file progress, `reverted_no_edit`, and no terminal evidence" — but the CURRENT assessment contradicts this. The trajectory shows strong task success: task_success_rate=1.0, task_verification_rate=1.0. The only reverted_no_edit was Day 125 (one task out of 4), and Day 126 had perfect 5/5.
+
+The seed task is about fixing analysis-only task pressure, but the current evidence shows we're NOT in an analysis-only spiral — we're in a healthy productive streak. The seed task is stale!
+
+Per the planning instructions: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+Let me now plan from current evidence. The key signals:
+
+1. **State/transcript reconciliation gap** (59 state-only + 4 transcript-only failures) — the clearest actionable signal.
+2. **Missing FailureObserved events** — 78 error sessions without FailureObserved.
+3. **9 incomplete runs** — though Day 126 Task 1 partially addressed this.
+4. **Issue #37** — eval fixture coverage (partially addressed, remaining gaps).
+
+Let me think about what tasks to select. I need:
+- At least 2 slots from yoagent-state / trajectory / eval evidence
+- Up to 3 tasks total
+- Each task ≤ 3 files
+- Each task completable in 20 minutes
+
+Task ideas:
+
+**Task 1: Reconcile state-only tool failures — investigate the 59 state-only failures**
+The state records 59 tool failures that transcripts don't capture. This is a structural gap. The likely owners would be in the state/transcript recording pipeline. But this might be too broad — we need to narrow to a specific, concrete fix.
+
+Actually, let me think about this differently. The 59 state-only failures could simply mean state records tool-level failures (like bash timeouts) before the transcript format captures them. That's not necessarily a bug — it might be expected behavior. Investigating this could be a large task.
+
+**Task 2: Add FailureObserved recording for exit-code-1 sessions**
+78 error sessions completed (RunCompleted) but never recorded a FailureObserved. This is a concrete gap: when a session exits with code 1 but the pipeline still marks it completed, no FailureObserved is emitted. The fix would be in `scripts/evolve.sh` or wherever the RunCompleted event is recorded — add a FailureObserved event when exit code is non-zero.
+
+Wait, the assessment says `scripts/evolve.sh` is protected. Let me check what files handle failure recording.
+
+Let me look at `src/state.rs` — it has `record_failure_schema`, and there's a `FailureObserved` event type. The issue is likely in the harness scripts that record terminal events.
+
+Actually, looking at `scripts/append_terminal_state_events.py` — this script was modified on Day 126 to fix orphaned-run detection. It might be the right place to also detect runs that completed with errors but no FailureObserved.
+
+But wait — `scripts/evolve.sh` is a protected file. Let me check if `scripts/append_terminal_state_events.py` is protected.
+
+The PROTECTED_IMPLEMENTATION_FILES from `scripts/preseed_session_plan.py` includes `scripts/evolve.sh` but I'm not sure about `scripts/append_terminal_state_events.py`.
+
+Let me think about which tasks are small, concrete, and can be verified:
+
+**Best task 1: Close the FailureObserved gap for exit-code-1 sessions**
+The assessment says 78 sessions completed with errors but no FailureObserved. The `scripts/append_terminal_state_events.py` was just modified on Day 126 to handle orphaned runs — it could be extended to also detect runs with error completion but no FailureObserved and append the missing event.
+
+Files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`
+
+**Best task 2: Add held-out eval fixture for state event coverage of lifecycle transitions**
+Issue #37 asks for eval coverage. Day 126 added one fixture (genome determinism). The assessment notes "state event coverage for key lifecycle transitions" is still missing. This is additive — create a new eval fixture.
+
+Files: `eval/fixtures/local-smoke/` (new fixture file)
+
+**Best task 3: ... maybe the state/transcript reconciliation?**
+
+Let me narrow task 3. The 59 state-only failures — I could create a diagnostic command or improve the `state why` output to surface these better, making them actionable for future sessions.
+
+Actually, wait. Let me re-read the trajectory more carefully:
+
+"Reconcile transcript-only tool failures (transcript_only_failed_tool_count=4): Recent transcripts contained failed tool actions absent from state events — transcript sees failures that state doesn't record."
+
+"Reconcile state-only tool failures (state_only_failed_tool_count=59): State events contained failed tool actions without matching transcript records — state records failures that transcripts don't capture."
+
+This asymmetry is about the transcript recording pipeline vs the state event recording pipeline. The fix would need to understand both pipelines. This is probably a diagnostic task first (investigate), then a fix task. For planning, I could make it a diagnostic task.
+
+But actually, let me focus on what's most concrete and actionable:
+
+1. **Task 1: Appending missing FailureObserved for error-completed runs** — concrete, small, testable.
+2. **Task 2: Add eval fixture for lifecycle transition coverage** — additive, from issue #37, small.
+3. **Task 3: Add a diagnostic for state/transcript failure reconciliation** — make the gap visible so future sessions can close it.
+
+Let me verify ownership of the relevant files with quick checks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 22.2s (2 ✓)
+
+Let me check the seed task against current evidence, then verify file ownership for candidate tasks.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files scripts/append_te…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg -n 'FailureObserved' script…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && rg -n 'exit_code\|run_error\|r… ✓ (840ms)
+ ✓ (1.7s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`rg` isn't available. Let me use `grep` or `search` tool.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in scripts/append_terminal_state_events.py  ▶ search 'exit_code' in scripts/append_terminal_state_events.py  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/local-smoke/ … ✓ (723ms)
+ ✓ (792ms)
+ ✓ (853ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task claims "Recent evo evidence showed implementation attempts ending with no file progress, `reverted_no_edit`, and no terminal evidence." But the current assessment says Day 126 had 5/5 strict-verified tasks across 2 sessions, and the trajectory shows task_success_rate=1.0, task_verification_rate=1.0. The evidence contradicts the seed task's premise.
+
+Per the planning instructions: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+I need to write task_01_obsolete.md and then create new evidence-backed tasks.
+
+Now let me plan the actual tasks:
+
+**Task 1 candidates:**
+1. Close the FailureObserved gap for exit-code-1 sessions (78 error sessions without FailureObserved). The `scripts/append_terminal_state_events.py` already detects and closes orphaned runs — it could be extended to also detect runs that completed with errors but no FailureObserved and append the missing event. 
+   - Files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`
+   - But wait — `scripts/append_terminal_state_events.py` doesn't currently mention FailureObserved at all. The 78 number comes from `state why last-failure`. Let me check where FailureObserved is recorded...
+
+Actually, let me look at what the `state why last-failure` output means. Those 78 sessions completed (RunCompleted present) but had errors and no FailureObserved. The FailureObserved event is typically recorded by the harness scripts (evolve.sh) when something fails. If the harness records RunCompleted with error status but didn't explicitly emit a FailureObserved, that's a gap in the harness pipeline.
+
+But `scripts/evolve.sh` is protected. So I can't modify it directly. What I CAN do is modify `scripts/append_terminal_state_events.py` to detect this gap and append FailureObserved events for sessions that have RunCompleted with error but no FailureObserved.
+
+Wait — but `append_terminal_state_events.py` is a post-hoc script that runs to clean up state. Adding FailureObserved retroactively might be the right approach.
+
+Let me think about what's concretely actionable:
+
+1. **Task: Append missing FailureObserved events for error-completed runs** — modify `append_terminal_state_events.py` to detect runs that completed with `run_error_without_start` (the lifecycle cause with count=8) or otherwise completed with errors but without a FailureObserved event, and append one. Files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`.
+
+2. **Task: Add eval fixture for lifecycle transition event coverage** — issue #37. Create an eval fixture that verifies key lifecycle transitions (RunStarted → RunCompleted, ModelCallStarted → ModelCallCompleted) are correctly paired in state events. Additive work. Files: new fixture file in `eval/fixtures/local-smoke/`.
+
+3. **Task: Surface state/transcript failure reconciliation in `state why`** — the 59 state-only + 4 transcript-only failures. Make `state why` surface this reconciliation gap explicitly. Files: `src/commands_state.rs`.
+
+Wait, but `commands_state.rs` is 24,737 lines. That's huge. A task touching it needs to be very focused.
+
+Let me reconsider. Maybe task 3 should be smaller. What about: add a `state why missing-failures` or extend `state why last-failure` to explicitly break down the state/transcript reconciliation gap?
+
+Actually, let me re-examine the graph pressure for clearer task definition:
+
+"Reconcile state-only tool failures (state_only_failed_tool_count=59): State events contained failed tool actions without matching transcript records — state records failures that transcripts don't capture."
+
+This might simply mean that some tool failures are recorded via the state event pipeline (e.g., via `record_failure` or `FailureObserved`) but the transcript recording happens through a different code path that doesn't capture those events. The fix might be in how failures are recorded — making sure the transcript pipeline sees them.
+
+But this is complex. Let me focus on the two clearest tasks:
+
+1. Append missing FailureObserved events (concrete, testable, addresses the 78 error sessions)
+2. Add eval fixture for lifecycle transitions (additive, from issue #37)
+
+And possibly a third task:
+3. Add diagnostic visibility for state/transcript failure reconciliation in `state why`
+
+Let me also check: is `scripts/append_terminal_state_events.py` a protected file?
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 17.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'PROTECTED_IMPLEMENTAT… ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:31..61 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `scripts/append_terminal_state_events.py` is NOT in PROTECTED_IMPLEMENTATION_FILES. Neither is `scripts/test_append_terminal_state_events.py`. And neither is `src/commands_state.rs` or `eval/fixtures/`.
+
+Now let me think about what the 78 error sessions without FailureObserved means and whether `append_terminal_state_events.py` can address it.
+
+The script already handles orphaned runs (runs started but not completed). The new gap is: runs that completed with errors but never recorded a FailureObserved event. The script could be extended to detect these and append FailureObserved events.
+
+But I need to understand: where does FailureObserved get recorded normally? Let me check.
+
+Actually, I don't need to deep-dive this. The assessment says "78 sessions with errors but no FailureObserved — these are exit-code-1 runs that completed (RunCompleted present) but didn't record a FailureObserved event." This is a clear gap that `append_terminal_state_events.py` could close.
+
+Now, for my task plan:
+
+**Task 1 (STATE-DRIVEN):** Extend `append_terminal_state_events.py` to detect runs that completed with errors (RunCompleted with error status) but lack a FailureObserved event, and append one. This addresses the 78 error sessions gap and the lifecycle imbalance (`run_error_without_start=8`).
+
+Files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`
+
+**Task 2 (STATE-DRIVEN):** Add held-out eval fixture for lifecycle transition event coverage. From issue #37. The assessment notes state event coverage for key lifecycle transitions is missing. Create a fixture that validates RunStarted→RunCompleted pairing.
+
+Files: new file in `eval/fixtures/local-smoke/`
+
+**Task 3 (STATE-DRIVEN):** Make `state why` surface the state/transcript failure reconciliation gap. Currently 59 state-only failures and 4 transcript-only failures exist but aren't visible in `state why` output. Add a breakdown.
+
+Files: `src/commands_state.rs`
+
+Wait, but `commands_state.rs` is 24,737 lines. That's huge. Let me be more specific about what the change should be. Maybe this should be a small addition to the `state why last-failure` subcommand to include the reconciliation breakdown.
+
+Actually, let me think about whether task 3 is too big. Adding a new subcommand or extending an existing one in a 24K-line file is risky. Let me narrow it.
+
+Let me look at how `state why last-failure` works currently.
+
+Hmm, I don't want to read the file during planning. Let me just scope it tightly in the task description.
+
+Actually, let me reconsider. The most impactful and concrete tasks are:
+
+1. **FailureObserved gap**: append missing events for error-completed runs
+2. **Eval fixture**: lifecycle transition coverage (from issue #37) 
+3. **State/transcript reconciliation visibility**: make `state why` show the gap
+
+For task 3, I should be precise about what to add. Let me think about what the minimal change is:
+
+The `state why` command already scans events and reports issues. Adding a check for state/transcript failure reconciliation would require knowing which events are state-only vs transcript-only, which might need data from both pipelines. That's complex.
+
+A simpler approach: add a `state why failure-reconciliation` subcommand that specifically checks for the asymmetry. But that's a bigger change.
+
+Let me pivot. Instead of trying to fix the reconciliation in one task, let me make the first step: add a diagnostic that makes the gap visible so the next planning phase can act on it.
+
+Actually, the trajectory already makes this visible. The issue is that `state why` doesn't show it. Let me think about the simplest change...
+
+OK, I think I'm overcomplicating this. Let me just pick two strong state-driven tasks and make the third one optional/simple:
+
+**Final plan:**
+
+1. **Task 1: Append missing FailureObserved events for error-completed runs** — state-driven, addresses 78 error sessions + lifecycle gap
+2. **Task 2: Add eval fixture for lifecycle transition event coverage** — from issue #37, additive
+3. **Task 3: Surface FailureObserved gap in `state why last-failure` output** — make the 78-session gap visible in the diagnostic tool
+
+These three tasks are connected: task 3 makes the gap visible, task 1 closes it, and task 2 adds a held-out test.
+
+Wait, actually task 3 should come first logically (make it visible), then task 1 (fix it). But the harness runs tasks in order, so task 1 would be implemented first.
+
+Let me reorder:
+- Task 1: Make state why show FailureObserved gap (diagnostic)
+- Task 2: Append missing FailureObserved events (fix)
+- Task 3: Add eval fixture (test)
+
+This way: first we see the problem, then we fix it, then we test it.
+
+But wait, tasks are implemented by different agents in separate sessions. They don't need to be ordered — they're independent. And the assessment already shows the gap exists. The fix (task 2 in my ordering) can be implemented without the diagnostic first.
+
+Let me just go with my original ordering but make all three state-driven:
+
+1. Task 1: Append missing FailureObserved (fix the 78-session gap)
+2. Task 2: Make state why show FailureObserved gap explicitly
+3. Task 3: Add eval fixture for lifecycle transitions
+
+Now let me write all the files. First the obsolete note for the seed task.
+
+Actually wait, for task 2 (modifying commands_state.rs), I need to be very precise about what to change. The file is huge. Let me scope it to a specific function or subcommand.
+
+Let me search for how `state why last-failure` works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'last-failure' in src/commands_state.rs  ▶ search 'fn.*last_failure' in src/commands_state.rs ✓ (318ms)
+ ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `build_why_report` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs  ▶ search 'FailureObserved' in src/commands_state.rs ✓ (323ms)
+ ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `build_why_report` is at line 3125. Let me look at a small section around that to understand the structure, and also around line 1885 where FailureObserved is mentioned.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3125..3205 ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the structure. The `build_why_report` function already counts `error_run_completed_count` at line 3163 — runs that completed with error/non-success status. But it doesn't check whether those error runs have a corresponding `FailureObserved` event. That's the gap.
+
+Now I have enough context to write the task files. Let me continue reading to understand where the FailureObserved check should go, and see the end of this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3204..3264 ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `build_why_report` function in `src/commands_state.rs` already detects error-run-completed sessions without FailureObserved at line 3219-3229. It reports them as "N sessions completed with errors but no FailureObserved events were recorded."
+
+So the diagnostic is already in place! The `state why last-failure` command already reports this gap. The issue is that the sessions still exist — 78 of them.
+
+So the right tasks are:
+1. Fix: append missing FailureObserved events in `append_terminal_state_events.py`
+2. Test: add eval fixture for lifecycle transitions
+3. The diagnostic already exists, so I don't need a task to add it.
+
+But wait — the assessment says "The scope of missing FailureObserved may be larger than the 1000-event window." So the gap might be bigger than what `state why` can see with its default 1000-event limit.
+
+Let me reconsider my tasks:
+
+1. **Task 1: Extend `append_terminal_state_events.py` to append missing FailureObserved events** for runs that completed with errors but lack FailureObserved. This closes the 78+ session gap.
+
+2. **Task 2: Add eval fixture for lifecycle transition event coverage** — validates RunStarted→RunCompleted and ModelCallStarted→ModelCallCompleted pairing.
+
+3. **Task 3: ...** What's another high-impact task? Let me look at the graph pressure again:
+   - "Close yyds state and model lifecycle gaps" — partially addressed by Task 1
+   - "Break recurring log failure fingerprints" — this is about command timeouts, which is operational
+   - "Bound failing shell commands before retrying" — this is a lesson, not a task
+   - "Reconcile transcript-only tool failures" and "Reconcile state-only tool failures" — this is about the transcript/state asymmetry
+
+For task 3, I could:
+- Add the eval fixture for FIM routing correctness (from issue #37, remaining gaps)
+- Or address the transcript/state reconciliation
+
+Actually, looking at the assessment more carefully: "59 state-only failures suggest the transcript pipeline has a structural blind spot, or state is recording tool-level failures that the transcript format doesn't express."
+
+This asymmetry could be legitimate — state records tool-level failures (like bash exit code 1) and transcripts record user-visible failures (like "command not found"). They're different views. The "reconciliation" might not need a fix — it might need documentation explaining why they differ.
+
+But I can't spend too long investigating. Let me pick the most concrete tasks:
+
+1. **Task 1: Append missing FailureObserved events for error-completed runs** — files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`
+2. **Task 2: Add eval fixture for state event lifecycle pairing** — from issue #37, additive
+3. **Task 3: Add eval fixture for FIM routing correctness** — from issue #37, another gap
+
+But wait, 3 fixtures is too many fixture-only tasks. Let me think about what makes the most impact...
+
+Actually, let me look at if there's a concrete fix for the "9 incomplete runs" lifecycle gap. The assessment says "Day 126 Task 1 fixed the single-session scope gap; broader pipeline-scoped incomplete runs may still exist."
+
+But investigating that could be complex. Let me stick with my plan:
+
+Task 1: Fix FailureObserved gap (state-driven, high impact)
+Task 2: Eval fixture for lifecycle transitions (test coverage, issue #37)
+Task 3: Something else state-driven...
+
+For task 3, let me go with: **Add eval fixture for prompt layout determinism** (also from issue #37). Day 126 Task 2 added a genome determinism fixture, but prompt layout determinism is a separate concern mentioned in the assessment: "Prompt layout determinism is asserted but needs more held-out eval fixtures."
+
+Wait, the genome determinism fixture from Day 126 (fixture #370) already covers that. Let me check.
+
+Actually, genome determinism and prompt layout determinism are different things. The genome is the harness configuration; prompt layout is how prompts are assembled. They're related but distinct.
+
+OK, let me finalize my plan:
+
+1. **Task 1: Append missing FailureObserved events for error-completed runs** 
+   - Files: `scripts/append_terminal_state_events.py`, `scripts/test_append_terminal_state_events.py`
+   - Addresses: 78 error sessions without FailureObserved, lifecycle gap `run_error_without_start=8`
+
+2. **Task 2: Add eval fixture for state event lifecycle pairing**
+   - Files: `eval/fixtures/local-smoke/` (new file)
+   - Addresses: issue #37, 9 incomplete runs, 4 incomplete model calls, 3 unmatched completed model calls
+
+3. **Task 3: Surface state/transcript failure reconciliation in state why**
+   - Files: `src/commands_state.rs`
+   - Addresses: 59 state-only + 4 transcript-only failures
+
+Now let me write all the files. First, the obsolete note for the seed task.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence. The seed task claims "analysis-only/no-edit attempts" as live pressure, but the trajectory shows **5 consecutive green runs**, Day 126 with **5/5 strict-verified tasks**, and `task_success_rate=1.0`. The seed's premise is stale. I'll obsolete it and write three evidence-backed tasks.
+  + # OBSOLETE — Seed Task Contradicted by Current Evidence
+  + 
+  + The harness-seeded task claimed "Recent evo evidence showed implementation
+  + attempts ending with no file progress, `reverted_no_edit`, and no terminal
+  + evidence." This is contradicted by current assessment and trajectory:
+  + 
+  + - **Day 126 (17:07)**: 3/3 tasks strict-verified, build OK, tests OK
+  + - **Day 126 (10:11)**: 2/2 tasks strict-verified, build OK, tests OK  
+  + - **Trajectory**: task_success_rate=1.0, task_verification_rate=1.0
+  + - **Evo readiness**: classification=verified_success, can_drive_evolution=true
+  + - **Five consecutive green runs** since Day 125
+  + 
+  + The only `reverted_no_edit` was one task on Day 125 (out of 4 across the day),
+  + and Day 126 recovered completely. The analysis-only spiral the seed task
+  + targets was broken during Days 114-119; current evidence shows the healthiest
+  + productivity streak in weeks.
+  + 
+  + The seed task is a regression risk — modifying task-selection logic when the
+  + pipeline is working would introduce new surface area for bugs without addressing
+  + any live problem.
+  ... (4 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (24 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (24 lines) ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now remove the stale task_01.md and write the real tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ rm session_plan/task_01.md ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the three tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+Now writing the three evidence-backed tasks:
+  + Title: Append missing FailureObserved events for error-completed runs
+  + Files: scripts/append_terminal_state_events.py, scripts/test_append_terminal_state_events.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - `state why last-failure` reports 78 sessions completed with errors but no FailureObserved events recorded
+  + - `state lifecycle --limit 1000` shows lifecycle imbalance: runs completed via error path without formal start records (`run_error_without_start=8`)
+  + - The `build_why_report` function in `src/commands_state.rs` (line 3220-3229) already detects and reports this gap: "N sessions completed with errors but no FailureObserved events were recorded"
+  + - `scripts/append_terminal_state_events.py` already detects and closes orphaned runs (runs started but never completed); it should also detect runs completed with error status that lack FailureObserved
+  + - Day 126 Task 1 fixed single-session-scope orphaned-run detection in this script; this task extends it to the FailureObserved gap
+  + 
+  + Edit Surface:
+  + - scripts/append_terminal_state_events.py — add detection for runs with RunCompleted(error) but no matching FailureObserved, and append a FailureObserved event
+  + - scripts/test_append_terminal_state_events.py — add test cases for the new detection
+  + 
+  + Verifier:
+  + - python3 -m pytest scripts/test_append_terminal_state_events.py -v
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (52 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (52 lines) ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task 02 - eval fixture for lifecycle transitions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add held-out eval fixture for state event lifecycle pairing
+  + Files: eval/fixtures/local-smoke/371-state-lifecycle-pairing.json
+  + Issue: #37
+  + Origin: planner
+  + 
+  + Evidence:
+  + - `state lifecycle --limit 1000` reports: 182 runs started, 187 completed, 9 incomplete; 4 incomplete model calls; 3 unmatched completed model calls
+  + - Issue #37 requests held-out eval coverage for "state event coverage for key lifecycle transitions"
+  + - Day 126 Task 2 added fixture #370 (genome determinism); the lifecycle pairing gap remains untested
+  + - The unmatched completed model calls (ModelCallCompleted without ModelCallStarted) suggest events can arrive out of order or be dropped — this is a class of bug that should have a held-out test
+  + - Current eval fixtures don't include any lifecycle-transition-specific tests
+  + 
+  + Edit Surface:
+  + - eval/fixtures/local-smoke/371-state-lifecycle-pairing.json — new fixture file
+  + 
+  + Verifier:
+  + - yyds eval run --fixture 371-state-lifecycle-pairing
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (49 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (49 lines) ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task 03. Let me think about the state/transcript failure reconciliation. The assessment says 59 state-only failures and 4 transcript-only failures. The `state why last-failure` command already reports error-completed sessions without FailureObserved, but it doesn't specifically break down the state-vs-transcript asymmetry.
+
+Actually, I wonder if the 59 state-only failures are simply the same 78 error sessions viewed from a different angle — state records the error completion, but the transcript (being a different pipeline) doesn't capture tool-level failure events in the same way.
+
+Let me think about what concrete diagnostic to add. The `state why` command could:
+1. Count FailureObserved events in state
+2. Count failed tool actions in transcripts
+3. Report the delta
+
+But transcripts are stored in `audit-log` branch, not locally. So `state why` can't easily access transcripts.
+
+Maybe instead of transcript reconciliation, I should pick a different task. Let me look at the remaining graph pressure:
+
+- "Break recurring log failure fingerprints (recurring_failure_count=1): GitHub/action log feedback repeated failure fingerprints across sessions" — this is about CI log timeouts, which is operational
+- "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=7)" — this is a habit/lesson, not a code change
+
+Actually, let me reconsider. The "Reconcile state-only tool failures" pressure isn't about `state why` — it's about the fact that some tool failures appear only in state and some only in transcripts. This might be a real recording gap.
+
+But I don't know the exact code path. Let me look at how tool failures get recorded.
+
+Actually, for the planning phase, I should pick a task I can scope concretely. Let me go with a different task 3: something from the assessment that's actionably small.
+
+Looking at the assessment again:
+- "Cache report: No agent chat cache metrics (yoagent drops them)." — this is a known upstream issue, file an agent-help-wanted issue.
+- "Full cargo test times out in assessment context" — operational, not a code change.
+- "state graph claims/evals/patches subcommands return 'no relations found'" — maybe a UX fix.
+
+Actually, let me go with a task that's connected to the evidence pipeline:
+
+**Task 3: Add `state why failure-reconciliation` subcommand** that breaks down the FailureObserved gap by run, showing which runs completed with errors but lack FailureObserved. This extends the existing diagnostic in `build_why_report` to be more actionable.
+
+Wait, that's too close to Task 1. Let me think of something different.
+
+Let me go with: **File an agent-help-wanted issue for the yoagent Usage struct gap** (cache metrics dropped). This is concrete, doesn't require code changes, and addresses a known upstream dependency issue.
+
+Actually, the policy says: "If you lack access, credentials, design certainty, or enough context for a safe upstream PR, create an agent-help-wanted issue in yologdev/yyds-harness instead."
+
+But filing an issue isn't really a "task" for an implementation agent. The planning phase could file the issue directly.
+
+Let me pick a different code task. What about:
+
+**Task 3: Add `--bounded` flag to `state lifecycle` for safe querying with large event stores**
+
+The assessment notes: "The scope of missing FailureObserved may be larger than the 1000-event window." This is because `state lifecycle --limit 1000` only scans 1000 events. The diagnostic is gated behind a limit. Adding a way to scan all events safely would make the diagnostic more complete.
+
+But this might be too big for a 20-minute task.
+
+OK, let me go with something simpler:
+
+**Task 3: Document the state/transcript failure asymmetry in CLAUDE.md**
+
+The 59 state-only vs 4 transcript-only failures represent a known architectural asymmetry. Documenting it makes future sessions aware of the gap without requiring a code fix. This is a documentation-only task.
+
+Files: `CLAUDE.md`
+
+Hmm, that's too trivial. Let me think more...
+
+Actually, let me go back to the concrete evidence:
+
+"Reconcile transcript-only tool failures (transcript_only_failed_tool_count=4)" — this is a small number (4). These are failures that transcripts captured but state didn't.
+
+The fix might be in how the transcript records failures vs how state records them. The transcript is written by the harness scripts (evolve.sh), and state events are written by the Rust code (state.rs, FailureObserved recording). If a bash command fails and the transcript captures it but the Rust code doesn't emit FailureObserved, that's the gap.
+
+But modifying evolve.sh is protected. And modifying the Rust FailureObserved recording requires understanding the tool failure path.
+
+Let me try yet another approach. The assessment mentions:
+
+"The `state graph claims/evals/patches` subcommands return 'no relations found'. These graph subcommands may require specific IDs rather than accepting `--limit`. The help text says to use `state tail` for IDs. This is a UX friction but the underlying data exists."
+
+This is a small UX fix: make `state graph claims/evals/patches` accept `--limit` like other graph subcommands do. Let me check.
+
+Actually, I don't know the exact code. Let me check quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'claims\|evals\|patche… ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at the help text (line 14402), the graph subcommands DO accept `--limit N`:
+
+```
+graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]
+graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]
+```
+
+But they require a positional argument (event-id, patch-id, eval-id, or commit). So if you run `yyds state graph evals --limit 10` without a positional argument, it might fail silently or show "no relations found."
+
+This is indeed a UX friction. The fix would be to allow `--limit` to work without a positional argument, scanning recent events to find evals/patches.
+
+But this might be a bigger change than expected. Let me check how other graph subcommands handle the positional argument.
+
+Actually, looking more carefully at the help:
+- `graph hotspots [--limit N] [--json]` — no positional required
+- `graph evals <event-id|...> [--limit N]` — positional required
+- `graph patches <event-id|...> [--limit N]` — positional required
+
+The "no relations found" error is likely because the user didn't provide a positional argument. The fix would be to make these subcommands work without a positional, like `graph hotspots` does.
+
+But this is a UX polish task, not a DeepSeek harness improvement. Let me pick a more harness-focused task 3.
+
+Let me go with: **File agent-help-wanted issue for yoagent Usage struct cache field gap**. This is from the assessment and addresses a real limitation that blocks cache observability on the agent chat path.
+
+Actually, I just realized: the planning phase can file issues directly. And the policy says "up to 3 tasks." Let me just have 2 strong tasks and skip task 3, or make task 3 a quick issue-filing task.
+
+No wait — I should have 3 tasks if there's enough evidence. Let me think about what else is actionable...
+
+What about extending `state why` to show the FailureObserved gap by run_id for error-completed sessions? The current output says "N sessions completed with errors but no FailureObserved" and lists up to 5 run IDs. But that only covers the 1000-event window. A focused improvement: make `state why last-failure --limit 5000` scan more events and report more detail.
+
+Actually, `state why last-failure` already accepts `--limit N`. Let me verify.
+
+Looking at the help: `why <event-id|last-failure|patch-id|commit|run-id> [--summary] [--limit N]`
+
+Yes, `--limit` is already supported. So the user can already scan more events.
+
+OK, I think the most impactful three tasks are:
+
+1. Append missing FailureObserved (fix the gap)
+2. Eval fixture for lifecycle pairing (test the gap)
+3. Something else...
+
+Let me go with: **Task 3: Add `state why failure-reconciliation` subcommand that breaks down the FailureObserved gap per-run**
+
+This extends the existing `build_why_report` to add a `failure-reconciliation` mode that specifically lists all runs with RunCompleted(error) but no FailureObserved, including their run_ids and error statuses. This makes the gap more actionable than the current "78 sessions without FailureObserved" summary.
+
+Files: `src/commands_state.rs`
+
+This is a small, focused change to an existing function. Let me scope it tightly.
+
+Wait, actually the help text for `why` doesn't list `failure-reconciliation` as a valid ID. Let me check what IDs are valid.
+
+Looking at: `why <event-id|last-failure|patch-id|commit|run-id>`
+
+So valid IDs are: event-id, last-failure, patch-id, commit, run-id. Adding `failure-reconciliation` would require modifying the parser.
+
+This is getting complex. Let me simplify.
+
+**Task 3: Extend `--limit` on `state why last-failure` to surface more error-run detail**
+
+Currently `state why last-failure` with default limit (1000 events) shows "78 sessions completed with errors but no FailureObserved." By increasing the limit, users can see more runs, but the output format only lists 5 run IDs (hardcoded at line 3174: `.take(5)`). 
+
+Change: report all error runs without FailureObserved (up to a reasonable cap like 20), grouped by error status. This makes the diagnostic more complete.
+
+Files: `src/commands_state.rs`
+
+This is a small change — modify the `.take(5)` to `.take(20)` and add grouping by status.
+
+Actually, that's too trivial for a task. Let me think differently.
+
+Let me look at what other yoagent-state feedback is actionable:
+
+From trajectory graph pressure:
+- "Break recurring log failure fingerprints (recurring_failure_count=1)" — command timeouts. This is operational, not a code fix.
+- "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=7)" — this is a behavioral lesson.
+
+Neither is a concrete code task.
+
+Let me go with a task that the assessment explicitly flags:
+
+**Task 3: File agent-help-wanted issue for yoagent Usage struct dropping DeepSeek cache fields**
+
+This is from the assessment's "Upstream Dependency Signals" section. It's concrete, doesn't require code changes, and tracks a real limitation.
+
+But filing an issue is a 2-minute task. The implementation agent would be wasted on it.
+
+OK, I'll go with 2 tasks and accept that the third slot is unfilled. The policy says "up to 3 tasks" — 2 is fine.
+
+Actually wait, the policy says: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+I have 2 state-driven tasks. That meets the minimum. Let me add a third that's small but useful.
+
+Let me think about what the assessment says about `commands_state.rs`...
+
+Looking at the assessment again: "The `state graph claims/evals/patches` subcommands return 'no relations found'. These graph subcommands may require specific IDs rather than accepting `--limit`."
+
+This is a concrete UX issue. The fix would be to make `graph claims`, `graph evals`, and `graph patches` work without a positional argument, auto-discovering recent matches (like `graph hotspots` does).
+
+But that might require significant refactoring in a 24K-line file. Let me check quickly how `graph hotspots` handles the no-positional case.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'hotspots\|fn handle_g… ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at the help text, `graph evals` and `graph patches` require a positional argument (event-id, patch-id, eval-id, or commit). `graph hotspots` doesn't. The assessment says these return "no relations found" — likely because they're called without a positional argument.
+
+But I also see at line 82-83 that `evals` and `patches` are also top-level subcommands:
+```
+"evals" => handle_evals(&args[3..]),
+"patches" => handle_patches(&args[3..]),
+```
+
+So `yyds state evals` is a different command from `yyds state graph evals`. The `state evals` subcommand (line 984, `handle_evals`) probably works without a positional.
+
+Let me check `handle_evals` and `handle_patches`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:984..1034 ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both `handle_evals` and `handle_patches` work — they use `read_tail_events` for a default of 500 recent events. The "no relations found" is about `graph evals` and `graph patches` specifically, which require a positional argument.
+
+OK, I think the right approach for task 3 is to fix the `graph claims` subcommand (which requires a positional argument but doesn't document how to get one) to work like `graph hotspots` — accept `--limit N` without a positional argument, auto-discovering recent claims.
+
+But wait, looking at the help: `graph <event-id|patch-id|eval-id|commit>` — there's no `graph claims` subcommand! There's `graph` (root) and `graph evals`, `graph patches`, etc. but not `graph claims`.
+
+The assessment says "state graph claims/evals/patches subcommands return 'no relations found'" — but `graph claims` might not exist as a subcommand. The assessment might be wrong about the exact syntax.
+
+Let me check if `claims` is handled anywhere:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search '"claims"' in src/commands_state.rs ✓ (102ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`"claims"` is not in `commands_state.rs`. So the assessment's mention of `state graph claims` might have been a guess or from a different version. The actual graph subcommands are listed in the help text — there's no `claims` subcommand.
+
+This means the assessment's friction point #5 is partially wrong — `graph claims` doesn't exist as a subcommand. The `graph evals` and `graph patches` subcommands exist but require a positional argument.
+
+However, I should focus on the most impactful tasks. Let me go with a third task that's more concrete.
+
+Let me re-examine what's available:
+
+Looking at the assessment one more time:
+- "Cache report: No agent chat cache metrics (yoagent drops them). Workaround exists: FIM/SSE paths record metrics directly. This is a known upstream issue."
+
+This is a documentation task: add a note to CLAUDE.md or a tracking issue about the yoagent Usage struct gap. Let me make this the third task — it's small, concrete, and useful.
+
+Actually, you know what, let me just file the issue now in the planning phase and skip task 3. The policy says "up to 3 tasks" — 2 strong state-driven tasks plus an issue filing is fine.
+
+Actually wait, the planning instructions say: "If you decide yoagent itself needs a change, do not patch around it here. Either: Create an agent-help-wanted issue in yologdev/yyds-harness..."
+
+I'll file the issue in the issue_responses.md. But I still need a task 3. Let me think...
+
+What about a task that's small but connects to the state evidence?
+
+**Task 3: Make `state lifecycle` report FailureObserved vs RunCompleted(error) mismatch count**
+
+Currently `state lifecycle --limit 1000` reports start/complete counts but doesn't flag runs that completed with errors but have no FailureObserved. Adding a line to the lifecycle output that says "N runs completed with errors but no FailureObserved" would make the gap visible directly in the lifecycle view.
+
+Files: `src/commands_state.rs`
+
+This is a small addition to whatever function produces the lifecycle output. Let me find it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*lifecycle.*report\|fn build_lifecycle' in src/commands_state.rs ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_lifecycle' in src/commands_state.rs ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for "lifecycle" specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_lifecycle' in src/commands_state.rs ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_lifecycle` function to understand the structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:528..608 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the lifecycle handler at line 528. It uses `build_state_lifecycle_json` and `format_state_lifecycle_report`. Let me find those functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_state_lifecycle_json' in src/commands_state.rs  ▶ search 'fn format_state_lifecycle_report' in src/commands_state.rs ✓ (293ms)
+ ✓ (410ms)
+  2 tools completed in 499ms (2 ✓)
+
+

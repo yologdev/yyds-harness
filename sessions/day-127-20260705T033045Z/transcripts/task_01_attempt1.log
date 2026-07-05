@@ -1,0 +1,688 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant source files to understand the existing code before making changes.
+
+Let me plan my approach:
+1. Read `skills/evolve/SKILL.md` for the implementation contract
+2. Read `scripts/append_terminal_state_events.py` to understand existing patterns
+3. Read `scripts/test_append_terminal_state_events.py` to understand existing tests
+4. Implement the changes
+5. Run verification
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (250ms)
+ ✓ (1.2s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the existing code structure:
+
+1. `append_terminal_state_events.py` handles closing orphaned runs (runs started but never completed). It has:
+   - `load_jsonl()` - load events
+   - `event_type()` - extract event type
+   - `payload()` - extract payload
+   - `run_id()` - extract run_id
+   - `is_session_run()` - check if session run
+   - `lifecycle_for_scope()` - build lifecycle tracking sets
+   - `find_stale_orphaned_runs()` - find orphaned runs
+   - `append_terminal_events()` - main function that appends terminal events
+   - `main()` - CLI entry point
+
+2. `test_append_terminal_state_events.py` has test cases for the orphaned run detection.
+
+The task is to add detection for runs with RunCompleted(error) but no matching FailureObserved event.
+
+Let me read the rest of the `append_terminal_state_events.py` file to see the full `append_terminal_events()` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:200.. ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full structure. Let me also check the `append_state_event` import to see how events are appended:
+
+Let me also look at the test file to see its full structure, and the `append_state_event.py` file.
+
+Now let me plan the implementation:
+
+### What needs to happen:
+
+1. **In `append_terminal_state_events.py`**: Add a function `find_missing_failure_observed()` that:
+   - Scans all events for RunCompleted events whose payload status is not "success"/"completed"
+   - For each such error-completed run, check whether a FailureObserved event exists with the same run_id
+   - If no FailureObserved exists, return the list of (run_id, timestamp, status) tuples that need a FailureObserved appended
+
+2. **In `append_terminal_events()`**: After the orphan detection section, call `find_missing_failure_observed()` and append FailureObserved events for runs that need them.
+
+3. **In `test_append_terminal_state_events.py`**: Add test cases.
+
+4. **Update return value**: Add `failure_observed_appended` to the result dict.
+
+Let me look at how the RunCompleted events are structured in the existing code. From the code, I can see that RunCompleted has a payload with `status` field. Values like "error" signal error completion.
+
+Let me now look at the `append_state_event.py` module to understand how `append_event` works (particularly what args it takes), and also check the FailureObserved event format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'append_state_event' (*.py)  ▶ search 'FailureObserved' (*.py) ✓ (310ms)
+ ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `append_state_event.py` to understand the `append_event` signature.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_state_event.py ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding of the codebase. Let me plan the implementation:
+
+### Changes to `scripts/append_terminal_state_events.py`:
+
+1. Add a new function `find_missing_failure_observed(events)` that:
+   - Scans all events for RunCompleted events
+   - For each RunCompleted, checks if payload.status is not "success"/"completed"
+   - Collects the set of run_ids that completed with errors
+   - Also collects the set of run_ids that have FailureObserved events
+   - Returns the error-completed runs that lack FailureObserved, along with their timestamps and statuses
+
+2. In `append_terminal_events()`, after the orphan detection section, call `find_missing_failure_observed()` and append FailureObserved events.
+
+3. Update the return value with `failure_observed_appended`.
+
+### Changes to `scripts/test_append_terminal_state_events.py`:
+
+Add test cases:
+- Test that a RunCompleted with status "error" and no FailureObserved triggers appending one
+- Test that a RunCompleted with status "error" that already has FailureObserved is not double-counted
+- Test that a RunCompleted with status "completed" does not trigger a FailureObserved
+
+Let me now implement this.
+
+Looking at the code flow, I should add the FailureObserved detection in the same "full scan" section as the orphan detection, since it also needs to scan the full event file.
+
+Let me implement:
+
+1. `find_missing_failure_observed(events)` - new function
+2. `append_terminal_events()` - add call to the new function
+3. Tests
+
+For the `find_missing_failure_observed` function, I need to:
+- Scan all events
+- Track `error_completed_runs`: dict of run_id -> (timestamp_ms, status) for RunCompleted events where status is not "success"/"completed"
+- Track `failure_observed_runs`: set of run_ids that have FailureObserved events
+- Return error_completed_runs that don't have FailureObserved
+
+Let me now write the code.
+
+For the FailureObserved payload, the task says:
+```json
+{
+  "reason": "retroactive: run completed with error status '<status>' but no FailureObserved was recorded"
+}
+```
+
+And use the RunCompleted timestamp for the FailureObserved event.
+
+Now, looking at `append_event`, the timestamp is auto-generated (`int(time.time() * 1000)`). The task says to use the RunCompleted timestamp. Let me check if I can pass a custom timestamp... No, `append_event` generates it automatically. I'll note this in the payload instead or accept the current timestamp. Actually, the task says "use the RunCompleted timestamp". Since `append_event` auto-generates, I'll include the original timestamp in the payload.
+
+Actually, let me re-read: "a timestamp (use the RunCompleted timestamp)". The `append_event` function auto-generates timestamp. I could modify it, but that would be a bigger change. Let me include the RunCompleted's timestamp in the payload instead, and note the difference. The FailureObserved's own timestamp will be now_ms, but the payload will contain the reference to the original error completion timestamp.
+
+Wait, I could also just pass the timestamp as part of the payload. Let me do that.
+
+OK let me write the implementation now. Here's my plan:
+
+**New function `find_missing_failure_observed`:**
+
+```python
+def find_missing_failure_observed(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Find runs completed with error status that lack FailureObserved events."""
+    error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+    failure_observed_runs: set[str] = set()
+    
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "RunCompleted":
+            status = data.get("status", "")
+            if status and status not in ("success", "completed"):
+                error_completed[rid] = {
+                    "status": status,
+                    "timestamp_ms": event.get("timestamp_ms", 0),
+                }
+        elif kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+    
+    missing = [
+        {"run_id": rid, **info}
+        for rid, info in error_completed.items()
+        if rid not in failure_observed_runs
+    ]
+    
+    diagnostics = {
+        "error_completed_runs": len(error_completed),
+        "failure_observed_runs": len(failure_observed_runs),
+        "missing_failure_observed": len(missing),
+    }
+    
+    return missing, diagnostics
+```
+
+Then in `append_terminal_events()`, after the orphan detection:
+
+```python
+# Full-scan for missing FailureObserved events
+missing_failures, failure_diag = find_missing_failure_observed(events)
+diagnostics["failure_observed_diagnostics"] = failure_diag
+
+for missing in missing_failures:
+    rid = missing["run_id"]
+    payload = {
+        "reason": f"retroactive: run completed with error status '{missing['status']}' but no FailureObserved was recorded",
+        "retroactive": True,
+        "original_run_completed_timestamp_ms": missing.get("timestamp_ms"),
+    }
+    append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload)
+```
+
+Now let me look at the return value to see how it should be updated. The return currently has `completed_model_calls`, `completed_runs`, `completed_session_runs`, `diagnostics`. I'll add a new key.
+
+Wait, let me also check: should I use `failure_observed_appended` or just put it in diagnostics? Looking at the pattern, the return values track what was appended. Let me add `failure_observed_appended` to the return.
+
+```python
+return {
+    "completed_model_calls": completed_models,
+    "completed_runs": completed_runs,
+    "completed_session_runs": completed_session_runs,
+    "failure_observed_appended": [m["run_id"] for m in missing_failures],
+    "diagnostics": diagnostics,
+}
+```
+
+Now for tests. Let me write tests following the existing pattern:
+
+1. `test_appends_failure_observed_for_error_completed_run` - A RunCompleted with status "error" and no FailureObserved → appends FailureObserved
+2. `test_skips_failure_observed_when_already_present` - RunCompleted "error" with existing FailureObserved → no duplicate
+3. `test_skips_failure_observed_for_success_run` - RunCompleted "success" → no FailureObserved
+
+Let me now implement all of this.
+
+For the test, I need to create events that simulate the scenario. Let me follow the `write_event` pattern but with proper payloads.
+
+Looking at the test file more carefully, the `write_event` function creates simple events with `event_id`, `event_type`, `run_id`, and `payload`. The existing tests use `append_terminal_events()` which reads from the events file and checks results.
+
+My tests need to:
+1. Create an events file with a RunCompleted(status="error") and no FailureObserved
+2. Call `append_terminal_events()` with appropriate args
+3. Verify that a FailureObserved was appended
+
+But wait - the `append_terminal_events()` function has an `after_line` parameter to scope the scan to events after that line. For the full-scan FailureObserved detection, we need to scan ALL events (not just those after `after_line`). Let me make sure my implementation scopes correctly.
+
+Actually, looking at the orphan detection, it does a full scan when `diagnostics.get("scope") != "ambiguous_reset_full_scan"`. I should follow the same pattern - the FailureObserved detection should also be a full scan, since we're looking for historical gaps.
+
+But should I also guard it behind the same scope check? I think so - if the events file was reset/rebuilt, the historical events might not be reliable.
+
+Let me now write the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the codebase. Let me implement the changes. First, I'll add the `find_missing_failure_observed` function and the call site in `append_terminal_events`.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (110ms)
+  ▶ todo ✓ (204ms)
+  ▶ todo ✓ (206ms)
+  ▶ todo ✓ (204ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the changes now. First, let me add the `find_missing_failure_observed` function right after `find_stale_orphaned_runs`. Then integrate it into `append_terminal_events`.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.6s (4 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `find_missing_failure_observed` function. I'll place it right after `find_stale_orphaned_runs` (line 224) and before `append_terminal_events` (line 227).
+────────────────────────────────────────────────────────────────────────────────
+
+
+        return orphaned_runs, orphaned_session_runs, diagnostics
+  + 
+  + 
+  + def find_missing_failure_observed(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find runs completed with error status that lack FailureObserved events.
+  + 
+  +     Returns (missing_entries, diagnostics) where each missing entry is a dict
+  +     with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  +     payload status is not "success"/"completed" and that have no matching
+  +     FailureObserved event.
+  +     """
+  +     error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+  +     failure_observed_runs: set[str] = set()
+  + 
+  +     for event in events:
+  +         kind = event_type(event)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (4 → 51 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (4 → 51 lines)
+        return orphaned_runs, orphaned_session_runs, diagnostics
+  + 
+  + 
+  + def find_missing_failure_observed(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find runs completed with error status that lack FailureObserved events.
+  + 
+  +     Returns (missing_entries, diagnostics) where each missing entry is a dict
+  +     with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  +     payload status is not "success"/"completed" and that have no matching
+  +     FailureObserved event.
+  +     """
+  +     error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+  +     failure_observed_runs: set[str] = set()
+  + 
+  +     for event in events:
+  +         kind = event_type(event)
+  +         data = payload(event)
+  +         rid = run_id(event, data)
+  ... (31 more lines)
+ ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me integrate the FailureObserved detection into `append_terminal_events()`. I'll add it after the orphan detection section (after line ~375 in the new file, which was line ~324 before).
+
+Let me re-read the relevant section to find the exact insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (126ms)
+  ▶ todo ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the exact insertion point - after the orphan detection section and before the return statement.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:330.. ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll edit the section between the orphan detection else clause and the return statement to add the FailureObserved detection.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        else:
+            diagnostics["full_scan_orphan_diagnostics"] = {
+  +             "skipped": True,
+  +             "reason": "ambiguous_reset_full_scan",
+  +         }
+  + 
+  +     # Full-scan for missing FailureObserved events: find any runs that
+  +     # completed with error status (not "success"/"completed") but have no
+  +     # matching FailureObserved event.  This closes the gap where error-
+  +     # completed sessions were never formally recorded as failures.
+  +     # The scan is skipped under the same ambiguous-reset guard as orphans.
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         missing_failures, failure_diag = find_missing_failure_observed(events)
+  +         diagnostics["failure_observed_diagnostics"] = failure_diag
+  + 
+  +         for entry in missing_failures:
+  +             rid = entry["run_id"]
+  +             payload: dict[str, Any] = {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (12 → 41 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (12 → 41 lines)
+        else:
+            diagnostics["full_scan_orphan_diagnostics"] = {
+  +             "skipped": True,
+  +             "reason": "ambiguous_reset_full_scan",
+  +         }
+  + 
+  +     # Full-scan for missing FailureObserved events: find any runs that
+  +     # completed with error status (not "success"/"completed") but have no
+  +     # matching FailureObserved event.  This closes the gap where error-
+  +     # completed sessions were never formally recorded as failures.
+  +     # The scan is skipped under the same ambiguous-reset guard as orphans.
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         missing_failures, failure_diag = find_missing_failure_observed(events)
+  +         diagnostics["failure_observed_diagnostics"] = failure_diag
+  + 
+  +         for entry in missing_failures:
+  +             rid = entry["run_id"]
+  +             payload: dict[str, Any] = {
+  +                 "reason": (
+  +                     f"retroactive: run completed with error status "
+  ... (20 more lines)
+ ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Actually, I should fix the `failure_observed_appended` line — using `dir()` to check for `missing_failures` is fragile. Let me fix this by initializing `missing_failures` before the conditional block.
+
+Let me re-read the current state of the function to find the right place.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me fix the `missing_failures` variable initialization issue properly:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:286.. ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to fix the `missing_failures` reference. Let me initialize it as an empty list before the if/else block.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        # matching FailureObserved event.  This closes the gap where error-
+        # completed sessions were never formally recorded as failures.
+        # The scan is skipped under the same ambiguous-reset guard as orphans.
+  +     missing_failures: list[dict[str, Any]] = []
+        if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+            missing_failures, failure_diag = find_missing_failure_observed(events)
+            diagnostics["failure_observed_diagnostics"] = failure_diag
+    
+            for entry in missing_failures:
+                rid = entry["run_id"]
+  -             payload: dict[str, Any] = {
+  +             payload_fo: dict[str, Any] = {
+                    "reason": (
+                        f"retroactive: run completed with error status "
+                        f"'{entry['status']}' but no FailureObserved was recorded"
+  ···
+                }
+                ts = entry.get("timestamp_ms")
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (35 → 36 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (35 → 36 lines)
+        # matching FailureObserved event.  This closes the gap where error-
+        # completed sessions were never formally recorded as failures.
+        # The scan is skipped under the same ambiguous-reset guard as orphans.
+  +     missing_failures: list[dict[str, Any]] = []
+        if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+            missing_failures, failure_diag = find_missing_failure_observed(events)
+            diagnostics["failure_observed_diagnostics"] = failure_diag
+    
+            for entry in missing_failures:
+                rid = entry["run_id"]
+  -             payload: dict[str, Any] = {
+  +             payload_fo: dict[str, Any] = {
+                    "reason": (
+                        f"retroactive: run completed with error status "
+                        f"'{entry['status']}' but no FailureObserved was recorded"
+  ···
+                }
+                ts = entry.get("timestamp_ms")
+                if ts:
+  -                 payload["original_run_completed_timestamp_ms"] = ts
+  ... (14 more lines)
+ ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add the test cases. First, let me mark task 2 as done and start on task 3.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (100ms)
+  ▶ todo ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test cases. I need to follow the existing test patterns in `test_append_terminal_state_events.py`. Let me add tests at the end of the `AppendTerminalStateEvents` class, before the `if __name__ == "__main__":` block.
+
+The test needs to:
+1. Create events file with appropriate test data
+2. Call `append_terminal_events` with minimal args
+3. Verify the result and the appended events
+
+For my tests, I need the `append_terminal_events` to trigger the full-scan, not just the incremental scan. Looking at the `open_lifecycle` function, the `scope` field in diagnostics determines whether to run full scans. The scope is based on `after_line` - if `after_line` is 0, it's a "full_scan". If there's ambiguity (e.g., fallback_after_line is set and differs), it's "ambiguous_reset_full_scan".
+
+So for my tests, I should use `after_line=0` and `fallback_after_line=None` to ensure full scan mode.
+
+Let me read the existing test that does full scan (the orphan test) to see the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+Now let me read the orphan test to follow its pattern:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:370.. ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the orphan detection test that does a full scan (the one starting at line ~340) to see how `after_line` is set:
+
+The test at line 340-ish: `after_line` is set to `len(events.read_text(...).splitlines())` after writing historical events and before writing current events. This means the incremental scan only catches the current events, but the full-scan orphan detection catches the historical ones.
+
+For my tests, I need to set `after_line=0` (or after the events I write) to ensure the full scan runs. Let me look at how `open_lifecycle` determines scope:
+
+Actually, looking at the code, the scope is determined by `open_lifecycle()`. The key check is `diagnostics.get("scope") != "ambiguous_reset_full_scan"`. The scope is "ambiguous_reset_full_scan" when `fallback_after_line` is set and differs from `after_line`. So if I pass `fallback_after_line=None` and a reasonable `after_line`, the scope won't be ambiguous.
+
+For my tests, I'll set `after_line=0` to scan everything from the start. That should put the scope in "full_scan" mode.
+
+Let me now write the test cases. I need events that have:
+- `timestamp_ms` field for RunCompleted events (for the payload timestamp)
+
+Wait, looking at the `write_event` helper, it doesn't add `timestamp_ms`! Let me check how existing events handle this...
+
+Looking at the `event_type` function, it checks `event.get("event_type")` which is set by `write_event`. The `find_missing_failure_observed` also checks `event.get("timestamp_ms", 0)`.
+
+So I need `timestamp_ms` in my test events. The `write_event` helper doesn't include it. I'll need to write events manually or modify the test fixture.
+
+Let me write more specific events with timestamps. Actually, let me just write them with json directly or extend the helper.
+
+Wait, actually looking at other tests, they use `write_event` which doesn't include `timestamp_ms`. But my function checks `event.get("timestamp_ms", 0)` which defaults to 0 if not present. That should be fine for tests - the timestamp would just be 0.
+
+But wait, there's another issue: the `write_event` helper doesn't add `timestamp_ms`, so `find_missing_failure_observed` would get `timestamp_ms: 0` for those events, which would still work since 0 is falsy and the payload wouldn't include `original_run_completed_timestamp_ms`... Actually, `0` IS falsy, so `if ts:` would be False, which is fine.
+
+Let me also check: the `write_event` helper creates events with `event_id`, `event_type`, `run_id`, and `payload`. My `find_missing_failure_observed` uses `event_type(event)`, `payload(event)`, and `run_id(event, data)`. Let me trace through:
+
+1. `event_type(event)`: checks `event.get("event_type")` — ✅ set by `write_event`
+2. `payload(event)`: checks `event.get("payload")` — ✅ set by `write_event`
+3. `run_id(event, data)`: checks `event.get("run_id")` — ✅ set by `write_event`
+
+And for status, I check `data.get("status", "")` where `data = payload(event)` which returns the payload dict. So `write_event(events, "RunCompleted", "error-run", {"status": "error"})` would have `data = {"status": "error"}` and `data.get("status")` = "error". Good.
+
+For `timestamp_ms`, `event.get("timestamp_ms", 0)` returns 0 since `write_event` doesn't set it. That's fine.
+
+Now let me write the tests:
+
+**Test 1: Appends FailureObserved for error-completed run without one**
+- Create a RunCompleted with status "error" 
+- Call append_terminal_events
+- Verify FailureObserved was appended with correct payload
+
+**Test 2: Skips when FailureObserved already exists**
+- Create a RunCompleted "error" AND a FailureObserved for the same run
+- Call append_terminal_events
+- Verify no additional FailureObserved
+
+**Test 3: Skips for success/completed runs**
+- Create a RunCompleted "success" without FailureObserved
+- Call append_terminal_events
+- Verify no FailureObserved for that run
+
+Let me note the call pattern. Looking at the test at line 340:
+```python
+after_line = len(events.read_text(encoding="utf-8").splitlines())
+```
+
+Then more events are written. In the orphan test, the historical events (orphaned-run) are written BEFORE `after_line`, and current events are written AFTER. The full scan catches the historical ones.
+
+For my test, I want the full scan to detect the error-completed runs. So I should write them before `after_line`:
+```python
+write_event(events, "RunCompleted", "error-run", {"status": "error"})
+after_line = len(events.read_text(encoding="utf-8").splitlines())
+# Write current session events
+write_event(events, "RunStarted", "current-run")
+...
+```
+
+Actually wait. Looking at the orphan test more carefully:
+
+```python
+write_event(events, "RunStarted", "orphaned-run")
+write_event(events, "ModelCallStarted", "orphaned-run")
+# ... more historical
+after_line = len(events.read_text(encoding="utf-8").splitlines())
+# ... current events
+```
+
+So the orphaned-run events are before `after_line`, and the full scan detects them. Good.
+
+For my tests, I should write the error-completed runs before `after_line`, and then have some current session events after.
+
+But actually, for simplicity, let me just use `after_line=0` so ALL events are in scope for the full scan. The `open_lifecycle` function handles after_line=0 by doing a full scan.
+
+Wait, looking at `open_lifecycle` more carefully... actually let me just look at how `scope` is set:
+
+```python
+def open_lifecycle(...):
+    ...
+    # scope determination based on after_line and fallback_after_line
+```
+
+I don't need to worry too much - as long as I pass `fallback_after_line=None`, the scope won't be "ambiguous_reset_full_scan". And `after_line=0` means scan all events.
+
+Let me write the tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test cases at the end of the `AppendTerminalStateEvents` class:
+                orphan_diag = result["diagnostics"]["full_scan_orphan_diagnostics"]
+                self.assertEqual(orphan_diag["full_scan_orphaned_runs"], 0)
+  + 
+  +     def test_appends_failure_observed_for_error_completed_run(self):
+  +         """A RunCompleted with error status and no FailureObserved gets one appended."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "error-run")
+  +             write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "error-run", {"status": "error"})
+  +             write_event(events, "RunStarted", "success-run")
+  +             write_event(events, "ModelCallStarted", "success-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "success-run", {"status": "completed"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             # Write current session events so the full scan has something to skip.
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (6 → 143 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (6 → 143 lines)
+                orphan_diag = result["diagnostics"]["full_scan_orphan_diagnostics"]
+                self.assertEqual(orphan_diag["full_scan_orphaned_runs"], 0)
+  + 
+  +     def test_appends_failure_observed_for_error_completed_run(self):
+  +         """A RunCompleted with error status and no FailureObserved gets one appended."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "error-run")
+  +             write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "error-run", {"status": "error"})
+  +             write_event(events, "RunStarted", "success-run")
+  +             write_event(events, "ModelCallStarted", "success-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "success-run", {"status": "completed"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             # Write current session events so the full scan has something to skip.
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+  ... (122 more lines)
+ ✓ (204ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me run the tests to verify everything works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (88ms)
+  ▶ todo ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the tests first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No pytest, let me use unittest directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 14 tests pass, including the 3 new ones. Now let me also run `cargo fmt -- --check` on the Rust code (the script change is Python so it doesn't apply, but let me run it to check the Rust side).
+
+Wait, I didn't change any Rust files, so `cargo fmt` would be checking unchanged code. But let me verify anyway.
+
+Also, let me verify the script runs without errors on its own.
+────────────────────────────────────────────────────────────────────────────────
+
+All 14 tests pass. Let me also run the script's self-test and cargo fmt:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (50 lines) ✓ (393ms)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything passes. Let me now check git status and diff, then verify the changes look right before committing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both files are in the task's Edit Surface. Let me do a final review of the diff to make sure everything is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks clean and correct:
+
+1. **`scripts/append_terminal_state_events.py`**: 
+   - Added `find_missing_failure_observed()` function that scans events for RunCompleted events with non-success status lacking FailureObserved
+   - Integrated the function into `append_terminal_events()` after orphan detection, under the same ambiguous-reset guard
+   - Added `failure_observed_appended` to the return value
+
+2. **`scripts/test_append_terminal_state_events.py`**:
+   - `test_appends_failure_observed_for_error_completed_run` — verifies that error-completed runs get FailureObserved appended
+   - `test_skips_failure_observed_when_already_present` — verifies no double-counting
+   - `test_skips_failure_observed_for_success_run` — verifies success runs are left alone
+
+All 14 tests pass, cargo fmt passes. Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff is clean and covers exactly the task's Edit Surface. All 14 tests pass (including 3 new ones), cargo fmt is clean. Let me commit.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (395ms)
+
+

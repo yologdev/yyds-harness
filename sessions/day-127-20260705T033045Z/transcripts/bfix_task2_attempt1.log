@@ -1,0 +1,134 @@
+warning: skipping corrupted event at line 69752 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 634
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the error. The fixture file `eval/fixtures/local-smoke/371-state-lifecycle-pairing.json` has a `task_id` of `371-state-lifecycle-pairing` but the filename slug (derived from the filename minus the number prefix) is `state-lifecycle-pairing`. The test expects these to match.
+
+Let me look at the existing fixture files to understand the pattern, particularly 369 and 370.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read eval/fixtures/local-smoke/371-state-lifecycle-pairing.json  ▶ read eval/fixtures/local-smoke/370-genome-determinism.json ✓ (602ms)
+ ✗ (600ms)
+    │ Cannot access eval/fixtures/local-smoke/370-genome-determinism.json: No such file or directory (os error 2)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error message says: `fixture task 'eval/fixtures/local-smoke/371-state-lifecycle-pairing.json' has task_id '371-state-lifecycle-pairing' but filename slug is 'state-lifecycle-pairing'`
+
+So the filename is `371-state-lifecycle-pairing.json` and the task_id is `371-state-lifecycle-pairing`. The "filename slug" is derived from the filename by taking the part after the number prefix. Let me look at how the slug is computed in the code.
+
+The filename is `371-state-lifecycle-pairing.json`. If the slug is `state-lifecycle-pairing`, then the code extracts `state-lifecycle-pairing` as the slug. But the task_id is `371-state-lifecycle-pairing`. The task_id format expected seems to be `<number>-<slug>`, so for the task_id to match the filename slug, the slug would need to be `state-lifecycle-pairing` AND the task_id would need to be `371-state-lifecycle-pairing`.
+
+Wait, let me re-read: `task_id '371-state-lifecycle-pairing' but filename slug is 'state-lifecycle-pairing'`. So the task_id contains the full slug `371-state-lifecycle-pairing` but the code extracts the filename slug as just `state-lifecycle-pairing` (without the number prefix). So the check is: the task_id should be `<number>-<filename slug>`. But the filename slug is `state-lifecycle-pairing` (without `371-`), so the expected task_id would be `371-state-lifecycle-pairing`... which is exactly what it is.
+
+Hmm, wait. Let me re-read the error more carefully:
+
+```
+"fixture task 'eval/fixtures/local-smoke/371-state-lifecycle-pairing.json' has task_id '371-state-lifecycle-pairing' but filename slug is 'state-lifecycle-pairing'"
+```
+
+So the filename slug (derived from the filename) is `state-lifecycle-pairing`. The task_id in the JSON is `371-state-lifecycle-pairing`. The error says these don't match, implying the expected task_id should be something like `<number>-<slug>` where slug matches the filename slug.
+
+Let me look at the code that validates this.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.0s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'filename slug' (*.rs)  ▶ ls eval/fixtures/local-smoke (36*.json) ✓ (205ms)
+ ✓ (472ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is clear. The filename is `371-state-lifecycle-pairing.json`, and the task_id is `371-state-lifecycle-pairing`. But the expected pattern based on the error is that the slug should be extracted from the filename as the part after the number prefix and dash. So the filename `371-state-lifecycle-pairing.json` → slug would be `state-lifecycle-pairing`. But the task_id in JSON is `371-state-lifecycle-pairing`.
+
+Wait, let me look at the code to understand the validation logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:530..570 ✓ (199ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The code at line 542-546:
+
+```rust
+let slug = stem
+    .split_once('-')
+    .filter(|(prefix, _)| prefix.chars().all(|ch| ch.is_ascii_digit()))
+    .map(|(_, slug)| slug)
+    .unwrap_or(stem);
+```
+
+For filename `371-state-lifecycle-pairing.json`:
+- `stem` = `371-state-lifecycle-pairing`
+- `split_once('-')` returns `Some(("371", "state-lifecycle-pairing"))`
+- `prefix` = "371", which is all ASCII digits, so filter passes
+- `slug` = `state-lifecycle-pairing`
+
+Then at line 547: `slug != task.task_id` → `"state-lifecycle-pairing" != "371-state-lifecycle-pairing"` → true → error.
+
+So the rule is: task_id must equal the slug (text after the numeric prefix and dash). The task_id should NOT include the number prefix.
+
+So the fix is: change the `task_id` in the JSON from `"371-state-lifecycle-pairing"` to `"state-lifecycle-pairing"`.
+
+Let me verify by looking at other fixtures like 369-deepseek-prompt-layout-determinism.json.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed. The `task_id` in fixture 369 is `"deepseek-prompt-layout-determinism"` (no number prefix), and the filename is `369-deepseek-prompt-layout-determinism.json`. The slug extracted from the filename is `deepseek-prompt-layout-determinism`, which matches the task_id.
+
+So the fix is to change the `task_id` in `371-state-lifecycle-pairing.json` from `"371-state-lifecycle-pairing"` to `"state-lifecycle-pairing"`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -   "task_id": "371-state-lifecycle-pairing",
+  +   "task_id": "state-lifecycle-pairing",
+  ✓ Auto-approved: edit: eval/fixtures/local-smoke/371-state-lifecycle-pairing.json (1 → 1 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit eval/fixtures/local-smoke/371-state-lifecycle-pairing.json (1 → 1 lines)
+  -   "task_id": "371-state-lifecycle-pairing",
+  +   "task_id": "state-lifecycle-pairing",
+ ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now verify with the narrowest test — just the eval fixtures test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now verify with the specific failing tests:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test eval_fixtures::test… ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Passed. Let me also run the other failing test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test eval_fixtures::test… ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Let me also run `cargo fmt --check` to confirm formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Let me also check formatting:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass.
+────────────────────────────────────────────────────────────────────────────────
+
+All fixed. The issue was that the `task_id` field in the fixture JSON must match the filename slug (the part after the numeric prefix and dash), not the full filename stem.
+
+**Change**: `eval/fixtures/local-smoke/371-state-lifecycle-pairing.json` — changed `task_id` from `"371-state-lifecycle-pairing"` to `"state-lifecycle-pairing"` to match the convention (filename `371-state-lifecycle-pairing.json` → slug `state-lifecycle-pairing`).
+
+**Verification**: Both previously-failing tests now pass, and `cargo fmt --check` is clean.
+
+
