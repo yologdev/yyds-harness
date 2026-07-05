@@ -1,0 +1,339 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The task is about cleaning up lifecycle gnome classification by separating input-validation exits from real unmatched completions. I need to:
+
+1. Read the evolve skill first
+2. Identify the actual code gap
+3. Make minimal changes to the listed files
+
+Let me start by reading the evolve skill and the relevant source files.
+
+Key concerns from the task:
+- `is_input_validation_completion()` exists in summarize_state_gnomes.py but may not be plumbed through properly
+- Need to ensure input-validation exits are NOT counted as incomplete model calls/runs
+- The task specifically says to use `is_input_validation_completion()` as the canonical check
+
+Let me first read the evolve skill, then examine the actual code paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/summarize_state_gnomes.py:460..490 ✓ (695ms)
+ ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the actual gap. Let me trace the gnome computation paths in both files. Let me look at `summarize_state_lifecycle` in summarize_state_gnomes.py and the lifecycle lesson emission in log_feedback.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'summarize_state_lifecycle' in scripts/summarize_state_gnomes.py  ▶ search 'model_incomplete_ids' in scripts/summarize_state_gnomes.py  ▶ search 'deepseek_model_call_incomplete_count' in scripts/summarize_state_gnomes.py ✓ (544ms)
+ ✓ (694ms)
+ ✓ (650ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `summarize_state_lifecycle` function to understand how model_incomplete_ids is computed.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:306..466 ✓ (246ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. Let me trace through the gnome computation:
+
+In `summarize_state_lifecycle`:
+1. `run_incomplete_ids` (line 361) = RunStarted but no RunCompleted — these are truly incomplete runs. Input validation exits would have RunCompleted, so they're NOT in this set. ✅
+2. `run_unmatched_completed_ids` (line 362) = RunCompleted but no RunStarted — these are the interesting ones. Input validation exits (empty_input, invalid_input:*) are RunCompleted(error) events that have no matching RunStarted. These ARE in `run_unmatched_completed_ids`.
+3. `run_unstarted_input_validation_errors` (line 372-376) correctly uses `is_input_validation_completion()` to split out input validation exits from unmatched completed runs. ✅
+4. `run_unmatched_non_validation_completed` (line 382-386) excludes the input validation ones. ✅
+
+For model calls:
+5. `model_incomplete_ids` (line 387-389) = ModelCallStarted but no ModelCallCompleted. Input validation exits don't trigger ModelCallStarted, so they can't be here. ✅
+6. `model_unmatched_completed_ids` (line 390-392) = ModelCallCompleted but no ModelCallStarted. Input validation exits don't trigger ModelCallCompleted, so they can't be here. ✅
+
+Now let me check the gnome keys mapping. Let me look at lines 89 and 289:
+
+Line 89: `"deepseek_model_call_incomplete_count"` — this is a GNOME_KEYS constant
+Line 289: `"deepseek_model_call_incomplete_count": int(model_calls.get("incomplete") or 0)` — this maps from the lifecycle result
+
+The gnome at line 289 uses `model_calls.get("incomplete")` which comes from the lifecycle's `model_calls.incomplete` computed at line 423 = `model_incomplete_count`. Since input validation exits can't be in `model_incomplete_ids`, they can't inflate `deepseek_model_call_incomplete_count`.
+
+Wait, but the task says they CAN inflate these counts. Let me re-read the task more carefully.
+
+The task says:
+> "If input-validation exits inflate these counts, the harness may select 'fix lifecycle gaps' tasks when the actual gap is zero"
+
+But from my analysis, input-validation exits CANNOT inflate model_incomplete_ids because they don't have ModelCallStarted. The only place where input validation exits appear is in `run_unmatched_completed_ids`, which is already correctly split by `is_input_validation_completion()`.
+
+So the code in summarize_state_gnomes.py is already correct! The `is_input_validation_completion()` function IS used, and it DOES split input-validation exits from non-validation unmatched completions.
+
+BUT wait — what about the `lifecycle["balanced"]` check at line 442-447? It checks `len(run_unmatched_non_validation_completed) == 0` — correctly using the filtered version. ✅
+
+And what about `lifecycle["healthy"]` at line 456-460? It checks `lifecycle["balanced"]` and `model_call_abnormal_completed == 0`. ✅
+
+Now let me check log_feedback.py side. Let me see how lifecycle lessons are emitted there.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how log_feedback.py uses lifecycle metrics to emit lessons:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete_count' in scripts/log_feedback.py  ▶ search 'incomplete model call' in scripts/log_feedback.py  ▶ search 'lifecycle_cause' in scripts/log_feedback.py ✓ (562ms)
+ ✓ (693ms)
+ ✓ (659ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the lifecycle lesson emission in log_feedback.py around line 2060.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2050..2130 ✓ (200ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+In log_feedback.py:
+- Line 2060-2067: `state_run_incomplete_count` lesson — these are runs with RunStarted but no RunCompleted. This is correct; input validation exits don't affect this.
+- Line 2068-2075: `state_run_unmatched_non_validation_completed_count` — this already correctly uses the NON-validation count, not the raw unmatched count. ✅
+- Line 2076-2083: `deepseek_model_call_incomplete_count` lesson — this is about model calls that started but didn't complete. Input validation exits can't affect this. ✅
+
+So the code in log_feedback.py also looks correct! The metrics already use `state_run_unmatched_non_validation_completed_count` (the filtered version) rather than the raw `state_run_unmatched_completed_count`.
+
+Now let me check if the gnome keys used in log_feedback.py (line 269) include the right ones. Let me look at the gnome keys and their mapping.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the gnome key definitions and where the gnome values are read:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:265..285  ▶ search 'unstarted_input_validation_error' in scripts/log_feedback.py ✓ (458ms)
+ ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I need to understand the full gnome computation in log_feedback.py. Let me look at how gnomes are computed, specifically around line 1314.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1280..1350 ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see how `incomplete_count` is computed in log_feedback.py, because this feeds into `deepseek_model_call_incomplete_count`. Let me look at the function that computes these values.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'incomplete_count =' in scripts/log_feedback.py ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full function context to understand `started_runs` and `completed_runs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1240..1290 ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me analyze carefully:
+
+**In `summarize_state_gnomes.py`:**
+- `model_incomplete_ids` (line 387-389): model calls that started but didn't complete. Input validation exits CANNOT inflate this because they don't trigger ModelCallStarted. ✅
+- `run_unmatched_completed_ids` (line 362): RunCompleted without RunStarted. Input validation exits DO appear here. 
+- `run_unstarted_input_validation_errors` (line 372-376): correctly filters input validation exits from unmatched completed runs. ✅
+- `run_unmatched_non_validation_completed` (line 382-386): correctly excludes input validation exits. ✅
+- `lifecycle["balanced"]` (line 442-447): uses `run_unmatched_non_validation_completed` — correct. ✅
+
+**In `log_feedback.py`:**
+- `incomplete_count` (line 1277): model calls started but not completed. Input validation exits CANNOT inflate this. ✅
+- `run_unstarted_input_validation_error_count` (line 1281-1285): correctly counts input validation exits separately. ✅
+- `run_unmatched_non_validation_completed_count` (line 1286-1288): correctly excludes input validation exits. ✅
+- Lifecycle lessons (line 2060-2098): 
+  - Line 2060: uses `state_run_incomplete_count` — this is RunStarted but no RunCompleted. Input validation exits can't affect this. ✅
+  - Line 2068: uses `state_run_unmatched_non_validation_completed_count` — already filtered. ✅
+  - Line 2076: uses `deepseek_model_call_incomplete_count` — model calls started but not completed. Input validation exits can't affect this. ✅
+
+Wait, but there's a subtle issue: `state_run_incomplete_count` at line 2060. This is `len(run_incomplete_ids)` where `run_incomplete_ids = run_started - run_completed`. Input validation exits DO have RunCompleted events (they're RunCompleted with error detail "empty_input" or "invalid_input:*"). So input validation exits actually reduce `run_incomplete_ids` — they close runs. So they can't inflate it. ✅
+
+Hmm, but what about the OTHER direction? Could input validation exits produce a Completed event without a Started event? That would put them in `run_unmatched_completed_ids` — and that IS handled correctly by `is_input_validation_completion()`. ✅
+
+So the code in both files already correctly:
+1. Uses `is_input_validation_completion()` to split input validation exits from non-validation unmatched completions
+2. Keeps `deepseek_model_call_incomplete_count` unaffected by input validation exits (since they don't have ModelCallStarted)
+3. Emits lifecycle lessons based on the filtered metrics
+
+The code is already correct! The task's concern has already been addressed by the existing code.
+
+Now, according to the evolve skill (rule 6): "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+And the checkpoint says: "write session_plan/task_01_obsolete.md with exact evidence that the task is already satisfied"
+
+Let me verify my analysis one more time by running the verifier tests to make sure `is_input_validation_completion` works correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the verification tests to confirm the current state:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (11 lines) ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify that the existing gnome computation correctly filters input validation from incomplete counts. Let me trace through the actual code paths once more:
+
+**summarize_state_gnomes.py:**
+1. Line 372-376: `run_unstarted_input_validation_errors` correctly splits input validation from unmatched completed runs
+2. Line 382-386: `run_unmatched_non_validation_completed` correctly excludes input validation exits  
+3. Line 442-447: `lifecycle["balanced"]` uses `run_unmatched_non_validation_completed` — correct
+4. Line 387-389: `model_incomplete_ids` — input validation exits can't be here (no ModelCallStarted)
+5. Line 393: `model_incomplete_count` — correct, can't be inflated by input validation
+
+**log_feedback.py:**
+1. Line 1277: `incomplete_count = len(started_runs - completed_runs) + ...` — input validation can't inflate (no ModelCallStarted)
+2. Line 1281-1285: `run_unstarted_input_validation_error_count` — correctly counts input validation exits separately
+3. Line 1286-1288: `run_unmatched_non_validation_completed_count` — correctly excludes input validation
+4. Line 2060-2067: `state_run_incomplete_count` lesson — correct (input validation exits have RunCompleted)
+5. Line 2068-2075: `state_run_unmatched_non_validation_completed_count` lesson — already using the filtered count
+6. Line 2076-2083: `deepseek_model_call_incomplete_count` lesson — correct (input validation exits can't inflate)
+
+Both code paths are already correct. The task's objective is already satisfied. I should write `session_plan/task_01_obsolete.md` with the evidence.
+
+Wait, but the task also mentions: "If `is_input_validation_completion` needs to be imported from summarize_state_gnomes into log_feedback.py, that's fine" — but when I look at the usage in log_feedback.py line 1284, it already calls `is_input_validation_completion()`. Let me check if it's imported.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify that `is_input_validation_completion` is properly imported in log_feedback.py:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation_completion' in scripts/log_feedback.py ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function is defined locally in log_feedback.py at line 1216. Let me verify it matches the one in summarize_state_gnomes.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1214..1229 ✓ (249ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both `is_input_validation_completion()` functions (in summarize_state_gnomes.py line 464-472 and log_feedback.py line 1216-1224) are identical. Both are used correctly in their respective files.
+
+Now let me do a final comprehensive sweep:
+
+**summarize_state_gnomes.py:**
+- `is_input_validation_completion()` is defined at line 464
+- Used at line 375 to filter `run_unstarted_input_validation_errors` from `run_unmatched_completed_all`
+- `run_unmatched_non_validation_completed` at line 382-386 excludes input validation exits
+- `lifecycle["balanced"]` at line 442-447 uses `run_unmatched_non_validation_completed` (filtered) — correct
+- `model_incomplete_ids` at line 387-389 — input validation exits can't inflate (no ModelCallStarted) — correct
+- Gnome `deepseek_model_call_incomplete_count` at line 289 maps from `model_calls.incomplete` — correct
+
+**log_feedback.py:**
+- `is_input_validation_completion()` is defined at line 1216
+- Used at line 1284 to compute `run_unstarted_input_validation_error_count`
+- `run_unmatched_non_validation_completed_count` at line 1286-1288 excludes input validation exits
+- Lifecycle lesson at line 2060 uses `state_run_incomplete_count` — input validation can't inflate (has RunCompleted) — correct
+- Lifecycle lesson at line 2068 uses `state_run_unmatched_non_validation_completed_count` — already filtered — correct
+- Lifecycle lesson at line 2076 uses `deepseek_model_call_incomplete_count` — input validation can't inflate (no ModelCallStarted) — correct
+
+The task's objective is ALREADY satisfied. The code already:
+1. Uses `is_input_validation_completion()` to classify input validation exits
+2. Counts them in `state_run_unstarted_input_validation_error_count` separately
+3. Excludes them from `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`
+4. Filters lifecycle lessons using the non-validation counts
+
+The only potential gap I can see: the `state_run_incomplete_count` lesson at line 2060-2067 doesn't specifically mention input-validation exits, but it also can't be inflated by them since input validation exits have RunCompleted events, which close the run lifecycle.
+
+Actually, wait. Let me reconsider. Could input validation exits be counted as "unmatched completed" and then the `run_incomplete_ids` count be unaffected? Yes, that's exactly what happens and it's correct.
+
+Let me write the obsolete note.
+────────────────────────────────────────────────────────────────────────────────
+
+I've traced through every code path. The task's objective is **already fully satisfied** in both files. Let me write the obsolete note with exact evidence:
+  + # Task 01: Obsolete — Already Satisfied
+  + 
+  + **Title:** Clean up lifecycle gnome classification: separate input-validation exits from real unmatched completions
+  + **Files listed:** scripts/log_feedback.py, scripts/summarize_state_gnomes.py, scripts/append_terminal_state_events.py
+  + **Status:** obsolete (code already satisfies all success criteria)
+  + 
+  + ## Evidence of Existing Correctness
+  + 
+  + ### Criterion 1: `is_input_validation_completion()` is called before classifying unmatched completed runs
+  + 
+  + **summarize_state_gnomes.py:372–386** — `run_unstarted_input_validation_errors` filters `run_unmatched_completed_all` using `is_input_validation_completion()`, and `run_unmatched_non_validation_completed` (line 382–386) excludes those validation exits. The `lifecycle["balanced"]` check at line 442–447 uses `run_unmatched_non_validation_completed` (the filtered count), not the raw unmatched count.
+  + 
+  + **log_feedback.py:1281–1288** — `run_unstarted_input_validation_error_count` is computed by calling `is_input_validation_completion()` on each unmatched completed run, and `run_unmatched_non_validation_completed_count` subtracts them from the total.
+  + 
+  + ### Criterion 2: Input-validation exits are NOT counted in `deepseek_model_call_incomplete_count`
+  + 
+  + Input validation exits (RunCompleted with `error_detail="empty_input"` or `"invalid_input:..."`) **never trigger ModelCallStarted**. The model call lifecycle tracking in both files only populates `started_runs`/`model_call_started_runs` from `ModelCallStarted` events. Since input validation exits don't produce ModelCallStarted, they can never appear in `model_incomplete_ids` (summarize_state_gnomes.py:387–389) or `incomplete_count` (log_feedback.py:1277).
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (49 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (49 lines) ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the verification commands from the task, and also run the test suites to confirm no regression:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify my analysis by running the verifier tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (732ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 77 tests pass. Now let me also check that `git diff --name-only` only shows the obsolete note file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (265ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Git diff shows nothing because the file isn't tracked yet. Let me check with `git status`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short ✓ (235ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It shows nothing. That's odd - the file was written. Let me check if it exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la session_plan/task_01_ob… ✓ (262ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file exists but git status says "nothing to commit, working tree clean". This means session_plan/ is likely in .gitignore. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git check-ignore session_plan/… ✓ (263ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Yes, `session_plan/` is gitignored. The file is written to the session_plan directory which is gitignored (as noted in CLAUDE.md: "session_plan/ — ephemeral directory with per-task files"). So the file exists but won't show in git status.
+
+The task is complete: I've written the obsolete note with exact evidence that the task is already satisfied. The code in both `summarize_state_gnomes.py` and `log_feedback.py` already correctly:
+1. Uses `is_input_validation_completion()` to split input-validation exits from real unmatched completions
+2. Counts them separately in `state_run_unstarted_input_validation_error_count`
+3. Excludes them from `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`
+4. Uses the filtered non-validation counts in lifecycle feedback lessons
+
+Final answer: TASK_TERMINAL_EVIDENCE: obsolete
+────────────────────────────────────────────────────────────────────────────────
+
+The `session_plan/` directory is gitignored (as expected — it's ephemeral). The obsolete note is written. Let me provide the final evidence.
+
+**Summary:** I traced every code path in both `scripts/summarize_state_gnomes.py` and `scripts/log_feedback.py` that involves lifecycle gnome classification. The task's objective is **already fully satisfied** by the existing code:
+
+1. `is_input_validation_completion()` exists in both files (lines 464 and 1216) and is called before classifying unmatched completed runs
+2. Input-validation exits are counted separately in `state_run_unstarted_input_validation_error_count` and excluded from `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`
+3. Lifecycle feedback lessons use the filtered non-validation counts (line 2068 uses `state_run_unmatched_non_validation_completed_count`, not the raw unmatched count)
+4. Input-validation exits can never inflate model call incomplete counts because they don't produce `ModelCallStarted` events
+5. All 77 existing tests pass (verified via `python3 -m unittest`)
+
+Wrote `session_plan/task_01_obsolete.md` with exact evidence and line-number references.
+
+TASK_TERMINAL_EVIDENCE: obsolete
+
+
