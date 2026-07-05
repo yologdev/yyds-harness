@@ -29,6 +29,7 @@ const DEFAULT_DOCTOR_LIMIT: usize = 20_000;
 
 /// Default event scan limit for `state why last-failure` to prevent timeout with 70k+ events.
 const DEFAULT_WHY_LIMIT: usize = 10_000;
+const BOUNDED_FULL_SCAN_CAP: usize = 100_000;
 
 pub fn handle_state_subcommand(args: &[String]) {
     let sub = args.get(2).map(|s| s.as_str()).unwrap_or("help");
@@ -169,7 +170,7 @@ fn handle_doctor(limit: usize) {
 
     let (sampled_events, sample_note) = if limit > 0 && total_events > limit {
         match read_tail_events(&events_path, limit) {
-            Ok(events) => {
+            Ok((events, _)) => {
                 let note = format!(" (sampled from last {limit} of {total_events} total)");
                 (events, note)
             }
@@ -902,7 +903,7 @@ fn handle_tool_failures(args: &[String]) {
             (limit * 2).min(100_000)
         };
         match read_tail_events(&path, tail_window) {
-            Ok(events) => (events, 0usize),
+            Ok((evts, _)) => (evts, 0usize),
             Err(_) => {
                 eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
                 return;
@@ -1009,7 +1010,7 @@ fn handle_evals(args: &[String]) {
         }
     } else {
         match read_tail_events(&path, recent) {
-            Ok(events) => events,
+            Ok((events, _)) => events,
             Err(_) => {
                 eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
                 return;
@@ -1047,7 +1048,7 @@ fn handle_patches(args: &[String]) {
             }
         } else {
             match read_tail_events(&path, recent) {
-                Ok(events) => events,
+                Ok((events, _)) => events,
                 Err(_) => {
                     eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
                     return;
@@ -1071,7 +1072,7 @@ fn handle_patches(args: &[String]) {
         }
     } else {
         match read_tail_events(&path, recent) {
-            Ok(events) => events,
+            Ok((events, _)) => events,
             Err(_) => {
                 eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
                 return;
@@ -1092,7 +1093,7 @@ fn handle_patches(args: &[String]) {
 
 fn handle_why(id: &str, show_summary: bool, limit: usize) {
     let path = default_events_path();
-    let Ok(events) = read_tail_events(&path, limit) else {
+    let Ok((events, note)) = read_tail_events(&path, limit) else {
         let diagnostic = crate::state::take_diagnostic_error();
 
         if let Some(dir_info) = crate::state::state_directory_info() {
@@ -1252,6 +1253,10 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
             println!("{DIM}(searched {all_count} events){RESET}");
         }
     }
+    if !note.is_empty() {
+        println!();
+        println!("{DIM}{note}{RESET}");
+    }
 }
 
 /// Find runs that started (RunStarted) but never completed (no RunCompleted event).
@@ -1290,7 +1295,7 @@ fn find_incomplete_runs(events: &[Value]) -> Vec<(String, u64)> {
 fn handle_state_summary(args: &[String], limit: usize) {
     let path = default_events_path();
     let show_tail = args.iter().any(|a| a == "--tail");
-    let Ok(events) = read_tail_events(&path, limit) else {
+    let Ok((events, note)) = read_tail_events(&path, limit) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
@@ -1301,6 +1306,10 @@ fn handle_state_summary(args: &[String], limit: usize) {
             println!();
             println!("{DIM}(summary from last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
         }
+    }
+    if !note.is_empty() {
+        println!();
+        println!("{DIM}{note}{RESET}");
     }
     if show_tail && !events.is_empty() {
         println!();
@@ -1376,20 +1385,22 @@ fn read_limited_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io:
 
 /// Read only the last `limit` events from the state log.
 /// Returns fewer than `limit` events if the log is smaller.
-/// When `limit == 0`, reads all events with lenient parsing (skips malformed lines).
-fn read_tail_events(path: &Path, limit: usize) -> Result<Vec<Value>, std::io::Error> {
+/// When `limit == 0`, uses a bounded reader with an internal cap to prevent
+/// timeouts on large event logs (50K+ events).
+/// Returns (events, truncation_note) — the note is empty when no truncation occurred.
+fn read_tail_events(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
     if limit == 0 {
-        let (events, _skipped) = read_events_lenient(path)?;
-        return Ok(events);
+        return crate::state::read_events_bounded(path, BOUNDED_FULL_SCAN_CAP);
     }
-    let raw_lines = read_tail(path, limit)?;
+    let raw_lines = read_tail(path, limit)
+        .map_err(|e| format!("error reading tail of {}: {e}", path.display()))?;
     let mut events = Vec::with_capacity(raw_lines.len());
     for line in &raw_lines {
         if let Ok(value) = serde_json::from_str::<Value>(line) {
             events.push(value);
         }
     }
-    Ok(events)
+    Ok((events, String::new()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24710,7 +24721,7 @@ mod tests {
             .collect();
         write_jsonl(&path, &events);
 
-        let tail = read_tail_events(&path, 10).unwrap();
+        let (tail, _note) = read_tail_events(&path, 10).unwrap();
         assert_eq!(tail.len(), 10, "should return exactly 10 events");
         assert_eq!(tail[0]["event_id"], "evt-91");
         assert_eq!(tail[9]["event_id"], "evt-100");
@@ -24727,11 +24738,39 @@ mod tests {
             .collect();
         write_jsonl(&path, &events);
 
-        let tail = read_tail_events(&path, 100).unwrap();
+        let (tail, _note) = read_tail_events(&path, 100).unwrap();
         assert_eq!(
             tail.len(),
             5,
             "should return all 5 events when limit > file size"
         );
+    }
+
+    #[test]
+    fn tail_events_limit_zero_uses_bounded_reader() {
+        // When limit=0, read_tail_events uses the bounded reader.
+        // With a small file (under the internal cap), all events are
+        // returned and the truncation note is empty.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        let events: Vec<Value> = (1..=50)
+            .map(|i| {
+                json!({"event_id": format!("evt-{:03}", i), "event_type": "RunStarted", "schema_version": 1, "timestamp_ms": i * 10, "actor": "yoyo", "run_id": format!("run-{}", i), "trace_id": format!("trace-{}", i), "parent_event_ids": [], "payload": {}})
+            })
+            .collect();
+        write_jsonl(&path, &events);
+
+        let (tail, note) = read_tail_events(&path, 0).unwrap();
+        assert_eq!(
+            tail.len(),
+            50,
+            "limit=0 should return all events when under cap"
+        );
+        assert!(
+            note.is_empty(),
+            "truncation note should be empty when under cap"
+        );
+        assert_eq!(tail[0]["event_id"], "evt-001");
+        assert_eq!(tail[49]["event_id"], "evt-050");
     }
 }
