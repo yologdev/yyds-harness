@@ -1,0 +1,289 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 12959 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 3925
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me assess the situation:
+
+1. The task is to create a held-out eval fixture at `eval/fixtures/local-smoke/371-state-lifecycle-pairing.json`
+2. The git diff is EMPTY - no changes were made
+3. Build/Tests show PASS, but that's the baseline state, not evidence of implementation
+
+The empty diff clearly means the implementation did NOT happen. The fixture file was never created. This is an immediate FAIL.
+
+Let me verify quickly that the file doesn't exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ test -f eval/fixtures/local-smoke/371-state-lifecycle-pairing.json && echo "EXIS… ✓ (937ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file exists! Let me read it to verify it matches the task requirements.
+────────────────────────────────────────────────────────────────────────────────
+
+The file exists despite an empty diff — let me read it to verify the content.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/371-state-lifecycle-pairing.json ✓ (132ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check existing fixtures 369 and 370 to verify the format matches, and also check the lifecycle output to see if these tests would pass.
+
+Key observations:
+1. The file exists and follows the described format
+2. It has `task_id`, `category`, `repo_fixture`, `initial_commit`, `risk_label`, `goal`, `tests`, `expected_files`, `hidden_failure_mode`
+3. Tests use `--limit 500` (not 1000) as required
+4. The goal mentions ModelCallStarted↔ModelCallCompleted but also mentions RunStarted↔RunCompleted in the task description - let me check if the goal covers both
+
+Wait, the task description says:
+- "every RunStarted has a matching RunCompleted and every ModelCallStarted has a matching ModelCallCompleted"
+
+But the fixture's goal only says:
+- "every ModelCallStarted has a matching ModelCallCompleted"
+
+That's a discrepancy. Let me also look at the test commands:
+1. First test: runs `yyds state lifecycle --limit 500` and greps for `unmatched completed: 0`
+2. Second test: runs it and greps for `^State lifecycle:`
+
+Now the task says:
+- "Verify that within a bounded event window, every RunStarted has a matching RunCompleted and every ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions."
+
+But the fixture only verifies ModelCallCompleted matching and doesn't check RunStarted↔RunCompleted at all. The test only checks `unmatched completed: 0` — what about incomplete runs?
+
+The task description's example test command shows:
+```
+output=$(cargo run -- state lifecycle --limit 500 2>&1)
+incomplete_runs=$(echo "$output" | grep -oP '\d+(?= incomplete runs?)' || echo 0)
+incomplete_calls=$(echo "$output" | grep -oP '\d+(?= incomplete model calls?)' || echo 0)
+[ "$incomplete_runs" -eq 0 ] && [ "$incomplete_calls" -eq 0 ]
+```
+
+But the fixture only checks `unmatched completed: 0`. Let me also check what `yyds state lifecycle` actually outputs to understand the mismatch.
+
+Let me run a quick check on the lifecycle output format.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the fixture format against 369/370 and check what the lifecycle output actually looks like.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/369-prompt-layout-determinism.json  ▶ $ cargo run -- state lifecycle --limit 500 2>&1 | head -30 ✗ (369ms)
+    │ Cannot access eval/fixtures/local-smoke/369-prompt-layout-determinism.json: No such file or directory (os error 2)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Key findings:
+
+1. Fixtures 369 and 370 don't exist at `eval/fixtures/local-smoke/`. Let me find where they are.
+2. The lifecycle output shows:
+   - "runs: 13 started, 14 completed, 2 incomplete"
+   - "model calls: 3 started, 2 completed, 1 incomplete, 0 unmatched completed"
+
+So the test `grep -q 'unmatched completed: 0'` would PASS (it's indeed 0).
+But the test doesn't check for incomplete runs or incomplete model calls.
+
+The task description explicitly says to verify BOTH:
+- RunStarted↔RunCompleted (incomplete runs should be 0)
+- ModelCallStarted↔ModelCallCompleted (incomplete model calls should be 0)
+
+The fixture's test only checks `unmatched completed: 0` for model calls, which is a different thing. "Unmatched completed" means completions without starts, but "incomplete runs" means starts without completions.
+
+Also, the fixture's goal only mentions ModelCallCompleted matching but says nothing about RunStarted↔RunCompleted.
+
+The task says: "every RunStarted has a matching RunCompleted and every ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions."
+
+But the fixture only tests `unmatched completed: 0` — it doesn't check incomplete runs or incomplete model calls.
+
+Wait, let me re-read the task more carefully. The Phase A1 assessment says: "182 runs started, 187 completed, 9 incomplete; 4 incomplete model calls; 3 unmatched completed calls." So the gaps are:
+- 9 incomplete runs (started but not completed)
+- 4 incomplete model calls (started but not completed)
+- 3 unmatched completed model calls (completed without start)
+
+The fixture only tests for "unmatched completed: 0" which tests for the third gap but not the first two.
+
+Now, the task says the fixture should validate "no orphaned starts, no unmatched completions." The fixture tests for unmatched completions but not orphaned starts. This seems like a significant gap.
+
+However, I should also consider:
+- The fixture's goal says "ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions" but only tests unmatched completions
+- The goal completely omits RunStarted↔RunCompleted checking
+
+Let me also look at what fixtures 369/370 look like to understand the format. Let me search for them.
+
+Actually wait - the task says "Fixtures #369 (prompt-layout-determinism) and #370 (genome-determinism) established the pattern for DeepSeek harness eval fixtures." So they might exist somewhere else. Let me search.
+
+But actually, the key question for my verdict: does this fixture meet the task requirements?
+
+The task says:
+- "Validate correct lifecycle event pairing — RunStarted↔RunCompleted and ModelCallStarted↔ModelCallCompleted"
+- "no orphaned starts, no unmatched completions"
+
+The fixture:
+- Goal mentions only ModelCallStarted↔ModelCallCompleted
+- Tests only check `unmatched completed: 0` and that the lifecycle header appears
+- Does NOT check incomplete runs or incomplete model calls
+
+This is a partial implementation. It checks one of the two lifecycle pair types, and only checks unmatched completions, not orphaned starts.
+
+However, the task also says "Your job: verify that a task was implemented correctly" — and the diff is empty. The file exists but wasn't created by the implementation agent (since there's no diff). Maybe it was created before the task? Or by a different process?
+
+Wait, actually if there's no diff, the file might have been committed already. Let me check git status.
+
+Actually, the key point is: the task says to create this fixture. The fixture exists but:
+1. It only partially covers the stated requirements
+2. Its goal only mentions ModelCallCompleted, omitting RunStarted↔RunCompleted
+3. Its tests only check `unmatched completed: 0` and a header check
+
+But wait, let me think about this differently. The task says "even if the command takes longer than expected, it won't hang the evaluator." And the Phase A1 says the current state has 9 incomplete runs and 3 unmatched completed calls. 
+
+If the fixture asserts `incomplete runs: 0` and `incomplete model calls: 0`, it would FAIL against current state data. The task description acknowledges these gaps exist ("the current 9-incomplete-runs and 3-unmatched-model-calls suggest this is not a theoretical concern but a live gap").
+
+So maybe the fixture is intentionally checking only `unmatched completed: 0` because that's something that should always be zero (a completion without a start is a hard bug), while incomplete runs/calls are expected during active sessions?
+
+Let me re-examine. The Phase A1 says: "182 runs started, 187 completed, 9 incomplete; 4 incomplete model calls; 3 unmatched completed calls." 
+
+Unmatched completed calls = 3 (a completion without a start - definitely a bug). Incomplete runs = 9 (started but not completed - could be from active sessions).
+
+So the fixture testing `unmatched completed: 0` is checking the hard invariant. That's actually reasonable.
+
+But the task description explicitly says: "Verify that within a bounded event window, every RunStarted has a matching RunCompleted and every ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions."
+
+It says BOTH "no orphaned starts" AND "no unmatched completions." The fixture only tests unmatched completions.
+
+Also the fixture's GOAL doesn't mention RunStarted↔RunCompleted at all! It says "every ModelCallStarted has a matching ModelCallCompleted" — it omits the RunStarted↔RunCompleted check entirely.
+
+This is a FAIL from me. The implementation:
+1. Only covers ModelCallStarted↔ModelCallCompleted, not RunStarted↔RunCompleted
+2. Only tests for unmatched completions, not orphaned starts
+3. The goal text drops half the lifecycle pairing requirement
+
+Let me also check if the fixture format matches 369/370. Let me find those fixtures.
+
+Actually, let me be more targeted. Let me check git status to see if this file was indeed created as part of this task.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 29.4s (1 ✓, 1 ✗)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short eval/fixtur…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && find eval/fixtures -name "36*.… ✓ (183ms)
+ ✓ (621ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is untracked (`??`), so it was created by the implementation agent. Let me check fixtures 369 and 370 to compare the format.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls eval/fixtures/local-smoke/3… ✓ (180ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me read one of these to compare the format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me compare the format. Both have:
+- `task_id`
+- `category`
+- `repo_fixture`
+- `initial_commit`
+- `risk_label`
+- `goal`
+- `tests`
+- `expected_files`
+- `hidden_failure_mode`
+
+The format matches. Now let me evaluate the content quality.
+
+The fixture at 371 has:
+- `task_id`: "state-lifecycle-pairing" ✓
+- `category`: "deepseek/state integrity" ✓
+- `repo_fixture`: "self" ✓
+- `initial_commit`: "HEAD" ✓
+- `risk_label`: "high" ✓
+- `goal`: "Verify that within a bounded event window (500 events), every ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions..." 
+- `tests`: 
+  1. Checks `unmatched completed: 0` 
+  2. Checks header `^State lifecycle:`
+- `expected_files`: self-referencing ✓
+- `hidden_failure_mode`: describes event ordering bugs ✓
+
+Now the critical question: does this meet the task requirements?
+
+Task says:
+- "Validate correct lifecycle event pairing — **RunStarted↔RunCompleted and ModelCallStarted↔ModelCallCompleted**"
+- "within a bounded event window of 500 events"
+
+The fixture:
+- Goal mentions only ModelCallStarted↔ModelCallCompleted, NOT RunStarted↔RunCompleted
+- Tests only `unmatched completed: 0` (which is for model calls based on the lifecycle output)
+- Doesn't test incomplete runs or incomplete model calls
+
+But wait, let me look at the lifecycle output again:
+```
+runs: 13 started, 14 completed, 2 incomplete
+model calls: 3 started, 2 completed, 1 incomplete, 0 unmatched completed
+```
+
+The "unmatched completed" field is specifically for model calls (there's no equivalent for runs in the output). And "incomplete runs" is a different metric.
+
+The task says: "no orphaned starts, no unmatched completions"
+
+"Orphaned starts" = starts without completions = incomplete
+"Unmatched completions" = completions without starts
+
+The fixture only checks unmatched completions. But should it also check orphaned starts?
+
+Looking at the data: incomplete runs are common during active sessions (runs that have started but the session is still in progress). So checking that incomplete runs == 0 would be wrong, as it would fail during live sessions.
+
+Similarly, incomplete model calls might be expected during active sessions.
+
+"Unmatched completed" is different — a completion without a start is always a bug. So checking for 0 unmatched completions is the hard invariant.
+
+Now, "incomplete" starts-without-completions: some are expected during active sessions. But some might be truly orphaned (session crashed). The task description says the current state has 9 incomplete runs and 3 unmatched model calls — these are described as "gaps" that "are real."
+
+So the fixture is testing the hard invariant (unmatched completions must be 0) but not the softer signals (incomplete counts). 
+
+The task objective says: "every RunStarted has a matching RunCompleted and every ModelCallStarted has a matching ModelCallCompleted — no orphaned starts, no unmatched completions."
+
+This is the IDEAL. The fixture doesn't fully achieve this. But it's checking the most critical aspect.
+
+However, I also notice the goal text dropped RunStarted↔RunCompleted entirely. And the task says it should verify BOTH. Let me re-check if the `unmatched completed` metric covers both runs and model calls or just model calls.
+
+From the output:
+```
+runs: 13 started, 14 completed, 2 incomplete
+model calls: 3 started, 2 completed, 1 incomplete, 0 unmatched completed
+```
+
+The `unmatched completed` only appears for model calls. So the fixture is NOT checking RunStarted↔RunCompleted at all.
+
+I think this warrants a FAIL, but let me consider the "fallback" options in the task:
+- "If the eval framework can't express lifecycle-pairing assertions as executable commands, write the fixture as a documentation/spec artifact with a 'not yet executable' note."
+
+The fixture is executable and has tests. It's just that the tests only cover half the requirement.
+
+But wait, let me be more careful. The task says the fixture should validate BOTH RunStarted↔RunCompleted AND ModelCallStarted↔ModelCallCompleted. The fixture's goal only mentions ModelCall. That's a clear gap.
+
+I'll FAIL this because:
+1. The goal doesn't mention RunStarted↔RunCompleted at all
+2. The tests only check `unmatched completed: 0` for model calls, not run lifecycle pairing
+3. The task explicitly requires both types of lifecycle pairing
+
+Actually, let me reconsider. The `runs` line in the output only has "started, completed, incomplete" — there's no "unmatched completed" for runs. So the lifecycle subcommand may not track unmatched completions for runs at all. If that's the case, the fixture physically can't check it.
+
+But the fixture could still check that `incomplete runs: 0` isn't growing, or at least mention runs in the goal.
+
+I think the fairest verdict is: the fixture is partially implemented. It covers the model call lifecycle but completely omits run lifecycle from both its goal and tests. The task explicitly requires both. This is a FAIL.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence. Let me write the verdict.
+  + Verdict: FAIL
+  + Reason: The fixture exists and follows the correct JSON format, but it only validates ModelCallStarted↔ModelCallCompleted (checking `unmatched completed: 0`). The task explicitly requires validating BOTH RunStarted↔RunCompleted AND ModelCallStarted↔ModelCallCompleted pairing. The goal text omits run lifecycle entirely, and no test checks for incomplete runs or run-level invariants. A fixture that only covers half the required lifecycle pairing scope does not meet the task's stated objective.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (90ms)

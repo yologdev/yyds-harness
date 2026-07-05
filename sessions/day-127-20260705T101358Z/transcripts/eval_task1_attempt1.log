@@ -1,0 +1,219 @@
+warning: skipping corrupted event at line 12958 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 3925
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task says "=== CHANGES MADE (git diff) ===" but the diff section is empty. This means there are no changes to evaluate. Let me check if there are any actual changes by looking at git status and the files in question.
+
+Let me also check the build/test status - it says "Build: PASS, Tests: PASS" but if no changes were made, this just means the existing code passes.
+
+Let me look at git status and the relevant files to understand the situation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD --stat ✓ (392ms)
+ ✓ (361ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is not shown in the task description, but it says ` M src/commands_eval.rs` and ` M src/eval_fixtures.rs` — these are modified files. Let me see the actual diff and check what was implemented.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD ✓ (173ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated in parts. Let me read the actual modified sections to get the full implementation details of `run_command_with_timeout` and the updated `run_gate`.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see the full implementation of the key functions to make sure the timeout logic is correct.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "run_command_with_time… ✓ (201ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep output is truncated. Let me read the specific sections of both files to see the full implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/eval_fixtures.rs:625..725  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_eval.rs:985..1045 ✓ (255ms)
+ ✓ (171ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look for tests for the timeout behavior, and also check how `run_fixture_command` is used in `run_fixture_task` to see if `timeout_secs` from the fixture JSON is used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+Now let me check how `timeout_secs` from the BenchmarkTask flows into `run_fixture_command`, and look for the timeout unit test.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "timeout_secs\|timeout…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "sleep\|timeout\|test.… ✓ (339ms)
+ ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the `timeout_secs` field was added to `BenchmarkTask` struct and to the allowed fields in `reject_unknown_fields`. But I need to check if `run_fixture_command` actually uses the `timeout_secs` from the BenchmarkTask. Looking at the diff:
+
+```rust
+fn run_fixture_command(command: &str, workdir: Option<&Path>) -> FixtureCommandResult {
+    let timeout_secs = DEFAULT_COMMAND_TIMEOUT_SECS;
+    let (passed, status_code, duration_ms, stdout_preview, stderr_preview) =
+        run_command_with_timeout(command, workdir, timeout_secs);
+```
+
+This always uses `DEFAULT_COMMAND_TIMEOUT_SECS` (120). The `timeout_secs` field on `BenchmarkTask` is defined but never used in `run_fixture_command`. The task description says:
+
+"Add per-command timeout to eval infrastructure... add optional timeout_secs field to BenchmarkTask"
+
+It also says `timeout_secs: Option<u64>` with `serde(default)`. Default when None is 120.
+
+But `run_fixture_command` doesn't receive the `timeout_secs` from the BenchmarkTask; it always uses the default. Let me check how `run_fixture_command` is called — it should be called from `run_fixture_task` which has access to the BenchmarkTask.
+
+Let me look at how `run_fixture_command` is called to see if the `timeout_secs` from the task is being passed through.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "run_fixture_command\|… ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see lines 180-220 to understand how `run_fixture_task` calls `run_fixture_command` and whether it passes `timeout_secs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/eval_fixtures.rs:180..230 ✓ (115ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see: `run_fixture_command` is called at line 187 with just `(command, workdir)`, not the `timeout_secs` from the task. And at line 210 for the agent command. And the `run_fixture_command` function itself uses the hardcoded `DEFAULT_COMMAND_TIMEOUT_SECS`.
+
+The `timeout_secs` field was added to `BenchmarkTask` but the code doesn't actually use it - it doesn't pass it through to `run_fixture_command`.
+
+This is a significant gap between the task description and the implementation. The task says:
+- "add optional timeout_secs field to BenchmarkTask"
+- "Default when None is 120"
+
+So adding the field is part of the implementation, but not using it means the per-fixture timeout configurability is missing. However, the task also says:
+
+"Fallback: If thread-based timeout proves unreliable in CI (flaky kill-by-PID), fall back to adding a timeout_secs field to BenchmarkTask only (JSON schema) and documenting the constraint. The fixture author can set a shorter timeout, but the code won't enforce it at the process level. Mark the task done-with-findings."
+
+This fallback says: if the thread-based timeout is unreliable, fall back to "adding a timeout_secs field to BenchmarkTask only (JSON schema) and documenting the constraint" — essentially, the field exists but isn't enforced at the process level.
+
+But wait — the thread-based timeout IS implemented (`run_command_with_timeout` with `thread::spawn` and `recv_timeout`). It's using the default 120s. The `timeout_secs` field on `BenchmarkTask` exists but isn't wired through. 
+
+The key question: does the implementation fulfill the primary objective? Let me re-read:
+
+"Objective: Make eval gates and fixture commands time-bounded: every command gets a default 120s timeout"
+
+The implementation does this:
+1. `run_command_with_timeout` is a shared helper that spawns, uses `recv_timeout`, and kills on timeout ✓
+2. `run_gate` uses it with 120s ✓
+3. `run_fixture_command` uses it with 120s ✓
+4. Timed-out commands produce failure result with "command timed out after Ns" ✓
+5. `BenchmarkTask` has `timeout_secs` field ✓
+
+What's missing:
+- The `timeout_secs` field on `BenchmarkTask` is not wired through to `run_fixture_command` — it always uses the default 120s
+
+The task says: "add optional timeout_secs field to BenchmarkTask in src/eval_fixtures.rs with serde(default). Default when None is 120." — this was done.
+
+But then it also says this field should be "configurable per-fixture" — the wiring isn't done. However, the field exists and can be parsed from JSON. The wiring from `run_fixture_task` → `run_fixture_command` passing `task.timeout_secs` is missing.
+
+Should I FAIL for this? Let me think...
+
+The task's success criteria say:
+- `run_fixture_command` returns within timeout_secs (default 120) even if the child process hangs ✓
+- `run_gate` returns within 120s even if the child process hangs ✓
+- Timed-out commands produce `FixtureCommandResult { passed: false, stderr_preview: "command timed out after Ns" }` ✓
+
+These three criteria are met.
+
+The missing wiring of `BenchmarkTask.timeout_secs` to `run_fixture_command` is a gap, but the primary objective is met: commands are time-bounded. The field exists for future wiring. The fallback clause describes exactly this situation: "adding a timeout_secs field to BenchmarkTask only (JSON schema) and documenting the constraint. The fixture author can set a shorter timeout, but the code won't enforce it at the process level."
+
+Wait, but the fallback says "If thread-based timeout proves unreliable in CI" — but the thread-based timeout IS implemented. So the fallback doesn't apply. The task wants the field to be both defined AND used.
+
+Let me check if there are any tests for the timeout behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for the timeout unit test and whether there's a test that spawns `sleep 999` with a 1s timeout.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "sleep\|spawn.*timeout…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib eval_fixtures… ✓ (396ms)
+ ✓ (404ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task says: "New unit test: spawn a `sleep 999` command with a 1s timeout, verify it returns failure within 3s wall time"
+
+But there's no such test in the code. Let me check the tests more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "sleep\|timeout.*test\… ✓ (214ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no test for the timeout behavior. The task explicitly says:
+"New unit test: spawn a `sleep 999` command with a 1s timeout, verify it returns failure within 3s wall time"
+
+But no such test exists.
+
+Summary of gaps:
+1. `BenchmarkTask.timeout_secs` field exists but is not wired through `run_fixture_task` → `run_fixture_command` (not passed as argument). The field is defined but unused.
+2. No unit test for timeout behavior as required by the task description.
+
+However, the core objective IS met: `run_gate` and `run_fixture_command` both use `run_command_with_timeout` with 120s timeout. The `run_command_with_timeout` function is properly implemented with `spawn()`, `recv_timeout()`, and `kill -9` on timeout.
+
+Should I FAIL? Let me weigh:
+
+The task says "New unit test: spawn a `sleep 999` command with a 1s timeout, verify it returns failure within 3s wall time" — this is clearly missing.
+
+The `timeout_secs` field on `BenchmarkTask` is added but not wired through — it's dead code. This could be considered a partial implementation.
+
+But the core critical path (gates and fixtures not hanging) IS fixed. The `timeout_secs` field wiring is an enhancement, not the core requirement. And the test is important but the existing tests pass.
+
+Actually, wait. The task description also says:
+"Fallback: If thread-based timeout proves unreliable in CI (flaky kill-by-PID), fall back to adding a timeout_secs field to BenchmarkTask only (JSON schema) and documenting the constraint."
+
+This fallback is about what to do if the thread-based approach fails. Since the thread-based approach IS implemented, the fallback doesn't apply. The missing wiring of `timeout_secs` is just incomplete work, not a fallback scenario.
+
+I think this warrants FAIL because:
+1. The `timeout_secs` field is dead code — never read or used
+2. The required unit test for timeout behavior is missing
+
+However, the core functionality (preventing hangs) is in place. Let me be pragmatic: the task's primary goal is achieved (commands won't hang), and the two gaps are significant but not catastrophic. Let me consider whether to FAIL or PASS.
+
+Actually, re-reading: the task says "Add per-command timeout to eval infrastructure (fixture runner + gates)". The per-command timeout IS added to both. The `timeout_secs` field is a future enhancement. The test is missing.
+
+I'll FAIL because:
+1. The `timeout_secs` field on `BenchmarkTask` is never used — it's dead code added but not wired through
+2. No timeout unit test exists as required by the task
+
+These are concrete gaps in the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify whether `BenchmarkTask.timeout_secs` is actually wired through or is dead code:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "task\.timeout_secs\|\…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn "timeout_secs" src/co… ✓ (350ms)
+ ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: `task.timeout_secs` is never referenced anywhere. The field exists on `BenchmarkTask` and is accepted from JSON (serde), but it's never read when running a fixture task — `run_fixture_command` always uses `DEFAULT_COMMAND_TIMEOUT_SECS` (120) regardless of what's in the JSON.
+
+Also, there's no unit test for timeout behavior.
+
+I'll write the FAIL verdict. The implementation adds the timeout mechanism (shared helper `run_command_with_timeout`), which is good, but:
+
+1. `BenchmarkTask.timeout_secs` is dead code — never read or wired through
+2. No unit test for timeout behavior as required
+
+These are concrete gaps. Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ mkdir -p /home/runner/work/yyds-harness/yyds-harness/session_plan ✓ (236ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll write the evaluation verdict.

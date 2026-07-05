@@ -1,0 +1,530 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant source files to understand the current state before implementing the timeout feature.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/eval_fixtures.rs:600..700  ▶ read src/commands_eval.rs:970..1050 ✓ (2.1s)
+ ✓ (1.7s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the full picture. Let me:
+
+1. Read the BenchmarkTask struct to see its current fields
+2. Read the FixtureCommandResult struct
+3. Look at how run_fixture_command is called
+4. Check for existing tests
+
+Let me read the top of eval_fixtures.rs for struct definitions and the area around run_fixture_command calls.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.8s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct BenchmarkTask' in src/eval_fixtures.rs  ▶ search 'struct FixtureCommandResult' in src/eval_fixtures.rs  ▶ search 'run_fixture_command' in src/eval_fixtures.rs ✓ (1.3s)
+ ✓ (1.3s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the struct definitions and the call sites.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:1..61  ▶ read src/eval_fixtures.rs:160..210  ▶ read src/eval_fixtures.rs:1570..1600 ✓ (2.1s)
+ ✓ (1.7s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `run_gate` is called in commands_eval.rs and where the gate results are used. I also need to check the imports in commands_eval.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (421ms)
+  ▶ todo ✓ (422ms)
+  ▶ todo ✓ (424ms)
+  ▶ todo ✓ (423ms)
+  ▶ todo ✓ (429ms)
+  ▶ todo ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the imports in commands_eval.rs and look at how `run_gate` is called. Also let me check how many places construct BenchmarkTask so I know what needs updating.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 4.7s (6 ✓)
+
+Let me check imports and call sites in commands_eval.rs plus BenchmarkTask constructors:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:1..31  ▶ search 'run_gate' in src/commands_eval.rs  ▶ search 'BenchmarkTask {' in src ✓ (847ms)
+ ✓ (1.7s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the validate_task_manifest_path function to understand what fields it checks, and see the call site in commands_eval.rs around line 797:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:580..620  ▶ read src/commands_eval.rs:780..810  ▶ read src/commands_eval.rs:6200..6240 ✓ (2.1s)
+ ✓ (850ms)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture. Let me also check `validate_task_manifest_path` for fields it checks:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.0s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn validate_task_manifest_path' in src/eval_fixtures.rs ✓ (427ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:538..588 ✓ (422ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me also check `run_fixture_agent_attempt` and see if there are other callers of `run_fixture_command`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:195..255  ▶ search 'dependencies' in . (*.toml) ✓ (889ms)
+ ✓ (879ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a complete picture. Let me plan the implementation:
+
+1. **`BenchmarkTask`** - add `timeout_secs: Option<u64>` with `#[serde(default)]`
+2. **`reject_unknown_fields`** - add `"timeout_secs"` to allowed list
+3. **`run_command_with_timeout`** - new shared helper function in `eval_fixtures.rs` 
+4. **`run_fixture_command`** - use the new helper with `timeout_secs` from the task (None → 120s default)
+5. **`run_gate`** in `commands_eval.rs` - use the new helper with hardcoded 120s
+6. **All BenchmarkTask constructors** - add `timeout_secs: None` (serde default handles deserialization)
+7. **Unit test** - spawn sleep with 1s timeout, verify failure
+
+Wait, the task says to add a shared helper and use it from both. But `run_gate` is in `commands_eval.rs` which already depends on `eval_fixtures`. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'eval_fixtures' in src/commands_eval.rs ✓ (448ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, commands_eval.rs already imports from eval_fixtures. So I can make `run_command_with_timeout` a public function in `eval_fixtures.rs` and call it from `commands_eval.rs`.
+
+Now let me implement. I'll start with the changes to eval_fixtures.rs:
+
+1. Add `timeout_secs` to BenchmarkTask
+2. Add `"timeout_secs"` to allowed fields
+3. Add `run_command_with_timeout` public function
+4. Update `run_fixture_command` to use it
+5. Update all BenchmarkTask constructors in tests
+6. Add a timeout test
+
+Then commands_eval.rs:
+1. Update `run_gate` to use `run_command_with_timeout`
+
+Let me implement step by step.
+
+For the `run_command_with_timeout` function, the implementation:
+```rust
+pub fn run_command_with_timeout(
+    command: &str,
+    workdir: Option<&Path>,
+    timeout_secs: u64,
+) -> (bool, String, String) {
+    let started = Instant::now();
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-lc").arg(command);
+    if let Some(workdir) = workdir {
+        cmd.current_dir(workdir);
+    }
+    
+    // Spawn the child
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return (
+                false,
+                String::new(),
+                e.to_string(),
+            );
+        }
+    };
+    
+    // Wrap in a thread with channel
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = tx.send(output);
+    });
+    
+    match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+        Ok(Ok(output)) => {
+            // ... build normal result
+        }
+        Ok(Err(e)) => {
+            // ... error result
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // Kill child
+        }
+    }
+}
+```
+
+I need to be careful: `child` is moved into the thread, so I can't kill it from the parent. I need to record the PID first.
+
+Let me use this pattern:
+```rust
+let mut child = cmd.spawn()?;
+let pid = child.id();
+let (tx, rx) = std::sync::mpsc::channel();
+std::thread::spawn(move || {
+    let output = child.wait_with_output();
+    let _ = tx.send(output);
+});
+
+match rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+    Ok(Ok(output)) => { ... }
+    Err(_) => {
+        // Kill by PID
+        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        // Return timeout failure
+    }
+}
+```
+
+Now let me implement all changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes. Starting with `eval_fixtures.rs`:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (424ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `timeout_secs` field to `BenchmarkTask`, add `"timeout_secs"` to the allowed fields list, and implement the timeout helper.
+
+I'll make three surgical edits to eval_fixtures.rs in parallel since they're independent.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+  - use std::time::Instant;
+  + use std::time::{Duration, Instant};
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (3 → 3 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (3 → 3 lines)
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+  - use std::time::Instant;
+  + use std::time::{Duration, Instant};
+ ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the `timeout_secs` field to BenchmarkTask:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        pub expected_files: Vec<String>,
+        pub risk_label: String,
+  +     #[serde(default)]
+  +     pub timeout_secs: Option<u64>,
+    }
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (3 → 5 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (3 → 5 lines)
+        pub expected_files: Vec<String>,
+        pub risk_label: String,
+  +     #[serde(default)]
+  +     pub timeout_secs: Option<u64>,
+    }
+ ✓ (424ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Add timeout_secs to the allowed fields list:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            "expected_files",
+            "risk_label",
+  +         "timeout_secs",
+        ];
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (3 → 4 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (3 → 4 lines)
+            "expected_files",
+            "risk_label",
+  +         "timeout_secs",
+        ];
+ ✓ (428ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now implement the `run_command_with_timeout` function. I'll place it right before `run_fixture_command`. Let me also replace `run_fixture_command` to use it.
+
+The default timeout should be 120 seconds when `timeout_secs` is None.
+────────────────────────────────────────────────────────────────────────────────
+
+Now replace `run_fixture_command` and add the shared helper:
+  - fn run_fixture_command(command: &str, workdir: Option<&Path>) -> FixtureCommandResult {
+  + const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
+  + 
+  + pub fn run_command_with_timeout(
+  +     command: &str,
+  +     workdir: Option<&Path>,
+  +     timeout_secs: u64,
+  + ) -> (bool, Option<i32>, u64, String, String) {
+        let started = Instant::now();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-lc").arg(command);
+        if let Some(workdir) = workdir {
+            cmd.current_dir(workdir);
+        }
+  -     let output = cmd.output();
+  -     match output {
+  -         Ok(output) => FixtureCommandResult {
+  -             command: command.to_string(),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (27 → 70 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (27 → 70 lines)
+  - fn run_fixture_command(command: &str, workdir: Option<&Path>) -> FixtureCommandResult {
+  + const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 120;
+  + 
+  + pub fn run_command_with_timeout(
+  +     command: &str,
+  +     workdir: Option<&Path>,
+  +     timeout_secs: u64,
+  + ) -> (bool, Option<i32>, u64, String, String) {
+        let started = Instant::now();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-lc").arg(command);
+        if let Some(workdir) = workdir {
+            cmd.current_dir(workdir);
+        }
+  -     let output = cmd.output();
+  -     match output {
+  -         Ok(output) => FixtureCommandResult {
+  -             command: command.to_string(),
+  -             passed: output.status.success(),
+  -             status_code: output.status.code(),
+  ... (69 more lines)
+ ✓ (424ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to update `run_gate` in commands_eval.rs to use the shared helper. And update all BenchmarkTask constructors in tests to include `timeout_secs: None`.
+
+Let me also check what the `preview` function signature looks like to make sure my call in `run_command_with_timeout` is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `run_gate` in `commands_eval.rs` to use the shared helper:
+    fn run_gate(command: &str, workdir: Option<&Path>) -> GateResult {
+  -     let started = Instant::now();
+  -     let mut cmd = Command::new("/bin/sh");
+  -     cmd.arg("-lc").arg(command);
+  -     if let Some(workdir) = workdir {
+  -         cmd.current_dir(workdir);
+  -     }
+  -     let output = cmd.output();
+  -     match output {
+  -         Ok(output) => GateResult {
+  -             command: command.to_string(),
+  -             passed: output.status.success(),
+  -             status_code: output.status.code(),
+  -             duration_ms: started.elapsed().as_millis() as u64,
+  -             stdout_preview: preview(&String::from_utf8_lossy(&output.stdout), 2000),
+  -             stderr_preview: preview(&String::from_utf8_lossy(&output.stderr), 2000),
+  -         },
+  -         Err(e) => GateResult {
+  -             command: command.to_string(),
+  -             passed: false,
+  ... (17 more lines)
+  ✓ Auto-approved: edit: src/commands_eval.rs (27 → 13 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (27 → 13 lines)
+    fn run_gate(command: &str, workdir: Option<&Path>) -> GateResult {
+  -     let started = Instant::now();
+  -     let mut cmd = Command::new("/bin/sh");
+  -     cmd.arg("-lc").arg(command);
+  -     if let Some(workdir) = workdir {
+  -         cmd.current_dir(workdir);
+  -     }
+  -     let output = cmd.output();
+  -     match output {
+  -         Ok(output) => GateResult {
+  -             command: command.to_string(),
+  -             passed: output.status.success(),
+  -             status_code: output.status.code(),
+  -             duration_ms: started.elapsed().as_millis() as u64,
+  -             stdout_preview: preview(&String::from_utf8_lossy(&output.stdout), 2000),
+  -             stderr_preview: preview(&String::from_utf8_lossy(&output.stderr), 2000),
+  -         },
+  -         Err(e) => GateResult {
+  -             command: command.to_string(),
+  -             passed: false,
+  ... (17 more lines)
+ ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update all BenchmarkTask constructor call sites to include `timeout_secs: None`. Let me find all of them:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update all BenchmarkTask constructors to include the new field. Let me find all instances:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'BenchmarkTask {' in src/eval_fixtures.rs  ▶ search 'BenchmarkTask {' in src/commands_eval.rs ✓ (846ms)
+ ✓ (846ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test constructors in eval_fixtures.rs to know their exact structure:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:726..746  ▶ read src/eval_fixtures.rs:1440..1460 ✓ (1.3s)
+ ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the `valid_task` helper at line 726. Let me add `timeout_secs: None` to it. Let me also find the other constructor locations.
+
+Let me search more precisely:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'risk_label:' in src/eval_fixtures.rs ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the lines around those other constructors:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:1248..1258  ▶ read src/eval_fixtures.rs:1281..1291  ▶ read src/eval_fixtures.rs:1314..1324  ▶ read src/eval_fixtures.rs:1348..1358  ▶ read src/eval_fixtures.rs:1382..1392 ✓ (3.9s)
+ ✓ (3.4s)
+ ✓ (3.0s)
+ ✓ (2.6s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at lines around 1391-1450 for all the BenchmarkTask constructors in that test:
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 5.6s (5 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:1390..1470                expected_files: vec!["src/context.rs".to_string()],
+                risk_label: "low".to_string(),
+  +             timeout_secs: None,
+            }
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (3 → 4 lines)
+ ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the locations. I need to add `timeout_secs: None` to:
+1. The `valid_task` helper at line 726 (which affects many tests)
+2. The 5 constructors in `format_fixture_list_by_domain_groups_and_sorts`
+3. The constructor in `commands_eval.rs` at line 6215
+
+Let me do these edits:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (3 → 4 lines)
+                expected_files: vec!["src/context.rs".to_string()],
+                risk_label: "low".to_string(),
+  +             timeout_secs: None,
+            }
+ ✓ (423ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the 5 constructors in the list test. They all end with `risk_label: "low"` or `risk_label: "medium"` or `risk_label: "high"`. Let me edit them individually:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                        risk_label: "high".to_string(),
+  +                     timeout_secs: None,
+                    },
+                    BenchmarkTask {
+                        task_id: "eval-scoring".to_string(),
+  ···
+                        hidden_failure_mode: "none".to_string(),
+                        expected_files: vec!["src/lib.rs".to_string()],
+                        risk_label: "medium".to_string(),
+  +                     timeout_secs: None,
+                    },
+                    BenchmarkTask {
+                        task_id: "eval-state-metrics".to_string(),
+  ···
+                        hidden_failure_mode: "none".to_string(),
+                        expected_files: vec!["src/lib.rs".to_string()],
+                        risk_label: "medium".to_string(),
+  +                     timeout_secs: None,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (46 → 51 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (46 → 51 lines)
+                        risk_label: "high".to_string(),
+  +                     timeout_secs: None,
+                    },
+                    BenchmarkTask {
+                        task_id: "eval-scoring".to_string(),
+  ···
+                        hidden_failure_mode: "none".to_string(),
+                        expected_files: vec!["src/lib.rs".to_string()],
+                        risk_label: "medium".to_string(),
+  +                     timeout_secs: None,
+                    },
+                    BenchmarkTask {
+                        task_id: "eval-state-metrics".to_string(),
+  ···
+                        hidden_failure_mode: "none".to_string(),
+                        expected_files: vec!["src/lib.rs".to_string()],
+                        risk_label: "medium".to_string(),
+  +                     timeout_secs: None,
+                    },
+                    BenchmarkTask {
+  ... (15 more lines)
+ ✓ (432ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the constructor in commands_eval.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                expected_files: vec!["src/context.rs".into()],
+                risk_label: "medium".into(),
+  +             timeout_secs: None,
+            };
+  ✓ Auto-approved: edit: src/commands_eval.rs (3 → 4 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_eval.rs (3 → 4 lines)
+                expected_files: vec!["src/context.rs".into()],
+                risk_label: "medium".into(),
+  +             timeout_secs: None,
+            };
+ ✓ (711ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there's a `preview` function in commands_eval.rs that could conflict... the `run_gate` was using `preview` directly, and it was a local function. Now it doesn't call `preview` directly anymore since `run_command_with_timeout` handles it. Let me verify there are no compilation issues. Let me also check if `run_gate` previously had `preview` imported:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn preview' in src/commands_eval.rs ✓ (441ms)
+
+

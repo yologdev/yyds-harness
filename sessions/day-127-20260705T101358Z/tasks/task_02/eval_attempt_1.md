@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The fixture exists and follows the correct JSON format, but it only validates ModelCallStarted↔ModelCallCompleted (checking `unmatched completed: 0`). The task explicitly requires validating BOTH RunStarted↔RunCompleted AND ModelCallStarted↔ModelCallCompleted pairing. The goal text omits run lifecycle entirely, and no test checks for incomplete runs or run-level invariants. A fixture that only covers half the required lifecycle pairing scope does not meet the task's stated objective.
