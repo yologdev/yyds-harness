@@ -224,6 +224,53 @@ def find_stale_orphaned_runs(
     return orphaned_runs, orphaned_session_runs, diagnostics
 
 
+def find_missing_failure_observed(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Find runs completed with error status that lack FailureObserved events.
+
+    Returns (missing_entries, diagnostics) where each missing entry is a dict
+    with keys run_id, status, timestamp_ms for runs whose RunCompleted
+    payload status is not "success"/"completed" and that have no matching
+    FailureObserved event.
+    """
+    error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+    failure_observed_runs: set[str] = set()
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "RunCompleted":
+            status = data.get("status", "")
+            if status and status not in ("success", "completed"):
+                error_completed[rid] = {
+                    "status": status,
+                    "timestamp_ms": event.get("timestamp_ms", 0),
+                }
+        elif kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+
+    missing = sorted(
+        [
+            {"run_id": rid, **info}
+            for rid, info in error_completed.items()
+            if rid not in failure_observed_runs
+        ],
+        key=lambda m: m["run_id"],
+    )
+
+    diagnostics = {
+        "error_completed_runs": len(error_completed),
+        "failure_observed_runs": len(failure_observed_runs),
+        "missing_failure_observed": len(missing),
+    }
+
+    return missing, diagnostics
+
+
 def append_terminal_events(
     events_path: Path,
     after_line: int,
@@ -327,10 +374,40 @@ def append_terminal_events(
             "reason": "ambiguous_reset_full_scan",
         }
 
+    # Full-scan for missing FailureObserved events: find any runs that
+    # completed with error status (not "success"/"completed") but have no
+    # matching FailureObserved event.  This closes the gap where error-
+    # completed sessions were never formally recorded as failures.
+    # The scan is skipped under the same ambiguous-reset guard as orphans.
+    missing_failures: list[dict[str, Any]] = []
+    if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+        missing_failures, failure_diag = find_missing_failure_observed(events)
+        diagnostics["failure_observed_diagnostics"] = failure_diag
+
+        for entry in missing_failures:
+            rid = entry["run_id"]
+            payload_fo: dict[str, Any] = {
+                "reason": (
+                    f"retroactive: run completed with error status "
+                    f"'{entry['status']}' but no FailureObserved was recorded"
+                ),
+                "retroactive": True,
+            }
+            ts = entry.get("timestamp_ms")
+            if ts:
+                payload_fo["original_run_completed_timestamp_ms"] = ts
+            append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo)
+    else:
+        diagnostics["failure_observed_diagnostics"] = {
+            "skipped": True,
+            "reason": "ambiguous_reset_full_scan",
+        }
+
     return {
         "completed_model_calls": completed_models,
         "completed_runs": completed_runs,
         "completed_session_runs": completed_session_runs,
+        "failure_observed_appended": [m["run_id"] for m in missing_failures],
         "diagnostics": diagnostics,
     }
 

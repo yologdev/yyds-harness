@@ -450,6 +450,143 @@ class AppendTerminalStateEvents(unittest.TestCase):
             orphan_diag = result["diagnostics"]["full_scan_orphan_diagnostics"]
             self.assertEqual(orphan_diag["full_scan_orphaned_runs"], 0)
 
+    def test_appends_failure_observed_for_error_completed_run(self):
+        """A RunCompleted with error status and no FailureObserved gets one appended."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "error-run")
+            write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "error-run", {"status": "error"})
+            write_event(events, "RunStarted", "success-run")
+            write_event(events, "ModelCallStarted", "success-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "success-run", {"status": "completed"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            # Write current session events so the full scan has something to skip.
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # error-run should get a FailureObserved.
+            failure_diag = result["diagnostics"]["failure_observed_diagnostics"]
+            self.assertEqual(failure_diag["error_completed_runs"], 1)
+            self.assertEqual(failure_diag["missing_failure_observed"], 1)
+            self.assertIn("error-run", result["failure_observed_appended"])
+
+            # success-run should not.
+            self.assertNotIn("success-run", result["failure_observed_appended"])
+
+            # Verify the appended FailureObserved event payload.
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "error-run"
+            ]
+            self.assertEqual(len(fo_rows), 1)
+            fo = fo_rows[0]
+            self.assertEqual(fo["actor"], "harness")
+            self.assertIn("retroactive", fo["payload"])
+            self.assertTrue(fo["payload"]["retroactive"])
+            self.assertIn("error status 'error'", fo["payload"]["reason"])
+
+    def test_skips_failure_observed_when_already_present(self):
+        """A RunCompleted with error status that already has FailureObserved is not double-counted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "error-run")
+            write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "error-run", {"status": "error"})
+            write_event(events, "FailureObserved", "error-run", {"reason": "original failure"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            failure_diag = result["diagnostics"]["failure_observed_diagnostics"]
+            self.assertEqual(failure_diag["error_completed_runs"], 1)
+            self.assertEqual(failure_diag["failure_observed_runs"], 1)
+            self.assertEqual(failure_diag["missing_failure_observed"], 0)
+            self.assertEqual(result["failure_observed_appended"], [])
+
+            # Only the original FailureObserved should exist.
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "error-run"
+            ]
+            self.assertEqual(len(fo_rows), 1)
+
+    def test_skips_failure_observed_for_success_run(self):
+        """A RunCompleted with status 'completed' does not trigger FailureObserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "success-run")
+            write_event(events, "ModelCallStarted", "success-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "success-run", {"status": "completed"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            failure_diag = result["diagnostics"]["failure_observed_diagnostics"]
+            self.assertEqual(failure_diag["error_completed_runs"], 0)
+            self.assertEqual(failure_diag["missing_failure_observed"], 0)
+            self.assertEqual(result["failure_observed_appended"], [])
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved"
+            ]
+            self.assertEqual(len(fo_rows), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
