@@ -6221,6 +6221,7 @@ mod tests {
             tests: vec!["cargo test context_task".into(), "cargo check".into()],
             hidden_failure_mode: "context category hidden from eval summary".into(),
             expected_files: vec!["src/context.rs".into()],
+            timeout_secs: None,
             risk_label: "medium".into(),
         };
         let result = crate::eval_fixtures::FixtureTaskResult {

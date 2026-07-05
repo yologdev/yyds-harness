@@ -5,7 +5,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 pub const DEFAULT_FIXTURE_ROOT: &str = "eval/fixtures";
 
@@ -19,6 +20,9 @@ pub struct BenchmarkTask {
     pub tests: Vec<String>,
     pub hidden_failure_mode: String,
     pub expected_files: Vec<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
     pub risk_label: String,
 }
 
@@ -182,7 +186,11 @@ pub fn run_fixture_task(task: &BenchmarkTask) -> FixtureTaskResult {
 pub fn run_fixture_task_in(task: &BenchmarkTask, workdir: Option<&Path>) -> FixtureTaskResult {
     let mut command_results = Vec::new();
     for command in &task.tests {
-        command_results.push(run_fixture_command(command, workdir));
+        command_results.push(run_fixture_command(
+            command,
+            workdir,
+            task.timeout_secs.unwrap_or(120),
+        ));
     }
     let passed = command_results.iter().all(|result| result.passed);
     FixtureTaskResult {
@@ -205,7 +213,11 @@ pub fn run_fixture_agent_attempt(
     }
 
     let agent_command = render_agent_command(agent_command_template, task);
-    let agent_result = run_fixture_command(&agent_command, Some(worktree));
+    let agent_result = run_fixture_command(
+        &agent_command,
+        Some(worktree),
+        task.timeout_secs.unwrap_or(120),
+    );
     let changed_files = collect_worktree_changed_files(worktree);
     let unexpected_changed_files = unexpected_changed_files_for_task(task, &changed_files);
     let mutation_scope_passed = unexpected_changed_files.is_empty();
@@ -622,31 +634,89 @@ fn reject_unknown_fields(path: &Path, value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn run_fixture_command(command: &str, workdir: Option<&Path>) -> FixtureCommandResult {
+fn run_fixture_command(
+    command: &str,
+    workdir: Option<&Path>,
+    timeout_secs: u64,
+) -> FixtureCommandResult {
     let started = Instant::now();
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-lc").arg(command);
     if let Some(workdir) = workdir {
         cmd.current_dir(workdir);
     }
-    let output = cmd.output();
-    match output {
-        Ok(output) => FixtureCommandResult {
-            command: command.to_string(),
-            passed: output.status.success(),
-            status_code: output.status.code(),
-            duration_ms: started.elapsed().as_millis() as u64,
-            stdout_preview: preview(&String::from_utf8_lossy(&output.stdout), 2000),
-            stderr_preview: preview(&String::from_utf8_lossy(&output.stderr), 2000),
+
+    let timeout = Duration::from_secs(timeout_secs.max(1));
+
+    // Spawn the child process
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return FixtureCommandResult {
+                command: command.to_string(),
+                passed: false,
+                status_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                stdout_preview: String::new(),
+                stderr_preview: e.to_string(),
+            };
+        }
+    };
+
+    let pid = child.id();
+
+    // Spawn a thread to wait for the child
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let output = child.wait_with_output();
+        let _ = tx.send(output);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(output_result) => match output_result {
+            Ok(output) => FixtureCommandResult {
+                command: command.to_string(),
+                passed: output.status.success(),
+                status_code: output.status.code(),
+                duration_ms: started.elapsed().as_millis() as u64,
+                stdout_preview: preview(&String::from_utf8_lossy(&output.stdout), 2000),
+                stderr_preview: preview(&String::from_utf8_lossy(&output.stderr), 2000),
+            },
+            Err(e) => FixtureCommandResult {
+                command: command.to_string(),
+                passed: false,
+                status_code: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+                stdout_preview: String::new(),
+                stderr_preview: e.to_string(),
+            },
         },
-        Err(e) => FixtureCommandResult {
-            command: command.to_string(),
-            passed: false,
-            status_code: None,
-            duration_ms: started.elapsed().as_millis() as u64,
-            stdout_preview: String::new(),
-            stderr_preview: e.to_string(),
-        },
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            // Kill the child process
+            let duration_ms = started.elapsed().as_millis() as u64;
+            // Ignore errors: the process may have already exited
+            let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+            FixtureCommandResult {
+                command: command.to_string(),
+                passed: false,
+                status_code: None,
+                duration_ms,
+                stdout_preview: String::new(),
+                stderr_preview: format!("command timed out after {}s", timeout_secs),
+            }
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            // Thread panicked or child was dropped; treat as failure
+            let duration_ms = started.elapsed().as_millis() as u64;
+            FixtureCommandResult {
+                command: command.to_string(),
+                passed: false,
+                status_code: None,
+                duration_ms,
+                stdout_preview: String::new(),
+                stderr_preview: "command process ended unexpectedly".to_string(),
+            }
+        }
     }
 }
 
@@ -687,6 +757,7 @@ mod tests {
             tests: vec!["true".to_string()],
             hidden_failure_mode: "context miss".to_string(),
             expected_files: vec!["src/context.rs".to_string()],
+            timeout_secs: None,
             risk_label: "low".to_string(),
         }
     }
@@ -1356,6 +1427,7 @@ mod tests {
                     tests: vec!["cargo test".to_string()],
                     hidden_failure_mode: "none".to_string(),
                     expected_files: vec!["src/lib.rs".to_string()],
+                    timeout_secs: None,
                     risk_label: "high".to_string(),
                 },
                 BenchmarkTask {
@@ -1367,6 +1439,7 @@ mod tests {
                     tests: vec!["cargo test".to_string()],
                     hidden_failure_mode: "none".to_string(),
                     expected_files: vec!["src/lib.rs".to_string()],
+                    timeout_secs: None,
                     risk_label: "medium".to_string(),
                 },
                 BenchmarkTask {
@@ -1378,6 +1451,7 @@ mod tests {
                     tests: vec!["cargo test".to_string()],
                     hidden_failure_mode: "none".to_string(),
                     expected_files: vec!["src/lib.rs".to_string()],
+                    timeout_secs: None,
                     risk_label: "medium".to_string(),
                 },
                 BenchmarkTask {
@@ -1389,6 +1463,7 @@ mod tests {
                     tests: vec!["cargo test".to_string()],
                     hidden_failure_mode: "none".to_string(),
                     expected_files: vec!["src/lib.rs".to_string()],
+                    timeout_secs: None,
                     risk_label: "low".to_string(),
                 },
                 BenchmarkTask {
@@ -1400,6 +1475,7 @@ mod tests {
                     tests: vec!["cargo test".to_string()],
                     hidden_failure_mode: "none".to_string(),
                     expected_files: vec!["src/lib.rs".to_string()],
+                    timeout_secs: None,
                     risk_label: "low".to_string(),
                 },
             ],
@@ -1594,5 +1670,26 @@ mod tests {
                 "real command result should have a status_code"
             );
         }
+    }
+
+    #[test]
+    fn run_fixture_command_times_out_on_hanging_process() {
+        // Spawn a process that sleeps for 999 seconds, with a 1-second timeout.
+        // The result must be a failure and must return within 3 seconds wall time.
+        let wall_start = Instant::now();
+        let result = run_fixture_command("sleep 999", None, 1);
+        let wall_elapsed = wall_start.elapsed().as_secs();
+
+        assert!(!result.passed, "hanging command should not pass");
+        assert!(
+            result.stderr_preview.contains("timed out after 1s"),
+            "stderr_preview should indicate timeout, got: {}",
+            result.stderr_preview
+        );
+        assert!(
+            wall_elapsed < 3,
+            "timeout should return quickly, but wall time was {}s",
+            wall_elapsed
+        );
     }
 }
