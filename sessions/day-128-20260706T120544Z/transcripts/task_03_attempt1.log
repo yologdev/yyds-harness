@@ -1,0 +1,226 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. Add a hard event-count cap to `read_compatibility_events` in `src/state.rs`
+2. Remove `#[allow(dead_code)]` from `read_events_bounded`
+3. No caller changes needed
+
+Let me start by reading the skill file and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:3180..3260 ✓ (649ms)
+ ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the `read_events_bounded` function and then see the callers of `read_compatibility_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3259..3289  ▶ search 'read_compatibility_events' in src (*.rs)  ▶ search 'read_events_bounded' in src (*.rs) ✓ (656ms)
+ ✓ (696ms)
+ ✓ (693ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. `read_compatibility_events` at line 3193 reads everything unbounded - it's called directly from 5 places (context.rs, commands_evolve.rs, commands_deepseek.rs, commands_eval.rs, commands_state.rs line 1353, plus test code and the `read_events_bounded` wrapper)
+
+2. `read_events_bounded` at line 3245 has `#[allow(dead_code)]` and is called from `commands_state.rs:1393` with `BOUNDED_FULL_SCAN_CAP`
+
+3. The task says to add a cap to `read_compatibility_events` and remove `#[allow(dead_code)]` from `read_events_bounded`
+
+Let me now proceed to implement:
+
+1. Add constant `COMPAT_EVENTS_CAP: usize = 500_000` near `read_compatibility_events`
+2. Add check in the for loop: after `events.push(v)`, check if `events.len() >= COMPAT_EVENTS_CAP`, emit warning, break
+3. Remove `#[allow(dead_code)]` from line 3244
+
+Let me make sure about the exact line to insert the cap check. Looking at the loop structure:
+
+```rust
+for (idx, line) in raw.lines().enumerate() {
+    ...
+    match serde_json::from_str::<Value>(&normalized) {
+        Ok(v) => events.push(v),    // line 3216
+        Err(e) => { ... }
+    }
+}
+```
+
+I should add the cap check right after `events.push(v)`.
+
+Let me also verify total_lines computation accounts for the cap. In `read_compatibility_events`, the total_lines isn't needed since we're just capping. But the warning should say something like "event cap reached: read N events (stopped at line M of file)".
+
+Actually, looking more carefully: the task says to add a cap to `read_compatibility_events` and remove `#[allow(dead_code)]` from `read_events_bounded`. The cap constant and warning message are straightforward.
+
+Let me write the edit now.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.3s (3 ✓)
+
+Good. I have a clear picture now. Let me implement the changes:
+
+1. Add a constant and cap to `read_compatibility_events` (line 3193)
+2. Remove `#[allow(dead_code)]` from `read_events_bounded` (line 3244)
+    /// state event (corrupted JSON, truncated write, etc.). Skipped lines are
+    /// reported via `eprintln!` with their line number. Only returns `Err` when the
+    /// file itself cannot be read.
+  + ///
+  + /// Capped at `COMPAT_EVENTS_CAP` events to prevent silent timeouts on large
+  + /// event histories (Day 128: the Day 117 lesson encoded as a guard).
+    pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+  +     /// Maximum number of events to read in a single call.
+  +     /// 500k events at ~200 bytes each ≈ 100 MB file — well above any current
+  +     /// legitimate use case, but low enough to prevent the silent hang.
+  +     const COMPAT_EVENTS_CAP: usize = 500_000;
+  + 
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+        let mut events = Vec::new();
+  ···
+                }
+            };
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (48 → 69 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (48 → 69 lines)
+    /// state event (corrupted JSON, truncated write, etc.). Skipped lines are
+    /// reported via `eprintln!` with their line number. Only returns `Err` when the
+    /// file itself cannot be read.
+  + ///
+  + /// Capped at `COMPAT_EVENTS_CAP` events to prevent silent timeouts on large
+  + /// event histories (Day 128: the Day 117 lesson encoded as a guard).
+    pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+  +     /// Maximum number of events to read in a single call.
+  +     /// 500k events at ~200 bytes each ≈ 100 MB file — well above any current
+  +     /// legitimate use case, but low enough to prevent the silent hang.
+  +     const COMPAT_EVENTS_CAP: usize = 500_000;
+  + 
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
+        let mut events = Vec::new();
+  ···
+                }
+            };
+            match serde_json::from_str::<Value>(&normalized) {
+  -             Ok(v) => events.push(v),
+  ... (17 more lines)
+ ✓ (257ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now remove `#[allow(dead_code)]` from `read_events_bounded`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now remove `#[allow(dead_code)]` from `read_events_bounded`:
+  - #[allow(dead_code)]
+    pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+  ✓ Auto-approved: edit: src/state.rs (2 → 1 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 1 lines)
+  - #[allow(dead_code)]
+    pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+ ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo fmt -- --check, then cargo build, then cargo test read_events_bounded.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Now cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (16.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run `cargo test read_events_bounded`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test read_events_bounded… ✓ (29.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 9 `read_events_bounded` tests pass. Let me also run the broader `cargo test` to make sure nothing else is broken. Actually, the task says to run focused verification: "cargo build && cargo test read_events_bounded", and then "cargo test (full suite — the change is internal to read_compatibility_events, no caller changes)". Let me run the full suite to be safe.
+
+Wait, the evolve skill says: "Run focused verification after changes: cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface. Do not run full cargo test or full clippy inside the implementation turn; the harness runs global gates after the task."
+
+So I should NOT run the full test suite. Just the focused ones. The focused test `cargo test read_events_bounded` passes. Let me also check that the read_compatibility_events tests still pass (there are some in the test module).
+────────────────────────────────────────────────────────────────────────────────
+
+Focused tests pass. Let me also verify the `read_compatibility_events` tests still pass:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test read_compatibility … ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No test named "read_compatibility". Let me search for existing tests of `read_compatibility_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*compatibility' in src/state.rs (*.rs) ✓ (167ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No dedicated tests for `read_compatibility_events` directly. That's fine. The existing `read_events_bounded` tests indirectly exercise it through its internal call. Let me now verify the git diff and then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — no dedicated tests for the unbounded function (that's part of why it needed a cap). The `read_events_bounded` tests pass and they exercise the same code path internally. Let me verify the diff:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `src/state.rs` which matches the task's Edit Surface. Let me now review the actual diff to make sure it's correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct:
+1. Added doc comment about the cap
+2. Added `COMPAT_EVENTS_CAP` constant (500,000)
+3. After `events.push(v)`, checks if `events.len() >= COMPAT_EVENTS_CAP`, emits a warning with count/total/location, and breaks
+4. Removed `#[allow(dead_code)]` from `read_events_bounded`
+
+All checks pass: `cargo fmt -- --check`, `cargo build`, `cargo test read_events_bounded`. The diff only touches `src/state.rs` as required.
+
+Now I should commit. The commit message should be: "Day 128 (12:05): Cap unbounded event reads to prevent future diagnostic timeouts (Task 3)"
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is clean, only touches `src/state.rs`. Let me commit:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's a summary of what changed:
+
+**`src/state.rs`** — two edits:
+
+1. **Added `COMPAT_EVENTS_CAP = 500_000` to `read_compatibility_events`** (line 3193). After each successful `events.push(v)`, the loop checks if `events.len() >= COMPAT_EVENTS_CAP` and breaks with a clear `eprintln!` warning showing how many events were read and at what line it stopped. This converts the silent hang-at-scale into a bounded read with a warning.
+
+2. **Removed `#[allow(dead_code)]` from `read_events_bounded`** (was line 3244). The function is now the canonical bounded path, so the suppression is no longer appropriate — its existence is justified even without current callers.
+
+**Verification:**
+• `cargo fmt -- --check` — pass
+• `cargo build` — pass
+• `cargo test read_events_bounded` — 9/9 pass
+
+No caller signatures changed. All existing callers continue to compile and work as before, just with a safety cap on event volume.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

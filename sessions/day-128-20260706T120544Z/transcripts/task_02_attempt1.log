@@ -1,0 +1,448 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to add a held-out eval fixture for DeepSeek cache metric propagation. Let me start by reading the evolve skill, then examine existing fixtures as templates, and create the new fixture file.
+
+Let me plan:
+1. Read `skills/evolve/SKILL.md`
+2. Examine existing fixtures: `eval/fixtures/local-smoke/004-cache-metrics.json` and `036-deepseek-transport-error-policy.json`
+3. Create `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`
+4. Verify with `python3 -c ...` 
+5. Run `cargo test` to ensure additive change doesn't break anything
+6. Commit
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read eval/fixtures/local-smoke/004-cache-metrics.json  ▶ read eval/fixtures/local-smoke/036-deepseek-transport-error-policy.json ✓ (1.1s)
+ ✓ (893ms)
+ ✓ (649ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the existing fixture format more closely and check if there's a fixture runner that I can understand. Let me also look at the eval fixtures directory structure.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ ls eval/fixtures/local-smoke  ▶ read src/eval_fixtures.rs (80 lines) ✓ (238ms)
+ ✓ (784ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the BenchmarkTask struct. Let me look at the existing 004-cache-metrics.json fixture more carefully and then check the existing tests to understand how "cache-report" works.
+
+The task is to create a new fixture file. But the task says the fixture should be a held-out eval fixture. Looking at the BenchmarkTask struct, each fixture has `tests` which are shell commands. The fixture runner runs these commands and checks if they pass.
+
+The task says the fixture should verify that cache metrics survive the full agent pipeline. The tests could use `yyds deepseek cache-report` or `yyds state query`.
+
+But wait - looking at the fixture runner code more carefully, it just runs commands and checks exit codes. The fixture doesn't actually simulate a full agent pipeline. It just runs the specified tests and checks if they pass.
+
+Let me look more carefully at what existing fixtures actually do. Let me look at how `run_fixture_task` works.
+
+Let me also check what `yyds deepseek cache-report` does exactly, and whether there are any existing tests that check cache metrics in state events.
+
+Let me also think about the fallback: "If the fixture cannot be validated because it requires a live DeepSeek API key or real cache-populated state that isn't available in the test environment, mark it as a "requires-api" fixture with risk_label=high"
+
+The key challenge here is: this is a held-out fixture for detecting regression. But if it's testing "cache metrics survive the full agent pipeline", it needs a full agent pipeline run with real cache-populated state. In the test environment, there may not be any real state events with cache metrics.
+
+Let me look at how cache-report works and whether there are state events we could query.
+
+Let me look at the `yyds deepseek cache-report` command and existing state query capabilities.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cache-report' (*.rs)  ▶ read src/commands_deepseek.rs:1..101 ✓ (241ms)
+ ✓ (822ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the handle_cache_report function to understand what it does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_cache_report' ✓ (185ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1882.. ✓ (194ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I now understand the cache-report command. It reads state events and looks for cache metrics. Let me also check what cache-related tests exist to understand the test patterns.
+
+The task says: "The fixture's tests array includes at least one command that verifies cache metrics are populated in state events (e.g., `yyds deepseek cache-report` or a state query filtering for ModelCallCompleted events with cache fields)"
+
+But the challenge is: the `yyds deepseek cache-report` command reads from `.yoyo/state/events.jsonl`, which won't exist in a clean test environment. And the task's fallback says: "If the fixture cannot be validated because it requires a live DeepSeek API key or real cache-populated state that isn't available in the test environment, mark it as a 'requires-api' fixture with risk_label=high and a note explaining the gating condition."
+
+However, looking at the existing fixture `004-cache-metrics.json`, it uses `cargo test` as its test command. So the fixture tests can be Rust unit tests that validate the behavior.
+
+Let me think about what tests I can write. The existing cache tests are:
+- `deepseek::tests::cache_ratio_handles_missing_and_zero_totals` - tests ratio calculation
+- `commands_deepseek::tests::cache_report_reads_canonical_yoagent_state_events` - tests reading from state events
+
+The task says: "If the existing 004-cache-metrics.json fixture already covers this regression path after inspection, mark this task done-with-findings and update the existing fixture's goal if needed."
+
+Let me inspect the existing cache-related tests to see if they actually test the regression path (cache metrics surviving the full pipeline).
+
+The key regression path is: cache metrics present in raw API response but absent from recorded state events after passing through yoagent. The workaround records them directly before they enter yoagent's Usage struct.
+
+Let me check the test for cache_report_reads_canonical_yoagent_state_events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cache_report_reads_canonical_yoagent_state_events' ✓ (162ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test to understand what it actually tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2274.. ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the existing tests. The 004-cache-metrics.json fixture already has tests that:
+1. Test cache ratio calculation
+2. Test reading from canonical state events with cache metrics
+
+But the regression path the task describes is: "Cache metrics silently drop to zero when new code paths use yoagent without the direct-recording workaround." This is about the *full pipeline* - from raw API response through yoagent to recorded state events. The existing unit tests test the parsing and reporting, but they don't test that the workaround path (recording cache metrics directly before they enter yoagent) actually works end-to-end.
+
+However, I can't write a unit test that requires a live API key and real API calls. The fallback in the task says: "If the fixture cannot be validated because it requires a live DeepSeek API key or real cache-populated state that isn't available in the test environment, mark it as a 'requires-api' fixture with risk_label=high and a note explaining the gating condition."
+
+Let me think about what I can actually test. The existing `cache_report_reads_canonical_yoagent_state_events` test creates a synthetic event and verifies that the cache report can read it. But this doesn't test the full pipeline - it tests that the report command works when cache metrics ARE in the state events.
+
+What I could do is create a test that specifically tests the regression path: that `parse_chat_completion_sse` or `parse_fim_completion_response` actually records cache metrics when they're present in the raw response. Let me look at the parsing code.
+
+Actually, let me re-read the task more carefully. It says the tests should include "at least one command that verifies cache metrics are populated in state events (e.g., `yyds deepseek cache-report` or a state query filtering for ModelCallCompleted events with cache fields)".
+
+But the cache-report command won't work without real state events. And the ModelCallCompleted search won't work either without real state.
+
+Wait, the task says it should be a fixture - the fixture runs `cargo test` commands. I could add a new unit test that specifically tests the regression path. Let me look at what `parse_chat_completion_sse` does with cache metrics.
+
+Let me check the deepseek.rs parsing code for cache metrics.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cache_read_input_tokens' (*.rs)  ▶ search 'CacheMetricsRecorded' (*.rs) ✓ (347ms)
+ ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the cache metric recording code in state.rs (lines around 529 and 558) and the parsing code in lib.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:510..  ▶ read src/lib.rs:170.. ✓ (664ms)
+ ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me now understand what the fixture needs:
+
+1. The existing 004-cache-metrics.json fixture covers:
+   - Cache ratio calculation (`cache_ratio_handles_missing_and_zero_totals`)
+   - Reading cache metrics from state events (`cache_report_reads_canonical_yoagent_state_events`)
+
+2. The regression path NOT covered: cache metrics present in raw API response → survive through yoagent pipeline → end up as CacheMetricsRecorded events in state.
+
+The workaround is `record_cache_metrics_direct` which is called from `parse_chat_completion_sse` and `parse_fim_completion_response`. Let me check where this is called.
+
+Let me look at lib.rs where the cache metrics are recorded:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:1.. ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me focus. The task is to create a fixture file at `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`. This is purely additive - no source code changes.
+
+The key question is: what tests should the fixture contain?
+
+Looking at the existing 004-cache-metrics.json:
+```json
+{
+  "task_id": "cache-metrics",
+  "category": "state serialization bug",
+  "repo_fixture": "self",
+  "initial_commit": "current",
+  "goal": "Keep DeepSeek context cache hit and miss token metrics parseable and reportable.",
+  "tests": [
+    "cargo test deepseek::tests::cache_ratio_handles_missing_and_zero_totals -- --nocapture",
+    "cargo test commands_deepseek::tests::cache_report_reads_canonical_yoagent_state_events -- --nocapture"
+  ],
+  "hidden_failure_mode": "cache metrics are missing, divide by zero, or become unreadable after canonical yoagent-state JSONL persistence",
+  "expected_files": [
+    "src/deepseek.rs",
+    "src/commands_deepseek.rs",
+    "src/state.rs"
+  ],
+  "risk_label": "medium"
+}
+```
+
+The task says the new fixture should test the regression path: "Cache metrics silently drop to zero when new code paths use yoagent without the direct-recording workaround."
+
+The existing tests (004) cover:
+1. Ratio calculation correctness
+2. Reading from state events once they're there
+
+But they DON'T cover: cache metrics in raw API responses surviving through the full pipeline.
+
+However, testing the full pipeline requires a live API key or synthetic pipeline simulation. The fallback says: "If the fixture cannot be validated because it requires a live DeepSeek API key or real cache-populated state that isn't available in the test environment, mark it as a 'requires-api' fixture with risk_label=high and a note explaining the gating condition."
+
+But wait - the task also says: "If the existing 004-cache-metrics.json fixture already covers this regression path after inspection, mark this task done-with-findings and update the existing fixture's goal if needed."
+
+Let me think more carefully. The existing fixture 004 tests:
+1. `cache_ratio_handles_missing_and_zero_totals` - This tests the DeepSeekUsage cache_ratio method. It checks that when both hit and miss are zero, the ratio is 0.0 (not NaN). This is about calculation robustness.
+2. `cache_report_reads_canonical_yoagent_state_events` - This creates a synthetic CacheMetricsRecorded event and verifies the cache report reads it correctly.
+
+Neither of these tests the regression path where cache metrics are present in the raw API response but get dropped by the yoagent pipeline. The workaround records them directly before they enter yoagent, and there's no test that verifies this recording path works.
+
+So what we need is: a test that verifies `record_cache_metrics_direct` actually records CacheMetricsRecorded events that can be read back. Let me check if such a test already exists.
+
+Actually, let me search for tests of `record_cache_metrics_direct`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics_direct' (*.rs) ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no test for `record_cache_metrics_direct`. This is the regression path! Let me check where it's called:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1690..  ▶ read src/deepseek.rs:1780.. ✓ (651ms)
+ ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The regression path is:
+
+1. `parse_chat_completion_sse` gets a raw API response with cache metrics
+2. It extracts them into `DeepSeekUsage`
+3. It calls `record_cache_metrics_direct` to record them directly in state events (lines 1789-1793)
+4. If this recording step is ever removed or broken, cache metrics silently disappear from the state
+
+Similarly, `parse_fim_completion_response` does the same at line 1706.
+
+There's no direct unit test for `record_cache_metrics_direct` in the current codebase. The existing `cache_report_reads_canonical_yoagent_state_events` test creates synthetic CacheMetricsRecorded events and then reads them - it tests the read path. But it doesn't test that the write path (record_cache_metrics_direct) correctly records events.
+
+However, the fixture is a file, not a Rust test. The fixture contains `tests` which are shell commands. I could either:
+1. Write a new Rust unit test that tests `record_cache_metrics_direct`, then reference it in the fixture, OR
+2. Make the fixture reference existing tests
+
+The task's Edit Surface only lists the fixture file. But the evolve skill says: "Write a test first if possible." If the existing tests don't cover the regression path, I should write a new test.
+
+Wait, let me re-read the task: "Edit Surface: eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json (new file)"
+
+The task says the Edit Surface is just the fixture file. But it also says the fixture should reference tests. Since this is a "held-out" eval fixture, it should reference existing tests that would catch the regression.
+
+Let me think about what tests already exist that could catch this regression:
+1. `cache_report_reads_canonical_yoagent_state_events` - tests that CacheMetricsRecorded events can be read and displayed. If `record_cache_metrics_direct` stopped recording, this test wouldn't catch it because it creates events manually.
+2. `cache_ratio_handles_missing_and_zero_totals` - tests ratio calculation, not recording.
+
+Neither test catches the regression. So I need to add a new test and reference it in the fixture.
+
+But wait - the task says the fixture is the only file in the Edit Surface. Let me re-read: "Edit Surface: eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json (new file)".
+
+Actually, looking at other fixtures, they reference existing tests. The fixture itself doesn't contain test code - it references `cargo test` commands that run existing tests. So I need to:
+1. Write a new unit test (in src/state.rs or src/deepseek.rs) that specifically tests the regression path
+2. Reference it in the fixture
+
+But the Edit Surface only lists the fixture file. This could mean either:
+a) The task expects me to only create the fixture file and it should reference existing tests
+b) The task expects me to also write the test code
+
+Let me look at how other fixtures handle this. The 036-deepseek-transport-error-policy.json references existing tests:
+```json
+"tests": [
+    "cargo test deepseek::tests::transport_policy_ -- --nocapture",
+    "cargo test commands_deepseek::tests::transport_decision_is_printable_as_json -- --nocapture",
+    "cargo test deepseek_config_parser_maps_sections_to_cli_keys -- --nocapture"
+]
+```
+
+These tests already existed when the fixture was created. Similarly, the 004-cache-metrics.json fixture references existing tests.
+
+So the pattern is: create the fixture file that references existing tests. The fixture is held-out evidence.
+
+But the task says the existing 004 doesn't cover this regression path. Let me re-read the fallback: "If the existing 004-cache-metrics.json fixture already covers this regression path after inspection, mark this task done-with-findings and update the existing fixture's goal if needed."
+
+After inspection, 004 does NOT cover the regression path. The regression path is:
+- Cache metrics in raw API response → survive through yoagent → appear in CacheMetricsRecorded events
+
+The existing tests only cover reading and calculating, not the recording step.
+
+But the Edit Surface only lists the fixture file. I think the intent is that the fixture should reference new tests that I write. But the Edit Surface says the fixture is the only file...
+
+Actually, let me re-read the task more carefully. "Objective: Add one held-out eval fixture that catches silent cache-metric regression — when cache_read_input_tokens or cache_creation_input_tokens are present in the raw API response but absent from the recorded state events after passing through the agent pipeline."
+
+This is the fixture's goal. The fixture's tests should catch this regression. Currently no tests catch it. So I need to either:
+1. Write a new test and reference it in the fixture (but Edit Surface doesn't list the test file)
+2. Use existing tests that partially cover the path
+
+Alternatively, the task may expect me to add the test as well since it's implied by "write a test first if possible" from the evolve skill.
+
+OK, let me think about what the minimum viable thing is here. The task is to create a fixture file. The fixture file should reference tests. The tests should catch the regression. If no existing tests catch the regression, I should write one.
+
+I think the right approach is:
+1. Write a new unit test for `record_cache_metrics_direct` in `src/state.rs` 
+2. Create the fixture file referencing this test
+3. Both go in the same commit
+
+Let me also check if `record_cache_metrics_direct` is testable - it calls `record()` which requires the global state to be initialized. Let me check how the existing `cache_report_reads_canonical_yoagent_state_events` test works - it creates events manually, it doesn't go through `record_cache_metrics_direct`.
+
+Let me look at how `record` works:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.5s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record\b' (state.rs) ✓ (167ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `record` function in state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\(' (state.rs) ✓ (129ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "fn record(" src/state… ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `record` function and understand if I can test `record_cache_metrics_direct` in a unit test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:439.. ✓ (211ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I understand the situation now. Let me think about what I should actually do:
+
+1. The `record_cache_metrics_direct` function uses the global recorder. Testing it directly in a unit test is hard because it depends on the global state.
+
+2. The existing `cache_report_reads_canonical_yoagent_state_events` test creates a synthetic event manually and then reads it. This tests the read path but not the recording path.
+
+3. The regression path is: if someone changes `parse_chat_completion_sse` to stop calling `record_cache_metrics_direct`, cache metrics silently disappear from state events. There's no mechanical test for this.
+
+Given the constraints:
+- The Edit Surface only lists the fixture file
+- The task wants a "held-out eval fixture" (a fixture that, when run against future code, would catch the regression)
+- The fallback says: "If the fixture cannot be validated because it requires a live DeepSeek API key or real cache-populated state that isn't available in the test environment, mark it as a 'requires-api' fixture with risk_label=high"
+
+I think the right approach is:
+1. Create the fixture file
+2. Write a new unit test for the recording path in `src/state.rs` that tests `record_cache_metrics_direct` by setting up a temp state recorder and verifying the event is written
+3. Reference both the new test and the existing tests in the fixture
+
+Actually, let me look more carefully at whether I can test `record_cache_metrics_direct`. The function calls `record()` which uses `GLOBAL_RECORDER`. Let me check if there's a way to set up the global recorder in tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'init_global' (state.rs) ✓ (182ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at one of those tests to see the pattern for initializing global state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:6820.. ✓ (198ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I can write a test that:
+1. Initializes the global recorder with a temp dir
+2. Calls `record_cache_metrics_direct`
+3. Reads the events from the temp file
+4. Asserts that the CacheMetricsRecorded event was written
+
+This would test the recording path and catch the regression if `record_cache_metrics_direct` is ever broken or removed.
+
+Let me now plan the implementation:
+
+1. **Write a unit test** in `src/state.rs` called `record_cache_metrics_direct_writes_event` that:
+   - Initializes global recorder
+   - Calls `record_cache_metrics_direct` with some cache values
+   - Reads the events file
+   - Asserts a CacheMetricsRecorded event exists with the right values
+
+2. **Create the fixture file** at `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json` that references this test.
+
+Actually wait - looking at the fixture tests, they use `cargo test` commands. If I add a new test function in state.rs, I can reference it with `cargo test state::tests::record_cache_metrics_direct_writes_event -- --nocapture`.
+
+But let me also check: do I need to add `record_cache_metrics_direct` to the list of functions tested? The task says `expected_files: list the source files that own the cache recording path (src/deepseek.rs, src/state.rs)`
+
+Let me also check the existing 004 fixture to see if there's a test pattern I should follow for the test name.
+
+OK, let me now plan the implementation in detail:
+
+1. Write a new test `record_cache_metrics_direct_writes_event` in `src/state.rs`
+2. Create fixture file at `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`
+3. Verify with python3 json check
+4. Run cargo test for the new test
+5. Commit
+
+Let me look at how `reset_global_recorder_for_test` works and the locking pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn reset_global_recorder_for_test' (state.rs) ✓ (131ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3380.. ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I notice the tests use `state_global_test_lock()`. Let me check how this is defined.
+
+Now I have enough context. Let me plan my approach:
+
+1. Add a new test `record_cache_metrics_direct_writes_event` in `src/state.rs` that verifies:
+   - Calling `record_cache_metrics_direct("deepseek-v4-pro", Some(100), Some(50))` writes a CacheMetricsRecorded event
+   - The event can be read back and has the correct values
+
+2. Create the fixture file `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`
+
+Let me check `state_global_test_lock`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "state_global_test_loc… ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the lock function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3375.. ✓ (196ms)
+
+

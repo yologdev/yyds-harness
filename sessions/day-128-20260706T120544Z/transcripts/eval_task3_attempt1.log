@@ -1,0 +1,69 @@
+warning: skipping corrupted event at line 58599 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 6460
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task quickly.
+
+The task is: Cap unbounded event reads in `read_compatibility_events` to prevent future diagnostic timeouts.
+
+Looking at the diff:
+
+1. Added `COMPAT_EVENTS_CAP: usize = 500_000` constant inside `read_compatibility_events`
+2. In the event push loop, after `events.push(v)`, added a check: if `events.len() >= COMPAT_EVENTS_CAP`, emit `eprintln!` warning and `break`
+3. Removed `#[allow(dead_code)]` from `read_events_bounded`
+4. Updated doc comment on `read_compatibility_events` to note the cap
+
+Build: PASS, Tests: PASS
+
+Let me verify against success criteria:
+- ✅ `read_compatibility_events` has a hard event-count cap (500,000)
+- ✅ When the cap is hit, a clear eprintln warning is emitted
+- ✅ `cargo build && cargo test` passes
+- ✅ `#[allow(dead_code)]` removed from `read_events_bounded`
+
+The diff matches the task description exactly. The cap constant is there, the check is in the right place (after push), the warning message is clear, and the dead_code suppression is removed. No caller changes needed per the implementation notes.
+
+One small thing to check: the warning message says `idx + 1` for both the total lines read and the stopped-at line. Since `break` is called inside the loop and `idx` starts at 0 and is incremented at the bottom (`idx += 1`), when we break, `idx` is the index of the current line. So `idx + 1` would be the line number where we stopped, and `idx` is the index of the last processed line. But the message says "read {} of {} total lines" where the second `{}` is `idx + 1` — this is a bit misleading because it says "total lines [in the file]" but it's really just the line count we processed up to. However, the intent is clear enough — it's saying we read N events out of the (idx+1) lines scanned so far, stopping at line (idx+1). This is a minor wording issue, not a bug.
+
+Actually wait, let me re-read the loop structure more carefully. Let me check the actual code around the loop to understand `idx` properly.
+
+The loop is:
+```
+for (idx, line) in raw.lines().enumerate() {
+    ...
+    if events.len() >= cap {
+        eprintln!("... read {} of {} total lines ... stopped at line {}", events.len(), idx + 1, idx + 1);
+        break;
+    }
+    idx += 1;
+}
+```
+
+Wait no, `enumerate()` gives (0, line0), (1, line1), etc. If we break after pushing the event at idx=499999 (the 500,000th event), `idx` is 499999 but it could be up to much higher depending on how many lines are skipped. The `idx + 1` in the message shows the line number in the file where we stopped. The message says "read N of (idx+1) total lines" which is a bit confusing because "total lines" sounds like the total lines in the file, but it's actually just the number of lines scanned so far. 
+
+This is a minor wording imperfection but not a bug. The functionality is correct.
+
+Verdict: PASS.
+
+Let me write the eval file.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff matches every success criterion in the task description. Let me verify one detail quickly — checking the actual line structure around the change to ensure `idx` usage is correct.
+  ▶ read src/state.rs:3190..3250 ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code looks correct. The loop uses `enumerate()` which gives (0, line0), (1, line1), etc. The cap check is after `events.push(v)`, and `idx + 1` correctly gives the 1-based line number. Everything matches the task description. No bugs visible.
+
+The warning message uses `idx + 1` for both the "total lines" and "stopped at line" values. The "total lines" here means "total lines scanned so far" which is fine — it's clear from context.
+
+One minor note: the constant `COMPAT_EVENTS_CAP` is defined inside the function body, which means it's not accessible to callers who might want to know the cap. But the task explicitly says "Add a constant like const COMPAT_EVENTS_CAP: usize = 500_000; near the top of read_compatibility_events" — so this is exactly what was requested.
+
+Verdict: PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+Everything checks out. The implementation matches the task exactly: cap constant added, check in the right place after `push`, warning emitted on cap hit, `#[allow(dead_code)]` removed. Build and tests pass.
+  + Verdict: PASS
+  + Reason: The diff adds a 500,000-event cap to `read_compatibility_events` with an `eprintln!` warning on overflow, removes `#[allow(dead_code)]` from `read_events_bounded`, and the provided build+tests pass confirms no regressions — all success criteria met exactly as specified.
+  ✓ Auto-approved: write: session_plan/eval_task_3.md (2 lines)

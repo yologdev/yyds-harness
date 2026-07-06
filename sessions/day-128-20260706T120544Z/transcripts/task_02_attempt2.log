@@ -1,0 +1,313 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is to create a held-out eval fixture file at `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`. This is a new file, no source code changes needed. Let me first read the evolve skill, then study the existing fixture templates, and then write the fixture.
+
+Let me act efficiently. I need to:
+1. Read the evolve skill
+2. Study existing fixture templates (004-cache-metrics.json and 036-deepseek-transport-error-policy.json)
+3. Write the fixture
+4. Verify it
+
+The checkpoint says I must write/edit a file by my 3rd tool turn or write blocked/obsolete notes. Let me move fast.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read eval/fixtures/local-smoke/004-cache-metrics.json  ▶ read eval/fixtures/local-smoke/036-deepseek-transport-error-policy.json ✓ (1.1s)
+ ✓ (905ms)
+ ✓ (696ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the fixture templates. Let me also check what tests currently exist in state.rs related to cache metrics, so I know if there's already a `record_cache_metrics_direct` test. The previous transcript shows the sub-agent was investigating this.
+
+Let me also check if a `state_global_test_lock` function exists so I can write a proper test.
+
+Actually, the task says to create a fixture file. The fixture file references tests. But looking at the existing fixtures, they reference cargo test commands. If I'm writing a fixture that tests cache metric propagation through the full pipeline, I should either:
+1. Reference existing tests that already cover this path
+2. Or add a new test and reference it
+
+Let me check what test functions already exist related to cache metrics in state.rs and deepseek.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics_direct' in src/state.rs  ▶ search 'cache.metric' in src/state.rs  ▶ search 'CacheMetricsRecorded' in src/state.rs ✓ (615ms)
+ ✓ (653ms)
+ ✓ (698ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `record_cache_metrics_direct` function and its context to understand how to write a test for it.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:525..575  ▶ search 'fn record_cache_metrics' in src/state.rs ✓ (450ms)
+ ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the recording path. The `record_cache_metrics_direct` function writes a `CacheMetricsRecorded` event. Let me check if there's already a test for this function, and also look at how other tests in state.rs use the recorder.
+
+Let me also look at how to find the test for `state_global_test_lock` and `reset_global_recorder_for_test`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_global_test_lock' in src/state.rs  ▶ search 'fn reset_global_recorder_for_test' in src/state.rs ✓ (366ms)
+ ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `reset_global_recorder_for_test` and a few example tests to understand the pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3380..3410  ▶ read src/state.rs:6810..6860 ✓ (210ms)
+ ✓ (908ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear pattern. The test `panic_hook_records_to_state` shows the exact pattern I need:
+
+1. Take the `state_global_test_lock`
+2. Call `reset_global_recorder_for_test()`
+3. Create a temp dir
+4. Create a `StateConfig` with that temp dir
+5. Call `init_global(config, json!({}))`
+6. Do the action (call `record_cache_metrics_direct`)
+7. Read the events file and assert it contains the expected data
+
+Now, looking at the task more carefully: the task says the Edit Surface is ONLY the fixture file at `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json`. But the fixture needs tests to reference. The existing 004 fixture references tests in `deepseek.rs` and `commands_deepseek.rs`.
+
+I have two options:
+1. Write a new test in `src/state.rs` that verifies `record_cache_metrics_direct` writes events, then reference it from the fixture
+2. Write the fixture referencing existing tests only
+
+The task's Files list says `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json` only. The evolve skill says: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md..."
+
+But wait, the checkpoint says "This is the final implementation attempt." And "Prefer the smallest honest scoped proof change over more diagnosis." The task says "Edit Surface: eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json (new file)".
+
+The fixture file alone can reference existing tests. Let me check if there are already existing tests that cover cache metric propagation through the full pipeline. The 004 fixture references:
+- `cargo test deepseek::tests::cache_ratio_handles_missing_and_zero_totals`
+- `cargo test commands_deepseek::tests::cache_report_reads_canonical_yoagent_state_events`
+
+These test cache metrics parsing and serialization. What's missing is a test that verifies `record_cache_metrics_direct` actually writes events. Let me check if such a test exists.
+
+Let me search for tests that use `record_cache_metrics_direct`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics_direct' in src/state.rs (*test*)  ▶ search 'cache_metrics' in src/state.rs (*fn test*)  ▶ search 'fn.*cache.*test' in src (*.rs) ✓ (597ms)
+ ✓ (654ms)
+ ✓ (698ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are no tests that use `record_cache_metrics_direct` at all. The function has zero test coverage for its event-writing behavior. This is exactly the regression risk described in the task.
+
+Now, the task says the Edit Surface is only the fixture file. But the fixture file needs to reference tests, and those tests don't exist. I have two paths:
+
+1. Add a test to `src/state.rs` - but the task's Files list only names the fixture file.
+2. Write the fixture referencing only existing tests - but there are no existing tests that verify `record_cache_metrics_direct` works end-to-end.
+
+Looking at the evolve skill rule: "If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task."
+
+The fixture tests pattern in the existing references shows tests in `src/deepseek.rs` and `src/commands_deepseek.rs`. The 036 fixture references tests in `src/deepseek.rs`, `src/commands_deepseek.rs`, and `src/config.rs`. 
+
+The 004 fixture already covers serialization of cache metrics and the cache-report command. A new fixture would ideally reference a new test that explicitly tests `record_cache_metrics_direct` writing events - but that test would need to be in `src/state.rs`, which is not in the task's Files list.
+
+Wait, let me re-read the task more carefully. The task says:
+- "Edit Surface: eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json (new file)"
+
+And the Verification line says: "cargo test (fixture is additive, no code changes to break)"
+
+So the task expects NO code changes - only the fixture file. The fixture file references cargo test commands. The 004 fixture already has tests that cover cache metrics from the deepseek side. The new fixture should test a different angle.
+
+Let me think about what tests exist that I can reference. The 004 fixture tests:
+1. `cache_ratio_handles_missing_and_zero_totals` - serialization
+2. `cache_report_reads_canonical_yoagent_state_events` - the cache-report command
+
+A new fixture for regression testing could reference:
+- A test that verifies `record_cache_metrics_direct` works. But this doesn't exist yet.
+- Or we could write the fixture differently.
+
+Looking at the fixture format again:
+```json
+{
+  "task_id": "...",
+  "category": "...",
+  "repo_fixture": "self",
+  "initial_commit": "current",
+  "goal": "...",
+  "tests": ["cargo test ...", "cargo test ..."],
+  "hidden_failure_mode": "...",
+  "expected_files": [...],
+  "risk_label": "..."
+}
+```
+
+The `tests` array contains cargo test commands. If I need a new test, I'll need to add it. But the task scope only allows the fixture file.
+
+Let me check: are there any tests that indirectly test the cache recording path? Let me look at what `record_cache_metrics` covers and what `commands_deepseek` tests exist.
+
+Actually, wait. Let me re-read the checkpoint. It says I have 3 tool turns to write or edit something. Let me just write the fixture file that references tests from the existing 004 fixture but adds additional verification around `record_cache_metrics_direct`.
+
+But actually, the task explicitly says it's an additive-only fixture. So I'll write the fixture that references EXISTING tests plus maybe the full test suite. Let me check what `cargo test` commands would be meaningful.
+
+Looking at this more carefully: the 004 fixture already covers cache metrics. The difference with this new fixture (372) is that it should specifically test the "full pipeline" - that cache metrics survive from the API response through to state events. The 004 tests cover individual functions. The 372 fixture should test end-to-end.
+
+But without adding a new test, what can this fixture reference? It could reference the existing 004 tests plus additional verification. Or it could reference a broader integration test.
+
+Actually, let me re-read the Fallback section: "If the existing 004-cache-metrics.json fixture already covers this regression path after inspection, mark this task done-with-findings and update the existing fixture's goal if needed."
+
+I need to inspect whether 004 already covers this. Let me look at the 004 fixture tests more carefully. The 004 tests:
+1. `cache_ratio_handles_missing_and_zero_totals` - tests the ratio calculation
+2. `cache_report_reads_canonical_yoagent_state_events` - tests the cache-report command reads state events
+
+Neither of these tests `record_cache_metrics_direct` directly. The cache-report test reads events, but to test that events are written by the direct path, you'd need to actually call `record_cache_metrics_direct` and verify the event is written.
+
+So: the task needs a new test, but the task scope only allows the fixture file. This is a scope mismatch.
+
+Let me write session_plan/task_02_blocked.md with the evidence.
+
+Wait, actually, let me think about this differently. The fixture file can reference any test. I could reference `cargo test state::` and it would run all state tests. Or I could just reference the existing relevant tests and write the fixture such that the hidden_failure_mode describes what would break if the fixture doesn't detect it.
+
+The real question is: can I write a fixture that provides value referencing ONLY existing tests? If yes, proceed. If not, write blocked.
+
+Looking at the 004 fixture - it already has `expected_files: ["src/deepseek.rs", "src/commands_deepseek.rs", "src/state.rs"]` and tests the cache-report command. That already covers some of what this fixture would test.
+
+But the 004 fixture's hidden_failure_mode is about "serialization bugs" while this 372 fixture's hidden_failure_mode is about "silent drop to zero through the agent pipeline." They're different regression paths.
+
+The issue is: I can't add a test that directly exercises `record_cache_metrics_direct` without editing `src/state.rs`. And the task scope doesn't allow that.
+
+Let me go with the blocked approach. The evidence is clear: the fixture needs to reference a test that calls `record_cache_metrics_direct` and verifies the event is written, but no such test exists in the codebase, and adding it would require editing `src/state.rs` which is outside the task's Edit Surface.
+
+Actually wait - let me re-check. The task says "Edit Surface: eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json (new file)". The fixture itself is only the JSON file. But the fixtures reference existing tests. So the fixture can be created referencing existing tests.
+
+Let me take a different approach. What if the fixture's tests array includes the full test suite? Like `cargo test -- --test-threads=1`? That would verify nothing regresses.
+
+Or more practically, I could reference the existing 004 tests plus any tests from state.rs that relate to cache metrics. Let me see what tests are near the CacheMetricsRecorded match in the test section.
+
+Let me check lines ~4740-4760 in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 23.0s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4740..4800 ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is the SQLite projection test. It already has a CacheMetricsRecorded event with cache_hit_ratio. So the projection layer is tested.
+
+Let me now check if there's a test that specifically exercises the `record_cache_metrics_direct` function itself - writing an event and reading it back. Let me search more specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics_direct' in src ✓ (158ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `record_cache_metrics_direct` is called from `src/deepseek.rs` in two places but never tested directly. The function is defined in `src/state.rs` but no test exercises it.
+
+Now, the task's Edit Surface only allows the fixture file. I can't add a test to `src/state.rs`. But the fixture file can reference existing tests. 
+
+Let me take a practical approach: I'll write the fixture file that references the existing cache-related tests (from 004) plus any state-related tests that cover the event recording path. The fixture will be valid JSON and referenced by the eval system.
+
+The key question: does this provide value? The fixture file is a test specification. It says "when these tests pass, cache metric propagation is verified." If the referenced tests don't actually test the direct recording path, the fixture is a false positive - it passes even when the regression exists.
+
+So I need to either:
+1. Add a test to `src/state.rs` (outside task scope)
+2. Write the fixture referencing existing tests (low/no value)
+3. Write blocked note
+
+The right answer is option 3: write `session_plan/task_02_blocked.md`. The evidence is:
+- No test exercises `record_cache_metrics_direct` end-to-end
+- The fixture can only reference cargo test commands
+- Without a new test, the fixture would reference existing tests that don't cover the regression path
+- Adding a test requires editing `src/state.rs`, which is outside the task's Edit Surface
+
+Let me write the blocked note.
+────────────────────────────────────────────────────────────────────────────────
+
+The task requires creating a fixture that references tests verifying `record_cache_metrics_direct` writes state events, but no such test exists in the codebase, and adding one requires editing `src/state.rs` — which is outside the task's Edit Surface. Let me write the blocked note.
+  + # Task 2 blocked: Missing test dependency outside Edit Surface
+  + 
+  + ## Blocker
+  + 
+  + The fixture file `eval/fixtures/local-smoke/372-deepseek-cache-metric-regression.json` must reference `cargo test` commands in its `tests` array. The regression path this task targets is:
+  + 
+  + > `record_cache_metrics_direct` is called from `src/deepseek.rs` (lines 1706, 1789) but there is **no unit test anywhere in the codebase** that verifies calling this function actually writes a `CacheMetricsRecorded` event to the state events file.
+  + 
+  + Without such a test, any fixture referencing only existing tests would be a false-positive gate — it would pass even when the cache metric workaround silently breaks.
+  + 
+  + ## Evidence
+  + 
+  + - `record_cache_metrics_direct` is defined at `src/state.rs:536`. It is called from `src/deepseek.rs:1706` and `src/deepseek.rs:1789`.
+  + - A search for `record_cache_metrics_direct` in test contexts (`src/state.rs` tests, `src/deepseek.rs` tests, `src/commands_deepseek.rs` tests) returns **zero results**. No test exercises this function.
+  + - The existing 004 fixture (`eval/fixtures/local-smoke/004-cache-metrics.json`) tests:
+  +   - `deepseek::tests::cache_ratio_handles_missing_and_zero_totals` — serialization, not event recording
+  +   - `commands_deepseek::tests::cache_report_reads_canonical_yoagent_state_events` — reads events, doesn't write them via the direct path
+  + - The SQLite projection test at `src/state.rs:4740` uses a hardcoded `CacheMetricsRecorded` event but does not call `record_cache_metrics_direct`.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02_blocked.md (60 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02_blocked.md (60 lines) ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the git diff confirms only the blocked note was created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The blocked note is a new untracked file, so it won't show in `git diff --name-only` (which shows only modified files). Let me check with `git status` to confirm it exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short session_pla… ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, no output. Let me check if the file actually exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la /home/runner/work/yyds-harness/yyds-harness/session_plan/task_02_blocked.… ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file exists (2927 bytes) but `git status --short session_plan/` shows nothing because `session_plan/` is likely gitignored. Let me check the .gitignore.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git check-ignore -v session_pl… ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `session_plan/` directory is gitignored. The task says "write session_plan/task_02_blocked.md" — it's intended to be written but not committed (since it's in a gitignored directory). That's fine — the harness reads from the filesystem, not from git.
+
+Now let me verify: `git diff --name-only` is empty (no tracked files changed), and I wrote `session_plan/task_02_blocked.md`. This satisfies the checkpoint requirements. 
+
+Let me now provide the final answer with the TASK_TERMINAL_EVIDENCE marker.
+────────────────────────────────────────────────────────────────────────────────
+
+**Blocked.** The fixture file cannot be completed within the task's Edit Surface because no test exists that exercises `record_cache_metrics_direct`, and adding one requires editing `src/state.rs` — outside the allowed surface.
+
+**What happened:**
+• `record_cache_metrics_direct` (at `src/state.rs:536`) is the function that bypasses `yoagent::Usage` and records DeepSeek cache metrics directly to state events.
+• It is called from `src/deepseek.rs:1706` and `src/deepseek.rs:1789`.
+• **Zero tests** anywhere in the codebase call `record_cache_metrics_direct` or verify that a `CacheMetricsRecorded` event is written when it's invoked.
+• The existing 004 fixture covers serialization (`cache_ratio_handles_missing_and_zero_totals`) and the cache-report command (`cache_report_reads_canonical_yoagent_state_events`), but neither verifies the direct recording path.
+• Without a new test in `src/state.rs`, any fixture referencing only existing tests would be a false-positive gate.
+
+**Artifact:** `session_plan/task_02_blocked.md` written with evidence, the missing test, and the corrected Files list (`src/state.rs` + the fixture file).
+
+TASK_TERMINAL_EVIDENCE: blocked
+
+
