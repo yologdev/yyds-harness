@@ -7617,4 +7617,120 @@ mod tests {
             "should have sampling note: {note}"
         );
     }
+
+    #[test]
+    fn record_cache_metrics_direct_writes_event() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        record_cache_metrics_direct("deepseek-v4-pro", Some(100), Some(50));
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("CacheMetricsRecorded"),
+            "should contain CacheMetricsRecorded: {raw}"
+        );
+        assert!(
+            raw.contains(r#""model":"deepseek-v4-pro""#),
+            "should contain model: {raw}"
+        );
+        assert!(
+            raw.contains(r#""prompt_cache_hit_tokens":100"#),
+            "should contain cache hit: {raw}"
+        );
+        assert!(
+            raw.contains(r#""prompt_cache_miss_tokens":50"#),
+            "should contain cache miss: {raw}"
+        );
+    }
+
+    #[test]
+    fn record_cache_metrics_direct_skips_non_deepseek() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        record_cache_metrics_direct("claude-4", Some(100), Some(50));
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunStarted"),
+            "should contain system RunStarted: {raw}"
+        );
+        assert!(
+            !raw.contains("CacheMetricsRecorded"),
+            "non-deepseek model should not write cache metrics: {raw}"
+        );
+    }
+
+    #[test]
+    fn record_cache_metrics_direct_skips_zero_zero() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        record_cache_metrics_direct("deepseek-v4-pro", Some(0), Some(0));
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunStarted"),
+            "should contain system RunStarted: {raw}"
+        );
+        assert!(
+            !raw.contains("CacheMetricsRecorded"),
+            "zero-zero should not write cache metrics: {raw}"
+        );
+    }
+
+    #[test]
+    fn record_cache_metrics_direct_skips_both_none() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        record_cache_metrics_direct("deepseek-v4-pro", None, None);
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("RunStarted"),
+            "should contain system RunStarted: {raw}"
+        );
+        assert!(
+            !raw.contains("CacheMetricsRecorded"),
+            "both-none should not write cache metrics: {raw}"
+        );
+    }
 }
