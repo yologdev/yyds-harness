@@ -1,0 +1,261 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task requirements, then implement the unit test for `record_cache_metrics_direct`.
+
+The task is clear:
+1. Add a `#[test]` in `src/state.rs` that exercises `record_cache_metrics_direct` 
+2. Verify it writes a `CacheMetricsRecorded` event with correct fields
+3. Use existing patterns: `state_global_test_lock`, `reset_global_recorder_for_test`, `tempfile::tempdir()`
+
+Let me start by reading the evolve skill and then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'record_cache_metrics_direct' in src/state.rs  ▶ search 'state_global_test_lock' in src/state.rs ✓ (698ms)
+ ✓ (714ms)
+ ✓ (696ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record_cache_metrics_direct` function and the test patterns around it. Let me also see what the test patterns look like in the `#[cfg(test)]` module.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:530..570  ▶ read src/state.rs:6830..6910  ▶ search 'reset_global_recorder_for_test' in src/state.rs ✓ (901ms)
+ ✓ (698ms)
+ ✓ (664ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the function signature and the test pattern. Let me also look at the `reset_global_recorder_for_test` function to understand it, and check where the test module is to know where to add the new test. Let me also look at the `record` function and the `CacheMetricsRecorded` event type.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3390..3420  ▶ search 'CacheMetricsRecorded' in src/state.rs ✓ (456ms)
+ ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also quickly verify the `record_cache_metrics` function at line 529 to understand both paths, and then I'll find a good spot in the test module to add the new test.
+
+The function at line 536 is what I need to test. Let me also check the `record` function to make sure it's public or accessible from the test module.
+
+The test module is at line 3391: `#[cfg(test)] mod tests`. I need to add a test in that module.
+
+Let me find a good spot. The last test is probably near line 7620. Let me find a good insertion point. I'll look at the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+Now let me find where the test module ends to find a good insertion point:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7590.. ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The module ends at line 7620. I'll add the test before the closing `}` at line 7620. Let me write a test that follows the exact pattern shown in the other tests (e.g., `panic_hook_records_to_state`).
+
+The test should:
+1. Acquire `state_global_test_lock()` 
+2. Call `reset_global_recorder_for_test()`
+3. Create a tempdir
+4. Set up a `StateConfig` with the tempdir's `events.jsonl`
+5. Call `init_global(config, json!({}))`
+6. Call `record_cache_metrics_direct("deepseek-v4-pro", Some(100), Some(50))`
+7. Read the events file
+8. Assert the JSON contains `"CacheMetricsRecorded"`, `"prompt_cache_hit_tokens": 100`, `"prompt_cache_miss_tokens": 50`, `"model": "deepseek-v4-pro"`
+
+Let me construct the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have everything I need. Let me implement the test. I'll add it right before the closing `}` of the test module:
+            assert!(
+                note.contains("sampled from last"),
+                "should have sampling note: {note}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn record_cache_metrics_direct_writes_event() {
+  +         let _guard = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (14 → 118 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (14 → 118 lines)
+            assert!(
+                note.contains("sampled from last"),
+                "should have sampling note: {note}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn record_cache_metrics_direct_writes_event() {
+  +         let _guard = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  + 
+  ... (90 more lines)
+ ✓ (237ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test record_cache_metric… ✓ (31.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The main test `record_cache_metrics_direct_writes_event` passes. But the skip tests fail because `init_global` itself writes a `RunStarted` event — so the events file is never empty even when the function being tested skips. I need to fix those three tests to account for the `RunStarted` event that `init_global` always writes.
+
+The fix: instead of checking `raw.trim().is_empty()`, I should check that the raw text contains `RunStarted` but NOT `CacheMetricsRecorded`.
+────────────────────────────────────────────────────────────────────────────────
+
+The main test passes. The skip tests fail because `init_global` writes a `RunStarted` event — the file is never empty. Let me fix the assertions:
+    
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+            assert!(
+  -             raw.trim().is_empty(),
+  +             raw.contains("RunStarted"),
+  +             "should contain system RunStarted: {raw}"
+  +         );
+  +         assert!(
+  +             !raw.contains("CacheMetricsRecorded"),
+                "non-deepseek model should not write cache metrics: {raw}"
+            );
+        }
+  ···
+    
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+            assert!(
+  -             raw.trim().is_empty(),
+  +             raw.contains("RunStarted"),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (68 → 80 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (68 → 80 lines)
+    
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+            assert!(
+  -             raw.trim().is_empty(),
+  +             raw.contains("RunStarted"),
+  +             "should contain system RunStarted: {raw}"
+  +         );
+  +         assert!(
+  +             !raw.contains("CacheMetricsRecorded"),
+                "non-deepseek model should not write cache metrics: {raw}"
+            );
+        }
+  ···
+    
+            let raw = std::fs::read_to_string(&events_path).unwrap();
+            assert!(
+  -             raw.trim().is_empty(),
+  +             raw.contains("RunStarted"),
+  +             "should contain system RunStarted: {raw}"
+  +         );
+  ... (18 more lines)
+ ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now re-run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test record_cache_metric… ✓ (32.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4 tests pass. Now let me run `cargo fmt -- --check` and `cargo check` as required by the harness gates, and then the state test suite to verify no regressions.
+────────────────────────────────────────────────────────────────────────────────
+
+All 4 tests pass. Now let me run the harness gates: `cargo fmt -- --check`, `cargo check`, and the state test suite:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Now cargo check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo check passes. Now let me run the state tests to verify no regression:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (41.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 313 state tests pass, plus 2 integration tests. No regressions. Now let me check the git diff to confirm we only touched src/state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+All 313 state tests pass, zero regressions. Let me check the diff and commit:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/state.rs` was modified, which matches the task's Edit Surface. Now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only `src/state.rs` is modified — matches the task's Edit Surface exactly. Now commit:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (453ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is complete. Let me summarize what was done:
+
+1. Added 4 unit tests in `src/state.rs` for `record_cache_metrics_direct`:
+   - `record_cache_metrics_direct_writes_event` — verifies that calling the function writes a `CacheMetricsRecorded` event with correct model name, cache hit, and cache miss fields
+   - `record_cache_metrics_direct_skips_non_deepseek` — verifies non-DeepSeek models are skipped
+   - `record_cache_metrics_direct_skips_zero_zero` — verifies (0, 0) is skipped
+   - `record_cache_metrics_direct_skips_both_none` — verifies (None, None) is skipped
+
+2. All tests pass, no regressions in existing state tests (313 state tests, 2 integration tests)
+3. `cargo fmt -- --check` and `cargo check` both pass
+4. Committed with the required message format
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's the summary:
+
+**What changed:** Added 4 unit tests to `src/state.rs` in the `#[cfg(test)] mod tests` block:
+
+| Test | What it verifies |
+|---|---|
+| record_cache_metrics_direct_writes_event | Calling with ("deepseek-v4-pro", Some(100), Some(50)) writes a CacheMetricsRecorded event with correct model, prompt_cache_hit_tokens:100, and prompt_cache_miss_tokens:50 |
+| record_cache_metrics_direct_skips_non_deepseek | Non-DeepSeek models (e.g., "claude-4") are silently skipped |
+| record_cache_metrics_direct_skips_zero_zero | Some(0), Some(0) is skipped (no real cache data) |
+| record_cache_metrics_direct_skips_both_none | None, None is skipped (no cache data at all) |
+
+**Verification:**
+• `cargo fmt -- --check` — pass
+• `cargo check` — pass
+• `cargo test record_cache_metrics_direct -- --test-threads=1` — 4/4 pass
+• `cargo test state -- --test-threads=1` — 313/313 pass (zero regressions)
+
+**Commit:** `b3ba779d` — `Day 128 (18:11): Add unit test for cache metric recording and verify cache-report reads them (Task 1)`
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

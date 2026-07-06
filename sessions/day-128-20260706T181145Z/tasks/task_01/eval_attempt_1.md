@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Four well-targeted tests exercise `record_cache_metrics_direct` end-to-end, covering the happy path (writes CacheMetricsRecorded with correct model/token fields) and all three early-return guards (non-deepseek model, zero/zero, both-None). The tests follow existing patterns (state_global_test_lock, reset_global_recorder_for_test, tempdir, init_global). Build and tests pass. No src/deepseek.rs call sites were modified.
