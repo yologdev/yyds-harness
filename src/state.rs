@@ -3190,7 +3190,15 @@ pub fn compatibility_event_json_line(line: &str) -> Result<String, String> {
 /// state event (corrupted JSON, truncated write, etc.). Skipped lines are
 /// reported via `eprintln!` with their line number. Only returns `Err` when the
 /// file itself cannot be read.
+///
+/// Capped at `COMPAT_EVENTS_CAP` events to prevent silent timeouts on large
+/// event histories (Day 128: the Day 117 lesson encoded as a guard).
 pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
+    /// Maximum number of events to read in a single call.
+    /// 500k events at ~200 bytes each ≈ 100 MB file — well above any current
+    /// legitimate use case, but low enough to prevent the silent hang.
+    const COMPAT_EVENTS_CAP: usize = 500_000;
+
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
     let mut events = Vec::new();
@@ -3213,7 +3221,20 @@ pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
             }
         };
         match serde_json::from_str::<Value>(&normalized) {
-            Ok(v) => events.push(v),
+            Ok(v) => {
+                events.push(v);
+                if events.len() >= COMPAT_EVENTS_CAP {
+                    eprintln!(
+                        "warning: event cap reached: read {} of {} total lines in '{}' \
+                         (stopped at line {})",
+                        events.len(),
+                        idx + 1,
+                        path.display(),
+                        idx + 1
+                    );
+                    break;
+                }
+            }
             Err(e) => {
                 skipped += 1;
                 eprintln!(
@@ -3241,7 +3262,6 @@ pub fn read_compatibility_events(path: &Path) -> Result<Vec<Value>, String> {
 /// to prevent timeouts with large event histories (50k+ events). Six
 /// diagnostic tools were individually patched with the same pattern before
 /// this utility was extracted.
-#[allow(dead_code)]
 pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| format!("read state events '{}': {e}", path.display()))?;
