@@ -1,0 +1,697 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the current state of things. The task is about repairing evidence-backed planning after no-task sessions. Let me read the evolve skill first, then understand the current state of the files mentioned.
+
+Let me start by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py  ▶ read scripts/task_manifest.py ✓ (1.2s)
+ ✓ (949ms)
+ ✓ (756ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state of things. The task is about repairing evidence-backed planning after no-task sessions. The key files are:
+- `scripts/preseed_session_plan.py` — creates minimal task before planning agent explores
+- `scripts/task_manifest.py` — builds task decision manifests
+- `scripts/test_task_manifest.py` — tests for task_manifest
+
+Let me now:
+1. Check if `scripts/test_task_manifest.py` exists
+2. Run the verifier: `python3 scripts/preseed_session_plan.py --test`
+3. Run `python3 -m unittest scripts.test_task_manifest` (if it exists)
+4. Run `python3 scripts/task_manifest.py --help`
+
+Let me also read more of preseed_session_plan.py to understand the full picture, especially the choose_task function and how it handles the case where no tasks match.
+
+Let me also look at what the assessment says about this situation.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.8s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1  ▶ $ ls scripts/test_task_manifest.py 2>&1  ▶ $ python3 scripts/task_manifest.py --help 2>&1 ✓ (949ms)
+ ✓ (1.0s)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the existing self-tests pass. Let me now run the test_task_manifest tests and also look at more context. Let me also understand what the task is really asking.
+
+The task says:
+1. "Fallback planning repair tasks avoid protected implementation files" — the preseed task list should not produce tasks that touch protected files like evolve.sh, etc.
+2. "Task manifest warnings make no-task planning failures visible" — when planning fails to produce tasks, the manifest should warn about it
+3. "Future planning failures preserve enough evidence to select a landable repair task"
+
+Let me look more carefully at the code. I need to:
+1. Look at the preseed TASKS list to see if any task's "files" field contains protected files
+2. Look at task_manifest.py's build_manifest function to see how it handles planning failures
+3. Check that planning_failed flag makes no-task visible
+
+Let me read more of both files.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -m unittest scripts.test_task_manifest 2>&1  ▶ read scripts/task_manifest.py:200..400 ✓ (251ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key issue. Let me look at what happens when `planning_failed` is True - the manifest is built but `selected` is empty. The warning `planner_produced_no_task_files` is already added. 
+
+Now let me look at the preseed TASKS list and find if any tasks reference protected files. Let me check which tasks have "files" containing protected paths.
+
+Also, let me look at the `protected_task_surfaces` function and `PROTECTED_IMPLEMENTATION_SURFACES` in `task_manifest.py` and compare with `PROTECTED_IMPLEMENTATION_FILES` in `preseed_session_plan.py`.
+
+Key observations:
+1. `task_manifest.py` has `PROTECTED_IMPLEMENTATION_SURFACES` that includes `.github/workflows/`, `IDENTITY.md`, `PERSONALITY.md`, `scripts/evolve.sh`, `scripts/format_issues.py`, `scripts/build_site.py`, `skills/self-assess/`, `skills/evolve/`, `skills/communicate/`, `skills/research/`
+2. `preseed_session_plan.py` has `PROTECTED_IMPLEMENTATION_FILES` that includes `scripts/evolve.sh`, `scripts/format_issues.py`, `scripts/build_site.py`, `skills/self-assess/SKILL.md`, `skills/evolve/SKILL.md`
+
+Now let me check whether any preseed TASKS have files that match protected surfaces. Let me search for the full TASKS list.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"files"' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:100..300 ✓ (254ms)
+ ✓ (930ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the full list of preseed tasks for any that reference protected files. Let me look at the rest of the TASKS list and also check if there's a choose_task function that handles fallback.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"files"' in scripts/preseed_session_plan.py ✓ (176ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me extract all the files values from the TASKS list to check for protected files. Let me grep for all "files" entries with their values.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '"files"' scripts/preseed_session_plan.py | head -50 ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the specific section of the code that handles the fallback task selection, especially around lines 840-990 where the critical logic is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:820..990 ✓ (237ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full flow:
+
+1. The preseed task list has various tasks with key-based matching
+2. When no task matches (all candidates are contradicted or no candidates at all), the fallback is the `Repair evidence-backed planning after no-task sessions` task
+3. The fallback task has `files: "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py"`
+
+Now let me understand what the task is asking me to do. Let me re-read the task spec:
+
+**Success Criteria:**
+- Fallback planning repair tasks avoid protected implementation files.
+- Task manifest warnings make no-task planning failures visible.
+- Future planning failures preserve enough evidence to select a landable repair task.
+
+Let me now check if the fallback task already avoids protected files. Looking at the fallback:
+- `files: "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py"` — none of these are in PROTECTED_IMPLEMENTATION_FILES (scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, skills/self-assess/SKILL.md, skills/evolve/SKILL.md) or PROTECTED_IMPLEMENTATION_SURFACES.
+
+OK so let me think about what needs to be done:
+
+1. **"Fallback planning repair tasks avoid protected implementation files"** — This is already true for the fallback. But I need to also check if any other TASKS in the list have protected files. The key question: are any of the preseed TASKS touching protected files? Let me check...
+
+Looking at the files values:
+- `src/tools.rs, src/agent_builder.rs, src/lib.rs` — not protected
+- `src/prompt.rs, src/deepseek.rs, src/state.rs` — not protected
+- `src/commands_state.rs, src/state.rs` — not protected
+- `src/state.rs` — not protected
+- `src/tool_wrappers.rs` — not protected
+- `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py` — not protected
+- `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py` — not protected
+- `src/commands_state.rs, src/commands_state_graph.rs` — not protected
+- `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` (fallback) — not protected
+- `journals/JOURNAL.md` (healthy codebase fallback) — not protected
+
+So the tasks themselves don't directly reference protected files. But the "analysis-only task pressure landable" task has `"files": "scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py"` — none of these are protected.
+
+Now the second criterion: **"Task manifest warnings make no-task planning failures visible"** — Looking at `build_manifest()`, when `planning_failed` is True, it already adds the warning "planner_produced_no_task_files". But wait, let me look more carefully...
+
+The `planning_failed` flag is set when:
+- `args.planning_failed` is set, OR
+- `failure_text` is present, OR  
+- `not tasks` (no task files found), OR
+- `tasks and len(harness_seeded) == len(tasks)` (all tasks are harness-seeded)
+
+When `planning_failed` is True, `selected` is empty `[]`. So the manifest will show `planning_failed: true` and have the warning. This already seems to make no-task planning failures visible.
+
+But wait — what about a different scenario: when tasks exist but none are selectable? That's the `no_selectable_tasks` path. Let me re-read:
+
+```python
+selected = [] if planning_failed else selectable[: args.selected_limit]
+if tasks and not selected and not planning_failed:
+    warnings.append("no_selectable_tasks")
+```
+
+Hmm, this seems fine. The warnings are already there.
+
+Now for the third criterion: **"Future planning failures preserve enough evidence to select a landable repair task"** — This is about ensuring that when planning fails, the evidence (task files, manifest, etc.) still allows the next session's preseed to select a good task.
+
+Let me think about what concrete changes to make:
+
+1. The fallback task files (`scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`) are already non-protected. ✓
+
+2. The task manifest already has "planner_produced_no_task_files" warning when planning fails. ✓
+
+3. For evidence preservation: when `planning_failed` is true, we should make sure the manifest captures enough context. Let me look at what `planning_failed` looks like in the manifest output...
+
+The manifest already captures:
+- `planning_failed: true`  
+- `task_count: 0` (when no tasks)
+- Warning `planner_produced_no_task_files`
+- Assessment present status
+
+But I think we could improve things. Let me look at whether there's a `--planning-failure-file` argument and if its content is properly included. Also, when `planning_failed`, the selected tasks are empty, but the manifest should still include the available tasks (even if they're harness-seeded only) so that the next session has evidence.
+
+Wait, actually, looking more carefully: when `planning_failed` and there are no tasks, the tasks list IS empty. But when there are harness-seeded tasks and planning_failed, the manifest does include them in `tasks` but selects none. This seems right.
+
+Let me think about what's actually broken here. The task says: "The harness reached planning with no task artifacts." This means the session had no task files at all — `task_paths` was empty, so `planning_failed` was set, and nothing was selected. 
+
+The preseed script is the one that creates task_01.md BEFORE the planner runs. But if it can't find a matching task (all candidates are contradicted), it falls back to the planning repair task. But that task's files include `scripts/task_manifest.py` and `scripts/test_task_manifest.py` — these are script files, not src/. So when this task gets executed, it doesn't go through `cargo build && cargo test`, making it harder to verify.
+
+But wait — looking at the success criteria again: "Fallback planning repair tasks avoid protected implementation files" — this is already done, the files are not protected.
+
+Let me look at the actual scenario more carefully. The task exists because "The harness reached planning with no task artifacts." So the preseed script ran, produced a task, but somehow the session ended up with no task files. Let me look at what happens when the preseed can't find candidates...
+
+Actually, looking at the choose_task function more carefully, when `candidates` is empty, it falls back to the repair task. But what if the assessment itself is missing? That's handled separately.
+
+Let me look at the `assessment_was_missing` flag more carefully:
+
+```python
+task = choose_task(assessment, assessment_was_missing=(
+    args.assessment is not None and args.assessment.name == "assessment_missing.md"
+))
+```
+
+So if the assessment file is `assessment_missing.md`, the fallback changes to a simpler single-file fix. 
+
+Now let me think about what concrete improvement I should make. Let me read the self-test that validates this particular scenario:
+
+The test at line 1363:
+```python
+assert "scripts/preseed_session_plan.py" not in str(task["files"]), (
+    "analysis-only pressure should prefer src-file candidates over script-only repair"
+)
+```
+
+And at line 1544:
+```python
+assert "scripts/preseed_session_plan.py" not in str(fallback["files"]), (
+    "contradicted fallback should select a non-preseed path"
+)
+```
+
+Wait, the test at line 1544 says the contradicted fallback should NOT have `scripts/preseed_session_plan.py` in files. But the fallback task DOES have it! Let me re-read...
+
+OK wait, these are in the `--test` flow. Let me read the full test function.
+
+Actually, let me re-read the `choose_task` function more carefully:
+
+When `candidates` is empty (no task matched), it falls back. The fallback has `files: "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py"`. 
+
+Then the `main()` function writes task_01.md. So when the session runs, the preseed task is the "Repair evidence-backed planning" task. But the planner may have also produced its own tasks. The manifest sees both.
+
+Now, looking at the actual task I'm asked to do: this is the FALLBACK task itself being executed! The title matches: "Repair evidence-backed planning after no-task sessions", the files match: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`.
+
+So I'm implementing the fallback task. The question is: what concrete improvements should I make to these files?
+
+Let me think about what improvements would make a real difference:
+
+1. **Ensure the preseed can never produce a task with protected files**. Add a check in `choose_task` that filters out tasks whose files include protected paths. This would be a safety net.
+
+2. **Make planning_failed more visible in the manifest**. The manifest already has the warning `planner_produced_no_task_files`, but maybe we should also add the warning when there's a `--planning-failure-file` present? Let me check...
+
+Actually looking at lines 277-284:
+```python
+failure_text = read_text(args.planning_failure_file)
+harness_seeded = [t for t in tasks if isinstance(t.get("origin"), str) and t["origin"] == "harness-seed"]
+planning_failed = bool(
+    args.planning_failed
+    or failure_text
+    or not tasks
+    or (tasks and len(harness_seeded) == len(tasks))
+)
+```
+
+And then line 338:
+```python
+"planning_failure_present": bool(failure_text.strip()),
+```
+
+OK so the planning_failure is already tracked. But when `planning_failed` is True, `selected` is empty `[]`. This means the manifest has no selected tasks. The warnings already include `planner_produced_no_task_files`.
+
+Let me focus on what would actually improve the situation:
+
+1. **Add a protected-file check to the preseed candidate filtering** — ensure no preseed task can reference protected implementation files. This is already mostly true but adding an explicit filter would be defensive.
+
+2. **Improve the task manifest to emit a clearer warning when the preseed task is the only task** — this is already partially done with `all_tasks_harness_seeded`.
+
+3. **Make the decision payload clearer about what happened** — the decision is `planning_failed` when `planning_failed` is true.
+
+Let me check what the actual gap is. Let me look at the `PROTECTED_IMPLEMENTATION_FILES` in `preseed_session_plan.py`:
+
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+And `PROTECTED_IMPLEMENTATION_SURFACES` in `task_manifest.py`:
+```python
+PROTECTED_IMPLEMENTATION_SURFACES = (
+    ".github/workflows/",
+    "IDENTITY.md",
+    "PERSONALITY.md",
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/",
+    "skills/evolve/",
+    "skills/communicate/",
+    "skills/research/",
+)
+```
+
+These are different! `task_manifest.py` has more protected surfaces than `preseed_session_plan.py`. The task manifest also protects `.github/workflows/`, `IDENTITY.md`, `PERSONALITY.md`, `skills/communicate/`, `skills/research/`.
+
+For the preseed script, the protected list is narrower. But the preseed tasks don't reference any of those broader surfaces.
+
+Now, let me think about what concrete code change to make:
+
+**Option A**: Add a protected-files gate in the preseed `choose_task` function to filter out any task whose files include a protected path. This prevents the preseed from ever producing a task that touches protected files.
+
+**Option B**: Enhance the task manifest to make planning_failed warnings more visible and actionable.
+
+**Option C**: Both.
+
+Let me re-read the task more carefully:
+
+> "Fallback planning repair tasks avoid protected implementation files."
+> "Task manifest warnings make no-task planning failures visible."
+> "Future planning failures preserve enough evidence to select a landable repair task."
+
+I think the most impactful change would be:
+
+1. In `preseed_session_plan.py`: Add a protected-files filter in `choose_task` so that if any candidate has protected files, it's excluded from consideration (or at least deprioritized). Also, the fallback task itself already avoids protected files, which is good.
+
+2. In `task_manifest.py`: When `planning_failed` is true, add more specific warning about what evidence is preserved (assessment_present, harness_seeded_count, etc.).
+
+Actually, let me re-examine. The fallback task IS this task — "Repair evidence-backed planning after no-task sessions". And its files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. None of these are protected in either the preseed or manifest definitions.
+
+So the fallback already avoids protected files. ✓
+
+For the manifest, the `planning_failed` flag and warning already exist. ✓
+
+But I think there's room for improvement. Let me think about what would make the system more robust:
+
+1. **In preseed_session_plan.py**: Add a function that checks whether task files overlap with protected surfaces, and use it to filter candidates AND verify the fallback. Also, the `PROTECTED_IMPLEMENTATION_FILES` constant in preseed should be aligned with the one in task_manifest (or at least be documented as intentionally narrower).
+
+2. **In task_manifest.py**: When `planning_failed`, the manifest should still record the assessment evidence (which it already does). But we could add a more explicit warning like `planning_failed: no task files produced` vs `planning_failed: only harness-seeded tasks`.
+
+Actually, wait. Let me re-read the implementation notes:
+
+> "This task was seeded by the harness before planner exploration because recent runs reached planning without durable task files."
+> "Treat it as a minimum viable task for Day 129 (12:22); refine it if the planner has stronger evidence, but do not leave the session with zero task files."
+> "Keep the change scoped to the listed files unless verification reveals a direct dependency."
+
+So this is a MINIMUM VIABLE task. The key thing is to make at least one concrete improvement. Let me focus on the most impactful small change.
+
+Looking at the success criteria:
+1. "Fallback planning repair tasks avoid protected implementation files." — Already true for the current fallback. But I should add a programmatic check so this stays true as the code evolves.
+
+2. "Task manifest warnings make no-task planning failures visible." — Currently, `planning_failed` produces the warning `planner_produced_no_task_files`. This is visible but maybe we can make it more specific.
+
+3. "Future planning failures preserve enough evidence to select a landable repair task." — The manifest already preserves `assessment_present` and `planning_failure_present` status. This seems sufficient.
+
+Let me focus on adding explicit protected-file guards:
+
+In `preseed_session_plan.py`:
+- Add a `_task_has_protected_files()` function
+- Use it in `choose_task()` to filter candidates and verify the fallback doesn't have protected files
+- Add tests for this
+
+In `task_manifest.py`:
+- The `protected_task_surfaces()` function already exists and is used to warn. Let me verify it works correctly for common paths.
+
+Actually, wait. Let me re-read the `protected_task_surfaces` function in task_manifest.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:100..180 ✓ (238ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a clear picture. Let me plan my changes:
+
+1. **In `preseed_session_plan.py`**: 
+   - Add a `_task_files_overlap_protected()` function that checks if a task's files include any protected surfaces
+   - Use it in `choose_task()` to:
+     a. Filter candidates that have protected files
+     b. Verify the fallback doesn't have protected files
+   - Add tests for this filtering behavior
+
+2. **In `task_manifest.py`**:
+   - The existing `protected_task_surfaces` already does this checking and adds warnings
+   - The `planning_failed` warning `planner_produced_no_task_files` already makes failures visible
+   - Let me check if there's a gap: when planning_failed and no tasks exist, is the `planner_produced_no_task_files` warning always emitted?
+
+Looking at lines 285-287:
+```python
+if planning_failed:
+    warnings.append("planner_produced_no_task_files")
+```
+
+Yes, it's always emitted when planning_failed. Good.
+
+But wait, there's a subtle case: when `planning_failed` is True because `not tasks` (no task files at all), the warning is added. But what about the case where there's a `planning_failure_file` present but tasks also exist? That seems unusual but let me check...
+
+Actually `planning_failed` is `True` if ANY of the conditions is true. So if `failure_text` is present, `planning_failed` is True regardless of whether tasks exist. That seems right.
+
+Now, let me also think about the `assessment_was_missing` path. When the assessment is missing, the fallback task curtails to just `scripts/preseed_session_plan.py`. This is fine and not protected.
+
+Let me write the improvements. Let me focus on:
+
+1. Adding `_task_has_protected_files()` to `preseed_session_plan.py`
+2. Using it in `choose_task()` to filter candidates
+3. Adding a self-test for the protected-files filtering
+4. In `task_manifest.py`, making sure the `planning_failed` scenario has clear visibility
+
+Actually, let me also look at what `_candidate_files_exist` does and how the protected check could be incorporated:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1530..1590 ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that at line 1534-1540, there's already a test that checks each TASKS candidate for protected files. And at line 1543, there's a test for `_has_protected_files(fallback)`. Let me check if the `_has_protected_files` function exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '_has_protected_files' in scripts/preseed_session_plan.py ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_has_protected_files` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:681..706 ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_has_protected_files` already exists and uses `PROTECTED_IMPLEMENTATION_FILES`. But the task manifest uses a broader `PROTECTED_IMPLEMENTATION_SURFACES`. Let me check if the preseed function is used in `choose_task` to filter candidates.
+
+Let me search for where `_has_protected_files` is called in choose_task:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '_has_protected' in scripts/preseed_session_plan.py ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`_has_protected_files` is defined at line 681 but only called in the test (line 1543). It's NOT used in `choose_task` to filter candidates! That's a gap.
+
+Now let me plan my changes:
+
+1. **In `preseed_session_plan.py`**: 
+   - Use `_has_protected_files()` in `choose_task()` to filter out candidates with protected files
+   - Make sure the fallback task is also checked
+   
+2. **In `task_manifest.py`**:
+   - The `protected_task_surfaces` already checks tasks and adds the `protected_files` warning. But let me also make sure planning_failed visibility is good.
+
+Actually, looking more carefully at the code and tests:
+
+- Line 1534-1540: Tests that no TASKS candidate has protected files — this is a static check.
+- Line 1543: Tests that the fallback doesn't have protected files.
+
+But the `choose_task` function doesn't actually filter candidates by protected files at runtime. The static test is good but doesn't prevent a task with protected files from being selected if one slips through.
+
+Let me add the filtering in `choose_task`. Let me also look at the protected surfaces. The preseed's `PROTECTED_IMPLEMENTATION_FILES` is narrower than task_manifest's `PROTECTED_IMPLEMENTATION_SURFACES`. Should I align them?
+
+Looking at the preseed protected list:
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+And task_manifest:
+```python
+PROTECTED_IMPLEMENTATION_SURFACES = (
+    ".github/workflows/",
+    "IDENTITY.md",
+    "PERSONALITY.md",
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/",
+    "skills/evolve/",
+    "skills/communicate/",
+    "skills/research/",
+)
+```
+
+I think I should align the preseed's `PROTECTED_IMPLEMENTATION_FILES` to match task_manifest's broader list. This is the safest change. The preseed should never produce tasks that touch `.github/workflows/`, `IDENTITY.md`, `PERSONALITY.md`, `skills/communicate/`, `skills/research/`.
+
+But wait — the preseed currently uses `_has_protected_files` which checks exact file matches. The task_manifest uses `protected_surface_match` which supports directory prefixes (e.g., `skills/evolve/` matches `skills/evolve/SKILL.md`). I should update the preseed to also support directory prefixes.
+
+OK, let me think about the minimal change:
+
+1. Expand `PROTECTED_IMPLEMENTATION_FILES` in preseed to include the broader surfaces
+2. Update `_has_protected_files` to handle directory prefixes (like `skills/evolve/`)
+3. Use `_has_protected_files` in `choose_task` to filter candidates
+4. Add a test for the filtering behavior
+
+Let me now also look at the test_task_manifest.py to see what tests exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the specific test for protected files and planning_failed in test_task_manifest.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'protected' in scripts/test_task_manifest.py ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the protected files test section:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py:590..720 ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me plan my changes:
+
+### Plan:
+
+**1. `scripts/preseed_session_plan.py`:**
+- Expand `PROTECTED_IMPLEMENTATION_FILES` to match the broader surfaces from `task_manifest.py` (using directory prefix support)
+- Update `_has_protected_files()` to handle directory prefixes (like `skills/evolve/` matching `skills/evolve/SKILL.md`)
+- Use `_has_protected_files()` in `choose_task()` to filter out candidates with protected files
+- For the fallback task, verify it doesn't have protected files (and add a warning if somehow it does)
+
+**2. `scripts/test_task_manifest.py`:**
+- Add a test for `planning_failed` with a `--planning-failure-file` that confirms the warning is emitted
+
+Wait, looking at the test at line 628-638, it already tests `planning_failed` with the `all_tasks_harness_seeded` scenario. And it already checks that `planner_produced_no_task_files` is in warnings.
+
+Let me look at what warnings are tested and what's missing.
+
+Actually, let me focus on the most concrete improvements:
+
+1. **Expand `_has_protected_files` to support directory prefixes** and align `PROTECTED_IMPLEMENTATION_FILES` with the manifest's surfaces.
+
+2. **Use `_has_protected_files` in `choose_task`** to skip candidates with protected files.
+
+3. **Add a test for the protected-files filtering in `choose_task`**.
+
+Let me also look at what `PROTECTED_IMPLEMENTATION_FILES` is currently set to and how it's used, then make it broader:
+
+Current:
+```python
+PROTECTED_IMPLEMENTATION_FILES = (
+    "scripts/evolve.sh",
+    "scripts/format_issues.py",
+    "scripts/build_site.py",
+    "skills/self-assess/SKILL.md",
+    "skills/evolve/SKILL.md",
+)
+```
+
+I should expand this to also include:
+```python
+".github/workflows/",
+"IDENTITY.md",
+"PERSONALITY.md",
+"skills/communicate/",
+"skills/research/",
+```
+
+And update `_has_protected_files` to handle paths ending with `/` as directory prefixes.
+
+Let me also check: does the current preseed task "Repair evidence-backed planning" have any protected files? Its files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. None of these are in the expanded protected list. Good.
+
+Let me now implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan my changes:
+
+1. **`preseed_session_plan.py`**: Expand `PROTECTED_IMPLEMENTATION_FILES` to match `task_manifest.py`'s broader surfaces, update `_has_protected_files` to handle directory prefixes, and use it in `choose_task()` to filter candidates.
+2. **`task_manifest.py`**: Ensure `planning_failed` visibility is clear enough (already mostly there).
+3. **`test_task_manifest.py`**: Add a targeted test if needed.
+
+Let me start implementing:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (77ms)
+  ▶ todo ✓ (64ms)
+  ▶ todo ✓ (97ms)
+  ▶ todo ✓ (115ms)
+  ▶ todo ✓ (108ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the first change: expanding `PROTECTED_IMPLEMENTATION_FILES` and updating `_has_protected_files`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.7s (5 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the first edit. I need to:
+1. Expand `PROTECTED_IMPLEMENTATION_FILES` to include broader surfaces with directory prefix support
+2. Update `_has_protected_files` to handle directory prefixes
+────────────────────────────────────────────────────────────────────────────────
+
+    PROTECTED_IMPLEMENTATION_FILES = (
+  +     ".github/workflows/",
+  +     "IDENTITY.md",
+  +     "PERSONALITY.md",
+        "scripts/evolve.sh",
+        "scripts/format_issues.py",
+        "scripts/build_site.py",
+  -     "skills/self-assess/SKILL.md",
+  -     "skills/evolve/SKILL.md",
+  +     "skills/self-assess/",
+  +     "skills/evolve/",
+  +     "skills/communicate/",
+  +     "skills/research/",
+    )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (7 → 12 lines)
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (7 → 12 lines)
+    PROTECTED_IMPLEMENTATION_FILES = (
+  +     ".github/workflows/",
+  +     "IDENTITY.md",
+  +     "PERSONALITY.md",
+        "scripts/evolve.sh",
+        "scripts/format_issues.py",
+        "scripts/build_site.py",
+  -     "skills/self-assess/SKILL.md",
+  -     "skills/evolve/SKILL.md",
+  +     "skills/self-assess/",
+  +     "skills/evolve/",
+  +     "skills/communicate/",
+  +     "skills/research/",
+    )
+ ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `_has_protected_files` to handle directory prefixes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `_has_protected_files` to handle directory prefixes (paths ending with `/`):
+    def _has_protected_files(task: dict[str, object]) -> bool:
+  -     """Return True if the task's files include any protected implementation file."""
+  +     """Return True if the task's files include any protected implementation surface.
+  + 
+  +     Handles both exact-file matches (e.g. ``IDENTITY.md``) and directory-prefix
+  +     matches (e.g. ``skills/evolve/`` matching ``skills/evolve/SKILL.md``).
+  +     """
+        files_str = str(task.get("files") or "")
+        task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+  -     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  +     for tf in task_files:
+  +         for protected in PROTECTED_IMPLEMENTATION_FILES:
+  +             sp = protected.strip("/")
+  +             if protected.endswith("/"):
+  +                 # Directory prefix: match tf == sp or tf starts with sp/
+  +                 if tf == sp or tf.startswith(f"{sp}/"):
+  +                     return True
+  +             elif tf == sp:
+  +                 return True
+  +     return False
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 18 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 18 lines)
+    def _has_protected_files(task: dict[str, object]) -> bool:
+  -     """Return True if the task's files include any protected implementation file."""
+  +     """Return True if the task's files include any protected implementation surface.
+  + 
+  +     Handles both exact-file matches (e.g. ``IDENTITY.md``) and directory-prefix
+  +     matches (e.g. ``skills/evolve/`` matching ``skills/evolve/SKILL.md``).
+  +     """
+        files_str = str(task.get("files") or "")
+        task_files = {path.strip() for path in files_str.split(",") if path.strip()}
+  -     return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+  +     for tf in task_files:
+  +         for protected in PROTECTED_IMPLEMENTATION_FILES:
+  +             sp = protected.strip("/")
+  +             if protected.endswith("/"):
+  +                 # Directory prefix: match tf == sp or tf starts with sp/
+  +                 if tf == sp or tf.startswith(f"{sp}/"):
+  +                     return True
+  +             elif tf == sp:
+  +                 return True
+  +     return False
+ ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the protection filtering in `choose_task`. Let me find the exact location where candidates are iterated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (89ms)
+  ▶ todo ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the protection filter in `choose_task`. I'll add it right before the loop that iterates over candidates.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:830..860 ✓ (60ms)
+
+
