@@ -991,6 +991,13 @@ def _healthy_codebase_fallback() -> dict[str, object]:
 
 
 def render_task(task: dict[str, object], day: str, session_time: str) -> str:
+    files_val = str(task.get("files") or "").strip()
+    if not files_val:
+        raise ValueError(
+            f"Task '{task.get('title', 'unknown')}' has empty files — "
+            f"the planning pipeline will reject this task during verification. "
+            f"Fix the fallback path that produced this empty-files task."
+        )
     success = "\n".join(f"- {item}" for item in task["success"])
     verification = "\n".join(f"- {item}" for item in task["verification"])
     evidence = "\n".join(f"- {item}" for item in task["evidence"])
@@ -1077,6 +1084,31 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
         assert task["files"] == "src/state.rs", task
         text = render_task(task, "107", "21:45")
         assert "run_completion_guard_reports_error_on_panic" in text, text
+
+        # --- render_task raises on empty files ---
+        empty_files_task = {
+            "title": "Empty Files Test Task",
+            "files": "",
+            "success": ["Nothing"],
+            "verification": ["echo ok"],
+            "evidence": ["None"],
+            "why": "Test",
+            "objective": "Test",
+        }
+        try:
+            render_task(empty_files_task, "107", "21:45")
+            assert False, "render_task should have raised ValueError for empty files"
+        except ValueError as exc:
+            assert "empty files" in str(exc), f"Unexpected error message: {exc}"
+
+        # --- render_task raises on whitespace-only files ---
+        whitespace_files_task = dict(empty_files_task)
+        whitespace_files_task["files"] = "   "
+        try:
+            render_task(whitespace_files_task, "107", "21:45")
+            assert False, "render_task should have raised ValueError for whitespace-only files"
+        except ValueError as exc:
+            assert "empty files" in str(exc), f"Unexpected error message: {exc}"
 
         assessment = """# Assessment
 
