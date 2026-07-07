@@ -1,0 +1,261 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The task is about guaranteeing non-empty `Files:` entries in every preseed task file
+2. The edit surface is `scripts/preseed_session_plan.py`
+3. I need to check if existing paths already guarantee non-empty files and if tests already cover this
+
+Let me start by reading the skill file and the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:840..1040 ✓ (746ms)
+ ✓ (546ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the file to see the test assertions at lines 1119, 1133, 1151 and the rest of the code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1040.. ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the full picture:
+
+1. The `render_task` function at line 993 takes `task['files']` and renders it as `Files: {task["files"]}`.
+2. The task says: add a guard in `render_task` that validates `task["files"]` is non-empty.
+3. I need to check if the existing tests already cover this (lines 1119, 1133, 1151).
+
+Let me look at the tests more carefully. Lines 1119, 1133, 1151 already assert `task.get("files")` is non-empty. But these assertions are on the task dict BEFORE rendering. The task wants a guard in `render_task` itself.
+
+Let me also check all the fallback paths to make sure they all set non-empty files.
+
+Looking at the fallback paths:
+- Line 847-872: fallback has `"files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py"` - has files ✓
+- Line 873-875: if `_candidate_files_exist(fallback)` fails, `fallback["files"] = "scripts/preseed_session_plan.py"` ✓
+- Line 877-885: if `assessment_was_missing`, `fallback["files"] = "scripts/preseed_session_plan.py"` ✓
+- Line 887-888: `_healthy_codebase_fallback()` - returns `"files": "journals/JOURNAL.md"` ✓
+- Line 988-989: if `_candidate_files_exist(task)` fails, `task["files"] = "journals/JOURNAL.md"` ✓
+
+Now, the task's instruction says:
+> If the existing tests at lines 1119, 1133, 1151 already assert non-empty files and all paths are covered, the implementation agent may mark this task as verified with a test run without adding a new guard — the test suite is the guard.
+
+The existing tests at 1119, 1133, and 1151 assert `task.get("files")` is non-empty. But these assert on the task dict *before* rendering. The guard in `render_task` would be an additional safety net.
+
+Also, the task says to add a guard in `render_task`. Let me check if the tests already call `render_task` with potentially empty files... Looking at the test code, `render_task` is only called after `choose_task` which always returns tasks with files set. So the test does NOT cover the case where `render_task` is called with empty files.
+
+The task says: "the implementation agent may mark this task as verified with a test run without adding a new guard — the test suite is the guard."
+
+But the test suite only guards the *task selection* paths, not `render_task` directly. Adding the guard in `render_task` is still valuable as a safety net.
+
+Let me think about whether to add the guard or mark as verified. The task description says both paths are valid. Let me add the guard since it's safer and adds a test that directly tests render_task with an empty files case.
+
+Let me also check if there are test assertions around line 1151.
+
+Let me read lines 1135-1160 to see the rest of the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1135.. ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan:
+
+1. The `render_task` function (line 993-1040) doesn't validate that `task["files"]` is non-empty.
+2. All existing fallback paths already set non-empty files.
+3. The tests at lines 1119, 1133, 1151 assert `task.get("files")` is truthy, but this is on the task dict *before* `render_task` is called.
+
+The task says:
+> the implementation agent may mark this task as verified with a test run without adding a new guard — the test suite is the guard.
+
+But I think adding the guard in `render_task` + a test for it is the better approach since:
+- It's an actual safety net for future changes
+- It directly addresses the issue (the verification gate rejects tasks with empty Files:)
+- The task description explicitly says to add this guard
+
+Let me add:
+1. The guard in `render_task` 
+2. A test that `render_task` raises ValueError when files is empty
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the guard in `render_task` and add a test for it.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (166ms)
+  ▶ todo ✓ (253ms)
+  ▶ todo ✓ (237ms)
+  ▶ todo ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the guard in render_task and the test. First, the guard.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.1s (4 ✓)
+
+
+    def render_task(task: dict[str, object], day: str, session_time: str) -> str:
+  +     files_val = str(task.get("files") or "").strip()
+  +     if not files_val:
+  +         raise ValueError(
+  +             f"Task '{task.get('title', 'unknown')}' has empty files — "
+  +             f"the planning pipeline will reject this task during verification. "
+  +             f"Fix the fallback path that produced this empty-files task."
+  +         )
+        success = "\n".join(f"- {item}" for item in task["success"])
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 9 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (436ms)
+  ▶ edit scripts/preseed_session_plan.py (2 → 9 lines)
+    def render_task(task: dict[str, object], day: str, session_time: str) -> str:
+  +     files_val = str(task.get("files") or "").strip()
+  +     if not files_val:
+  +         raise ValueError(
+  +             f"Task '{task.get('title', 'unknown')}' has empty files — "
+  +             f"the planning pipeline will reject this task during verification. "
+  +             f"Fix the fallback path that produced this empty-files task."
+  +         )
+        success = "\n".join(f"- {item}" for item in task["success"])
+ ✓ (247ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test. I'll add it in the test block. Let me find a good place. I'll add it after the existing render_task tests (around line 1077-1079 where it tests render_task) or at the end of the test block before the print statement.
+
+Let me add a specific test for the empty-files guard right after the existing render_task test (after line 1079).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Now let me add a test for the empty-files guard. I'll add it near the existing `render_task` test call:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1075..1085 ✓ (233ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1084..1094 ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test for the empty-files guard right after line 1086.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert "run_completion_guard_reports_error_on_panic" in text, text
+  + 
+  +         # --- render_task raises on empty files ---
+  +         empty_files_task = {
+  +             "title": "Empty Files Test Task",
+  +             "files": "",
+  +             "success": ["Nothing"],
+  +             "verification": ["echo ok"],
+  +             "evidence": ["None"],
+  +             "why": "Test",
+  +             "objective": "Test",
+  +         }
+  +         try:
+  +             render_task(empty_files_task, "107", "21:45")
+  +             assert False, "render_task should have raised ValueError for empty files"
+  +         except ValueError as exc:
+  +             assert "empty files" in str(exc), f"Unexpected error message: {exc}"
+  + 
+  +         # --- render_task raises on whitespace-only files ---
+  +         whitespace_files_task = dict(empty_files_task)
+  ... (8 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 28 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (414ms)
+  ▶ todo ✓ (253ms)
+  ▶ edit scripts/preseed_session_plan.py (3 → 28 lines)
+            assert "run_completion_guard_reports_error_on_panic" in text, text
+  + 
+  +         # --- render_task raises on empty files ---
+  +         empty_files_task = {
+  +             "title": "Empty Files Test Task",
+  +             "files": "",
+  +             "success": ["Nothing"],
+  +             "verification": ["echo ok"],
+  +             "evidence": ["None"],
+  +             "why": "Test",
+  +             "objective": "Test",
+  +         }
+  +         try:
+  +             render_task(empty_files_task, "107", "21:45")
+  +             assert False, "render_task should have raised ValueError for empty files"
+  +         except ValueError as exc:
+  +             assert "empty files" in str(exc), f"Unexpected error message: {exc}"
+  + 
+  +         # --- render_task raises on whitespace-only files ---
+  +         whitespace_files_task = dict(empty_files_task)
+  ... (8 more lines)
+ ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Now let me run the tests:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (169ms)
+  ▶ todo ✓ (253ms)
+  ▶ $ python3 scripts/preseed_session_plan.py --test ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+All tests pass. Let me verify the diff and commit:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff --name-only  ▶ $ git diff scripts/preseed_session_plan.py ✓ (602ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct. The only file changed is `scripts/preseed_session_plan.py`, which matches the task's Edit Surface. Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+The diff touches only `scripts/preseed_session_plan.py` — matches the task's Edit Surface exactly.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (188ms)
+  ▶ todo ✓ (252ms)
+  ▶ $ git add -A && git commit -m "Day 129 (18:01): Guarantee non-empty Files entries … ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify the commit is clean and everything is done.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (137ms)
+  ▶ $ git log -1 --oneline ✓ (486ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All done. Let me summarize.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+## Summary
+
+**What changed:** `scripts/preseed_session_plan.py` — added a guard in `render_task()` that validates `task["files"]` is non-empty before rendering. Raises `ValueError` with a diagnostic message naming the task title if the files field is empty or whitespace-only.
+
+**Where:**
+• **Line 994-1001** (guard): `render_task` now strips and checks `task["files"]` before rendering, raising `ValueError` with a clear diagnostic on empty/whitespace.
+• **Lines 1088-1112** (tests): Two new test cases — one for empty string and one for whitespace-only files — confirm the guard catches both cases.
+
+**Verification:**
+• `python3 scripts/preseed_session_plan.py --test` — all tests passed (including the new guard tests).
+• All existing fallback paths (lines 849, 875, 878, 964, 989) already set non-empty files — the guard is a safety net for future changes.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
