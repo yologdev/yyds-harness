@@ -1,0 +1,457 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Create a new eval fixture at `eval/fixtures/local-smoke/372-tool-failure-recording.json`
+2. This fixture should verify that FailureObserved events recorded during tool execution contain the required fields (source, tool_name, error_preview)
+3. It's a canary that catches regressions in the tool-failure recording pipeline
+
+First, I should:
+- Read the evolve skill
+- Read existing fixture examples (371-state-lifecycle-pairing.json, 004-cache-metrics.json)
+- Understand the fixture format
+- Check if there's an existing test for panic_hook_records_failure_observed
+- Create the fixture
+
+Let me start by reading the skill and existing fixtures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read eval/fixtures/local-smoke/371-state-lifecycle-pairing.json  ▶ read eval/fixtures/local-smoke/004-cache-metrics.json ✓ (1.1s)
+ ✓ (943ms)
+ ✓ (705ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I now understand the fixture format. Let me now check:
+
+1. What the eval fixture runner expects (schema)
+2. Whether there's an existing test for FailureObserved recording
+3. What prompt.rs line 906 looks like
+
+Let me look at the eval fixture infrastructure and existing tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.1s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (171ms)
+  ▶ todo ✓ (208ms)
+  ▶ todo ✓ (236ms)
+  ▶ todo ✓ (252ms)
+  ▶ todo ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for FailureObserved tests and the eval fixture validation logic.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.5s (5 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src (*.rs)  ▶ search 'fail_fixture_schema\|validate_fixture\|fixture.*valid' in src (*.rs)  ▶ ls eval/fixtures/local-smoke ✓ (189ms)
+ ✓ (695ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the eval fixture runner to understand how fixtures are loaded and validated. Let me also look at prompt.rs around line 901 and 960 to understand the FailureObserved recording.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.6s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (152ms)
+  ▶ read src/prompt.rs:890..970  ▶ read src/state.rs:20..70  ▶ search 'fixture' in tests (*.rs) ✓ (460ms)
+ ✓ (489ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the FailureObserved recording. Let me check:
+
+1. The eval runner in src/eval_fixtures.rs to understand how fixtures are loaded and validated
+2. Whether there are existing tests for tool FailureObserved recording
+
+Let me look at eval_fixtures.rs for format validation and the integration test.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.1s (4 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs (100 lines)  ▶ search 'integration' in tests (*.rs) ✓ (458ms)
+ ✓ (453ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I now understand the fixture format. The BenchmarkTask struct requires these fields:
+- task_id (string)
+- category (string)
+- repo_fixture (string, must be "self")
+- initial_commit (string)
+- goal (string)
+- tests (array of strings, each a shell command)
+- hidden_failure_mode (string)
+- expected_files (array of strings)
+- timeout_secs (optional u64)
+- risk_label (string)
+
+Now let me think about what this fixture should actually test. The task says:
+
+1. "Verify that FailureObserved events recorded during tool execution contain the required fields (source, tool_name, error_preview)"
+2. It should be a canary - it should PASS when the recording pipeline is healthy
+
+The task suggests two approaches:
+1. `cargo test state::tests::panic_hook_records_failure_observed -- --nocapture` - but this tests the PANIC hook, not tool failures
+2. A `cargo run -- state tail --limit 10000 --json | python3` approach that scans for FailureObserved events with source="tool"
+
+Let me check if there's already a test that specifically tests tool failure recording. Let me look at the state tests near line 3463 and 6874 to see what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3440..3520  ▶ read src/state.rs:6850..6930 ✓ (695ms)
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me check the integration test to see how fixtures are loaded and run.
+
+The key insight for creating this fixture: the task says the fixture should verify that FailureObserved events recorded during tool execution contain the required fields (source, tool_name, error_preview). 
+
+Since we can't easily simulate a tool failure in a fixture command (it would require actually running the agent which is expensive), the most practical approach for a held-out eval fixture is:
+
+1. A fixture that verifies the recording code is still correct by running unit tests that specifically test FailureObserved recording from tool paths.
+
+OR
+
+2. A fixture that reads the state event log and validates the structure of existing FailureObserved events.
+
+Let me think about what's most useful. The task mentions "tool-failure event recording consistency" and that the gap is "some failure paths recording to one stream but not the other". 
+
+Looking at the code:
+- prompt.rs:899-910 records FailureObserved with source="tool", tool_call_id, tool_name, error_preview when `is_error` is true
+- prompt.rs:958-966 records FailureObserved with source="input_rejected", reason when InputRejected
+- state.rs:53 records FailureObserved with "rust_panic" on panic
+
+The fixture should verify that when a tool execution fails:
+1. A FailureObserved event is recorded
+2. It has the correct fields: source="tool", tool_name, error_preview
+
+The best approach for a "canary" fixture is to run existing unit tests that verify this behavior. Let me check what tests exist.
+
+From my search, I see these test names in state.rs:
+- `panic_hook_records_failure_observed` (line ~6860)
+- `panic_hook_emits_run_completed` (line ~6880)
+
+But these test the panic hook, not tool failures. There don't seem to be specific tests for the tool failure recording in prompt.rs. Let me search for tests in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*tool.*fail\|fn test.*failure_observed\|fn test.*Fai…' in src (*.rs)  ▶ $ grep -n '#\[test\]' src/prompt.rs | head -20 ✓ (619ms)
+ ✓ (701ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there are any tests that specifically test the tool failure recording path (the code at prompt.rs:899-910). Let me look at what tests are in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '#\[test\]' src/prompt.rs | while read line; do num=$(echo "$line" | cut… ✓ (439ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+None of the tests in prompt.rs directly test the FailureObserved recording from tool execution. The closest is `test_prompt_event_state_into_result_preserves_tool_error` which tests the PromptEventState, not the actual FailureObserved event recording.
+
+For the fixture, I have a few options:
+
+1. Create a fixture that runs a unit test like `panic_hook_records_failure_observed` — but that tests the panic hook, not tool failure recording.
+
+2. Create a fixture that validates event log structure — scanning for FailureObserved events with source="tool" and checking they have tool_name, error_preview, tool_call_id.
+
+3. Add a unit test in state.rs or prompt.rs that specifically tests the tool failure recording path, and then create a fixture that runs it.
+
+Since the task says "Add held-out eval fixture" and the edit surface is only the fixture file, I should focus on creating a good fixture. The best approach given the constraints is:
+
+**Fixture approach**: A JSON schema validation + a test command that verifies the FailureObserved recording code is correct by running relevant unit tests, plus a canary that scans real state events if available.
+
+Let me create a fixture that:
+1. Runs the existing `panic_hook_records_failure_observed` test (verifies FailureObserved event structure from panic path)
+2. Runs a validation that the FailureObserved recording in prompt.rs has the correct fields by checking the code compiles and the event type exists
+3. Uses the `state tail` approach to check for any existing tool failure events
+
+Actually, let me think more carefully. The fixture should be testable. The task suggests:
+- `cargo test state::tests::panic_hook_records_failure_observed -- --nocapture` 
+- Or the state tail approach
+
+Both of these can work. Let me also check if there's a test specifically for the tool failure event structure. Looking at what we have:
+
+1. `panic_hook_records_failure_observed` - tests panic hook FailureObserved
+2. `event_log_is_readable_by_yoagent_state_store` - tests that a FailureObserved event with source="test" is readable
+
+Neither specifically tests the tool failure path (source="tool", has tool_name, error_preview, tool_call_id).
+
+But since the edit surface is only the fixture file (not adding new tests in src/), I should create a fixture that uses existing tests + a state scan.
+
+Let me design the fixture:
+
+```json
+{
+  "task_id": "tool-failure-recording",
+  "category": "state/integrity",
+  "repo_fixture": "self",
+  "initial_commit": "HEAD",
+  "risk_label": "medium",
+  "goal": "Verify that FailureObserved events recorded during tool execution contain the required fields (source, tool_name, error_preview) — a canary that catches regressions in the tool-failure recording pipeline.",
+  "tests": [
+    "cargo test state::tests::event_log_is_readable_by_yoagent_state_store -- --nocapture",
+    "cargo test state::tests::panic_hook_records_failure_observed -- --nocapture",
+    "python3 -c \"import subprocess, json, sys; result = subprocess.run(['cargo', 'run', '--', 'state', 'tail', '--limit', '5000', '--json'], capture_output=True, text=True, timeout=30); events = [json.loads(l) for l in result.stdout.strip().split(chr(10)) if l.strip()]; tool_failures = [e for e in events if e.get('kind') == 'FailureObserved' and e.get('payload', {}).get('source') == 'tool']; assert all('tool_name' in e.get('payload', {}) for e in tool_failures), 'missing tool_name'; assert all('error_preview' in e.get('payload', {}) for e in tool_failures), 'missing error_preview'; print(f'ok - {len(tool_failures)} tool FailureObserved events all have required fields')\""
+  ],
+  "expected_files": [
+    "eval/fixtures/local-smoke/372-tool-failure-recording.json",
+    "src/state.rs",
+    "src/prompt.rs"
+  ],
+  "hidden_failure_mode": "A change to the tool execution error path in prompt.rs silently drops the tool_name or error_preview field from FailureObserved events, or stops recording FailureObserved entirely for tool errors, causing the state/transcript reconciliation gap to widen without any test failure signal."
+}
+```
+
+Wait, but the `cargo run -- state tail --limit 5000 --json` command may time out or may not exist. Let me check if `state tail` is a valid subcommand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_state_subcommand\|state.tail\|"tail"' in src (*.rs) ✓ (138ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for what state subcommands are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_state_subcommand' in src (*.rs) ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state subcommand handler to understand what subcommands are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:34..114 ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `state tail` exists with `--limit` and `--json` options. Let me check if `handle_tail` outputs proper JSON.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tail' in src (*.rs) ✓ (166ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:496..556 ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So `state tail --limit N --json` outputs each event as JSON on its own line (JSONL format). This is usable for the fixture.
+
+Now let me design the fixture. The key is:
+
+1. It should be a canary - it should PASS when the recording pipeline is healthy
+2. It should catch regressions where the tool failure path stops recording properly
+
+The best approach:
+- A test command that runs unit tests verifying the FailureObserved recording infrastructure is intact:
+  - `panic_hook_records_failure_observed` - verifies the panic hook produces proper FailureObserved events
+  - `event_log_is_readable_by_yoagent_state_store` - verifies events can be read back correctly
+
+But these don't specifically test the tool failure path. Let me think about what would be most valuable...
+
+Actually, looking at the task more carefully, it says:
+- "The fixture should be a canary: it should PASS when the recording pipeline is healthy"
+- "Recommended test command shape: `cargo test state::tests::panic_hook_records_failure_observed -- --nocapture` (verifies the panic hook records FailureObserved with correct fields). If that test already exists and passes, the fixture's job is to ensure it STAYS passing across harness changes."
+
+So the task itself acknowledges that the test may already exist. The fixture's value is in ensuring these tests keep running as part of the eval suite.
+
+Let me also check the alternative: the state tail approach. But that requires the events log to exist and have tool failures, which may not be the case in a clean checkout. So the fixture should handle both: it passes if there are no events (clean state) OR if all existing events have correct fields.
+
+Let me create a fixture with well-designed tests:
+
+1. Run `panic_hook_records_failure_observed` to verify the panic hook recording
+2. Run `event_log_is_readable_by_yoagent_state_store` to verify event read-back
+3. A state tail scan that's tolerant of no events (passes if no events, validates fields if events exist)
+
+Actually wait - let me re-read the task's "Edit Surface":
+```
+- eval/fixtures/local-smoke/372-tool-failure-recording.json — new fixture file only
+```
+
+This is a new fixture file only. The task says the existing tests are already there. Let me just create a good fixture that captures the required verification.
+
+Let me also check how many more files are in the local-smoke directory - the 372 number suggests it's sequential.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (169ms)
+  ▶ $ ls eval/fixtures/local-smoke/ | tail -5 ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, 371 is the highest number. 372 is next. Now let me create the fixture.
+
+Let me design a well-crafted fixture:
+
+1. First test: Run the panic hook test to verify FailureObserved recording infrastructure
+2. Second test: Run the event log readability test
+3. Third test: A state scan that verifies tool FailureObserved event structure (if events exist)
+
+I need to be careful about the test commands - they're run as bash commands from the fixture framework. Let me look at how the fixture runner executes tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:250..330 ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how tests are run in the fixture framework:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn run_fixture_task\|Command::new\|\.spawn\|\.output' src/eval_fixtures… ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how tests are executed (line 643 onward):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:636..696 ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests are run with `/bin/sh -lc <command>`. So the test command is a shell command that should exit 0 on success.
+
+Now let me create the fixture. I'll make it comprehensive but simple:
+
+1. First test: Run the panic hook test (verifies FailureObserved recording infrastructure)
+2. Second test: Run the event log readability test (verifies events can be read back)
+3. Third test: Validate tool failure events in the state log (if events exist) - this is the "canary" part
+
+For the third test, I should make it tolerant of no events (passes if no events, fails if events exist but are malformed). But actually, the fixture runner needs the commands to pass. Let me design it so it passes under both conditions.
+
+Actually, let me re-read the task more carefully:
+
+> Recommended test command shape: `cargo test state::tests::panic_hook_records_failure_observed -- --nocapture` (verifies the panic hook records FailureObserved with correct fields). If that test already exists and passes, the fixture's job is to ensure it STAYS passing across harness changes.
+
+So the simplest approach: run the existing tests that verify FailureObserved recording. This is exactly what a "canary" fixture does - it runs tests that nobody would think to run unless they noticed the gap.
+
+Let me also add a test that checks the source code for the FailureObserved recording pattern in prompt.rs:899-910 to ensure the fields (source, tool_name, error_preview, tool_call_id) are still present.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough context. Let me create the fixture:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me create the fixture file now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + {
+  +   "task_id": "tool-failure-recording",
+  +   "category": "state/integrity",
+  +   "repo_fixture": "self",
+  +   "initial_commit": "HEAD",
+  +   "risk_label": "medium",
+  +   "goal": "Verify that FailureObserved events recorded during tool execution contain the required fields (source, tool_name, error_preview, tool_call_id) — a canary that catches regressions in the tool-failure recording pipeline. The state/transcript reconciliation gap (33 discrepancies) means post-hoc diagnosis loses fidelity when tool failures are recorded to one stream but not the other. This fixture runs the existing FailureObserved recording tests to ensure they stay passing across harness changes.",
+  +   "tests": [
+  +     "cargo test state::tests::panic_hook_records_failure_observed -- --nocapture",
+  +     "cargo test state::tests::event_log_is_readable_by_yoagent_state_store -- --nocapture",
+  +     "grep -q '\"source\":\"tool\"' src/prompt.rs && grep -q '\"tool_name\"' src/prompt.rs && grep -q '\"error_preview\"' src/prompt.rs && grep -q '\"tool_call_id\"' src/prompt.rs && echo 'ok - tool failure recording fields present in prompt.rs'"
+  +   ],
+  +   "hidden_failure_mode": "A change to the tool execution error path in prompt.rs silently drops the tool_name, error_preview, or tool_call_id field from FailureObserved events, or stops recording FailureObserved entirely for tool errors. The state/transcript reconciliation gap would widen without any test failure signal. The grep-based field check catches field removals; the unit tests catch structural breakage in the recording pipeline itself.",
+  +   "expected_files": [
+  +     "eval/fixtures/local-smoke/372-tool-failure-recording.json",
+  +     "src/state.rs",
+  +     "src/prompt.rs"
+  +   ],
+  +   "timeout_secs": 120
+  + }
+  ✓ Auto-approved: write: eval/fixtures/local-smoke/372-tool-failure-recording.json (20 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ write eval/fixtures/local-smoke/372-tool-failure-recording.json (20 lines) ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify:
+1. JSON schema validation
+2. The fixture is loadable
+3. Run focused checks
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (131ms)
+  ▶ todo ✓ (183ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the JSON is valid and the fixture loads correctly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c "import json; f=json.load(open('eval/fixtures/local-smoke/372-tool-fa…  ▶ $ cargo fmt -- --check 2>&1 ✓ (903ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+JSON is valid, cargo fmt passes. Now let me verify the tests can actually pass. Let me run the grep test first (fastest), then the unit tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -q '"source":"tool"' src/prompt.rs && grep -q '"tool_name"' src/prompt.rs &…  ▶ $ cargo test state::tests::panic_hook_records_failure_observed -- --nocapture 2>&1…  ▶ $ cargo test state::tests::event_log_is_readable_by_yoagent_state_store -- --nocap… ✓ (1.8s)
+ ✓ (1.8s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two issues:
+
+1. The grep test failed because `"source":"tool"` with the exact quoting doesn't match. Let me check what the actual source looks like.
+
+2. The unit tests show "0 passed" - the test names I used don't match the actual test names. Let me find the correct test names.
+
+Let me fix both issues.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'source.*tool\|"source"' src/prompt.rs | head -10  ▶ $ grep -n 'fn panic_hook\|fn event_log_is_readable' src/state.rs ✓ (902ms)
+ ✓ (963ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see two issues:
+
+1. The source field in prompt.rs uses `"source": "tool"` (with a space after the colon), not `"source":"tool"`. I need to adjust the grep pattern.
+
+2. The test names are wrong:
+   - `panic_hook_records_to_state` not `panic_hook_records_failure_observed`
+   - `event_log_is_readable_by_yoagent_state_store` is correct
+
+Let me fix the fixture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn panic_hook_records_to_state\|fn panic_hook_emits_run_completed' src/…  ▶ $ grep -c '"error_preview"' src/prompt.rs && grep -c '"tool_name"' src/prompt.rs &… ✓ (458ms)
+ ✓ (1.4s)
+  2 tools completed in 1.4s (2 ✓)
+
+
