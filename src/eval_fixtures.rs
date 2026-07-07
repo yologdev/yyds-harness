@@ -640,8 +640,10 @@ fn run_fixture_command(
     timeout_secs: u64,
 ) -> FixtureCommandResult {
     let started = Instant::now();
+    // Rewrite stale --bin yoyo references (binary renamed to yyds)
+    let command = command.replace("--bin yoyo", "--bin yyds");
     let mut cmd = Command::new("/bin/sh");
-    cmd.arg("-lc").arg(command);
+    cmd.arg("-lc").arg(&command);
     if let Some(workdir) = workdir {
         cmd.current_dir(workdir);
     }
