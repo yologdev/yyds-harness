@@ -1274,7 +1274,12 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         hit_tokens += hit or 0
         miss_tokens += miss or 0
         event_count += 1
-    incomplete_count = len(started_runs - completed_runs) + max(unkeyed_starts - unkeyed_completions, 0)
+    incomplete_model_runs = started_runs - completed_runs
+    input_validation_incomplete = sum(
+        1 for run_id in incomplete_model_runs
+        if is_input_validation_completion(run_last_events.get(run_id))
+    )
+    incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)
     unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
     run_incomplete_ids = run_started - run_completed
     run_unmatched_completed_ids = run_completed - run_started
