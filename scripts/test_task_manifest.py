@@ -462,6 +462,114 @@ Verification:
             self.assertTrue(quality["assessment_alignment"]["contradicted_by_assessment"])
             self.assertEqual(manifest["selected_tasks"], [])
 
+    def test_manifest_excludes_file_less_tasks_from_selectable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nNot much to do.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: File-less task that should not be selectable
+Files:
+Issue: #79
+Origin: planner
+
+Objective:
+This task has an empty Files header and no file mentions in the body.
+
+Success Criteria:
+- The task is excluded from selectable.
+- missing_files warning is emitted.
+- no_selectable_tasks fires when it is the only task.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+
+Expected Evidence:
+- The task gets a missing_files warning and is NOT in selected_tasks.
+""",
+                encoding="utf-8",
+            )
+            (plan / "task_02.md").write_text(
+                """Title: A real task with files should still be selectable
+Files: scripts/task_manifest.py
+Issue: none
+Origin: planner
+
+Objective:
+Make sure the file-less filter does not exclude valid tasks.
+
+Success Criteria:
+- This task is selected.
+
+Verification:
+- python3 -m unittest scripts.test_task_manifest
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            # file-less task gets a warning
+            self.assertIn("task_01:missing_files", manifest["warnings"])
+            # file-less task is excluded from selectable
+            selected_ids = [t["task_id"] for t in manifest["selected_tasks"]]
+            self.assertNotIn("task_01", selected_ids)
+            # task with files is still selected
+            self.assertIn("task_02", selected_ids)
+            self.assertEqual(len(manifest["selected_tasks"]), 1)
+
+    def test_manifest_no_selectable_when_all_file_less(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nNo real tasks.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Another file-less task
+Files:
+Issue: #79
+Origin: planner
+
+Objective:
+This task has an empty Files header too.
+
+Success Criteria:
+- no_selectable_tasks fires when all tasks are file-less.
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            self.assertIn("task_01:missing_files", manifest["warnings"])
+            self.assertIn("no_selectable_tasks", manifest["warnings"])
+            self.assertEqual(manifest["selected_tasks"], [])
+
     def test_manifest_rejects_recently_failed_analysis_only_seed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -310,7 +310,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
     selectable = [
         task
         for task in tasks
-        if not task.get("protected_files")
+        if task.get("files")
+        and not task.get("protected_files")
         and not (
             isinstance(task.get("quality"), dict)
             and task["quality"].get("analysis_only_escape")
