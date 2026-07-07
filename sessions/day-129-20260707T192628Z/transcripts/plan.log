@@ -1,0 +1,430 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the assessment and trajectory evidence to create a focused session plan. Let me first check if `session_plan/task_01.md` already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "directory does not exist" ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The directory exists and `task_01.md` already exists. Let me read it to understand what the seed task is, then decide whether to refine it or add task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md exists. Let me now look at the assessment evidence and decide:
+
+1. The assessment says this session is NOT a no-task session — the harness already created task_01.md as a seed. The seed's evidence says "The harness reached planning with no task artifacts" but that's the harness-seed's logic, not necessarily matching the current assessment reality.
+
+2. Looking at the assessment evidence more carefully:
+   - **[HIGH] `state why last-failure` still times out** — This is the most actionable and concrete bug. `read_events_bounded` exists (Day 126) but `commands_state.rs`'s failure-explanation path hasn't been migrated. 
+   - **[MEDIUM] 30 state-only tool failures** — State events record tool failures that don't appear in transcripts.
+   - **[LOW] 6 recent bash tool errors**
+   - **[LOW] 1 abnormal model completion**
+
+3. From trajectory graph pressure:
+   - "Close yyds state and model lifecycle gaps" — 1 abnormal completion
+   - "Bound failing shell commands before retrying" — 6 bash errors
+   - "Reconcile transcript-only tool failures" — 2 failures
+   - "Reconcile state-only tool failures" — 30 failures
+
+Now, the seed task is about "Repair evidence-backed planning after no-task sessions" — but this session HAS tasks. The harness-seed was inserted before the assessment ran, as a precautionary measure. Looking at the assessment, the evidence doesn't show planning failures as the top problem. The "state why last-failure timeout" is the highest-priority actionable bug.
+
+However, the seed task says "Treat it as a minimum viable task for Day 129 (19:26); refine it if the planner has stronger evidence, but do not leave the session with zero task files." So I can refine it.
+
+Let me decide on task priorities:
+
+**Task priority analysis:**
+1. **[HIGH] `state why last-failure` still times out** — Directly addresses a diagnostic gap. The fix is scoped (migrate one code path in `commands_state.rs` to use `read_events_bounded`). Hits Files: `src/commands_state.rs` and `src/state.rs` (the bounded utility is there). This is concrete, scoped, and has a clear verifier.
+
+2. **[MEDIUM] 30 state-only tool failures** — This is a state-vs-transcript reconciliation gap. Touches `src/state.rs` and `src/tools.rs` or `src/tool_wrappers.rs`. More investigation needed, but concrete problem.
+
+3. The seed task about planning repair — lower priority since this session already has task files and the assessment shows 8/10 sessions succeeding.
+
+I'll refine task_01.md to be the `state why last-failure` timeout fix (highest priority, most concrete), and create task_02.md for the state-only tool failure reconciliation.
+
+Let me first do ownership checks with git grep before finalizing.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check ownership for the high-priority bug — `state why last-failure` timeout:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'last-failure\|last_failure\|why.*failure\|failure.*explanation\|explain…  ▶ $ grep -n 'read_events_bounded' src/state.rs | head -10  ▶ $ grep -n 'fn .*last_failure\|fn .*explain.*fail\|fn .*failure.*explain' src/comma… ✓ (994ms)
+ ✓ (2.0s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the DEFAULT_WHY_LIMIT and how `build_why_report` reads events:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'DEFAULT_WHY_LIMIT\|read_events\b\|read_compatibility_events' src/comman…  ▶ $ grep -n 'DEFAULT_WHY_LIMIT' src/commands_state.rs ✓ (997ms)
+ ✓ (997ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the code flow:
+
+1. `read_events` at line 1352 calls `crate::state::read_compatibility_events(path)` — this is the UNBOUNDED read.
+2. `read_events_bounded` exists at line 3265 of `src/state.rs` and takes a limit.
+
+The `DEFAULT_WHY_LIMIT` is 10,000. Now let me trace the `build_why_report` function to see where it reads events and whether it uses the limit:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:95..125 ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now trace `handle_why` to see if it actually uses the limit parameter with `read_events_bounded`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `handle_why` to see how it reads events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1094..1164 ✓ (256ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — `handle_why` at line 1096 calls `read_tail_events(&path, limit)` — not `read_events`. Let me find `read_tail_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail_events' in src/commands_state.rs ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1391..1451 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow:
+
+1. `handle_why(id, show_summary, limit)` is called with `limit = DEFAULT_WHY_LIMIT = 10_000` for "last-failure"
+2. `handle_why` calls `read_tail_events(&path, limit)` which calls `read_tail(path, limit)` 
+3. `read_tail` reads the last N lines of the events file
+
+Wait — `read_tail` is the tail reader, not `read_events`. Let me find `read_tail`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail\b' in src/commands_state.rs ✓ (158ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Maybe it's `read_tail_lines` or imported from state.rs. Let me search:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn read_tail\|fn tail_read\|fn read_last' src/state.rs | head -10 ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `read_tail` more broadly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1340..1390 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. The `read_tail` function at line 1340 reads the ENTIRE file into a string (`std::fs::read_to_string(path)`), then keeps only the last `limit` lines. For a 70K+ event file, reading the entire file causes the timeout.
+
+Meanwhile, `read_events_bounded` in `src/state.rs` was designed for this exact case - it reads only what it needs.
+
+The fix should be in `read_tail` to use `read_events_bounded` from `state.rs` instead of reading the whole file. Or more precisely, the `read_tail_events` function should use `read_events_bounded` instead of `read_tail`.
+
+Now let me check the rest of the `handle_why` to see if there are other `read_events` calls that also don't use the bounded version:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1160..1210 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `read_tail` function at line 1340 reads the entire file into memory, then discards all but the last `limit` lines. This is the root cause of the timeout for `state why last-failure`.
+
+The fix: Replace `read_tail` and `read_tail_events` to use `crate::state::read_events_bounded` which reads events in a streaming fashion with a cap.
+
+Now let me also look at what other callers use `read_tail` to understand the blast radius:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_tail(' src/ | grep -v 'read_tail_events\|read_tail_cache\|read_tai… ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for `read_tail(` calls:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail\(' in src ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting — no direct calls to `read_tail(`? But `read_tail_events` calls `read_tail`. Let me check who calls `read_tail_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail_events\(' in src ✓ (167ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, that's odd. Let me check more carefully. The search might be missing the regex:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n 'read_tail_events' src/ ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use grep directly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'read_tail_events' src/ ✓ (492ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `read_tail_events` is used in multiple places. Let me see the exact callers:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_tail_events(' src/commands_state.rs ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The fix path:
+
+1. `read_tail_events` at line 1391 calls `read_tail` when `limit != 0`, which reads the entire file. This causes the timeout.
+2. The fix: replace the `read_tail` call in `read_tail_events` with `crate::state::read_events_bounded`. But `read_events_bounded` returns `(Vec<Value>, String)` where the String is a note about whether it was truncated. `read_tail_events` already returns `(Vec<Value>, String)`.
+
+The fix is surgical:
+- In `read_tail_events`, when `limit == 0`, it already uses `read_events_bounded` with `BOUNDED_FULL_SCAN_CAP`
+- When `limit > 0`, it should also use `read_events_bounded` with the given limit
+
+Actually, looking more carefully at `read_events_bounded`:
+
+```rust
+pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+```
+
+It takes a limit and returns events plus a note. The function signature matches what `read_tail_events` needs. The fix is simple: replace the `read_tail(limit)` path with `read_events_bounded(limit)`.
+
+But wait — `read_events_bounded` reads from the beginning and stops at the limit? Or does it read the last N events? Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3265..3315 ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — `read_events_bounded` ALSO reads the entire file into a string (`std::fs::read_to_string(path)`) and then takes the last `limit` lines. This is the same root cause as `read_tail`! Both read the entire file. The only advantage `read_events_bounded` has is that it's more careful about parsing.
+
+So the assessment's claim that `read_events_bounded` would solve the timeout is incorrect — it has the same I/O pattern. The real fix needs to be more fundamental: the event reader needs to read the file in reverse (from the end) to get the tail without loading the entire file.
+
+Actually wait, let me re-check. The assessment timeout is 15 seconds. For a 70K+ event file, reading the whole file into memory might take a few seconds, but 15 seconds seems excessive for just file I/O. Let me think about what's actually happening...
+
+Actually, I should just trust the assessment's claim that it times out and think about the real fix. The problem is that `read_tail` AND `read_events_bounded` both call `std::fs::read_to_string(path)` which reads the entire large file. For a state file with 70K+ events (which could be tens of MB), this can be slow.
+
+The proper fix is to read the file backwards (seek from the end) to get the last N lines without loading the whole file. This is a classic tail implementation.
+
+But wait - I should verify the actual file size to confirm:
+
+Actually, let me think about this differently. The assessment says:
+- "state why last-failure still times out"
+- "read_events_bounded exists (Day 126) but commands_state.rs's failure-explanation path hasn't been migrated"
+
+But looking at the code, `read_tail_events` already uses `read_events_bounded` when `limit == 0`. And `read_events_bounded` has the same problem (reads whole file). So the Day 126 fix may have created a partially-better utility but didn't actually fix the root cause.
+
+The real fix for the timeout is to implement true bounded reading — reading from the end of the file backward, only loading the last N lines. This is the "tail" pattern.
+
+Let me reconsider the task approach. The seed task_01.md is about planning reliability. But the most concrete, high-priority bug from the assessment is the `state why last-failure` timeout. Let me create a proper task for this, and also create task_02.md for the state-only tool failure reconciliation.
+
+Actually, let me reconsider. The planning instruction says:
+> If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task
+
+The seed task's evidence is about "no task artifacts" reaching planning, but this session HAS tasks and the assessment shows 8/10 sessions succeeding. The seed was written before the assessment ran. The assessment provides stronger evidence: the `state why last-failure` timeout is real and concrete.
+
+I should refine task_01.md to address the `state why last-failure` timeout (highest priority, concrete fix), and create task_02.md to address the 30 state-only tool failures.
+
+Let me also check what `BOUNDED_FULL_SCAN_CAP` is:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'BOUNDED_FULL_SCAN_CAP' src/commands_state.rs | head -5 ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+CAP is 100,000 which is larger than 70K+. So for `limit == 0`, it reads `read_events_bounded` with cap 100k, and for `limit != 0`, it reads `read_tail` with the actual limit. Both ultimately call `std::fs::read_to_string` — the unbounded read.
+
+Let me also check the actual file size to understand the magnitude of the problem:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -lh ~/.yoyo/state/events.jsonl 2>/dev/null || ls -lh .yoyo/state/events.jsonl… ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+98MB! That's massive. Reading a 98MB file into a string for every `state why` call is definitely the timeout cause. No wonder it times out at 15 seconds.
+
+The fix needs to be a real tail implementation — seeking from the end of the file and reading backward.
+
+Now let me plan the tasks:
+
+**Task 01: Fix `state why last-failure` timeout by implementing bounded reverse-file reading**
+
+The key insight: `read_tail` and `read_events_bounded` both call `std::fs::read_to_string` which reads the entire 98MB file. The fix should implement a proper reverse-chunk reader that seeks from the end.
+
+Files: `src/state.rs` (modify `read_events_bounded` to use reverse-chunk reading), `src/commands_state.rs` (modify `read_tail_events` to also use it, or just delegate). Actually, the simplest approach: fix `read_events_bounded` in `state.rs` to use reverse-chunk reading, then ensure `read_tail_events` uses it.
+
+Wait, but `read_events_bounded` currently does `total_lines <= limit` check using the raw string, and falls back to `read_compatibility_events` for small files. With a reverse reader, we can't easily count total lines. We'd need to handle this differently.
+
+Actually, the simplest high-impact fix: in `read_events_bounded`, when `total_lines > limit`, instead of calling `std::fs::read_to_string` and then collecting all lines, use a reverse-chunk reader. Keep the small-file fast path (`compatibility_events`) for when the file fits in the limit.
+
+Let me check if there's a `File::seek` approach we can use:
+
+Actually, for this task, the approach would be:
+1. In `src/state.rs`, modify `read_events_bounded` to use `Seek` from end + buffer reads for large files
+2. In `src/commands_state.rs`, ensure `read_tail_events` properly delegates to the bounded reader
+
+Files involved: `src/state.rs` (the bounded reader), `src/commands_state.rs` (the caller)
+
+Let me write the task files now.
+
+**Task 02: Reconcile state-only tool failures (30 events missing from transcripts)**
+
+Second priority: the 30 state-only tool failures. This is more investigative. The trajectory says "30 failures in state events absent from transcripts." This means state is recording failures that transcripts miss. Could be a transcript truncation issue, or different recording paths.
+
+Files to investigate: `src/state.rs` (event recording), `src/tools.rs` or `src/tool_wrappers.rs` (tool failure recording), potentially `src/prompt.rs` (transcript writing).
+
+Actually, this is more diagnostic than a code fix. Let me think about whether this is a good task for a 20-minute implementation agent. It might be better framed as: identify the recording gap and add at least one concrete fix.
+
+Hmm, actually let me reconsider priorities. Looking at the trajectory graph pressure:
+
+1. "Close yyds state and model lifecycle gaps" — 1 abnormal completion → LOW priority, count=1
+2. "Bound failing shell commands before retrying" — 6 bash errors → MEDIUM, recurring
+3. "Reconcile transcript-only tool failures" — 2 failures → LOW
+4. "Reconcile state-only tool failures" — 30 failures → MEDIUM, but investigative
+
+The `state why last-failure` timeout is the assessment's [HIGH] bug, and it's clear and scoped. That's task 01.
+
+For task 02, let me pick something that's both evidence-backed and actionable. The "Bound failing shell commands" from trajectory pressure (6 bash errors) overlaps with the log feedback lesson about `command timed out after 30s`. But that's more about tool-use patterns than a code fix.
+
+Actually, the most concrete and actionable second task is from the trajectory: the 6 recent bash tool errors + the repeated timeout pattern. But that's a prompt/tool-use fix, not a code fix.
+
+Let me reconsider. The `state why last-failure` timeout is the clear winner for task 01. For task 02, I could pick the 30 state-only tool failures as an investigative task. But that might be too open-ended for a 20-min slot.
+
+Alternatively, let me check if the seed task_01 about planning reliability still has value. The assessment shows 8/10 sessions succeeded — planning is working. The seed task was precautionary. I should replace it.
+
+Let me go with:
+- Task 01: Fix `state why last-failure` timeout (replace `read_tail`/`read_events_bounded` with reverse-file reading)
+- Task 02: Add reverse-file tail reader to `src/state.rs` and migrate all callers (this could be the follow-up ensuring the fix is comprehensive)
+
+Actually, both of these can be one task. Let me make task 01 the core fix and task 02 something else.
+
+For task 02, the highest-impact remaining item is probably the 30 state-only tool failures, since 30 is a significant gap. But it's investigative...
+
+Alternatively, I could make task 02 about adding eval fixture coverage (#37). That's additive and low-risk.
+
+Or, I could look at the "6 recent bash tool errors" - add better timeout handling in the bash tool wrapper.
+
+Let me go with:
+- Task 01: Fix `state why last-failure` timeout — concrete, high-priority
+- Task 02: Add timeout-aware recovery in tool wrappers for the 6 recent bash tool errors — also concrete
+
+Actually wait, let me check if the bash tool errors are truly recoverable via code changes or if they're environmental:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l .yoyo/state/events.jsonl ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+97K lines, 98MB. This file is huge.
+
+Let me finalize my plan. I'll write:
+
+1. **Task 01**: Fix `state why last-failure` timeout by implementing a proper reverse-chunk file reader in `read_events_bounded` (or a new helper) that seeks from EOF backward instead of reading the entire 98MB file.
+
+2. **Task 02**: Fix the `read_tail_events` function in `commands_state.rs` to use the improved bounded reader from `state.rs` consistently, removing the unbounded `read_tail` path.
+
+Actually, these are really one task — fixing the same root cause in two locations. Let me combine them into one task, and pick a different task 02.
+
+Let me reconsider. The real situation:
+- Task 01 (seed) is about planning reliability — lower priority given the assessment evidence
+- The highest priority bug is the `state why` timeout
+
+Let me make task 01 the timeout fix, and choose task 02 from the remaining evidence.
+
+For task 02, what's the most concrete, verifiable, and impactful remaining item?
+
+Options:
+- 30 state-only tool failures: investigative, less concrete
+- 6 bash tool errors: could add timeout recovery hints in tool wrappers, but environmental 
+- eval fixture coverage (#37): additive, low risk, but low priority
+- Fix `read_events` at line 187, 519, 703, 766, 786, 809, 1004, 1042, 1066 — these all use `read_events` (which calls `read_compatibility_events`, also unbounded). But `state why last-failure` already has `read_tail_events` with a limit...
+
+Actually, let me check: `handle_why` calls `read_tail_events(&path, limit)` with `limit = DEFAULT_WHY_LIMIT = 10_000`. This reads the tail via `read_tail(path, 10000)` which calls `std::fs::read_to_string` — reading 98MB. That's the timeout. The fix is clear.
+
+OK, my plan:
+
+**Task 01**: Fix `state why last-failure` timeout — implement reverse-file reading in `read_events_bounded` or `read_tail_events` so we don't load 98MB.
+
+**Task 02**: Add a `yyds state why last-failure --summary` test to verify the command completes in under 5 seconds with the fixed reader. Also consider: check other unbounded `read_events` callers and migrate them to bounded reading where appropriate.
+
+Actually, task 02 as "add test for bounded reading" is thin. Let me pick the 30 state-only tool failures instead:
+
+**Task 02**: Investigate and fix the state-only tool failure recording gap. The trajectory shows 30 tool failures recorded in state events but absent from transcripts. This suggests transcripts are not capturing all failures. Add a transcript completeness check or ensure consistent failure recording.
+
+Files: `src/prompt.rs` (transcript writing), `src/tools.rs` or `src/tool_wrappers.rs` (tool failure paths).
+
+Hmm, this is still investigative and might not be completable in 20 minutes. Let me think about what concrete fix could address this...
+
+Actually, the issue is "30 state-only tool failures" — this means state events have tool failures that transcripts don't show. The transcripts are presumably written from `prompt.rs`'s event stream. If the transcript is being truncated (common for long sessions), the failure events at the end would be missing. That would explain the gap.
+
+A concrete fix: add a note at transcript end when truncation occurred, and log the number of dropped events. Or: ensure tool failure events are always written to the transcript by prioritizing them.
+
+But this starts to feel like scope creep for a 20-min task.
+
+Let me just go with two clear tasks:
+
+1. Task 01: Fix `state why last-failure` timeout (concrete, verified by command timing)
+2. Task 02: Migrate remaining unbounded `read_events` callers in `commands_state.rs` to `read_events_bounded` (7+ call sites identified at lines 187, 519, 703, 766, 786, 809, 1004, 1042, 1066)
+
+Wait, let me check those call sites first:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:185..190  ▶ read src/commands_state.rs:517..522  ▶ read src/commands_state.rs:701..706 ✓ (757ms)
+ ✓ (506ms)
+ ✓ (1.7s)
+  3 tools completed in 1.7s (3 ✓)
+
+
