@@ -1,0 +1,199 @@
+warning: skipping corrupted event at line 54529 of '.yoyo/state/events.jsonl': key must be a string at line 1 column 7616
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. There are 275 fixture JSON files under `eval/fixtures/local-smoke/` that contain `cargo run --bin yoyo` or similar commands.
+2. The binary was renamed to `yyds`, so these commands fail.
+3. The fix is to add a `.replace("--bin yoyo", "--bin yyds")` in the `run_fixture_command` function in `src/eval_fixtures.rs`.
+4. This is a single-line change that fixes all 275 fixtures without modifying them individually.
+
+Let me start by reading the evolve skill and the relevant source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/eval_fixtures.rs:625..665 ✓ (436ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the `run_fixture_command` function at line 637-641. The fix is to add a `.replace("--bin yoyo", "--bin yyds")` on the `command` parameter before it's passed to `Command::new("/bin/sh")`. This is a single-line change.
+
+Let me look at the full function more carefully to understand where exactly to add the rewrite.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+I can see the exact spot. Let me also verify the binary name and check the fixture count to confirm the evidence:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --quiet --bin yyds -…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rl 'cargo.*--bin yoyo' e… ✓ (300ms)
+ ✓ (15.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: binary is `yyds`, and 275 fixture files contain `cargo.*--bin yoyo`. Now let me make the edit. The fix is simple: add `.replace("--bin yoyo", "--bin yyds")` to the `command` parameter before it's passed to `Command::new("/bin/sh")`.
+
+The current code:
+```rust
+fn run_fixture_command(
+    command: &str,
+    workdir: Option<&Path>,
+    timeout_secs: u64,
+) -> FixtureCommandResult {
+    let started = Instant::now();
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-lc").arg(command);
+```
+
+I'll change it to:
+```rust
+fn run_fixture_command(
+    command: &str,
+    workdir: Option<&Path>,
+    timeout_secs: u64,
+) -> FixtureCommandResult {
+    let started = Instant::now();
+    let command = command.replace("--bin yoyo", "--bin yyds");
+    let mut cmd = Command::new("/bin/sh");
+    cmd.arg("-lc").arg(&command);
+```
+
+Wait, but the `command` variable is also used later in `FixtureCommandResult { command: command.to_string(), ... }`. If I shadow it, that's fine - the result will contain the rewritten command. Let me check the full function including the return.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 20.4s (2 ✓)
+
+Evidence confirmed: 275 fixtures with stale references, binary is `yyds`. Now the edit:
+        timeout_secs: u64,
+    ) -> FixtureCommandResult {
+        let started = Instant::now();
+  +     // Rewrite stale --bin yoyo references (binary renamed to yyds)
+  +     let command = command.replace("--bin yoyo", "--bin yyds");
+        let mut cmd = Command::new("/bin/sh");
+  -     cmd.arg("-lc").arg(command);
+  +     cmd.arg("-lc").arg(&command);
+  ✓ Auto-approved: edit: src/eval_fixtures.rs (8 → 10 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/eval_fixtures.rs (8 → 10 lines)
+        timeout_secs: u64,
+    ) -> FixtureCommandResult {
+        let started = Instant::now();
+  +     // Rewrite stale --bin yoyo references (binary renamed to yyds)
+  +     let command = command.replace("--bin yoyo", "--bin yyds");
+        let mut cmd = Command::new("/bin/sh");
+  -     cmd.arg("-lc").arg(command);
+  +     cmd.arg("-lc").arg(&command);
+ ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check if the `command` variable is used anywhere else in the function body for the `FixtureCommandResult` return. Let me read the full function to make sure the shadowing works correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the full function to ensure the shadowed `command` variable is used consistently in all return paths:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:637.. ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All the `command.to_string()` calls now reference the shadowed `command` variable (the `String` from `.replace()`), which is correct. The rewritten command will appear in all `FixtureCommandResult` instances, which is good for debugging - you'll see the actual command that was run.
+
+Now let me build and test:
+────────────────────────────────────────────────────────────────────────────────
+
+All return paths use the shadowed `command: String`, so the rewrite propagates correctly. Now let me build and run focused tests:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (16.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the focused test on the eval_fixtures module:
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run focused tests:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (391ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the unit tests for the binary pass. Now let me run the eval fixtures validate command to verify the fix works:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the eval fixtures validate to confirm the fix works:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --quiet --bin yyds -… ✓ (293ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The eval fixtures validate just checks if fixtures are valid JSON, not if they pass. Let me check if there are any "no bin target" errors. It seems clean. Let me run the `score` command which actually executes the fixtures:
+────────────────────────────────────────────────────────────────────────────────
+
+The validate step is clean. Let me run the score command to actually exercise the command rewriting:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --quiet --bin yyds -… ✓ (31.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+5/5 passing with no "no bin target named 'yoyo'" errors. The fix works. Let me also verify with a larger sample to be more confident, and also grep for "no bin target" in the output:
+────────────────────────────────────────────────────────────────────────────────
+
+All 5 fixtures pass, no "no bin target" errors. Let me run a slightly larger sample for extra confidence:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --quiet --bin yyds -… ✓ (8.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+20/20 passing, no "no bin target" errors. The fix works. Now let's check the git diff and commit:
+────────────────────────────────────────────────────────────────────────────────
+
+20/20 passing, zero "no bin target" errors. The fix works. Let me inspect the diff and commit:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/eval_fixtures.rs ✓ (259ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is exactly what was planned: one line added to rewrite `--bin yoyo` to `--bin yyds`, plus the argument reference changed from `command` (which was `&str`) to `&command` (which is now `&String`). The change is scoped to only `src/eval_fixtures.rs` as the task specified.
+
+All checks pass: `cargo fmt -- --check`, `cargo build`, `cargo test --bin yyds`, and `eval fixtures score --sample 20` shows 20/20 passing.
+
+Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is exactly the planned change: single-line rewrite in `run_fixture_command`. Only `src/eval_fixtures.rs` touched. Now commit:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (291ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify the commit:
+────────────────────────────────────────────────────────────────────────────────
+
+Committed. Let me verify the final state:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --stat ✓ (263ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** Added a single-line `.replace("--bin yoyo", "--bin yyds")` in `run_fixture_command` (`src/eval_fixtures.rs`, line 644) that rewrites stale binary references at command execution time.
+
+**Why:** The binary was renamed from `yoyo` to `yyds`, but 275 fixture JSON files still reference `cargo run --bin yoyo`. Rather than editing 275 files individually, this transparent rewrite in the fixture runner fixes all of them at once.
+
+**Verification:**
+• `cargo fmt -- --check` ✅
+• `cargo build` ✅
+• `cargo test --bin yyds` ✅
+• `cargo run --bin yyds -- eval fixtures score --sample 20` → **20/20 passed, zero "no bin target" errors** ✅
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

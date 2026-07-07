@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The single-line `.replace("--bin yoyo", "--bin yyds")` in `run_fixture_command` correctly rewrites stale binary references at runtime. Build and tests pass, and `eval fixtures validate --suite local-smoke --sample 5` confirms the suite is valid with no "no bin target named 'yoyo'" errors. The implementation matches the task description precisely — scoped to the runner, no fixture files modified.
