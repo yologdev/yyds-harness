@@ -621,6 +621,7 @@ fn reject_unknown_fields(path: &Path, value: &Value) -> Result<(), String> {
         "hidden_failure_mode",
         "expected_files",
         "risk_label",
+        "timeout_secs",
     ];
     for key in obj.keys() {
         if !allowed.contains(&key.as_str()) {
