@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Diff correctly adds is_input_validation_completion() gating to unmatched_completed_count in log_feedback.py and to model_unmatched_completed_ids in summarize_state_gnomes.py — matching the task's reduced scope (append_terminal_state_events.py was already fixed on Day 130). All 77 tests pass, build is green, and no append_terminal_state_events.py changes were needed since the stale-run handling already exists from the prior Day 130 fix.

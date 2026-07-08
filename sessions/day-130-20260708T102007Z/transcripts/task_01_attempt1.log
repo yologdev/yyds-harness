@@ -1,0 +1,447 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the implementation contract, then assess the task evidence and surface.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/log_feedback.py  ▶ read scripts/summarize_state_gnomes.py ✓ (1.7s)
+ ✓ (1.6s)
+ ✓ (1.3s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the three files and understand what needs to be done:
+
+1. **`scripts/append_terminal_state_events.py`** - Already read, now I need to understand the full file, especially the `append_terminal_events` function and its handling of stale/incomplete runs. Let me read the middle section that was truncated.
+
+2. **`scripts/log_feedback.py`** - I need to find where `is_input_validation_completion()` is used (or should be used) for filtering lifecycle gap counts. Let me search for this function and where gnome metrics are computed.
+
+3. **`scripts/summarize_state_gnomes.py`** - I need to find where `is_input_validation_completion()` is used and where `deepseek_model_call_unmatched_completed_count` is computed. Already have the full file (1023 lines).
+
+Let me first search for key patterns across these files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.8s (4 ✓)
+
+Let me search for the key functions and patterns across these files.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation_completion' in scripts  ▶ search 'unmatched_completed_count' in scripts  ▶ search 'deepseek_model_call_unmatched' in scripts ✓ (490ms)
+ ✓ (975ms)
+ ✓ (758ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the key functions and the areas where fixes are needed. Let me look at:
+
+1. `scripts/summarize_state_gnomes.py` around line 290 and 375-450 to see how `deepseek_model_call_unmatched_completed_count` is computed and where `is_input_validation_completion` is applied
+2. `scripts/log_feedback.py` around lines 1216-1290 to see how lifecycle gaps are counted and lessons generated
+3. `scripts/build_evolution_dashboard.py` around line 2391-2541 to see the reference implementation
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:275..475  ▶ read scripts/log_feedback.py:1200..1320  ▶ read scripts/build_evolution_dashboard.py:2370..2570 ✓ (1.3s)
+ ✓ (998ms)
+ ✓ (758ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me summarize the current state:
+
+1. **`scripts/summarize_state_gnomes.py`** - Already has `is_input_validation_completion()` (line 468) and already applies it for:
+   - `run_unstarted_input_validation_errors` at line 375
+   - `run_unmatched_non_validation_completed` at line 382-386
+   - `model_incomplete_ids` at line 392 (filters out input-validation completions)
+   
+   BUT it does NOT filter `model_unmatched_completed_ids` (line 394-396) — the unmatched completions for model calls are computed without checking `is_input_validation_completion`. This is the gap!
+
+2. **`scripts/log_feedback.py`** - Already has `is_input_validation_completion()` (line 1216) and applies it for:
+   - `incomplete_model_runs` subset calculation at line 1278-1282 (filters input validation from incomplete count)
+   - `run_unmatched_completed_ids` filtering at line 1286-1290 (filters input validation from run unmatched)
+   
+   BUT it does NOT filter `unmatched_completed_count` (line 1283) — the `deepseek_model_call_unmatched_completed_count` metric is computed raw without filtering input-validation runs. AND the gnome metrics on `unmatched_completed_count` at line 1313 is the unfiltered version.
+
+Wait, let me re-read line 1283:
+```python
+unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
+```
+
+This computes the `model_call` unmatched count — it's `completed_runs - started_runs` — which counts run_ids where a ModelCallCompleted was seen but no ModelCallStarted. This doesn't filter input-validation completions. The task says we need to filter these.
+
+But wait, let me check the dashboard implementation more carefully. In `build_evolution_dashboard.py` at line 2391:
+```python
+unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)
+```
+Same as summarize_state_gnomes. Neither filters input-validation from the model unmatched count.
+
+So the issue is: the model `unmatched_completed` count includes run_ids that had ModelCallCompleted but no ModelCallStarted — but some of those run_ids might be input-validation runs (where the run exists with RunCompleted but no RunStarted was recorded). But wait, for model calls, unmatched_completed means the ModelCallCompleted event's run_id doesn't match any ModelCallStarted event's run_id. An input-validation run would have a RunCompleted event but no ModelCallStarted or ModelCallCompleted. So the `model_call_unmatched` is about ModelCallCompleted without ModelCallStarted - this is a different problem from RunCompleted without RunStarted.
+
+Hmm, but the task says: "ensure input-validation model completions are excluded from lifecycle gap counts" and "ensure is_input_validation_completion() gates are applied consistently when computing deepseek_model_call_unmatched_completed_count"
+
+Let me re-read the code flow more carefully.
+
+In `summarize_state_gnomes.py`:
+- `model_call_started_runs` = set of run_ids where ModelCallStarted events occurred. 
+- `model_call_completed_runs` = set of run_ids where ModelCallCompleted events occurred.
+- `model_unmatched_completed_ids` = run_ids in completed but not in started (line 394-396)
+- `model_unmatched_completed_count` = len(model_unmatched_completed_ids) + max(unkeyed_completions - unkeyed_starts, 0) (line 401-404)
+
+Now, if an input-validation run has a ModelCallCompleted (because DeepSeek still emits a completion even for input-validation errors), and no ModelCallStarted (because... hmm, would DeepSeek emit ModelCallStarted?).
+
+Actually, wait. Let me think about what happens with input-validation. When DeepSeek rejects input, the API call still happens — ModelCallStarted and ModelCallCompleted would both be emitted. But the RunStarted/Completed flow might be different. The actual input-validation errors cause RunCompleted with error_detail="empty_input" or "invalid_input:..." without RunStarted being recorded first.
+
+For model calls specifically: ModelCallCompleted would have a run_id if there was a RunStarted for that run. But input-validation runs might not have a RunStarted. So a ModelCallCompleted for an input-validation run would have a run_id that doesn't match ModelCallStarted... wait, ModelCallCompleted also carries a run_id, which is the same as RunStarted's run_id if they're in the same run.
+
+Actually, I think the scenario is: a run can exist where:
+1. RunStarted is never recorded (stale session, input-validation, etc.)
+2. ModelCallStarted and ModelCallCompleted both occur, tied to this run
+3. RunCompleted is eventually recorded
+
+In that case, model_call_started_runs would contain the run_id and model_call_completed_runs would also contain it — so it wouldn't be "unmatched". The unmatched model calls are where ModelCallCompleted events exist with run_ids that never had a ModelCallStarted. This seems like a different problem.
+
+Hmm, but the task evidence says there are `state_unmatched/completion_without_run_start=8` cases. These are RunCompleted events without matching RunStarted — the run-level gap. Not model-call-level.
+
+Let me re-read the task statement: "The assessment shows 16 unmatched model-call completions, but 8 are from missing RunStarted events (likely stale sessions). The remaining 8 may include input-validation calls that should be filtered out."
+
+So the `deepseek_model_call_unmatched_completed_count=16` counts model call completions without matching model call starts. Of these 16, 8 are from missing RunStarted events. The remaining 8 might include input-validation calls.
+
+Wait, but how does a model call get a completion without a start? In the current code, `model_call_completed_runs` tracks run_ids where ModelCallCompleted fired. `model_call_started_runs` tracks run_ids where ModelCallStarted fired. A mismatch happens when ModelCallCompleted has a run_id that never had ModelCallStarted.
+
+For input-validation runs, what would happen? The model API might still emit ModelCallStarted/ModelCallCompleted events. Actually, for input validation failures, the model API isn't called at all — the harness rejects before making the API call. So there might be no ModelCallStarted or ModelCallCompleted for those runs. But RunCompleted would still be recorded (as error with "empty_input" or "invalid_input:...").
+
+OK, I think the actual problem is more nuanced. Let me look at the `log_feedback.py` code more carefully, specifically how lifecycle gnome metrics are used for lessons.
+
+Let me search for where `deepseek_model_call_unmatched_completed` is used in log_feedback.py for lesson generation:
+
+Let me look at the lesson generation in log_feedback.py to see where `unmatched_completed` is used.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 33.8s (3 ✓)
+
+Now let me look at the lesson generation in log_feedback.py to find where unmatched lifecycle counts become lessons.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'deepseek_model_call_unmatched_completed' in scripts/log_feedback.py  ▶ read scripts/log_feedback.py:2080..2160 ✓ (252ms)
+ ✓ (954ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the issue and the three scripts:
+
+1. **`scripts/summarize_state_gnomes.py`**: Has `is_input_validation_completion()` (line 468) and applies it for run-level filtering (`run_unstarted_input_validation_errors`, `run_unmatched_non_validation_completed`, `model_incomplete_ids`) but NOT for `model_unmatched_completed_ids` (line 394-404). The `model_unmatched_completed_count` counts model-call completions without matching starts, and DOES include input-validation runs that have ModelCallCompleted without ModelCallStarted.
+
+2. **`scripts/log_feedback.py`**: Has `is_input_validation_completion()` (line 1216) and uses it for run-level filtering but NOT for `unmatched_completed_count` at line 1283. The `deepseek_model_call_unmatched_completed_count` at line 1313 is computed without filtering out input-validation completions.
+
+3. **`scripts/build_evolution_dashboard.py`**: Same pattern — uses `is_input_validation_completion()` for run-level but NOT for model-call-level unmatched count at line 2391.
+
+The task says: "The dashboard fix in scripts/build_evolution_dashboard.py already filters input-validation completions — use the same is_input_validation_completion() function or pattern."
+
+Wait, let me re-read the dashboard code at line 2391 again:
+```python
+unmatched_completed_count = len(unmatched_completed_run_ids) + max(unkeyed_model_call_completions - unkeyed_model_call_starts, 0)
+```
+
+This doesn't filter. So the "dashboard fix" might be referring to the run-level filtering, not the model-call-level. But the task says to apply the same pattern to the model-call-level unmatched count.
+
+Actually wait. Looking more carefully, the issue is specifically about `deepseek_model_call_unmatched_completed_count`. This metric tracks ModelCallCompleted events that don't have matching ModelCallStarted events. If an input-validation run has ModelCallCompleted (because the model API was actually called and completed) but no ModelCallStarted (because... hmm), then it would be counted.
+
+But actually, for input-validation runs, the RunCompleted is recorded (with error_detail="empty_input" or "invalid_input:...") - but the ModelCallCompleted may or may not have been recorded. If it WAS recorded, its run_id would match the RunCompleted's run_id. But the ModelCallStarted might NOT have been recorded (because the session was interrupted/truncated), making it an "unmatched completion."
+
+This is the scenario: an input-validation run where ModelCallStarted was never recorded (lost due to session interruption) but ModelCallCompleted was recorded. In this case, the unmatched model count includes it, even though it's benign (just input validation).
+
+OK so the fix is: in both `summarize_state_gnomes.py` and `log_feedback.py`, filter `model_unmatched_completed_ids` to exclude runs where the last event is an input-validation completion. Same pattern as the dashboard.
+
+Now let me also check the append_terminal_state_events.py - the task says to handle stale incomplete runs. Let me read the full append_terminal_events function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.7s (2 ✓)
+
+Let me now read the full `append_terminal_events` function and check the stale run scenario:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99..299  ▶ read scripts/append_terminal_state_events.py:330..380 ✓ (754ms)
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the `append_terminal_state_events.py` code. It already has `find_stale_orphaned_runs()` and `find_missing_failure_observed()` functions, and the `append_terminal_events()` function handles both scenarios. The task mentions the stale incomplete run (github-actions-28319290130) — this might already be detected and closed by the orphan run detection.
+
+Let me now assess what's actually needed:
+
+1. **`summarize_state_gnomes.py`**: The `model_unmatched_completed_count` at line 401-404 doesn't filter out input-validation completions. Need to add filtering similar to what's done for `model_incomplete_ids` at line 390-393.
+
+2. **`log_feedback.py`**: The `unmatched_completed_count` at line 1283 doesn't filter out input-validation completions. Need to add filtering.
+
+3. **`append_terminal_state_events.py`**: The code already handles stale orphaned runs and missing FailureObserved events. But the task might want a test for the stale run handling.
+
+Let me also check if there are tests for these scripts:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+Let me check for existing tests and verify the state of the stale run:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/test_append_terminal_state_events.py scripts/test_task_lineage_fe…  ▶ $ python3 scripts/append_terminal_state_events.py --help 2>&1 | head -20 ✓ (995ms)
+ ✓ (999ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Alright, let me now look at the tests to understand the existing test structure, then plan my changes.
+
+Let me establish a clear plan:
+
+1. **`scripts/summarize_state_gnomes.py`**: In `summarize_state_lifecycle()` at around line 394-404, filter `model_unmatched_completed_ids` to exclude runs where `is_input_validation_completion(run_last_events.get(run_id))` is True.
+
+2. **`scripts/log_feedback.py`**: In `state_cache_metrics()` at around line 1283, filter `unmatched_completed_count` to exclude input-validation completions from the model-call unmatched count.
+
+3. **`scripts/append_terminal_state_events.py`**: Add a test for stale run handling. The task spec says to add a test for the stale run case.
+
+Let me also check the test files to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (199ms)
+  ▶ todo ✓ (232ms)
+  ▶ todo ✓ (237ms)
+  ▶ todo ✓ (250ms)
+  ▶ todo ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the test files to understand existing test structures, and also check the summarize_state_gnomes self-tests to understand how lifecycle detection is tested.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.8s (5 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (221ms)
+  ▶ read scripts/test_append_terminal_state_events.py:1..101  ▶ search 'model_unmatched_completed' in scripts/summarize_state_gnomes.py ✓ (509ms)
+ ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me now implement the changes. The key insight is:
+
+1. In `summarize_state_gnomes.py`, the `model_unmatched_completed_ids` at line 394-396 counts ModelCallCompleted events without matching ModelCallStarted events. But some of these unmatched completions might be from input-validation runs where the RunCompleted event has `error_detail="empty_input"` or `error_detail="invalid_input:..."`. These should be filtered out, same as `model_incomplete_ids` on line 390-393.
+
+Wait, but actually let me re-think. The `model_unmatched_completed_ids` is about ModelCallCompleted without matching ModelCallStarted. For an input-validation run:
+- RunStarted may or may not be recorded
+- ModelCallStarted and ModelCallCompleted may or may not be recorded
+
+If the model WAS called but the call completed with input validation error, both ModelCallStarted and ModelCallCompleted would be recorded. So the unmatched count wouldn't include it.
+
+But if the session was interrupted and ModelCallStarted wasn't recorded (but ModelCallCompleted was), then it would show as unmatched. In that case, checking the RunCompleted's `last_event` for input validation is the right check.
+
+Actually wait - the `model_unmatched_completed_ids` filters on `run_id not in model_call_started_runs` - meaning the run_id had a ModelCallCompleted but no ModelCallStarted. If the last RunCompleted event for that run_id was an input-validation error, then this is benign. The fix should filter those out.
+
+Let me implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.7s (3 ✓)
+
+Now I have a clear understanding. Let me implement the changes. The key fix is: filter `model_unmatched_completed_ids` in both `summarize_state_gnomes.py` and `log_feedback.py` to exclude runs whose last event is an input-validation completion — matching the pattern already used for `model_incomplete_ids`.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (205ms)
+  ▶ todo ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edit to summarize_state_gnomes.py. The change is at line 394-404. Currently:
+
+```python
+model_unmatched_completed_ids = sorted(
+    run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+)
+...
+model_unmatched_completed_count = len(model_unmatched_completed_ids) + max(
+    unkeyed_model_call_completions - unkeyed_model_call_starts,
+    0,
+)
+```
+
+I need to filter `model_unmatched_completed_ids` to exclude runs where the last event is input-validation. The same pattern as `model_incomplete_ids` at line 390-393:
+
+```python
+model_incomplete_ids = [
+    run_id for run_id in model_incomplete_ids
+    if not is_input_validation_completion(run_last_events.get(run_id))
+]
+```
+
+I'll add similar filtering:
+
+```python
+model_unmatched_completed_ids = sorted(
+    run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+)
+model_unmatched_completed_ids = [
+    run_id for run_id in model_unmatched_completed_ids
+    if not is_input_validation_completion(run_last_events.get(run_id))
+]
+```
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.1s (2 ✓)
+
+
+        model_unmatched_completed_ids = sorted(
+            run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+        )
+  +     model_unmatched_completed_ids = [
+  +         run_id for run_id in model_unmatched_completed_ids
+  +         if not is_input_validation_completion(run_last_events.get(run_id))
+  +     ]
+        model_incomplete_count = len(model_incomplete_ids) + max(
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (4 → 8 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (4 → 8 lines)
+        model_unmatched_completed_ids = sorted(
+            run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+        )
+  +     model_unmatched_completed_ids = [
+  +         run_id for run_id in model_unmatched_completed_ids
+  +         if not is_input_validation_completion(run_last_events.get(run_id))
+  +     ]
+        model_incomplete_count = len(model_incomplete_ids) + max(
+ ✓ (249ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix log_feedback.py. The change is at line 1283:
+
+```python
+unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
+```
+
+I need to filter out input-validation completions from the run-level unmatched count AND model-level unmatched count. Looking at the code:
+
+- Line 1283: `unmatched_completed_count` = model call completions without matching starts (plus unkeyed diff)
+- Line 1286-1290: `run_unstarted_input_validation_error_count` = run completions without starts that are input-validation
+- Line 1291-1292: `run_unmatched_non_validation_completed_count` = run completions without starts minus input-validation ones
+- Line 1313: `deepseek_model_call_unmatched_completed_count` = unfiltered `unmatched_completed_count`
+
+The model-level `unmatched_completed_count` at line 1283 doesn't filter input-validation runs. I need to compute `model_input_validation_unmatched` first, then subtract it.
+
+Wait, but `completed_runs - started_runs` is the set of run_ids where ModelCallCompleted was recorded but ModelCallStarted wasn't. And for these, I should check if the RunCompleted's last event indicates input-validation.
+
+Let me add the filtering similar to what's done for run_unmatched:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)
+  -     unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
+  +     model_unmatched_run_ids = completed_runs - started_runs
+  +     model_input_validation_unmatched = sum(
+  +         1 for run_id in model_unmatched_run_ids
+  +         if is_input_validation_completion(run_last_events.get(run_id))
+  +     )
+  +     unmatched_completed_count = len(model_unmatched_run_ids) - model_input_validation_unmatched + max(unkeyed_completions - unkeyed_starts, 0)
+  ✓ Auto-approved: edit: scripts/log_feedback.py (2 → 7 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (2 → 7 lines)
+        incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)
+  -     unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
+  +     model_unmatched_run_ids = completed_runs - started_runs
+  +     model_input_validation_unmatched = sum(
+  +         1 for run_id in model_unmatched_run_ids
+  +         if is_input_validation_completion(run_last_events.get(run_id))
+  +     )
+  +     unmatched_completed_count = len(model_unmatched_run_ids) - model_input_validation_unmatched + max(unkeyed_completions - unkeyed_starts, 0)
+ ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the existing tests to verify the changes don't break anything.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (194ms)
+  ▶ todo ✓ (237ms)
+  ▶ todo ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/summarize_stat… ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, summarize_state_gnomes self-tests pass. Now let me run the log_feedback tests and the append_terminal_state_events tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/log_feedback.p…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (487ms)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+log_feedback tests pass. For the append_terminal_state_events tests, pytest is not installed but the tests use unittest. Let me run them with python3 -m unittest.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 14 existing tests pass. Now I need to add a test for the specific scenarios covered by the task:
+1. Model call unmatched completions should exclude input-validation runs
+2. Stale incomplete run should be properly handled
+
+But wait, let me first check what test coverage exists for the input-validation filtering. Let me look at the summarize_state_gnomes self-tests to see if there's already a test for the model_unmatched filtering.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what tests exist for the gnome lifecycle model-call filtering:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation' in scripts/summarize_state_gnomes.py  ▶ read scripts/summarize_state_gnomes.py:880..980 ✓ (253ms)
+ ✓ (937ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The self-tests in summarize_state_gnomes.py are very basic and don't test the lifecycle filtering. They test task lineage title correction but not the model call lifecycle logic.
+
+Now let me think about the test I need to add. The task says "Write a test first if possible." The test should verify that:
+1. When a run has ModelCallCompleted but no ModelCallStarted, and the RunCompleted has input-validation error_detail, it's NOT counted in `model_unmatched_completed_count`.
+2. When a run has ModelCallCompleted but no ModelCallStarted, and it's NOT input-validation, it IS counted.
+
+But wait - the `summarize_state_gnomes.py` self-tests only handle basic task lineage testing. Adding a complex lifecycle test there would be significant work. Let me instead focus on adding a test in `test_append_terminal_state_events.py` for the stale run scenario.
+
+Actually, let me re-read the task more carefully:
+
+"If the stale incomplete run is already closed by the Day 130 fix on next run, reduce scope to only the input-validation filtering fix."
+
+The Day 130 fix refers to the `append_terminal_state_events.py` already having the orphan run detection. The task says the stale incomplete run (github-actions-28319290130) may already be handled.
+
+Let me focus on what truly needs to be done:
+1. ✅ Fix summarize_state_gnomes.py - filter input-validation from model_unmatched_completed
+2. ✅ Fix log_feedback.py - filter input-validation from model_unmatched_completed  
+3. Add tests for the input-validation filtering behavior
+
+I should add a self-test in `summarize_state_gnomes.py` for the lifecycle filtering, and add relevant tests in `test_append_terminal_state_events.py`. But the task mentions "Write a test first if possible" - let me focus on adding the most impactful test.
+
+Looking at the existing tests for summarize_state_gnomes, the `run_tests()` function is quite basic. Adding a comprehensive lifecycle test there would be a significant expansion. However, there are already tests in `test_task_lineage_feedback.py` that test lifecycle gnome computation through `log_feedback.py`.
+
+Let me check what tests exist for the lifecycle filtering in the test files:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.5s (2 ✓)
+
+Let me check the existing test coverage for lifecycle filtering in the task_lineage tests:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_completed' in scripts/test_task_lineage_feedback.py ✓ (233ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the specific test at line 3007 that checks `unmatched_completed == 0`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2980..3040 ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I now need to add a test that verifies the input-validation filtering works for model_unmatched_completed in `summarize_state_gnomes.py`. Let me add a self-test to the `run_tests()` function.
+
+But actually, looking at the test file `test_task_lineage_feedback.py`, it already has comprehensive tests that use `summarize_state_gnomes.summarize()`. I should add a test there that verifies the filtering. However, that test file is huge (3114 lines) and the task scope says to focus on the three specific files.
+
+Let me instead add a focused self-test to `summarize_state_gnomes.py`'s `run_tests()` function. I'll add a test case where:
+1. A run has RunCompleted with error_detail="empty_input" (input validation)  
+2. The same run has ModelCallCompleted but no ModelCallStarted (unmatched)
+3. Verify that `model_unmatched_completed_count` is 0 (filtered out)
+
+Let me now write this test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a self-test to `summarize_state_gnomes.py` that verifies the input-validation filtering:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:993..1023 ✓ (254ms)
+
+
