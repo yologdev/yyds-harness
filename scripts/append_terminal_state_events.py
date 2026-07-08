@@ -271,6 +271,28 @@ def find_missing_failure_observed(
     return missing, diagnostics
 
 
+def _maybe_append_event(
+    events_path: Path,
+    event_type: str,
+    actor: str,
+    rid: str,
+    session_id: str,
+    trace_id: str,
+    payload: dict[str, Any],
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    """Append an event or print what would be appended in dry-run mode."""
+    if dry_run:
+        import sys
+        print(
+            f"[dry-run] Would append {event_type} actor={actor} run_id={rid} "
+            f"payload={json.dumps(payload, sort_keys=True, separators=(',', ':'))}",
+            file=sys.stderr,
+        )
+        return None
+    return append_event(events_path, event_type, actor, rid, session_id, trace_id, payload)
+
+
 def append_terminal_events(
     events_path: Path,
     after_line: int,
@@ -283,6 +305,7 @@ def append_terminal_events(
     reason: str,
     error: str,
     error_detail: str,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     events = load_jsonl(events_path)
     open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
@@ -301,7 +324,7 @@ def append_terminal_events(
             payload["error"] = error
         if error_detail:
             payload["error_detail"] = error_detail
-        append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload)
+        _maybe_append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload, dry_run)
         completed_models.append(rid)
         open_runs.add(rid)
 
@@ -315,7 +338,7 @@ def append_terminal_events(
             payload["error"] = error
         if error_detail:
             payload["error_detail"] = error_detail
-        append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+        _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
         completed_runs.append(rid)
 
     for rid in sorted(open_session_runs):
@@ -329,7 +352,7 @@ def append_terminal_events(
             payload["error"] = error
         if error_detail:
             payload["error_detail"] = error_detail
-        append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+        _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
         completed_session_runs.append(rid)
 
     # Full-scan orphan detection: find any runs in the entire event file
@@ -356,7 +379,7 @@ def append_terminal_events(
                 "stage": stage or None,
                 "outcome": "post_hoc_closed",
             }
-            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
             completed_runs.append(rid)
 
         for rid in sorted(new_orphan_session_runs):
@@ -366,7 +389,7 @@ def append_terminal_events(
                 "stage": stage or None,
                 "outcome": "post_hoc_closed",
             }
-            append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+            _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
             completed_session_runs.append(rid)
     else:
         diagnostics["full_scan_orphan_diagnostics"] = {
@@ -378,30 +401,28 @@ def append_terminal_events(
     # completed with error status (not "success"/"completed") but have no
     # matching FailureObserved event.  This closes the gap where error-
     # completed sessions were never formally recorded as failures.
-    # The scan is skipped under the same ambiguous-reset guard as orphans.
+    # Unlike the orphan scan, this scan is NOT gated by the ambiguous-reset
+    # guard: the find_missing_failure_observed function already checks for
+    # existing FailureObserved events per run_id, so there is no risk of
+    # duplicates even when scanning a rebuilt events file that contains
+    # historical replayed runs.
     missing_failures: list[dict[str, Any]] = []
-    if diagnostics.get("scope") != "ambiguous_reset_full_scan":
-        missing_failures, failure_diag = find_missing_failure_observed(events)
-        diagnostics["failure_observed_diagnostics"] = failure_diag
+    missing_failures, failure_diag = find_missing_failure_observed(events)
+    diagnostics["failure_observed_diagnostics"] = failure_diag
 
-        for entry in missing_failures:
-            rid = entry["run_id"]
-            payload_fo: dict[str, Any] = {
-                "reason": (
-                    f"retroactive: run completed with error status "
-                    f"'{entry['status']}' but no FailureObserved was recorded"
-                ),
-                "retroactive": True,
-            }
-            ts = entry.get("timestamp_ms")
-            if ts:
-                payload_fo["original_run_completed_timestamp_ms"] = ts
-            append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo)
-    else:
-        diagnostics["failure_observed_diagnostics"] = {
-            "skipped": True,
-            "reason": "ambiguous_reset_full_scan",
+    for entry in missing_failures:
+        rid = entry["run_id"]
+        payload_fo: dict[str, Any] = {
+            "reason": (
+                f"retroactive: run completed with error status "
+                f"'{entry['status']}' but no FailureObserved was recorded"
+            ),
+            "retroactive": True,
         }
+        ts = entry.get("timestamp_ms")
+        if ts:
+            payload_fo["original_run_completed_timestamp_ms"] = ts
+        _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
 
     return {
         "completed_model_calls": completed_models,
@@ -425,6 +446,7 @@ def main() -> int:
     parser.add_argument("--reason", required=True)
     parser.add_argument("--error", default="")
     parser.add_argument("--error-detail", default="")
+    parser.add_argument("--dry-run", action="store_true", default=False)
     args = parser.parse_args()
     result = append_terminal_events(
         args.events,
@@ -438,6 +460,7 @@ def main() -> int:
         args.reason,
         args.error,
         args.error_detail,
+        dry_run=args.dry_run,
     )
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
