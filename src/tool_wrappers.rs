@@ -1041,6 +1041,20 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      `apt-get install` / `brew install` as appropriate."
                         .to_string(),
                 )
+            } else if msg_lower.contains("argument list too long") {
+                Some(
+                    "The argument list is too long (E2BIG) — likely from glob expansion on \
+                     a large directory. Use `find ... -exec` or pipe through `xargs` instead \
+                     of filename expansion. Split the operation into smaller batches."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("broken pipe") {
+                Some(
+                    "A pipe closed before the writer finished (EPIPE / SIGPIPE). \
+                     Use `set -o pipefail` to detect pipeline failures, and consider \
+                     restructuring the pipeline to buffer output or handle early termination."
+                        .to_string(),
+                )
             } else {
                 Some(
                     "The shell command failed. Check `$?` immediately for the exit code, \
@@ -2972,6 +2986,26 @@ mod tests {
         assert!(hint.contains("explicit path"));
         assert!(hint.contains("bounded command"));
         assert!(hint.contains("individual steps"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_argument_list_too_long() {
+        let hint = targeted_recovery_hint("bash", "/bin/ls: Argument list too long");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("find"));
+        assert!(hint.contains("xargs"));
+        assert!(hint.contains("E2BIG"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_broken_pipe() {
+        let hint = targeted_recovery_hint("bash", "error writing to stdout: Broken pipe");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("pipefail"));
+        assert!(hint.contains("SIGPIPE"));
+        assert!(hint.contains("pipeline"));
     }
 
     #[test]
