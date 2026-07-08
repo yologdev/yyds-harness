@@ -953,40 +953,41 @@ def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
 
 
 def _healthy_codebase_fallback() -> dict[str, object]:
-    """Return a fallback task that records an honest stable-codebase observation.
+    """Return a fallback task that produces a small src/-touching improvement.
 
     When the assessment shows the codebase is healthy with no src/ bugs,
-    this produces a non-self-referential task that writes to journals/
-    instead of modifying the planning pipeline.
+    this produces a small, verifiable src/ improvement instead of a
+    journal-only observation. This ensures every session has a concrete
+    verifiable task that passes ``cargo build && cargo test``.
     """
     task: dict[str, object] = {
-        "title": "Record honest stable-codebase journal entry",
-        "files": "journals/JOURNAL.md",
+        "title": "Add a small verifiable improvement to src/",
+        "files": "src/state.rs",
         "objective": (
-            "Write a journal entry recording that the assessment found the codebase healthy "
-            "with no actionable src/ bugs. This is a valid outcome, not a planning failure."
+            "Add one focused unit test, doc comment, or micro-improvement to src/state.rs. "
+            "Choose a public function with incomplete test coverage, a function whose "
+            "documentation is missing edge-case descriptions, or a small clippy fix. "
+            "Run ``cargo test state`` to verify."
         ),
         "why": (
-            "The assessment found no actionable bugs in src/. Recording this honestly preserves "
-            "trajectory evidence without fabricating a self-referential pipeline-fix task that "
-            "cycles without ever passing strict verification (no cargo build && cargo test)."
+            "The assessment found no actionable bugs in src/. Instead of producing a "
+            "journal-only observation that wastes an evolution cycle, this task produces "
+            "a small, verifiable code improvement that passes cargo build && cargo test."
         ),
         "success": [
-            "Journal entry records the stable-codebase observation honestly.",
-            "No source code changes are made (none needed).",
-            "The task produces terminal evidence without modifying planning scripts.",
+            "One src/state.rs improvement lands and passes cargo test state.",
+            "The change is small enough to complete in 20 minutes.",
+            "The task avoids modifying planning/assessment scripts (no self-reference).",
         ],
         "verification": [
-            "python3 scripts/preseed_session_plan.py --test",
+            "cargo test state",
         ],
         "evidence": [
-            "Future trajectory shows honest stable-codebase cycles alongside real src/ improvements.",
-            "Strict verification passes because the task doesn't require cargo build && cargo test.",
-            "No self-referential pipeline-fix tasks are produced for healthy codebase assessments.",
+            "Task lineage shows an src/ change from a healthy-codebase fallback.",
+            "planner_no_task_count drops toward zero in subsequent sessions.",
+            "The change passes strict verification (cargo build && cargo test).",
         ],
     }
-    if not _candidate_files_exist(task):
-        task["files"] = "journals/JOURNAL.md"
     return task
 
 
@@ -1390,7 +1391,7 @@ Day 105 added regex-error recovery hint to search tool errors.
 No clunky friction found in quick tool checks.
 """
         task = choose_task(assessment)
-        assert task["title"] == "Record honest stable-codebase journal entry", task
+        assert task["title"] == "Add a small verifiable improvement to src/", task
         assert not _has_protected_files(task), task
         assert "scripts/preseed_session_plan.py" not in str(task["files"]), (
             "Healthy fallback must not self-reference planning scripts"
@@ -1398,8 +1399,8 @@ No clunky friction found in quick tool checks.
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assert "Evidence:\n-" in text
-        assert "journals/JOURNAL.md" in str(task["files"]), (
-            "Healthy fallback should target journals/ not planning scripts"
+        assert "src/state.rs" in str(task["files"]), (
+            "Healthy fallback should target src/ not just journals/"
         )
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
         task = choose_task(assessment)
@@ -1571,7 +1572,7 @@ no-edit revert pressure from prior session.
             ]
             assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
         fallback = choose_task("No known current bug matched this assessment.")
-        assert fallback["title"] == "Record honest stable-codebase journal entry", fallback
+        assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
         assert not _has_protected_files(fallback), fallback
         assert "scripts/preseed_session_plan.py" not in str(fallback["files"]), (
             "Healthy fallback must not self-reference planning scripts"
