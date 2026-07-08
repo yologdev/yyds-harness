@@ -394,6 +394,10 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
     model_unmatched_completed_ids = sorted(
         run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
     )
+    model_unmatched_completed_ids = [
+        run_id for run_id in model_unmatched_completed_ids
+        if not is_input_validation_completion(run_last_events.get(run_id))
+    ]
     model_incomplete_count = len(model_incomplete_ids) + max(
         unkeyed_model_call_starts - unkeyed_model_call_completions,
         0,

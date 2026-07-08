@@ -1280,7 +1280,12 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         if is_input_validation_completion(run_last_events.get(run_id))
     )
     incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)
-    unmatched_completed_count = len(completed_runs - started_runs) + max(unkeyed_completions - unkeyed_starts, 0)
+    model_unmatched_run_ids = completed_runs - started_runs
+    model_input_validation_unmatched = sum(
+        1 for run_id in model_unmatched_run_ids
+        if is_input_validation_completion(run_last_events.get(run_id))
+    )
+    unmatched_completed_count = len(model_unmatched_run_ids) - model_input_validation_unmatched + max(unkeyed_completions - unkeyed_starts, 0)
     run_incomplete_ids = run_started - run_completed
     run_unmatched_completed_ids = run_completed - run_started
     run_unstarted_input_validation_error_count = sum(
