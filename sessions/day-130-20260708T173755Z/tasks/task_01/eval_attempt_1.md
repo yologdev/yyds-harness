@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: New fixture `400-coding-hello-world.json` is created, follows the existing schema (validates cleanly with `eval fixtures validate`), is listed in `eval fixtures list` output, and the `src/eval_fixtures.rs` change is a minimal 1-line `timeout_secs` field addition. Build/Tests PASS per the provided baseline. The fixture defines a held-out coding task as specified — the first step toward coding fitness measurement.
