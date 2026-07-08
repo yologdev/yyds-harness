@@ -1,0 +1,444 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task requirements, then examine the relevant source files to implement the FIM routing eval fixture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/eval_fixtures.rs (100 lines) ✓ (22ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the eval_fixtures.rs file to understand the full infrastructure, and also look at existing fixtures to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:100..  ▶ ls eval/fixtures ✓ (13ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the existing fixture format. Let me read a few example fixtures to understand the structure, and also look at how `route_fim_for_prompt` works in `deepseek.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/001-context-failing-files.json  ▶ read eval/fixtures/local-smoke/200-release-required-gate-evidence.json  ▶ search 'route_fim_for_prompt' in src/deepseek.rs ✓ (26ms)
+ ✓ (20ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand `route_fim_for_prompt` function and the tests for it.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1472..1572  ▶ read src/deepseek.rs:3520..3640 ✓ (30ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the `FimRoutePromptOptions` and `FimRouteDecision` structs, and also look at the `FimPolicy` struct.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+Let me look at the FIM-related structs and a few more fixture examples:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct FimRoutePromptOptions' in src/deepseek.rs  ▶ search 'struct FimRouteDecision' in src/deepseek.rs  ▶ search 'struct FimPolicy' in src/deepseek.rs  ▶ read eval/fixtures/local-smoke/085-state-file-modified-plan-relation.json ✓ (38ms)
+ ✓ (40ms)
+ ✓ (25ms)
+ ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `FimRoutePromptOptions` struct and `FimPolicy` struct in detail:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.9s (4 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:338..398  ▶ read src/deepseek.rs:370..450 ✓ (7ms)
+ ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the FIM routing logic well. Let me look at the `fim_route_declined` helper and `infer_fim_route_scope` to fully understand the routing, then figure out the test format.
+
+The key insight: the existing fixtures use `cargo test <specific_test>` as their test commands. The task wants me to create a new fixture that tests FIM routing correctness. But I need to understand what test to write -- the existing tests in `deepseek.rs` are already unit tests for `route_fim_for_prompt`. 
+
+Wait, let me re-read the task. The fixture adds a `BenchmarkTask` that is loaded by `load_fixture_suite`. The fixture tests are commands that get run. Since the FIM routing function is tested directly via unit tests, a fixture would need to run an existing or new test.
+
+But the task asks me to "Add one eval fixture that tests DeepSeek FIM routing correctness: given a prompt that should trigger FIM routing..." - this means I need to add:
+1. A JSON fixture file in `eval/fixtures/local-smoke/`
+2. Possibly a new test in `deepseek.rs` that the fixture references
+
+But the task says "Do not modify `src/deepseek.rs` — this is a fixture-only task." 
+
+So the fixture's `tests` commands need to reference existing tests. Let me check what existing FIM routing tests exist:
+
+The tests already in deepseek.rs:
+- `fim_route_accepts_explicit_single_file_line_range_when_policy_enabled` 
+- `fim_route_declines_disabled_broad_or_ambiguous_prompts`
+- `fim_route_decision_payload_is_state_ready_without_full_prompt`
+
+The issue is: eval fixtures are loaded and validated by `load_fixture_suite`, and then can be run by `run_fixture_task`. The fixture's `tests` are bash commands. So the fixture JSON just needs to reference existing tests via `cargo test` commands.
+
+But wait, I need to check whether there are _enough_ existing tests to cover what the task wants. Let me re-read the Success Criteria:
+
+"One new BenchmarkTask added to the eval fixture suite that tests FIM routing"
+"The fixture validates that a known FIM-eligible prompt routes correctly"
+"The fixture validates that a known non-FIM prompt does NOT route to FIM"
+
+The existing tests already cover these cases. So I just need to create a fixture JSON that runs the existing tests.
+
+But wait - the task says I need a test that exercises `route_fim_for_prompt` at the fixture level. The fixture format runs cargo test commands. But the existing tests already exist. Should I add new tests?
+
+The task says "Do not modify `src/deepseek.rs` — this is a fixture-only task." So I cannot add new unit tests to deepseek.rs. But I can create a fixture JSON that references the existing tests.
+
+Actually, wait - let me re-read more carefully. The task wants a fixture that is an _eval_ fixture. Eval fixtures are JSON files with `tests` array of shell commands. These are run by the eval system. The idea is that this fixture becomes part of the held-out eval suite, ensuring that any future changes to FIM routing must still pass these tests.
+
+But since I can't add new tests to `src/deepseek.rs`, I should create a fixture that references the existing FIM routing tests. Let me check: do the existing tests adequately cover the success criteria?
+
+Success criteria:
+1. "The fixture validates that a known FIM-eligible prompt routes correctly" — covered by `fim_route_accepts_explicit_single_file_line_range_when_policy_enabled`
+2. "The fixture validates that a known non-FIM prompt does NOT route to FIM" — covered by `fim_route_declines_disabled_broad_or_ambiguous_prompts`
+
+These are already tested. So the fixture is a _meta-test_: it adds these existing tests to the held-out eval suite so they're run as part of eval, not just as part of `cargo test`.
+
+But actually, I need to think about this differently. Let me look at other fixture examples more carefully to see if there's a pattern where fixtures reference existing `cargo test` sub-tests. I already saw this pattern in `001-context-failing-files.json`:
+```
+"tests": [
+    "cargo test context::tests::selects_failing_files_from_recent_state_events -- --nocapture",
+    "cargo test context::tests::reads_recent_state_events_through_yoagent_state_adapter -- --nocapture"
+]
+```
+
+So the pattern is to reference existing tests with their full path. But I also see some fixtures have `cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke` as a test, which is a meta-validation.
+
+Let me create a fixture JSON that references the existing FIM route tests. But actually, I also need to think about what makes this fixture _held-out_ and what makes it more than just re-running existing tests.
+
+Hmm, looking at the task again: "Add one eval fixture that tests DeepSeek FIM routing correctness". The task is specifically from issue #37 about adding held-out coding eval coverage. The point is: these tests become part of the eval suite so they must pass during `yyds eval run`. If someone later changes FIM routing logic, the eval suite catches regressions.
+
+Let me also check if there's any existing fixture that already references these FIM tests:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fim_route' in eval/fixtures  ▶ search 'deepseek::tests::fim' in eval/fixtures ✓ (15ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are already several FIM-related fixtures! Let me look at them to see what coverage currently exists:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/197-fim-sensitive-target-gates.json  ▶ read eval/fixtures/local-smoke/131-deepseek-prompt-fim-route-execution.json  ▶ read eval/fixtures/local-smoke/129-deepseek-fim-route-heuristic.json  ▶ read eval/fixtures/local-smoke/123-deepseek-fim-http-protocol-regression.json ✓ (53ms)
+ ✓ (45ms)
+ ✓ (23ms)
+ ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the existing FIM fixtures. The task asks for a fixture that specifically tests `route_fim_for_prompt` for routing correctness. The existing fixture `deepseek-fim-route-heuristic` (129) already references the two unit tests that cover the accept and decline cases. But the task specifically says to add one that tests the routing correctness, specifically covering:
+1. A FIM-eligible prompt routes correctly
+2. A non-FIM prompt does NOT route to FIM
+
+Let me look at this more carefully. The existing unit tests already cover these cases:
+- `fim_route_accepts_explicit_single_file_line_range_when_policy_enabled` - tests that a valid prompt routes to FIM
+- `fim_route_declines_disabled_broad_or_ambiguous_prompts` - tests that invalid prompts DON'T route
+
+And `deepseek-fim-route-heuristic` already references both of these. So what's missing?
+
+Wait, the key issue is about `route_fim_for_prompt` itself. Let me think about what _additional_ specific routing correctness isn't covered. Looking at the function:
+
+1. Empty prompt → decline ✓ (covered by decline test)
+2. Policy disabled → decline ✓ (covered)
+3. Broad/sensitive keywords → decline ✓ (covered in decline test)
+4. Missing edit keywords → decline ✓ (covered - "missing_range" test in decline test covers this through the "no line range" path)
+5. Missing line range → decline ✓ (covered)
+6. Missing file path → decline - NOT explicitly tested
+7. Invalid repo path → decline - NOT explicitly tested 
+8. Zero start line or end < start → decline - NOT explicitly tested
+9. Range too large (>80 lines) → decline - NOT explicitly tested
+10. Disallowed scope → decline - NOT explicitly tested
+11. Valid → accept ✓ (covered)
+
+So there are several decline paths that aren't unit-tested, but the task says "Do not modify src/deepseek.rs" - so I can't add new unit tests. 
+
+But actually wait - the task says the fixture should test routing correctness at the eval fixture level. The fixture's tests are bash commands that get executed. I think the intent is to create a fixture JSON file that references the existing FIM route tests PLUS maybe runs the `yoyo deepseek fim-route` CLI command as an integration check. 
+
+Let me re-read the task more carefully:
+
+"Add one eval fixture that tests DeepSeek FIM routing correctness: given a prompt that should trigger FIM routing (code completion context with identifiable prefix/suffix boundaries), verify that route_fim_for_prompt returns a FimRouteDecision with the correct route_to_fim flag and expected model selection."
+
+OK, but since I can't modify deepseek.rs, I think the right approach is:
+
+1. Create a fixture JSON file that runs the existing FIM route tests as its `tests`
+2. Also include a CLI-level test: `yoyo deepseek fim-route --input '...' --json` to verify the routing command works end-to-end
+
+Actually, looking at `deepseek-fim-route-heuristic` (129), it already does this:
+```
+"cargo test deepseek::tests::fim_route_accepts_explicit_single_file_line_range_when_policy_enabled -- --nocapture",
+"cargo test deepseek::tests::fim_route_declines_disabled_broad_or_ambiguous_prompts -- --nocapture",
+"cargo run --quiet --bin yoyo -- deepseek fim-route --input 'complete src/deepseek.rs lines 1-3' --json",
+```
+
+So that fixture already covers the routing accept/decline tests AND the CLI. What would a new fixture add?
+
+Let me think about this differently. The task specifically says "One new BenchmarkTask added to the eval fixture suite that tests FIM routing" and the success criteria are:
+- "The fixture validates that a known FIM-eligible prompt routes correctly"
+- "The fixture validates that a known non-FIM prompt does NOT route to FIM"
+
+Maybe I should just create a focused fixture that specifically adds the two core routing tests plus a CLI `fim-route` check, and also a negative case CLI invocation. The key is making it a held-out eval fixture.
+
+Actually, I think I'm overcomplicating this. Let me just create a minimal fixture that:
+1. Runs the two existing FIM route unit tests
+2. Runs a CLI `fim-route` command to verify integration
+
+But this overlaps significantly with `deepseek-fim-route-heuristic`. Let me think about what makes this different...
+
+Actually, the task uses the word "held-out" - "Add held-out eval fixture for DeepSeek FIM routing correctness." Held-out means it's part of the eval suite but wasn't used to train or validate the implementation. The idea is simply to add a fixture that must pass during eval runs.
+
+I think the simplest honest implementation is:
+1. Create a fixture JSON that tests FIM routing at the CLI level with multiple scenarios
+2. Include both positive and negative cases through the CLI
+
+Let me look at the CLI command:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 21.0s (4 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fim-route' in src ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `handle_fim_route` function to understand the CLI command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_fim_route' in src/commands_deepseek.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1214..1274 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me create a focused eval fixture. The task says "Do not modify src/deepseek.rs" so I can't add new unit tests. But I can:
+
+1. Create a fixture JSON file in eval/fixtures/local-smoke/
+2. Reference existing FIM route tests and CLI-level integration checks
+
+Looking at what already exists:
+- `deepseek-fim-route-heuristic` (129) already covers the core routing unit tests
+- Multiple FIM fixtures already exist
+
+The task specifically asks for a _held-out_ fixture. The key distinction might be that this fixture focuses specifically on `route_fim_for_prompt` correctness (not heuristic classification, not HTTP protocol, not sensitive targets). It should be a minimal smoke test.
+
+Actually, I think the best approach is to create a fixture that tests `route_fim_for_prompt` at the CLI level through `yoyo deepseek fim-route` with multiple scenarios, including both positive and negative cases. This would be complementary to the existing fixtures.
+
+But wait - to really make this a proper eval fixture, I need tests that are actual bash commands. Let me think about what commands to use:
+
+1. `cargo test deepseek::tests::fim_route_accepts_explicit_single_file_line_range_when_policy_enabled -- --nocapture` - positive case
+2. `cargo test deepseek::tests::fim_route_declines_disabled_broad_or_ambiguous_prompts -- --nocapture` - negative case
+3. `cargo run --quiet --bin yoyo -- deepseek fim-route --input 'complete src/deepseek.rs lines 12-18' --enable --json` - CLI positive case
+4. `cargo run --quiet --bin yoyo -- deepseek fim-route --input 'refactor all the things' --enable --json` - CLI negative case (should not route)
+
+Actually, looking more carefully, the fixture `129-deepseek-fim-route-heuristic.json` already covers tests #1, #2, and a CLI test. My new fixture would be largely redundant.
+
+Hmm, but the task explicitly says to add a fixture. Let me re-read: "Add one eval fixture that tests DeepSeek FIM routing correctness."
+
+I think the way to make this valuable and NOT redundant is to create a fixture that focuses on a _specific gap_: testing `route_fim_for_prompt` return value shape and correctness through the CLI. The existing fixtures test the unit tests but don't necessarily test the CLI output format for both positive and negative cases.
+
+Let me also check if there's a test that specifically tests the `yoyo deepseek fim-route` command's JSON output correctness:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fim_route' in src/commands_deepseek.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check the tests around fim-route in commands_deepseek:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:3000..3060 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I have a good understanding. Let me also check how many total fixtures there are, and look at the last few fixture IDs to pick the right number for the new one.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/ | sort | tail -20 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The latest numbered fixture is 371. So the next one would be 372. Let me check that there isn't already a 372:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/372-* 2>&1 || echo "No fixture 372" ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now, let me think carefully about what the fixture should contain. The task says:
+- "One new BenchmarkTask added to the eval fixture suite that tests FIM routing"
+- "The fixture validates that a known FIM-eligible prompt routes correctly"
+- "The fixture validates that a known non-FIM prompt does NOT route to FIM"
+- "cargo test eval_fixtures passes"
+- "yyds eval fixtures list shows at least 373 tasks (was 372)"
+
+Wait, it wants 373 tasks (was 372). But I just confirmed there's no 372 yet. Let me re-count:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/*.json | wc -l ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are currently 372 fixtures. The task says current count is 372 and target is 373+. So I need to add one fixture to bring it to 373.
+
+Now let me plan the fixture. Since this is a "held-out eval fixture for DeepSeek FIM routing correctness," and I need to:
+1. Validate FIM-eligible prompt routes correctly
+2. Validate non-FIM prompt does NOT route to FIM
+
+And I can't modify `src/deepseek.rs`, so I'll reference existing tests and CLI commands.
+
+The cleanest approach: create a fixture that runs `yoyo deepseek fim-route --enable --json` with both a valid and an invalid prompt, using bash to check the output.
+
+But actually, looking at the eval fixture format, `tests` are just bash commands that should exit 0 on success. So I could write bash tests that:
+1. Run `yoyo deepseek fim-route --input 'complete src/deepseek.rs lines 12-18' --enable --json` and check the JSON output has `use_fim: true`
+2. Run `yoyo deepseek fim-route --input 'refactor architecture' --enable --json` and check the JSON output has `use_fim: false`
+
+But there's a subtlety: `yoyo deepseek fim-route` will call `run_git` to get tracked files, and in tests this requires a repo state. The fixture runs within the repo directory itself, so that should be fine.
+
+However, I need to make these bash test commands exit 0 on success and non-zero on failure. Let me construct them properly.
+
+Actually, let me also look at whether `yoyo deepseek fim-route --json` outputs parseable JSON that I can check with `jq` or similar. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how `fim-route --json` outputs its result:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1273..1313 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand how `--json` outputs. When `--json` flag is passed, it prints the serialized `FimRouteDecision` as pretty JSON. The `FimRouteDecision` struct has `use_fim: bool`, `route: String`, `reason: String`, etc.
+
+Now I can construct bash test commands that validate the routing correctness. Let me create the fixture.
+
+The fixture should:
+1. Test a FIM-eligible prompt → `use_fim: true` 
+2. Test a non-FIM prompt → `use_fim: false`
+
+I'll use bash commands with pipe to `jq` or `grep` to check the output.
+
+But wait - is `jq` available? Let me check if I should use `python3` or just `grep`. Let me use `grep` since it's more universally available.
+
+Actually, for the test to exit 0 on success, I could do something like:
+```
+cargo run --quiet --bin yoyo -- deepseek fim-route --input 'complete src/deepseek.rs lines 12-18' --enable --json 2>/dev/null | grep -q '"use_fim": true'
+```
+
+And for the negative:
+```
+cargo run --quiet --bin yoyo -- deepseek fim-route --input 'refactor architecture' --enable --json 2>/dev/null | grep -q '"use_fim": false'
+```
+
+But wait, I need to also run one of the unit tests or the `eval fixtures validate` as an additional check. Let me craft a well-rounded fixture.
+
+Let me also think about what tests make sense:
+
+1. Unit test: `cargo test deepseek::tests::fim_route_accepts_explicit_single_file_line_range_when_policy_enabled -- --nocapture`
+2. Unit test: `cargo test deepseek::tests::fim_route_declines_disabled_broad_or_ambiguous_prompts -- --nocapture` 
+3. CLI positive: `cargo run --quiet --bin yoyo -- deepseek fim-route --enable --json --input 'complete src/deepseek.rs lines 12-18' | grep -q '"use_fim": true'`
+4. CLI negative: `cargo run --quiet --bin yoyo -- deepseek fim-route --enable --json --input 'refactor architecture' | grep -q '"use_fim": false'`
+
+But that's a lot of tests and some are already covered by other fixtures. Let me simplify.
+
+Actually, the core value-add of this fixture compared to the existing `129-deepseek-fim-route-heuristic` would be CLI-level testing with explicit grep assertions. The existing fixture 129 just runs the CLI command without checking the output structure. My fixture could add explicit output assertions.
+
+Let me finalize the plan. I'll create fixture `372-deepseek-fim-route-correctness.json` with:
+- category: "deepseek/fim routing"
+- tests:
+  1. Unit test for positive routing
+  2. Unit test for negative routing  
+  3. CLI positive: explicit assertion that JSON output has `use_fim: true`
+  4. CLI negative: explicit assertion that JSON output has `use_fim: false`
+
+This provides held-out coverage for FIM routing correctness at both unit and integration levels, with explicit output assertions that the existing fixtures don't have.
+
+Let me write the fixture now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me create the eval fixture. Let me first verify the exact grep assertion will work by looking at how `--json` output is formatted:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me quickly verify the JSON output format of `fim-route --json` to make sure my grep assertions will work:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.5s (4 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yoyo -- deepseek fim-route --enable --json --input 'comp… ✓ (115ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It errored. Let me try without the `--quiet` and with full output. The issue might be that `cargo run` doesn't work this way. Let me try a different approach, building first, then running the binary.
+
+Actually, let me check the error message more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yoyo -- deepseek fim-route --enable --json --input 'complete src… ✓ (113ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The binary is `yyds`, not `yoyo`. The task description says `yoyo` but the actual binary is `yyds`. The `yoyo` is the alias/command. Let me use `yyds` instead.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- deepseek fim-route --enable --json --input 'complete src… ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me test the negative case:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- deepseek fim-route --enable --json --input 'refactor arc… ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both cases work. Now let me also test a case where the prompt has the right keywords but no line range:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- deepseek fim-route --enable --json --input 'fix the miss… ✓ (146ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can create the fixture. Let me write it. I'll use two CLI-based tests that grep for the specific JSON fields:
+
+1. Positive: run with `complete src/deepseek.rs lines 12-18` and assert `use_fim: true`
+2. Negative: run with `refactor architecture` and assert `use_fim: false`
+
+These are bash commands that exit 0 on success. Let me also add the unit test run for completeness.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The implementation updated `_healthy_codebase_fallback()` and the inline test assertions, but missed updating the stale assertion at line 1575 in `main()` that still checks for the old title `"Record honest stable-codebase journal entry"`. As a result, `python3 scripts/preseed_session_plan.py --test` fails with `AssertionError` — a verifier explicitly required in the success criteria. The fix is a one-line update: change the assertion at line 1575 to match the new title `"Add a small verifiable improvement to src/"`.

@@ -1,0 +1,714 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **Task**: Close historical state lifecycle gaps — retroactively add FailureObserved for error runs
+2. **Files**: `scripts/append_terminal_state_events.py`
+3. **Evidence**: 2 sessions completed with error status but no FailureObserved events, 3 error runs without FailureObserved, 1 incomplete run
+
+Let me start by reading the evolve skill, then the target script, and understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (761ms)
+ ✓ (494ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script is quite long and I need to understand what it does. Let me read the full script, especially the `find_missing_failure_observed` and `find_stale_orphaned_runs` functions, and the `append_terminal_events` function.
+
+Let me also check the test file and the `append_state_event.py` dependency.
+
+But first, let me understand the current state of the events - run the script and see what gaps exist.
+
+Actually, let me read the rest of the script first to understand it fully, then run it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..  ▶ read scripts/append_state_event.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (763ms)
+ ✓ (1.5s)
+ ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the rest of the script (lines 200-413) to see the `find_stale_orphaned_runs`, `find_missing_failure_observed`, and `append_terminal_events` functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:200.. ✓ (242ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the script. Let me analyze what's going on:
+
+1. The script has `find_missing_failure_observed()` which scans all events for error-status RunCompleted events that lack matching FailureObserved events. This function looks correct.
+
+2. The `append_terminal_events()` function calls `find_missing_failure_observed()` and appends FailureObserved events for those gaps. This also looks correct.
+
+3. The problem: The script is designed to be called from `evolve.sh` with `--after-line` (incremental) and the retrospective scans (orphan runs + missing failure observed) run as part of that same call. But the retroactive closure only happens when `append_terminal_events()` is called.
+
+The task says the script was built on Day 127 but historical gaps remain. The issue might be that the script is designed as a *post-hoc* closure tool (called after a session ends), so it handles "from now on" but the existing gaps may have already been there and were never explicitly closed.
+
+Let me now find the events file and run the script to check the current state.
+
+First, let me find where the events file is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find /home/runner/work/yyds-harness/yyds-harness -name "events.jsonl" -type f 2>…  ▶ $ ls -la ~/.yoyo/events.jsonl 2>/dev/null || ls -la ~/.yyds/events.jsonl 2>/dev/nu… ✓ (491ms)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the events file is at `.yoyo/state/events.jsonl`. Let me now check the current state:
+1. How many events are there?
+2. Run `find_missing_failure_observed` programmatically to see gaps
+3. Check the test suite
+
+Let me also check if there's a `yyds state why last-failure` command available.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.8s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l /home/runner/work/yyds-harness/yyds-harness/.yoyo/state/events.jsonl  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (15 lines) ✓ (1.0s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to pass a Path object, not a string.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (16 lines) ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there are 37 error-completed runs without FailureObserved events and 6 orphaned runs. The script already detects these gaps via `find_missing_failure_observed` and `find_stale_orphaned_runs`. 
+
+The problem is that the script's `main()` function requires `--after-line` (required), `--events` (required), `--reason` (required), etc. - it was designed to be called from `evolve.sh` as a post-session hook, not as a standalone retroactive fix tool.
+
+The task asks me to:
+1. Run the script in "dry-run" mode (or add `--dry-run` if missing) 
+2. If gaps exist, fix them by running the script for real
+
+The script doesn't have a `--dry-run` option. It requires `--after-line` and `--reason` as required args. The `find_missing_failure_observed` function already works perfectly - it detects gaps. The issue is that the script's `main()` is set up for incremental post-session use and doesn't have a standalone retroactive mode.
+
+Let me think about what I need to do:
+
+1. The `append_terminal_events()` function already:
+   - Calls `find_stale_orphaned_runs()` and appends RunCompleted for orphans
+   - Calls `find_missing_failure_observed()` and appends FailureObserved for error runs without them
+
+But currently `main()` requires `--after-line` and `--reason` - it's meant for calling after a session, not for standalone retroactive use.
+
+The simplest fix: Add a `--dry-run` flag and support running with `--after-line=0` (scan from beginning) to retroactively close all gaps. Or even better, add a `--retroactive` mode that doesn't need an `--after-line`.
+
+Actually, looking more carefully - when `--after-line` is 0, the script will scan from line 0, which means all events. And the find_stale_orphaned_runs and find_missing_failure_observed are full-scan anyway (they scan ALL events, not just from after_line). So we can use `--after-line 0` to trigger the full retroactive closure.
+
+But the issue is `main()` currently requires `--events`, `--after-line`, and `--reason` as required args. We need to:
+1. Add a `--dry-run` flag that prints what would happen without writing
+2. Support running the script in retroactive mode
+
+Let me think about the cleanest approach:
+
+Option A: Add `--dry-run` flag to `main()` that runs but doesn't actually append events.
+
+Option B: Make the script directly usable for retroactive closure by running with `--after-line 0`.
+
+The simplest approach: add a `--dry-run` flag. When set, the script should run the analysis (find_missing_failure_observed, find_stale_orphaned_runs) but not actually append events. Then users can:
+1. Run `--dry-run` to see gaps
+2. Run without `--dry-run` to actually fix them
+
+But wait - `--after-line` is currently required. For a full retroactive scan, `--after-line 0` makes sense since it scans everything. But we still need `--reason`. Let me make `--after-line` optional with a default, and add `--dry-run`.
+
+Actually, let me look at this more practically. The task says:
+- Run it in dry-run mode (or add a --dry-run flag if missing) to see how many gaps exist.
+- If the script already handles all detected gaps: run it for real to append the missing events, then verify the gaps are closed.
+
+So the plan is:
+1. Add `--dry-run` flag to the script
+2. Make `--after-line` have a sensible default (like 0 for full scan, or make it `--after-line 0` default with a `--full-scan` mode)
+3. Run with `--dry-run` first to see gaps
+4. Run without `--dry-run` to fix them
+
+Let me also make `--reason` not required when running in retroactive mode, or give it a default.
+
+Actually, the cleanest approach: add `--dry-run` and also handle the case where `--after-line` is explicitly provided. For the retroactive use case, the user would do:
+```
+python3 scripts/append_terminal_state_events.py --events .yoyo/state/events.jsonl --after-line 0 --reason "retroactive_lifecycle_closure" --dry-run
+```
+
+Then without `--dry-run` to actually fix.
+
+Let me also make `--reason` default to something sensible.
+
+Wait, let me re-read the command-line args. `--after-line` is required. Let me add `--dry-run` and make `--reason` have a default for retroactive use.
+
+Let me implement this now.
+
+Plan:
+1. Add `--dry-run` flag to `main()` 
+2. When `--dry-run`, run the full analysis but don't call `append_event()`
+3. Test by running with `--dry-run` first
+4. Then run for real
+
+Actually, even simpler: modify `append_terminal_events()` or add a wrapper that when dry_run=True, doesn't call `append_event()`. But that requires threading through a parameter.
+
+Simplest approach: add `--dry-run` to argparse, and when set, modify `append_event` to be a no-op.
+
+Wait, `append_event` is imported from `append_state_event.py`. We can't easily make it a no-op without monkey-patching or passing a flag down.
+
+Alternatively, I could:
+1. Add `--dry-run` to argparse
+2. In `main()`, when `--dry-run` is set, create a wrapper around `append_event` that only prints what would be appended but doesn't write
+3. Pass this wrapper to `append_terminal_events`
+
+But `append_terminal_events()` directly calls `append_event` from the module. The cleanest way is to add a `dry_run` parameter to `append_terminal_events()` and conditionally skip the `append_event()` calls.
+
+Let me implement this:
+
+1. Add `dry_run: bool = False` parameter to `append_terminal_events()`
+2. When `dry_run=True`, print what would be appended instead of calling `append_event()`
+3. Add `--dry-run` flag to `main()`
+4. Test
+5. Run for real
+
+Let me also make `--reason` not required, or give it a default. Actually, for backward compat, let me keep `--reason` required but make `--after-line` default to 0.
+
+Wait, `--after-line` is currently set as `required=True`. Let me change it to default to 0 (full scan from beginning), which is the retroactive mode.
+
+Actually, let me think about what changes are minimal:
+
+1. Add `--dry-run` flag (store_true, default False)
+2. When dry_run, run analysis but don't write
+3. Make `--reason` have a usable default for retroactive use ("retroactive_lifecycle_closure"), but keep it required for backward compat since evolve.sh provides it
+
+Actually, the simplest approach is to keep all the args as-is but just add `--dry-run`. In dry-run mode, the script loads events, runs the analysis, prints what would be done, but doesn't call `append_event`.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. There are 37 error-completed runs without FailureObserved events and 6 orphaned runs. The script's `find_missing_failure_observed()` and `find_stale_orphaned_runs()` already detect these gaps — the issue is the script has no `--dry-run` mode and was designed only for incremental post-session use, not standalone retroactive closure.
+
+Let me add a `--dry-run` flag and make the script usable for retroactive closure.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (171ms)
+  ▶ todo ✓ (251ms)
+  ▶ todo ✓ (238ms)
+  ▶ todo ✓ (254ms)
+  ▶ todo ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. I need to:
+
+1. Add `--dry-run` flag to the argparse in `main()`
+2. Add a `dry_run: bool = False` parameter to `append_terminal_events()`
+3. When `dry_run=True`, print what would be done instead of calling `append_event()`
+4. Return the diagnostic info so the caller knows what would have been done
+
+Let me make the edits.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.7s (5 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (167ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edits. I'll:
+
+1. Add `dry_run: bool = False` parameter to `append_terminal_events()`
+2. In the function body, wrap `append_event` calls to print instead when dry_run
+3. Add `--dry-run` to argparse
+4. Pass it through
+
+Let me look at the function signature and the calls to `append_event` more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+First, let me add `dry_run` parameter to `append_terminal_events()` and thread it through:
+        reason: str,
+        error: str,
+        error_detail: str,
+  +     dry_run: bool = False,
+    ) -> dict[str, Any]:
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (13 → 14 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (13 → 14 lines)
+        reason: str,
+        error: str,
+        error_detail: str,
+  +     dry_run: bool = False,
+    ) -> dict[str, Any]:
+ ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to wrap `append_event` calls to be conditional on `dry_run`. Let me look at the different places where `append_event` is called:
+
+1. Line 304: ModelCallCompleted
+2. Line 318: RunCompleted for open runs
+3. Line 332: RunCompleted for session runs
+4. Line 359: RunCompleted for orphaned runs
+5. Line 369: RunCompleted for orphaned session runs
+6. Line 399: FailureObserved for error-completed runs
+
+I have two options:
+A. Create a helper function that conditionally writes or prints
+B. Wrap each call individually
+
+Option A is cleaner. Let me add a helper.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add a dry-run helper and wrap all `append_event` calls:
+  + def _maybe_append_event(
+  +     events_path: Path,
+  +     event_type: str,
+  +     actor: str,
+  +     rid: str,
+  +     session_id: str,
+  +     trace_id: str,
+  +     payload: dict[str, Any],
+  +     dry_run: bool,
+  + ) -> dict[str, Any] | None:
+  +     """Append an event or print what would be appended in dry-run mode."""
+  +     if dry_run:
+  +         import sys
+  +         print(
+  +             f"[dry-run] Would append {event_type} actor={actor} run_id={rid} "
+  +             f"payload={json.dumps(payload, sort_keys=True, separators=(',', ':'))}",
+  +             file=sys.stderr,
+  +         )
+  +         return None
+  +     return append_event(events_path, event_type, actor, rid, session_id, trace_id, payload)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 23 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (1 → 23 lines)
+  + def _maybe_append_event(
+  +     events_path: Path,
+  +     event_type: str,
+  +     actor: str,
+  +     rid: str,
+  +     session_id: str,
+  +     trace_id: str,
+  +     payload: dict[str, Any],
+  +     dry_run: bool,
+  + ) -> dict[str, Any] | None:
+  +     """Append an event or print what would be appended in dry-run mode."""
+  +     if dry_run:
+  +         import sys
+  +         print(
+  +             f"[dry-run] Would append {event_type} actor={actor} run_id={rid} "
+  +             f"payload={json.dumps(payload, sort_keys=True, separators=(',', ':'))}",
+  +             file=sys.stderr,
+  +         )
+  +         return None
+  +     return append_event(events_path, event_type, actor, rid, session_id, trace_id, payload)
+  ... (3 more lines)
+ ✓ (258ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to replace each `append_event(...)` call inside `append_terminal_events()` with `_maybe_append_event(..., dry_run)`. Let me find and replace each one.
+────────────────────────────────────────────────────────────────────────────────
+
+Now replace all `append_event(` calls inside `append_terminal_events` with `_maybe_append_event(`:
+  -         append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload, dry_run)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 1 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (1 → 1 lines)
+  -         append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "ModelCallCompleted", "yoyo", rid, session_id, trace_id, payload, dry_run)
+ ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+  -         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+            completed_runs.append(rid)
+    
+        for rid in sorted(open_session_runs):
+  ···
+                payload["error"] = error
+            if error_detail:
+                payload["error_detail"] = error_detail
+  -         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+            completed_session_runs.append(rid)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (16 → 16 lines)
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (16 → 16 lines)
+  -         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+            completed_runs.append(rid)
+    
+        for rid in sorted(open_session_runs):
+  ···
+                payload["error"] = error
+            if error_detail:
+                payload["error_detail"] = error_detail
+  -         append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+            completed_session_runs.append(rid)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now replace the orphan run append_event calls and the FailureObserved append_event call.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -             append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +             _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+                completed_runs.append(rid)
+    
+            for rid in sorted(new_orphan_session_runs):
+  ···
+                    "stage": stage or None,
+                    "outcome": "post_hoc_closed",
+                }
+  -             append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +             _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+                completed_session_runs.append(rid)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (12 → 12 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (12 → 12 lines)
+  -             append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +             _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+                completed_runs.append(rid)
+    
+            for rid in sorted(new_orphan_session_runs):
+  ···
+                    "stage": stage or None,
+                    "outcome": "post_hoc_closed",
+                }
+  -             append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload)
+  +             _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload, dry_run)
+                completed_session_runs.append(rid)
+ ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the last one - the FailureObserved append_event:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -             append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo)
+  +             _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 1 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (1 → 1 lines)
+  -             append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo)
+  +             _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
+ ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the `main()` function to add `--dry-run` and pass it through. Also need to handle the `--reason` being optional or having a default for retroactive use. Actually, let me keep `--reason` required for backward compat but allow an explicit empty string or a useful default for retroactive use. 
+
+Actually for the retroactive use case, let me just add `--dry-run` and give `--reason` a default. The task says to use the script for retroactive closure. Let me make `--reason` default to "retroactive_lifecycle_closure" when `--dry-run` is set. 
+
+No, simpler: just add `--dry-run` and pass it. Keep all other args as-is.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `main()` to add `--dry-run` flag:
+        parser.add_argument("--reason", required=True)
+        parser.add_argument("--error", default="")
+        parser.add_argument("--error-detail", default="")
+  +     parser.add_argument("--dry-run", action="store_true", default=False)
+        args = parser.parse_args()
+        result = append_terminal_events(
+            args.events,
+  ···
+            args.reason,
+            args.error,
+            args.error_detail,
+  +         dry_run=args.dry_run,
+        )
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (29 → 31 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (29 → 31 lines)
+        parser.add_argument("--reason", required=True)
+        parser.add_argument("--error", default="")
+        parser.add_argument("--error-detail", default="")
+  +     parser.add_argument("--dry-run", action="store_true", default=False)
+        args = parser.parse_args()
+        result = append_terminal_events(
+            args.events,
+  ···
+            args.reason,
+            args.error,
+            args.error_detail,
+  +         dry_run=args.dry_run,
+        )
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+ ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the existing tests to make sure nothing is broken, and then test the `--dry-run` mode.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/test_append_te… ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 14 tests pass. Now let me run the dry-run mode. The script requires `--events`, `--after-line`, and `--reason`. For a full retroactive scan, `--after-line 0` will scan from the beginning.
+────────────────────────────────────────────────────────────────────────────────
+
+All 14 existing tests pass. Now let me run dry-run mode:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (172ms)
+  ▶ todo ✓ (244ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 sc… (5 lines) ✓ (509ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dry-run shows:
+- 96 missing failure observed events (WOW! More than expected)
+- 9 orphaned runs (more than the 6 detected earlier? Actually the earlier scan showed 507 events, but now the events file has 988 lines. The file must have grown since the earlier scan.)
+- 6 open models being closed
+- 12 open runs being closed
+- 96 failure observed events would be appended
+
+Wait, there's an issue: the script is also detecting `open_models` and `open_runs` from the lifecycle scan (starting from `--after-line 0`), which means it wants to close everything that's currently open. That's not right for the retroactive use case - we don't want to close currently-running sessions! We only want to close historical gaps.
+
+Actually, wait. Let me re-read the script more carefully. When `--after-line 0`:
+- `open_lifecycle` scans from line 0 and finds ALL open runs and models
+- But `find_stale_orphaned_runs` does a full scan anyway
+
+The issue is that `open_lifecycle` with `--after-line 0` will find currently-open runs (from the current session) and try to close them, which we don't want.
+
+But actually, let me check: is there a current session running? If not, then all open runs are genuinely orphaned.
+
+Let me think about this differently. The task says:
+- Close historical gaps: error runs without FailureObserved, stale incomplete runs
+- The `find_missing_failure_observed` and `find_stale_orphaned_runs` functions do exactly this
+
+The problem with `append_terminal_events()` is that it ALSO closes "currently open" runs (from `open_lifecycle`). When `--after-line 0`, it treats EVERY open run as needing closure, including runs that are still in progress.
+
+The right approach for this task is: only run the full-scan functions (find_missing_failure_observed and find_stale_orphaned_runs), not the incremental lifecycle scan.
+
+BUT... running with `--after-line` set to the current line count of the file would avoid the incremental scan. Let me check: if `--after-line` equals the number of lines in the file, then `open_lifecycle` would scan... wait, actually no. If after_line > len(events), it falls back to full scan from 0.
+
+Looking at `open_lifecycle`:
+```python
+if after_line > len(events):
+    scan_start = 0
+    scope = "full_after_line_exceeded_file"
+```
+
+So if I use `--after-line` equal to the number of lines, it would trigger the fallback to full scan. That's not helpful.
+
+If `--after-line` equals len(events), the scoped scan is `events[len(events):]` which is empty - no open runs found.
+
+Let me verify: `after_line = len(events)`, then `scoped = events[max(len(events), 0):]` which is `events[len(events):]` which is `[]`. So `open_lifecycle` would find no open runs. Then the full-scan functions (`find_stale_orphaned_runs` and `find_missing_failure_observed`) would still run because `scope` would be `"requested_after_line"` (not ambiguous).
+
+That's the right approach! Use `--after-line $(wc -l < events.jsonl)` to skip the incremental scan.
+
+Let me also verify: `diagnostics.get("scope") != "ambiguous_reset_full_scan"` - since scope would be `"requested_after_line"`, this guard passes and the full-scan functions run.
+
+Good. Let me run it with `--after-line` set to the file's line count.
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the dry-run shows the script detects 96 missing FailureObserved and 9 orphaned runs. But wait — I notice it also wants to close "open runs" from the incremental lifecycle scan. Since `--after-line 0` scans from the beginning, it treats every unclosed run as needing closure, including possibly still-running sessions.
+
+I need to use `--after-line` set to the current line count to skip the incremental scan and only run the full-scan retroactive functions:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && EVENTS_FIL… (5 lines) ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The scope is "full_after_line_exceeded_file" which then triggers the ambiguous_reset_full_scan guard. Let me look at the logic again:
+
+```python
+def open_lifecycle(events, after_line, fallback_after_line=None):
+    if after_line > len(events):
+        scan_start = 0
+        scope = "full_after_line_exceeded_file"
+    ...
+    if scope == "full_after_line_exceeded_file":
+        visible_open_runs = set(open_runs) | set(open_models)
+        if len(visible_open_runs) > 1:
+            diagnostics["scope"] = "ambiguous_reset_full_scan"
+            ...
+            return {}, set(), set(), diagnostics
+```
+
+So when after_line > len(events):
+1. It scans from 0 (full scan)
+2. If there are >1 visible open runs, scope becomes "ambiguous_reset_full_scan"
+
+Then in `append_terminal_events()`:
+```python
+if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+    # run full-scan orphan detection and failure observed
+```
+
+So if scope is "ambiguous_reset_full_scan", both the orphan scan and failure observed scan are SKIPPED!
+
+But wait, the output says events_count=0 and everything is 0. That's weird. Let me check: the events file has 107452 lines, and after_line is 107452. So `after_line > len(events)` is False (107452 > 107452 is False), but `scoped = events[max(107452, 0):]` is `events[107452:]` which is empty. So lifecycle_for_scope returns 0 for everything. That's expected.
+
+But then scope should be "requested_after_line" because after_line <= len(events). Wait no, 107452 == len(events) not >. Let me check: `if after_line > len(events)` - 107452 > 107452 is FALSE. So `scan_start = max(107452, 0) = 107452`, `scope = "requested_after_line"`.
+
+Then `scoped = events[107452:]` which is empty. So lifecycle_start_count=0, lifecycle_completion_count=0.
+
+Then it doesn't enter the "ambiguous_reset_full_scan" block because scope is "requested_after_line".
+
+Then it checks the fallback: the fallback is None so that's skipped.
+
+Then returns with scope="requested_after_line".
+
+Then in `append_terminal_events()`:
+- open_models is empty → no ModelCallCompleted appended
+- open_runs is empty → no RunCompleted appended  
+- diagnostics["scope"] is "requested_after_line" (≠ "ambiguous_reset_full_scan") → orphan scan runs
+- BUT: orphan scan runs `find_stale_orphaned_runs(events)` and events is loaded with load_jsonl(events_path)
+
+Wait, events is loaded at line 287: `events = load_jsonl(events_path)`. So the events list used in the full-scan functions is the full list. But the diagnostic output says `"event_count":0` which comes from `diagnostics["event_count"]` set at `diagnostics["event_count"] = len(events)` in `open_lifecycle()`.
+
+Wait, actually let me re-read. In `append_terminal_events()`:
+```python
+events = load_jsonl(events_path)
+open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+```
+
+Then later:
+```python
+if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+    stale_orphaned_runs, stale_orphaned_session_runs, orphan_diag = find_stale_orphaned_runs(events)
+```
+
+But the output shows `"full_scan_events":0` and everything 0. That means `find_stale_orphaned_runs` is getting an empty events list!
+
+Let me check: `events = load_jsonl(events_path)` - but we saw the events file has 107452 lines. How is it returning 0 events?
+
+Oh wait - the output said `"event_count":0`. That's from `diagnostics["event_count"] = len(events)` in open_lifecycle. And the output says `"scanned_events":0`. But `load_jsonl` should have loaded the full file... unless the file is too big and it failed.
+
+Actually, looking at the output more carefully: `"event_count": 0` - this is set inside `open_lifecycle` after `lifecycle_for_scope` returns. The `lifecycle_for_scope` function receives `events[max(scan_start, 0):]`, which for `--after-line 107452` would be `events[107452:]` = empty.
+
+But `len(events)` should be 107452 (the full list), and `diagnostics["event_count"] = len(events)` sets event_count to 107452. But the output says 0. Unless `load_jsonl` returned an empty list because the file is too large?
+
+Wait, maybe the issue is that the file is 107452 lines but load_jsonl is only loading a small portion? Let me check the load_jsonl function - it reads all lines. Maybe the file is huge and it's running out of memory or timing out?
+
+Actually, let me check: the events file has 107388 lines but now it says 107452 - it grew between the two runs. That's a lot of events. Let me check how big the file is.
+
+Wait, actually the JSON output says `"full_scan_orphan_diagnostics":{"full_scan_events":0,...}`. This suggests `find_stale_orphaned_runs` received an empty list. And the `events` variable in `append_terminal_events` is loaded at line 287... unless it's being truncated somehow.
+
+Let me check: the output also says `"scanned_events": 0`. This is from `lifecycle_for_scope` which receives `events[max(107452, 0):]`. If `events` has 107452 elements, then `events[107452:]` would indeed be empty. And `len(scoped)` would be 0. That's correct behavior - we're telling it to scan from after line 107452, which is past the end of the file.
+
+But then `diagnostics["event_count"] = len(events)` should be 107452, not 0. Unless `events` is actually empty...
+
+Oh wait, the JSON output shows `"event_count":0`. This is confusing. Let me look at the diagnostic fields more carefully:
+
+```json
+"diagnostics": {
+    "event_count": 0,
+    "full_scan_orphan_diagnostics": {
+        "full_scan_events": 0,
+        ...
+    },
+    ...
+}
+```
+
+Both `event_count` (from open_lifecycle) and `full_scan_events` (from find_stale_orphaned_runs) are 0. This means `events` (from `load_jsonl`) is an empty list.
+
+But the file has 107452 lines! Let me check if load_jsonl is failing silently. Actually, looking at the code:
+```python
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not path.is_file():
+        return rows
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                value = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                rows.append(value)
+    return rows
+```
+
+This should load all rows. But 107452 lines is a LOT of JSON objects. Maybe the file is so large that the command timed out or was truncated? Let me check the exit code.
+
+Actually, looking at the output more carefully - the JSON looks complete and valid. It just shows 0 events. Let me just check the file size.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -lh /home/runner/work/yyds-harness/yyds-harness/.yoyo/state/events.jsonl && w… ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events file is 98MB with 107,456 lines. That's huge. `load_jsonl` would need to load all 107K JSON objects into memory. But the earlier dry-run with `--after-line 0` did work (showing 988 events). Let me check that again — actually wait, the first dry-run (with --after-line 0) showed `"event_count":988` and `"full_scan_events":988`, not 107K. 
+
+Oh! The issue is format - the first dry-run with `--after-line 0` showed 988 events, not 107K. Looking at that output again: `"event_count":988`. But the file has 107K lines. Let me check if the output was truncated...
+
+Actually wait, the first call with `--after-line 0` showed `"event_count":988`. That's suspicious because the file has 107K lines. Maybe the issue is with how the output was displayed (the `tail -60` may have not shown the correct value). But the output says event_count=988...
+
+Let me just try again with `--after-line=0` to see the full output.
+
+Wait, actually the second dry-run (with `--after-line 107452`) showed `"event_count":0`. Let me re-read the code:
+
+```python
+events = load_jsonl(events_path)
+open_models, open_runs, open_session_runs, diagnostics = open_lifecycle(events, after_line, fallback_after_line)
+```
+
+In `open_lifecycle`:
+```python
+scoped = events[max(scan_start, 0):]
+...
+diagnostics["scanned_events"] = len(scoped)
+```
+
+Then later:
+```python
+diagnostics["event_count"] = len(events)
+```
+
+So `event_count` should be the length of the full events list, which should be ~107K. But the output says 0. 
+
+Unless... `load_jsonl` is being called on a different path? Let me check: the path is `.yoyo/state/events.jsonl`. But the script uses `Path` so it should be relative to the current directory.
+
+Actually wait - maybe the issue is that Python's `pathlib.Path` resolves to an absolute path differently. Let me just test directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (6 lines) ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import doesn't work when running from a different directory. Let me fix this:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness/scripts && py… (6 lines) ✓ (493ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only 515 events loaded from a 107K-line file! The issue is that `load_jsonl` is failing to parse most lines because the JSON format doesn't match what it expects. Let me check what the events look like.
+────────────────────────────────────────────────────────────────────────────────
+
+Only 515 events loaded from a 107K-line file! The JSON format likely doesn't match. Let me inspect the event format:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && head -3 .yoyo/state/events.jso… ✓ (496ms)
+
+
