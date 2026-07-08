@@ -2070,7 +2070,8 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
              Cache metrics ARE recorded for these diagnostic paths:\n  \
                - yyds deepseek stream-check  (chat completion SSE parsing)\n  \
                - yyds deepseek fim-complete   (FIM completion parsing)\n  \
-             Use one of those commands to populate metrics, then re-run this report."
+             Next step: Run `yyds deepseek stream-check` to populate cache metrics,\n  \
+             then re-run `yyds deepseek cache-report`."
                 .to_string(),
         );
     }
@@ -2267,6 +2268,10 @@ mod tests {
         assert!(
             err.contains("stream-check"),
             "error should point to stream-check as a diagnostic path, got: {err}"
+        );
+        assert!(
+            err.contains("Next step: Run"),
+            "error should include a concrete next step, got: {err}"
         );
     }
 
