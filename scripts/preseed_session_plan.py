@@ -784,6 +784,26 @@ def _has_src_files(task: dict[str, object]) -> bool:
     return False
 
 
+_ASSESSMENT_MISSING_FIELD_RE = re.compile(
+    r"-\s*(\w[\w_]*)\s*:\s*(.+?)(?:\n|$)",
+)
+
+def _parse_assessment_missing_fields(assessment_text: str) -> dict[str, str]:
+    """Extract structured fields from assessment_missing.md text.
+
+    Returns a dict with keys like assessment_exit_code, assessment_timeout_seconds,
+    provider_error_detected, transcript. Values are strings (trimmed).
+    Returns an empty dict if no fields are found.
+    """
+    fields: dict[str, str] = {}
+    for match in _ASSESSMENT_MISSING_FIELD_RE.finditer(assessment_text):
+        key = match.group(1)
+        value = match.group(2).strip()
+        if key != "status" and key != "required_artifact":
+            fields[key] = value
+    return fields
+
+
 def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[str, object]:
     current = current_evidence_text(assessment)
     lower = (current if current.strip() else assessment).lower()
@@ -877,11 +897,76 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
     if assessment_was_missing:
         fallback["files"] = "scripts/preseed_session_plan.py"
         fallback["assessment_missing_note"] = True
-        fallback["objective"] = (
-            "The assessment phase failed to produce assessment.md. "
-            "Improve harness planning reliability with a narrow, verifiable fix "
-            "scoped to a single file."
-        )
+        fields = _parse_assessment_missing_fields(assessment)
+        exit_code_str = fields.get("assessment_exit_code", "")
+        timeout_str = fields.get("assessment_timeout_seconds", "")
+        provider_error_str = fields.get("provider_error_detected", "")
+        transcript = fields.get("transcript", "transcripts/assess.log")
+
+        try:
+            exit_code = int(exit_code_str) if exit_code_str else None
+        except ValueError:
+            exit_code = None
+        provider_error = provider_error_str.lower() == "true"
+
+        if exit_code == 124:
+            # Timeout
+            timeout_secs = int(timeout_str) if timeout_str else "?"
+            fallback["title"] = (
+                f"Diagnose assessment phase timeout after {timeout_secs}s"
+            )
+            fallback["objective"] = (
+                f"The assessment phase timed out after {timeout_secs} seconds. "
+                f"Check {transcript} to understand why the assessment prompt took so long. "
+                f"Possible causes: prompt too broad, model slow, or too many files/sub-agents. "
+                f"Consider reducing assessment scope or increasing the timeout."
+            )
+        elif provider_error:
+            # Provider/API error
+            fallback["title"] = (
+                "Diagnose assessment phase provider/API error"
+            )
+            fallback["objective"] = (
+                "The assessment phase hit a provider or API error. "
+                f"Check {transcript} for the specific error. "
+                "Verify API key validity, rate limits, and provider availability. "
+                "The planning phase was skipped; repair the assessment pipeline "
+                "so it can survive or retry provider errors."
+            )
+        elif exit_code is not None and exit_code != 0:
+            # Non-zero exit (not timeout)
+            fallback["title"] = (
+                f"Diagnose assessment phase exit code {exit_code}"
+            )
+            fallback["objective"] = (
+                f"The assessment phase exited with code {exit_code} "
+                f"without a provider error. "
+                f"Check {transcript} for the failure reason. "
+                "The assessment agent ran but terminated abnormally — "
+                "this could be a tool error, a prompt parsing failure, "
+                "or an internal crash."
+            )
+        elif exit_code == 0 and not provider_error:
+            # Ran successfully but didn't write assessment.md
+            fallback["title"] = (
+                "Diagnose assessment phase silent failure (exit 0, no output)"
+            )
+            fallback["objective"] = (
+                "The assessment agent exited successfully (code 0) with no provider error "
+                f"but did not write assessment.md. Check {transcript} to understand "
+                "why the output file wasn't produced. "
+                "Possible causes: the agent wrote to the wrong path, "
+                "the write_file tool was refused by permission policy, "
+                "or the agent produced analysis in its response but never called write_file."
+            )
+        else:
+            # Couldn't parse specific fields — keep generic but improve it
+            fallback["objective"] = (
+                "The assessment phase failed to produce assessment.md. "
+                f"Check {transcript} for the assessment agent's output. "
+                "Improve harness planning reliability with a narrow, verifiable fix "
+                "scoped to a single file."
+            )
         return fallback
 
     if _assessment_is_healthy_codebase(lower, current):
@@ -1702,6 +1787,85 @@ no-edit revert pressure from prior session.
             f"Task without fixture references should NOT be contradicted, "
             f"got contradicted={contradicted4}, reason={reason4}"
         )
+        # --- Assessment-missing fallback specificity tests ---
+        # Exit 0 + no provider error → silent failure
+        assessment_zero = """# Assessment Missing - Day 131 (10:55)
+
+The assessment phase produced a transcript but did not write `session_plan/assessment.md`.
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- required_artifact: session_plan/assessment.md
+- transcript: transcripts/assess.log
+"""
+        task_zero = choose_task(assessment_zero, assessment_was_missing=True)
+        assert "silent failure" in task_zero["title"].lower() or "exit 0" in task_zero["title"].lower(), (
+            f"Exit-0 no-provider-error should produce 'silent failure' task, got: {task_zero['title']}"
+        )
+        assert "code 0" in str(task_zero["objective"]).lower(), (
+            f"Objective should mention exit 0, got: {task_zero['objective']}"
+        )
+
+        # Timeout → timeout-specific task
+        assessment_timeout = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 124
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+"""
+        task_timeout = choose_task(assessment_timeout, assessment_was_missing=True)
+        assert "timeout" in task_timeout["title"].lower(), (
+            f"Exit-124 should produce timeout task, got: {task_timeout['title']}"
+        )
+        assert "3600" in str(task_timeout["objective"]), (
+            f"Objective should mention timeout seconds, got: {task_timeout['objective']}"
+        )
+
+        # Provider error → provider-specific task
+        assessment_provider = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 1
+- assessment_timeout_seconds: 3600
+- provider_error_detected: true
+- transcript: transcripts/assess.log
+"""
+        task_provider = choose_task(assessment_provider, assessment_was_missing=True)
+        assert "provider" in task_provider["title"].lower() or "api" in task_provider["title"].lower(), (
+            f"Provider-error should produce provider task, got: {task_provider['title']}"
+        )
+        assert "api key" in str(task_provider["objective"]).lower() or "provider" in str(task_provider["objective"]).lower(), (
+            f"Objective should mention API key or provider, got: {task_provider['objective']}"
+        )
+
+        # Non-zero exit (not timeout, no provider error)
+        assessment_nonzero = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 2
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+"""
+        task_nonzero = choose_task(assessment_nonzero, assessment_was_missing=True)
+        assert "exit code 2" in task_nonzero["title"].lower(), (
+            f"Exit-2 should produce exit-code task, got: {task_nonzero['title']}"
+        )
+
+        # Unparseable → generic fallback still works
+        task_parsefail = choose_task("garbage text", assessment_was_missing=True)
+        assert task_parsefail["title"] == "Repair evidence-backed planning after no-task sessions", (
+            f"Unparseable should return generic fallback, got: {task_parsefail['title']}"
+        )
+
         print("preseed_session_plan self-tests passed")
         return 0
     if args.assessment is None:
