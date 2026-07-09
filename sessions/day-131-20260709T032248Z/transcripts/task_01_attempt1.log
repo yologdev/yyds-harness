@@ -1,0 +1,549 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task: I need to modify `close_orphaned_run_if_needed` in `src/state.rs` to recognize `SessionStarted` as a lifecycle start event alongside `RunStarted`. This is a surgical fix of roughly 5-8 lines.
+
+Let me start by reading the relevant code and the evolve skill, then implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/state.rs:310..390 ✓ (741ms)
+ ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the function to see the rest of it, and also look at what EventType looks like and how SessionStarted is defined.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:389..419  ▶ search 'SessionStarted' in src/state.rs  ▶ search 'close_orphaned_run' in src/state.rs ✓ (506ms)
+ ✓ (1.0s)
+ ✓ (808ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the existing tests to understand the test pattern, and also see the `record_session_started` function to understand the SessionStarted event shape.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7200..7240  ▶ read src/state.rs:555..595 ✓ (696ms)
+ ✓ (615ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key issue. `record_session_started` uses `record(EventType::SessionStarted, ...)` which goes through `record()` which calls `append_event`. Let me check how `record()` works — does it set a `run_id`? Let me look at the `record` function.
+
+Also, the scan backward loop at line 348-378 only checks for `RunStarted` (line 357) and `RunCompleted` (line 353). It doesn't check for `SessionStarted`. 
+
+But wait — `SessionStarted` events use `record()` rather than `append_event()`. Let me see if `record()` sets a run_id.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record(' in src/state.rs ✓ (227ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `record` function to see if it sets a run_id.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:439..479 ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `record()` calls `recorder.append()` → `StateRecorder::append()`. Let me check what `append` does — does it set a run_id for SessionStarted events? Let me search for `fn append(` in the StateRecorder impl.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append(&self' in src/state.rs ✓ (212ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the StateRecorder impl and its append method differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'impl StateRecorder' in src/state.rs ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:270..320 ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The `StateRecorder::append` always sets `run_id: Some(self.run_id.clone())`. So when `record_session_started` is called (which goes through `record()` → `recorder.append()`), the SessionStarted event will have a `run_id` field just like RunStarted events.
+
+So the fix is: in the backward scan loop, when we encounter a `SessionStarted` event (in addition to `RunStarted`), we should treat it the same way — extract the run_id, check that no RunCompleted exists for it, and set `orphan_run_id`.
+
+But wait, there's a subtlety. After the first lifecycle event, the scan stops. The scan currently stops at the first RunStarted or RunCompleted. If we also treat SessionStarted as a lifecycle start event, then the scan should also stop at SessionStarted.
+
+Actually, looking at the logic more carefully:
+
+1. The scan walks backward through ALL events.
+2. If it hits `RunCompleted`, it returns Ok(()) — the run is closed.
+3. If it hits `RunStarted`, it checks if a RunCompleted exists for that run_id, and if not, marks it as orphaned and breaks.
+
+The issue is: if SessionStarted is emitted AFTER RunStarted, then the backward scan will hit RunStarted before SessionStarted. So the RunStarted scan will find the run and close it. That should work fine.
+
+But! What if the session crashes BEFORE RunStarted is emitted? That shouldn't happen normally since RunStarted is emitted at the start. But what if the session crashes after SessionStarted but the RunStarted was ALSO emitted? Then the backward scan would find RunStarted and handle it.
+
+Hmm, but wait. The actual scenario is described as: "A session that crashes after SessionStarted but before RunCompleted leaves an orphaned run." But RunStarted is emitted before SessionStarted (at init_global time). So if RunStarted was already emitted, the backward scan would find it.
+
+Let me re-read the init sequence:
+
+```rust
+fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), String> {
+    // Close any orphaned run from a previous session before starting the new one.
+    close_orphaned_run_if_needed(...)
+    
+    let recorder = StateRecorder::new(config);
+    let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+    ...
+}
+```
+
+So `RunStarted` is emitted in `init_global`. Then `record_session_started` is called later (probably in `main.rs` or `lib.rs`). If the session crashes after `record_session_started` but before `RunCompleted`, then RunStarted IS in the events file and the backward scan would find it.
+
+So... maybe the actual scenario is: what if a prior session emitted SessionStarted but not RunStarted? That would be unusual but could happen if a crash happens between closing orphaned runs and the RunStarted emission. But that's a very tiny window.
+
+Wait, re-reading the evidence again: "A session that crashes after SessionStarted but before RunCompleted leaves an orphaned run." This assumes RunStarted is emitted. And the backward scan should find RunStarted...
+
+Let me re-read the assessment: "close_orphaned_run_if_needed only scans for RunStarted events, but SessionStarted is emitted later." 
+
+I think the actual scenario is:
+1. Session A runs, emits RunStarted
+2. Session A emits SessionStarted 
+3. Session A crashes before RunCompleted
+4. Session B starts, calls close_orphaned_run_if_needed
+5. Backward scan finds RunStarted for Session A, emits retroactive RunCompleted
+6. This works fine.
+
+But wait, what if:
+1. Session A runs, emits RunStarted
+2. Session A crashes BEFORE SessionStarted  
+3. Session B starts, calls close_orphaned_run_if_needed
+4. Backward scan finds RunStarted, closes it. This works fine too.
+
+So when does the bug actually trigger? Let me think more carefully...
+
+Actually, I think the scenario might be:
+1. Session A emits RunStarted 
+2. Session A emits SessionStarted
+3. Session B starts, and RunCompleted was already emitted for session A's run_id
+4. But there's STILL a SessionStarted event detected as hanging
+
+Hmm, but the backward scan would find RunCompleted for session A's run_id and return Ok(()).
+
+Wait, actually now I wonder: could there be a case where the SessionStarted event exists but the RunStarted event doesn't? That would happen if `init_global` crashes between `close_orphaned_run_if_needed` and `recorder.append(EventType::RunStarted, ...)`.
+
+Or perhaps the scenario is that the `append_terminal_state_events.py` script (which is a Python script that retroactively adds state events) only looks at `SessionStarted` but not `RunStarted`.
+
+Actually, I think I'm overcomplicating this. Let me look at the specific scenario from the trajectory:
+
+"Trajectory state_run_incomplete_count=1 with open_after_SessionStarted=1"
+
+This means there's a run that has SessionStarted but no RunCompleted. Let me check what `append_terminal_state_events.py` does.
+
+Actually, the task says: "close_orphaned_run_if_needed only scans for RunStarted events, but SessionStarted is emitted later." The fix is to also look for SessionStarted in the backward scan.
+
+But if RunStarted is always emitted before SessionStarted, then the backward scan would always find RunStarted first (scanning from the end backward). So adding SessionStarted to the scan wouldn't change anything for the RunStarted-before-SessionStarted case.
+
+UNLESS: There's a case where:
+1. Old session: RunStarted, SessionStarted, then crash (no RunCompleted)
+2. New session's `close_orphaned_run_if_needed` scans backward
+3. It goes past all events: sees non-lifecycle events, then SessionStarted, then RunStarted
+4. Wait... scanning from the END backward, it would see non-lifecycle events first, then SessionStarted, then RunStarted
+5. It would hit RunStarted first and handle it. So SessionStarted recognition doesn't matter here.
+
+BUT what about this case:
+1. Old session emits RunStarted (run_id = "run-A")
+2. Old session emits SessionStarted (run_id = "run-A")  
+3. Old session crashes
+4. New session's `close_orphaned_run_if_needed` scans backward
+5. Finds RunStarted, emits retroactive RunCompleted
+6. Good.
+
+What about this case:
+1. Old session emits RunStarted (run_id = "run-A")
+2. Old session crashes
+3. New session's `close_orphaned_run_if_needed` scans backward
+4. Finds RunStarted, emits retroactive RunCompleted
+5. Good.
+
+I literally cannot construct a case where adding SessionStarted recognition matters IF RunStarted always precedes SessionStarted. Unless there's a scenario where RunStarted somehow gets lost.
+
+Actually, wait. Let me re-read the `append_terminal_state_events.py` script description. It says it detects `open_after_SessionStarted=1`. Maybe the issue is in the Python script's detection, not in the Rust code's closure logic.
+
+But the task specifically asks me to modify `close_orphaned_run_if_needed` in `src/state.rs`. Let me just do what the task says: add SessionStarted recognition. Even if RunStarted always comes first, having the extra recognition is defense-in-depth. And it aligns with the "surgeon's fix" approach — add `|| event_type == "SessionStarted"` next to the `RunStarted` check.
+
+Actually, I just realized: there's ALSO a case where scanning backward from the end, we might hit a SessionStarted from a NEW session before hitting the RunStarted from an OLD session. Like:
+
+Events (from oldest to newest):
+- RunStarted (run-id-A)  [old session]
+- ...non-lifecycle events for old session...
+- SessionStarted (run-id-A) [old session crashed after this]
+- RunStarted (run-id-B) [new session — but this would trigger close_orphaned_run BEFORE reaching run-id-A]
+
+Actually no — `close_orphaned_run_if_needed` is called BEFORE the new RunStarted is emitted. So at the time of scanning, the last events would be:
+- RunStarted (run-id-A)
+- ...non-lifecycle...
+- SessionStarted (run-id-A)
+
+Scan backward:
+1. Hit SessionStarted — but this isn't currently recognized as a lifecycle event, so the scan continues past it
+2. Hit RunStarted — recognized, emits retroactive RunCompleted
+
+This works! SessionStarted being unrecognized doesn't cause a problem here because the scan falls through to RunStarted.
+
+OK, so I'm struggling to find the exact case where the fix matters. But the task is very clear about what change to make. Let me just make the change, write a test, and verify.
+
+Actually, wait. Let me think about one more case. What if the events are:
+
+From oldest to newest:
+- RunStarted (run-id-A) --- session A
+- RunCompleted (run-id-A) --- session A closed cleanly
+- RunStarted (run-id-B) --- session B  
+- SessionStarted (run-id-B) --- session B crashes after this
+(no RunCompleted for run-id-B)
+
+Now session C starts. `close_orphaned_run_if_needed` scans backward:
+1. Hit SessionStarted (run-id-B) — currently NOT recognized as lifecycle, scan continues
+2. Hit RunStarted (run-id-B) — recognized, RunCompleted check passes (no RunCompleted for run-id-B), orphan detected. Good.
+
+This still works without the fix. 
+
+But what about:
+- RunStarted (run-id-A) --- session A
+- RunCompleted (run-id-A) --- session A closed
+- RunStarted (run-id-B) --- session B
+- RunCompleted (run-id-B) --- session B closed
+- SessionStarted (run-id-C) --- session C started but NEVER emitted RunStarted
+
+This would be a pathological case: SessionStarted emitted without RunStarted. Could this happen? Let me think... `record_session_started` is called in main.rs/lib.rs presumably. If `init_global` succeeds (emitting RunStarted), then later `record_session_started` is called. So RunStarted should always precede SessionStarted.
+
+BUT: what if `init_global` from a previous version emitted RunStarted but the newer version ALSO emits SessionStarted after? The scan would fine.
+
+I think the real scenario might be slightly different. Let me just look at the `append_terminal_state_events.py` to understand what `open_after_SessionStarted` means.
+
+Actually, let me stop overanalyzing and just implement the fix. The task is clear: add SessionStarted recognition. It's a 5-8 line change. Even if the exact failure scenario isn't obvious, adding SessionStarted as a recognized lifecycle start event is correct defensive behavior and closes a blind spot. Let me write a test and implement the fix.
+
+Here's my plan:
+1. Add a test `close_orphaned_run_detects_sessionstarted` that creates events with SessionStarted but no RunCompleted for that run_id, and verifies the orphan is closed
+2. Modify the backward scan loop to also recognize SessionStarted as a lifecycle start event
+3. Run `cargo fmt -- --check` and `cargo test --lib -- state::tests::close_orphaned_run -- --nocapture`
+
+Let me first read the remaining test code to understand the pattern better.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me read the existing test patterns more carefully, then implement the fix.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7240..7300 ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the test patterns. Let me also look at the `append_event` function used in tests vs the real `append_event_with_projection`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the last test and the `append_event` helper to understand the full pattern:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7300..7380  ▶ search 'fn append_event(' in src/state.rs ✓ (506ms)
+ ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also check: does SessionStarted carry a `run_id` in its payload, or does the `StateEvent` struct itself carry the run_id? Based on the `StateRecorder::append` code, the `run_id: Some(self.run_id.clone())` is set in the StateEvent struct itself. So when looking at the JSON, `SessionStarted` events will have a `"run_id"` field just like `RunStarted` events.
+
+However, the backward scan uses `event_type` value from the JSON. Let me check what value `SessionStarted` has in the JSON format...
+
+Actually, looking at line 348-352:
+```rust
+let event_type = event
+    .get("event_type")
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+```
+
+And looking at the EventType enum, `SessionStarted` is at line 119. But the JSON serialization uses `event_type_label`. Let me check what string label SessionStarted uses.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'event_type_label' in src/state.rs ✓ (213ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what label SessionStarted uses:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3054..3104 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. The `SessionStarted` event has the label `"SessionStarted"` and carries a `run_id` field in its JSON representation. 
+
+Looking at the backward scan loop (lines 348-378), it uses `event_type` value from the JSON which will be `"SessionStarted"` for SessionStarted events. The fix is to add recognition for `"SessionStarted"` alongside `"RunStarted"`.
+
+But there's a subtlety: the backward scan currently treats `RunStarted` and `RunCompleted` as the ONLY lifecycle events — it stops at the first one it encounters. If we also treat `SessionStarted` as a lifecycle start event, then when scanning backward we might hit SessionStarted before RunStarted, and we need to handle it the same way.
+
+Actually, since SessionStarted is emitted AFTER RunStarted in normal flow, scanning backward from the end would hit SessionStarted first and then RunStarted later. So we need to handle SessionStarted correctly when we encounter it.
+
+The key change: add `|| event_type == "SessionStarted"` to the condition at line 357 (the `RunStarted` check). But also, we should add SessionStarted to the bail-out condition? No — the RunCompleted bail-out still works correctly because if we see RunCompleted first (scanning backward), the most recent lifecycle event is a completion.
+
+Wait, there's a subtle issue. Let me re-check: does the backward scan also bail out on SessionStarted? Currently, only RunStarted and RunCompleted are recognized as lifecycle events, so SessionStarted is silently skipped over. If we add SessionStarted recognition, should it also act as a "stop" for the scan?
+
+Let me think about the scenarios:
+
+Case 1: Normal closed session
+Events: RunStarted, SessionStarted, ... non-lifecycle ..., RunCompleted
+Backward scan: hits RunCompleted → bail out OK. ✓
+
+Case 2: Crashed session with both RunStarted and SessionStarted
+Events: RunStarted, SessionStarted, ... non-lifecycle ...
+Backward scan: hits SessionStarted → should treat as orphan start, extract run_id, check for RunCompleted → close orphan. ✓
+
+Case 3: Two sessions where first closed, second crashed after SessionStarted
+Events: RunStarted(A), RunCompleted(A), RunStarted(B), SessionStarted(B)
+Backward scan: hits SessionStarted(B) → extract run_id, check for RunCompleted(B) → none → close orphan. ✓
+
+Case 4: A session that emitted SessionStarted but never RunStarted (pathological)
+Events: ...non-lifecycle..., SessionStarted
+Backward scan: hits SessionStarted → extract run_id, no RunCompleted → close orphan. ✓
+
+All cases work correctly. The important thing is that when we encounter SessionStarted, we treat it exactly like RunStarted in terms of being a lifecycle start event.
+
+Now let me implement the change:
+
+1. In the backward scan loop (line 357), change:
+   ```rust
+   if event_type == "RunStarted" {
+   ```
+   to:
+   ```rust
+   if event_type == "RunStarted" || event_type == "SessionStarted" {
+   ```
+
+That's literally a one-line change. But I should also update the doc comment and add a test.
+
+Let me now write the test and the implementation.
+
+Let me also check if `append_event` (the test helper) writes the `event_type` as `"kind"` or `"event_type"`...
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the `append_event` test helper to understand the JSON format:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:607..637 ✓ (277ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `append_event` writes through to yoagent's state store format, which uses `"kind"` as the event type field. But the backward scan in `close_orphaned_run_if_needed` reads the JSON using `event.get("event_type")`, not `event.get("kind")`. Let me check the `compatibility_event_json_line` to understand the format...
+
+Wait, actually looking at the test again at line 7246: `!raw.contains("\"kind\":\"RunCompleted\"")` — the raw file uses `"kind"` not `"event_type"`. But the backward scan code uses `"event_type"`. Let me check `compatibility_event_json_line`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to understand the JSON format transformation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3181..3241 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `compatibility_event_value` to understand what field name is used for event_type:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn compatibility_event_value' in src/state.rs ✓ (189ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function to see the JSON format:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3289..3309 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The compatibility format uses `"event_type"` as the field name, and the value comes from `event_type_label`. So `SessionStarted` events have `"event_type": "SessionStarted"` in the compatibility JSON. This matches what the backward scan reads at line 350: `event.get("event_type")`.
+
+Now I have full confidence. Let me implement:
+
+1. Change line 357 from:
+   ```rust
+   if event_type == "RunStarted" {
+   ```
+   to:
+   ```rust
+   if event_type == "RunStarted" || event_type == "SessionStarted" {
+   ```
+
+2. Add a test `close_orphaned_run_detects_sessionstarted` that tests this case.
+
+3. Update the doc comment on the function.
+
+Let me now implement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have complete understanding. Let me implement the fix. The change is surgical: add `SessionStarted` recognition in the backward scan loop.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (203ms)
+  ▶ todo ✓ (253ms)
+  ▶ todo ✓ (254ms)
+  ▶ todo ✓ (237ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first write the test, then implement the code change.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 1.8s (4 ✓)
+
+First, let me add the test. I'll place it after the existing `close_orphaned_run_detects_distant_runstarted` test:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7260..7270 ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert the new test between `close_orphaned_run_detects_distant_runstarted` (ending at line 7264) and `close_orphaned_run_no_false_positive_when_completed_in_tail` (starting at line 7266). Let me write the edit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (227ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                "retroactive RunCompleted should reference orphan run_id '{orphan_run_id}'"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_detects_sessionstarted() {
+  +         // SessionStarted with no matching RunCompleted -> orphan closure.
+  +         // This covers sessions that crash after SessionStarted is emitted but
+  +         // before RunCompleted. The backward scan must recognize SessionStarted
+  +         // as a lifecycle start event alongside RunStarted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "run-sessionstarted-orphan";
+  +         // Write RunStarted first
+  +         let started = StateEvent {
+  +             event_id: "evt-ss-orphan-start".into(),
+  +             event_type: EventType::RunStarted,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (6 → 81 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 81 lines)
+                "retroactive RunCompleted should reference orphan run_id '{orphan_run_id}'"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_detects_sessionstarted() {
+  +         // SessionStarted with no matching RunCompleted -> orphan closure.
+  +         // This covers sessions that crash after SessionStarted is emitted but
+  +         // before RunCompleted. The backward scan must recognize SessionStarted
+  +         // as a lifecycle start event alongside RunStarted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "run-sessionstarted-orphan";
+  +         // Write RunStarted first
+  +         let started = StateEvent {
+  +             event_id: "evt-ss-orphan-start".into(),
+  +             event_type: EventType::RunStarted,
+  +             schema_version: STATE_SQLITE_SCHEMA_VERSION,
+  +             timestamp_ms: 1,
+  ... (59 more lines)
+ ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test added. Now let me modify the backward scan loop to recognize SessionStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me make the surgical change to the backward scan loop:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (213ms)
+  ▶ todo ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the current state of the backward scan loop (lines shifted due to the test insertion).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Scan backward from the end until a lifecycle event' in src/state.rs ✓ (203ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function hasn't moved — it's still at line 343. Let me read the current scan loop.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:343..383 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to change line 357 to also recognize `SessionStarted`. The change is simply:
+
+```rust
+if event_type == "RunStarted" || event_type == "SessionStarted" {
+```
+
+This is the minimal change. Also, I should update the doc comment at the top of the function (lines 307-314) to mention SessionStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+Now make the surgical change:
+  -         if event_type == "RunStarted" {
+  +         if event_type == "RunStarted" || event_type == "SessionStarted" {
+  ✓ Auto-approved: edit: src/state.rs (1 → 1 lines)
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 1 lines)
+  -         if event_type == "RunStarted" {
+  +         if event_type == "RunStarted" || event_type == "SessionStarted" {
+ ✓ (263ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also update the doc comment to mention SessionStarted:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the doc comment to reflect the change:
+    /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
+    ///
+    /// Scans backward from the end of the events file for a dangling RunStarted
+  - /// that has no matching RunCompleted. The scan stops at the first lifecycle
+  - /// event (RunStarted or RunCompleted) encountered, so it is efficient
+  - /// regardless of how many non-lifecycle events intervene.
+  + /// or SessionStarted that has no matching RunCompleted. The scan stops at
+  + /// the first lifecycle event (RunStarted, SessionStarted, or RunCompleted)
+  + /// encountered, so it is efficient regardless of how many non-lifecycle
+  + /// events intervene.
+    fn close_orphaned_run_if_needed(
+  ✓ Auto-approved: edit: src/state.rs (9 → 10 lines)
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (9 → 10 lines)
+    /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
+    ///
+    /// Scans backward from the end of the events file for a dangling RunStarted
+  - /// that has no matching RunCompleted. The scan stops at the first lifecycle
+  - /// event (RunStarted or RunCompleted) encountered, so it is efficient
+  - /// regardless of how many non-lifecycle events intervene.
+  + /// or SessionStarted that has no matching RunCompleted. The scan stops at
+  + /// the first lifecycle event (RunStarted, SessionStarted, or RunCompleted)
+  + /// encountered, so it is efficient regardless of how many non-lifecycle
+  + /// events intervene.
+    fn close_orphaned_run_if_needed(
+ ✓ (254ms)
+
+
