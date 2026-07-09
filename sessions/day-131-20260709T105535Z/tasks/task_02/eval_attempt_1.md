@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation correctly modifies `choose_task()` to parse `assessment_missing.md` fields via `_parse_assessment_missing_fields()` and produces specific fallback tasks for each failure mode (exit 0/no output, timeout, provider error, non-zero exit, and unparseable/generic). Five self-tests cover all scenarios and `python3 scripts/preseed_session_plan.py --test` passes. Existing task candidate selection logic is unchanged — only the `assessment_was_missing` branch is affected.

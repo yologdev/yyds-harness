@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Diff exactly matches the task spec — added "SessionStarted" alongside "RunStarted" in all four conditions across `lifecycle_for_scope` (lines 92, 94, 99) and `find_stale_orphaned_runs` (lines 198, 199, 203). Build/tests pass, imports work, and synthetic test confirms SessionStarted events are recognized as lifecycle start events with proper orphan detection (`open_run_count=1`, `lifecycle_start_count=1`).
