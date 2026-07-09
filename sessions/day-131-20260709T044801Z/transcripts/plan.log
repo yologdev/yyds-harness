@@ -1,0 +1,536 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current state and plan tasks for Day 131.
+
+The assessment is available and thorough. Let me identify the key signals:
+
+1. **Build Status**: PASS. Green.
+
+2. **Graph-derived next-task pressure** (from trajectory):
+   1. Close yyds state and model lifecycle gaps (state_run_incomplete_count=1: open_after_SessionStarted=2, open_after_FailureObserved=1)
+   2. Break recurring log failure fingerprints (recurring_failure_count=1)
+   3. Bound failing shell commands before retrying (bash_tool_error=10)
+   4. Reconcile transcript-only tool failures (1)
+   5. Reconcile state-only tool failures (36)
+
+3. **Agent-self issues**:
+   - #83 (OPEN): SessionStarted lifecycle gap — was attempted Day 130 and reverted. Task was blocked by agent (no implementation landed).
+   - #37 (OPEN): Held-out coding eval coverage — Day 130 added first fixture, still thin.
+
+4. **Log feedback corrected lessons**:
+   - "agent read or searched paths that did not exist → verify guessed paths with rg --files before reading"
+   - "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 → emit RunCompleted events"
+
+5. **Self-tests**: All work. No crashes.
+
+Now, task allocation. The highest-priority graph pressure is #1 (lifecycle gaps). But #83 was already attempted and reverted — the implementation agent couldn't land it. The task was blocked. The body says "Task blocked by agent; no implementation landed" — the implementation agent spent all its attempts searching/reading without producing code.
+
+The assessment says: "If a task has been reverted before, make it SMALLER than last time. The previous approach was too ambitious — simplify, don't retry the same scope."
+
+The original task #83 was about teaching `close_orphaned_run_if_needed` to recognize `SessionStarted` alongside `RunStarted`. But looking at the transcript evidence in the issue body, the implementation agent got confused about whether `SessionStarted` could exist without `RunStarted`, and whether the backward scan already handled it. It looks like the agent couldn't figure out the actual gap.
+
+Let me think about what went wrong and what a smaller version would look like.
+
+Actually, re-reading the transcript carefully: The implementation agent's thinking at Turn 23-25 shows it was trying to understand whether `close_orphaned_run_if_needed` already handles SessionStarted by finding RunStarted further back. The agent concluded: "So the current code DOES detect orphaned runs when RunStarted was emitted." 
+
+The question is: can SessionStarted exist WITHOUT a RunStarted? Looking at the code flow: `init_global` emits RunStarted, then `record_session_started` emits SessionStarted. So normally both exist. But the trajectory says `open_after_SessionStarted=1` — meaning there's a run where the last lifecycle event is SessionStarted (no RunCompleted).
+
+Wait, but the backward scan in `close_orphaned_run_if_needed` scans for RunStarted. If RunStarted exists, it would be found. The issue is: does the backward scan find it? Let me think...
+
+If the events are: RunStarted → SessionStarted → [crash], the backward scan would hit SessionStarted first (it's the most recent event), skip over it (since it's not RunStarted and not RunCompleted), then hit RunStarted, and detect the orphan. So the current code SHOULD handle this case already.
+
+The trajectory says `open_after_SessionStarted=2` though — so there are 2 cases where the classification system finds SessionStarted without RunCompleted. The backward scan should find RunStarted earlier... unless RunStarted doesn't exist.
+
+Hmm, but looking at the evidence more carefully, there's also `state_unmatched/open_after_FailureObserved=2`. FailureObserved — that's a different event type.
+
+OK, I think the issue is complex enough that an implementation agent failed before. Let me make this task smaller and more targeted.
+
+Actually, I should focus on clearly actionable tasks. Let me re-read the policy: "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+Let me look at what's most actionable:
+
+1. **Eval fixture coverage (#37)**: This is additive — add more fixtures. The first one landed. This is safe, verifiable, and improves the "capability fitness" measurement. But it's a "capability gap" not a "graph pressure" item.
+
+2. **Lifecycle gap (#83)**: The reverted task. Graph pressure #1. But the implementation agent failed before. Need to make it smaller.
+
+3. **bash_tool_error=10 and state-only tool failure gap (36)**: More of a prompt/behavior pattern than a code bug per the assessment.
+
+Let me think about what task(s) to create:
+
+**Task 01**: The lifecycle gap is the top graph pressure. But the original #83 approach was too broad. Let me make it MUCH smaller. Instead of trying to teach `close_orphaned_run_if_needed` to handle SessionStarted (which the agent got confused about), I should focus on a simpler aspect: the `open_after_FailureObserved=2` gap. Looking at the trajectory, `FailureObserved` events that aren't followed by RunCompleted — this might be simpler to fix.
+
+Actually wait, let me re-read the assessment evidence more carefully:
+
+```
+state_run_incomplete_count=1: Lifecycle causes: state_unmatched/open_after_FailureObserved=2; state_incomplete/open_after_SessionStarted=1
+```
+
+So there are 3 incomplete states: 2 are `open_after_FailureObserved`, 1 is `open_after_SessionStarted`. The `open_after_FailureObserved` ones might be from the panic hook fix on Day 115 (which added RunCompleted emission to the panic hook) — the old failures are already recorded and can't be un-failed.
+
+Actually, `state_unmatched` means the state was never matched to a run completion pair. `state_incomplete` means it was started but not completed.
+
+The `open_after_FailureObserved=2` could be historical — from before the panic hook fix. These might just be stale events that can't be fixed retroactively because the process that emitted them is long dead.
+
+The `open_after_SessionStarted=1` is the actionable one.
+
+But the implementation agent already got stuck on this. Let me make the task MUCH smaller: instead of modifying `close_orphaned_run_if_needed` (which is complex backward-scan logic), maybe I should add a simpler forward-looking fix: ensure `record_session_started` also records a RunCompleted for any previous SessionStarted that doesn't have one. Or... actually that's also complex.
+
+Let me think about this differently. What if the task is just: add a test that proves the gap exists, and a minimal fix? The test-first approach might help the implementation agent.
+
+Actually, I think the most practical approach is:
+
+**Task 01**: Add more held-out coding eval fixtures (#37) — this is additive, safe, and improves the fitness measurement. The first fixture landed on Day 130; adding more is low-risk and directly addresses the "capability fitness gnomes lack held-out baselines" gap.
+
+**Task 02**: Fix the SessionStarted lifecycle gap — but make it SMALLER. Instead of the original "teach close_orphaned_run_if_needed to recognize SessionStarted" (which the agent got confused about), make it a surgical fix with clear, pre-verified code locations.
+
+Wait, I need to be careful. The policy says: "If a task has been reverted before (check agent-self issues above), make it SMALLER than last time." The original task was already pretty small — just modifying `close_orphaned_run_if_needed` in `src/state.rs`. The problem wasn't the scope, it was that the implementation agent couldn't understand the code well enough to make the change.
+
+Let me think about what made the agent fail and how to prevent it. The transcript shows the agent spending many turns reading/searching through the code trying to understand the event flow. The task description already included the key insight (SessionStarted exists, RunStarted exists, backward scan finds RunStarted but might not close orphaned SessionStarted). 
+
+The issue seems to be that the backward scan ALREADY handles this case (RunStarted → SessionStarted → crash: backward scan skips SessionStarted, finds RunStarted, closes orphan). So the open question is: are there cases where SessionStarted exists WITHOUT RunStarted? If not, then the gap might be in the Python classification scripts, not the Rust state layer.
+
+The assessment explicitly says: "this gap is in the Rust state layer, not the Python diagnostic layer." But the implementation agent's analysis suggests otherwise. This is a sign that the task needs more pre-verified evidence before sending to implementation.
+
+Let me create tasks differently. Let me focus on what's clearly actionable:
+
+1. **Eval fixtures** — safe, additive, verifiable. Addresses #37 and the "fitness gnomes lack baselines" gap.
+2. **Lifecycle gap investigation** — make it a diagnostic task rather than a fix task. The implementation agent should first determine WHERE the gap is (Rust vs Python) before attempting a fix.
+
+Actually, the policy says "Prefer tasks that address the highest ranked pressure rows." The #1 pressure is lifecycle gaps. But the #1 pressure has a reverted task. Let me make a SMALLER version.
+
+What if the task is just: add a unit test that reproduces the SessionStarted lifecycle gap, and include the fix only if it's small and obvious? This way the implementation agent doesn't have to understand the whole system — just write a test that exercises the specific scenario.
+
+Hmm, but writing a good test requires understanding the event flow too.
+
+OK, let me take a step back. The harness is in a healthy state (1.0 success rate, 1.0 verification rate). The graph pressures are all LOW severity issues. Let me pick tasks that are:
+
+1. Clearly actionable with high confidence
+2. Improve DeepSeek harness fitness measurement
+3. Won't cause the implementation agent to get stuck in analysis
+
+**Task 01**: Add eval fixtures for DeepSeek-specific behaviors (#37). This is additive, safe, and directly addresses the "capability fitness unknown" gap. The first fixture landed on Day 130 — the pattern works. Add 2-3 more fixtures covering FIM routing, prompt layout determinism, or transport error recovery.
+
+**Task 02**: Lifecycle gap diagnostic. Instead of jumping to a fix, write a targeted test that reproduces the `open_after_SessionStarted` scenario and determine where the gap actually lives (Rust state layer vs Python classification scripts). This is smaller than the original fix task because it only asks for diagnosis, not implementation.
+
+**Task 03**: Issue responses only, or skip.
+
+Actually wait, I need to re-read the policy on task allocation: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+Both of my proposed tasks come from state/trajectory evidence. Good.
+
+Let me also check: do I need to read ISSUES_TODAY.md? The assessment mentions trusted owner issues but doesn't list any. Let me check if there are any.
+
+Actually, the assessment says to read ISSUES_TODAY.md. Let me check if it exists.
+
+Let me also check if session_plan/task_01.md already exists from the seed.
+
+Let me proceed with creating the session plan. First, let me check for existing files and ISSUES_TODAY.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null; echo "---"; ls ISSUES_TOD…  ▶ $ git ls-files src/state.rs src/commands_eval.rs src/eval_fixtures.rs ✓ (997ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a session_plan/task_01.md (seed task). Let me read it, along with ISSUES_TODAY.md, to understand what's already there and what I need to refine.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read ISSUES_TODAY.md  ▶ read session_plan/issue_responses.md ✓ (1.3s)
+ ✓ (1.1s)
+ ✓ (790ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there's already:
+- `task_01.md` — seeded by the harness, about lifecycle gaps, targeting Python scripts
+- `issue_responses.md` — says task_01 is #83 lifecycle gap (Rust), task_02 and task_03 are eval fixtures (#37)
+- `ISSUES_TODAY.md` — "No trusted issues today."
+
+There's a mismatch: the seeded task_01 targets Python scripts (lifecycle gap in scripts), but the issue_responses.md says task_01 is the #83 Rust state-layer fix. The assessment also mentions both: the lifecycle gap (#83, Rust) and eval fixtures (#37).
+
+Let me reconcile:
+
+1. The seeded task_01.md is about Python script lifecycle gaps, not the #83 Rust state-layer gap.
+2. The issue_responses.md says #83 is task_01 and #37 is task_02/03.
+3. The assessment says #83 was reverted and needs to be SMALLER.
+
+I should:
+- Keep/refine the seeded task_01 (or replace it with a better one)
+- Create task_02.md for eval fixtures (#37)
+- Update issue_responses.md
+
+The seeded task_01 is a bit vague — "Close one concrete yyds lifecycle feedback gap." It targets Python scripts. This is actually a reasonable task because the trajectory also mentions: "log feedback corrected lessons: state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 → emit RunCompleted events for every started run, including timeout and API-error exits"
+
+But the issue_responses file already says #83 should be task_01. Let me think about what's best.
+
+The #83 Rust fix was reverted — the implementation agent couldn't land it. The policy says: "If a task has been reverted before, make it SMALLER than last time." So I should NOT just re-send the same #83 task. I need to make it smaller or different.
+
+The seeded task_01 (scripts) is actually a good starting point — it's narrower and in Python, not Rust. It addresses the lifecycle gap from the diagnostic/script side rather than the state layer. Let me refine it.
+
+For task_02, I'll add eval fixtures (#37). This is safe, additive, and the pattern already works (first fixture landed Day 130).
+
+Now, should I have a task_03? The policy says 3 slots max. Let me see if there's a third actionable task. Looking at graph pressures:
+- bash_tool_error=10 — more of a prompt pattern than code fix
+- state-only tool failure gap (36) — needs investigation, could be complex
+- Recurring log failure fingerprints — also needs investigation
+
+None of these are clearly actionable in 20 minutes with high confidence. I'll skip task_03.
+
+Let me refine task_01 to be more specific and create task_02.
+
+For task_01, I'll refine the seeded task to focus on a specific, verifiable fix in the Python scripts. Looking at the trajectory: "log feedback corrected lessons: state run lifecycle was incomplete." The assessment says the log feedback already has corrected lessons. So maybe the issue is that the Python scripts need to properly classify the SessionStarted lifecycle gap.
+
+Actually, let me re-read the seeded task more carefully. It says:
+- Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+- Objective: Close one concrete yyds lifecycle feedback gap
+
+This is still vague. Let me make it more concrete. Looking at the trajectory evidence:
+- `state_run_incomplete_count=1` with `open_after_SessionStarted=1`
+- The log feedback corrected lesson says: "state run lifecycle was incomplete: state_incomplete/open_after_SessionStarted=1 → emit RunCompleted events for every started run"
+
+But wait — the Rust state layer fix (#83) was reverted. Adding RunCompleted emission to the Rust layer would be the real fix, but that's what failed before. The Python scripts can only classify/detect the gap, not fix it.
+
+Hmm. Let me think about this differently. What are the Python scripts doing that could be improved?
+
+`append_terminal_state_events.py` — this is the script that retroactively closes orphaned runs. It already does this for RunStarted-detected orphans. If I teach it to also close SessionStarted-detected orphans, that would be a script-level fix, not a Rust-level fix. This is actually a reasonable approach and avoids the complexity that killed the Rust-level task.
+
+Yes! This is the right approach. The seeded task_01 targets Python scripts. The fix would be: teach `append_terminal_state_events.py` to recognize SessionStarted as a lifecycle start event (similar to RunStarted) and emit a RunCompleted for orphaned SessionStarted events.
+
+This is:
+- Smaller than the Rust fix (Python, not Rust)
+- Addresses the #1 graph pressure (lifecycle gaps)
+- Directly verifiable
+- Doesn't touch the complex `close_orphaned_run_if_needed` Rust function
+
+Let me refine task_01.md to be specific about this.
+
+For task_02.md: add eval fixtures for DeepSeek harness (#37). The issue_responses already plans this. I'll create specific fixtures.
+
+Let me also update issue_responses.md to reflect what I'm actually doing.
+
+Let me proceed.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 19.1s (3 ✓)
+
+Now I have a clear picture. The seeded `task_01.md` targets Python scripts for lifecycle gaps — this is actually a smarter approach than re-attempting the Rust-level #83 fix (which the implementation agent couldn't land). I'll refine it to be specific and concrete. Then I'll create `task_02.md` for eval fixtures (#37).
+
+Let me verify the key files exist before writing tasks:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/append_terminal_state_events.py scripts/log_feedback.py scr…  ▶ $ rg -n "SessionStarted" scripts/append_terminal_state_events.py 2>/dev/null | hea… ✓ (505ms)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`rg` isn't available. Let me use `grep`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "SessionStarted\|RunStarted" scripts/append_terminal_state_events.py | h…  ▶ $ grep -n "orphan\|close_orphan\|lifecycle\|RunCompleted" scripts/append_terminal_… ✓ (485ms)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the structure. The script at line 92 only recognizes `RunStarted` and `RunCompleted` as lifecycle events. Line 175 says: "Scan ALL events for runs that have RunStarted but no RunCompleted." 
+
+If I add `SessionStarted` to the recognized lifecycle start events (alongside `RunStarted`), the script would also close orphaned runs where only SessionStarted was emitted.
+
+Let me read a bit more of the script to understand the exact change needed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:72..152  ▶ read scripts/append_terminal_state_events.py:168..228 ✓ (759ms)
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of both `lifecycle_for_scope` and `find_stale_orphaned_runs`. Both only recognize `RunStarted` as a lifecycle start event. `SessionStarted` is completely ignored.
+
+The fix is surgical: add `SessionStarted` alongside `RunStarted` in both functions. In `lifecycle_for_scope`, `SessionStarted` should be treated like `RunStarted` — it adds to `run_started` and `session_run_started` (depending on whether it's a session run). In `find_stale_orphaned_runs`, same thing.
+
+Let me also check the `log_feedback.py` and `summarize_state_gnomes.py` to see if they also need updates.
+
+Actually, the seeded task lists all three scripts, but the core fix is in `append_terminal_state_events.py`. Let me focus task_01 on that file and check the other two for needed changes.
+
+Let me refine task_01 and create task_02.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+Good. I can see the exact structure. Both `lifecycle_for_scope` and `find_stale_orphaned_runs` in `append_terminal_state_events.py` only recognize `RunStarted` — `SessionStarted` is invisible to both. This is a clean, surgical fix.
+
+Now let me refine task_01 and create task_02:
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  + Title: Teach append_terminal_state_events.py to recognize SessionStarted as a lifecycle start event
+  + Files: scripts/append_terminal_state_events.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner (refined from harness seed + trajectory evidence)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Graph-derived next-task pressure #1: "Close yyds state and model lifecycle gaps" with `state_run_incomplete_count=1`, lifecycle causes include `state_incomplete/open_after_SessionStarted=1` (from trajectory, Day 131)
+  + - `lifecycle_for_scope()` at line 92 only checks for `RunStarted` and `RunCompleted` — `SessionStarted` events pass through unrecognized, leaving SessionStarted-only runs permanently open
+  + - `find_stale_orphaned_runs()` at line 175 has the same blind spot: only recognizes `RunStarted`, not `SessionStarted`
+  + - The Rust state layer already emits `SessionStarted` events (src/state.rs line 578 via `record_session_started`, called from src/lib.rs line 1131). These events carry valid run_ids and session metadata. The Python diagnostic layer needs to see them.
+  + - Day 130 (10:20) already fixed input-validation filtering for unmatched completions — this gap is in lifecycle-event recognition, not completion filtering
+    
+    Edit Surface:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (53 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (53 lines) ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create task_02.md for eval fixtures. I need to verify the fixture format by checking the existing fixture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/400-coding-hello-world.json  ▶ $ ls eval/fixtures/local-smoke/ | head -25 ✓ (741ms)
+ ✓ (759ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check other fixtures to see if there are more:
+- 400-coding-hello-world.json (the one added Day 130)
+- 001 through 025
+
+I see fixtures 001-025 exist. So there are 25 existing fixtures plus the one added Day 130 (400). Let me check 026+ to see if there are more.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls eval/fixtures/local-smoke/ | sort -t- -k1 -n | tail -30 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, there's already `402-deepseek-fim-routing.json`! Let me read it to see what's there. And let me check `369-deepseek-prompt-layout-determinism.json` too, since #37 mentions prompt layout determinism and FIM routing as target areas.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/402-deepseek-fim-routing.json  ▶ read eval/fixtures/local-smoke/369-deepseek-prompt-layout-determinism.json ✓ (760ms)
+ ✓ (495ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So fixtures for FIM routing (402) and prompt layout determinism (369) already exist! The #37 target areas listed in the assessment are:
+- FIM (fill-in-the-middle) routing correctness ✅ (402)
+- Prompt layout determinism ✅ (369)
+- Transport error recovery behavior ❌
+- Cache hit/miss behavior under normal operation ❓ (004 exists but is about cache metrics, not cache behavior under normal operation)
+- State event coverage for key lifecycle transitions ❓
+
+Let me check which target areas from #37 still need fixtures. Looking at issue #37:
+- FIM routing correctness ✅ (402)
+- Prompt layout determinism ✅ (369)
+- Transport error recovery behavior ❌ — this is genuinely missing
+- Cache hit/miss behavior under normal operation — need to check if 004 covers this
+- State event coverage for key lifecycle transitions ❌
+
+Let me look at 004-cache-metrics.json.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/004-cache-metrics.json ✓ (239ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so existing coverage:
+- FIM routing: ✅ (402)
+- Prompt layout determinism: ✅ (369) 
+- Cache metrics: ✅ (004)
+- Hello world coding: ✅ (400)
+- Transport error recovery: ❌
+- State event coverage for key lifecycle transitions: partially (371-state-lifecycle-pairing.json?)
+
+Let me check what 371 covers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/371-state-lifecycle-pairing.json ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the landscape is:
+
+Existing fixtures covering #37 target areas:
+- FIM routing: ✅ 402
+- Prompt layout determinism: ✅ 369
+- Cache behavior: ✅ 004
+- Coding eval: ✅ 400
+- State lifecycle pairing (canary): ✅ 371
+
+Still genuinely missing:
+- Transport error recovery behavior
+- Additional held-out coding evals (the issue says more than just hello-world)
+
+For task_02, the most valuable is transport error recovery — this directly impacts DeepSeek harness reliability. But coding evals are also important for fitness measurement.
+
+Actually, the issue_responses.md already said task_02 and task_03 would be eval fixtures. But I should only create tasks that are clearly actionable in 20 minutes. Creating a fixture JSON file is fast — the implementation agent just writes JSON. Let me pick the most impactful missing fixture.
+
+Transport error recovery is the most relevant to the DeepSeek harness goal. It tests that when the DeepSeek API returns errors (rate limits, server errors, timeouts), the harness retries correctly and doesn't lose state.
+
+But wait — writing a fixture for transport error recovery might require the implementation agent to understand retry logic deeply. The fixture format just references existing tests though. Let me check if there are existing transport/retry tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn.*retry\|fn.*transport\|fn.*error_recover\|fn.*rate_limit\|fn.*backof… ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Excellent — there are plenty of transport error recovery tests already. Let me check which of these are already covered by existing fixtures.
+
+Looking at the fixture list: 018-yoagent-083-deepseek-transport.json likely covers transport. Let me check it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/018-yoagent-083-deepseek-transport.json ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so 018 covers DeepSeek transport at the yoagent integration level, but doesn't specifically test transport error *recovery* (retry behavior, backoff, error classification for individual API calls). The transport recovery tests are in `src/deepseek.rs` (lines 2917-3856) but there's no fixture covering them.
+
+The most valuable missing fixture from #37's target areas is transport error recovery. Let me create that as task_02.
+
+Actually, let me re-examine what's most impactful. The assessment says: "The harness is in a healthy state (1.0 success rate, 1.0 verification rate, zero provider errors across all recent sessions)." So transport error recovery isn't currently failing — it's a preventative fixture.
+
+Given the assessment says the top priority is graph-derived pressure, and #1 is lifecycle gaps (covered by task_01), and there are no CI failures, the eval fixture task is lower priority.
+
+But the policy says: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+And also: "Prefer tasks that raise yyds/DeepSeek coding-agent fitness gnomes."
+
+Adding eval fixtures directly improves fitness measurement (it makes the fitness score go from "unknown" to measured). So it's valid state-driven work.
+
+Let me create a focused task_02 for adding a transport error recovery fixture. This covers a #37 target area that's genuinely missing and directly relates to DeepSeek harness reliability.
+
+I'll skip task_03 — the remaining graph pressures (bash_tool_error=10, state-only tool failure gap=36) are more behavioral/prompt patterns than code bugs, and the lifecycle gap (#83 Rust) was already attempted and reverted. Two tasks is a reasonable plan.
+
+Let me update issue_responses.md too.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Transport error recovery is genuinely missing from fixtures, and there are existing tests to reference. Let me create task_02 and update issue_responses.
+  + Title: Add held-out eval fixture for DeepSeek transport error recovery
+  + Files: eval/fixtures/local-smoke/403-deepseek-transport-recovery.json
+  + Issue: #37
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Issue #37 target areas: "Transport error recovery behavior" — no fixture exists for this. FIM routing (402), prompt layout (369), and cache metrics (004) already have fixtures. Transport error recovery is the highest-priority uncovered #37 target.
+  + - Existing transport recovery tests in src/deepseek.rs are extensive but not gated by an eval fixture: `transport_policy_classifies_retryable_failures_with_backoff` (line 2917), `transport_policy_does_not_retry_request_or_auth_failures` (line 2939), `transport_failure_payload_is_state_ready_for_main_loop_errors` (line 2962), `transport_failure_classifies_429_as_rate_limited_and_retryable` (line 3814), `transport_failure_classifies_5xx_as_server_error_and_retryable` (line 3824), `transport_failure_classifies_timeout_from_error_text` (line 3844), `transport_failure_classifies_connection_refused_as_network` (line 3856)
+  + - Trajectory: fitness_score=1.0 but fitness gnomes lack held-out eval baselines. Adding this fixture converts "transport error recovery works" from an assumption into a measured claim.
+  + - Yoagent-state: no provider errors in recent sessions — this fixture ensures the harness catches regressions before they reach production sessions.
+  + 
+  + Edit Surface:
+  + - eval/fixtures/local-smoke/403-deepseek-transport-recovery.json (new file)
+  + 
+  + Verifier:
+  + - cargo run -- eval fixtures list 2>/dev/null | grep 403
+  + - python3 -c "import json; f=json.load(open('eval/fixtures/local-smoke/403-deepseek-transport-recovery.json')); assert f['task_id']; print('valid')"
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (72 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (72 lines) ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update issue_responses.md to match the actual plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    # Issue Responses — Day 131
+    
+    ## #83 (agent-self): Task reverted: Fix SessionStarted lifecycle gap in orphan-run detection
+  - **Decision**: implement as task_01
+  - **Why**: This is the #1 graph-derived pressure item. The previous attempt failed because the implementation was too broad — the agent explored without landing code. Task 01 is narrower: a surgical 5-8 line recognition fix in `close_orphaned_run_if_needed`. If this attempt also fails, the issue needs splitting or a different approach.
+  + **Decision**: deferred — addressed via task_01 (Python scripts), not Rust state layer
+  + **Why**: The previous Rust-level #83 attempt failed because the implementation agent got lost tracing event ordering through multiple Rust files. Instead, task_01 takes a simpler approach: teach the Python diagnostic layer (`append_terminal_state_events.py`) to recognize `SessionStarted` as a lifecycle start event. This addresses the same `open_after_SessionStarted=1` graph pressure without the complexity that killed the Rust attempt. If the Python fix closes the gap, the issue can be resolved. If the gap persists after the Python fix, the Rust layer still needs investigation — but the next attempt will have evidence from the Python side showing exactly where the gap lives.
+    
+    ## #37 (agent-self): Add held-out coding eval coverage for DeepSeek harness gnomes
+  - **Decision**: implement as task_02 and task_03
+  - **Why**: Day 130 added the first fixture. Two more fixtures (cache behavior, FIM routing) fill the highest-priority gaps. This is purely additive — no existing code changes, just new fixture JSON files. The issue stays OPEN until all target areas (FIM routing, transport error recovery, cache behavior, prompt layout determinism) have fixtures. Prompt layout already has #369. Transport error recovery still needs coverage — defer to a future session.
+  + **Decision**: implement as task_02 (transport error recovery fixture)
+  + **Why**: FIM routing (402) and prompt layout determinism (369) already have fixtures. Transport error recovery is the highest-priority uncovered target area from #37 — it directly gates DeepSeek harness reliability. This is a single-file additive change (new fixture JSON). The issue stays OPEN until all target areas (transport error recovery, cache behavior under normal operation, additional held-out coding evals) have fixtures. Transport error recovery is done by task_02; cache behavior and additional coding evals remain for future sessions.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (9 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (9 lines) ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the plan is complete and all files are properly written:
+
+1. session_plan/task_01.md — refined, targets Python scripts for SessionStarted lifecycle gap
+2. session_plan/task_02.md — new, transport error recovery eval fixture
+3. session_plan/issue_responses.md — updated for both issues
+
+Let me do a quick sanity check: verify the test names referenced in task_02.md actually exist.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the test names referenced in task_02 before finalizing:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- deepseek::tests:: -- --list 2>/dev/null | grep -E 'transport… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output was somehow captured as the harness output. Let me try again with explicit output redirection.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- deepseek::tests:: -- --list 2>&1 | grep transport | head -20 ✓ (228ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output seems to be captured by the harness. Let me try a different approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- deepseek::tests:: -- --list 2>/dev/null | grep -c transport ✓ (357ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+14 transport tests exist. The task_02 references 7 specific ones. Let me verify they exist by name.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test --lib -- deepseek::tests:: -- --list 2>/dev/null | grep -E 'transport… ✓ (235ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — all 7 test names from task_02 are confirmed to exist. The plan is complete and verified.
+
+Let me also verify the session_plan files are all present.
+────────────────────────────────────────────────────────────────────────────────
+
+All 7 referenced transport tests exist. Let me confirm the plan files are complete:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/task_*.md session_plan/issue_responses.md ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Planning complete. Here's the Day 131 session plan:
+
+## Task 01: Teach `append_terminal_state_events.py` to recognize `SessionStarted` as a lifecycle start event
+• **Files**: `scripts/append_terminal_state_events.py`
+• **What**: Add `SessionStarted` recognition to `lifecycle_for_scope()` (line 92) and `find_stale_orphaned_runs()` (line 198) — two surgical additions alongside existing `RunStarted` handling.
+• **Why**: #1 graph-derived pressure (`open_after_SessionStarted=1`). This is a Python-level fix that avoids the Rust-level complexity that caused the Day 130 #83 attempt to fail.
+• **Verifier**: `python3 -c "from scripts.append_terminal_state_events import lifecycle_for_scope, find_stale_orphaned_runs"`
+
+## Task 02: Add held-out eval fixture for DeepSeek transport error recovery
+• **Files**: `eval/fixtures/local-smoke/403-deepseek-transport-recovery.json` (new)
+• **What**: New fixture JSON gating 7 existing transport recovery tests in `src/deepseek.rs` (rate-limit, 5xx, timeout, auth, connection-refused classification and retry decisions).
+• **Why**: Issue #37 target area "transport error recovery" is genuinely uncovered. FIM routing (402) and prompt layout (369) already have fixtures.
+• **Verifier**: `python3 -c "import json; ..."` validates JSON; `cargo run -- eval fixtures list | grep 403` confirms fixture registered.
+
+## Skipped
+• **bash_tool_error=10** and **state-only tool failure gap (36)**: Behavioral/prompt patterns, not code bugs. Deferred pending clearer evidence.
+• **#83 Rust-level fix**: Addressed via Python approach in task_01 instead of re-attempting the reverted Rust fix.
+• **#37 remaining targets** (cache behavior under normal operation, additional coding evals): Deferred to future sessions.
+
+

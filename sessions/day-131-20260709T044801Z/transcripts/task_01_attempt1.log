@@ -1,0 +1,444 @@
+warning: skipping corrupted event at line 9195 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 9796
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the exact changes needed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read scripts/append_terminal_state_events.py (120 lines) ✓ (39ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the file to see the `find_stale_orphaned_runs` function and the rest of `lifecycle_for_scope`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:120..270 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of both functions. Let me identify the exact lines to change:
+
+1. **`lifecycle_for_scope()`** - Line 92: `if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):` and the `elif` branches at lines 99-110. I need to add `"SessionStarted"` alongside `"RunStarted"`.
+
+2. **`find_stale_orphaned_runs()`** - Line 198: `if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):` and the `elif` branches at lines 203-206. Same change.
+
+The task says to treat `SessionStarted` identically to `RunStarted`. Let me check if there are test files I should look at first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check if there's a test file for this script:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ ls scripts (test_append*)  ▶ search 'TestAppendTerminalStateEvents' in scripts ✓ (30ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test file to understand the existing tests and where I can add new ones.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding of both the source and the test file. Let me now check the existence of the tests relevant to `lifecycle_for_scope` and `find_stale_orphaned_runs` before I make changes.
+
+Let me now plan my implementation:
+
+1. **Two locations in `scripts/append_terminal_state_events.py`:**
+   - `lifecycle_for_scope()` line 92: Add `"SessionStarted"` to the condition
+   - `find_stale_orphaned_runs()` line 198: Add `"SessionStarted"` to the condition
+
+2. **Test**: I need to add tests that verify `SessionStarted` is treated like `RunStarted` in both functions.
+
+Let me now read more of the test file to see the existing tests for `lifecycle_for_scope` and `find_stale_orphaned_runs`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see the middle section of the test file to understand existing tests for these functions:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'lifecycle_for_scope' in scripts/test_append_terminal_state_events.py  ▶ search 'find_stale_orphaned_runs' in scripts/test_append_terminal_state_events.py  ▶ search 'SessionStarted' in scripts/test_append_terminal_state_events.py ✓ (96ms)
+ ✓ (84ms)
+ ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test around line 294 to understand the existing test for SessionStarted.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:280..340 ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. The test at line 289 (`test_closes_session_scope_orphan_run`) already has a `SessionStarted` event at line 294, but it also has a `RunStarted` at line 293. So the existing test doesn't test the case where ONLY `SessionStarted` exists without `RunStarted`.
+
+Now let me plan the changes:
+
+### Changes needed in `scripts/append_terminal_state_events.py`:
+
+**1. `lifecycle_for_scope()` (line 92):**
+Change:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+```
+To:
+```python
+if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+```
+
+And then add SessionStarted handling alongside RunStarted in the session-run branch (lines 94-97):
+```python
+if kind in ("RunStarted", "SessionStarted"):
+    session_run_started.add(rid)
+elif kind == "RunCompleted":
+    session_run_completed.add(rid)
+```
+
+And in the non-session branch (lines 99-110):
+```python
+if kind in ("RunStarted", "SessionStarted"):
+    lifecycle_start_count += 1
+    run_started.add(rid)
+elif kind == "RunCompleted":
+    lifecycle_completion_count += 1
+    run_completed.add(rid)
+```
+
+**2. `find_stale_orphaned_runs()` (line 198):**
+Change:
+```python
+if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+```
+To:
+```python
+if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+```
+
+And then add SessionStarted handling alongside RunStarted in the session-run branch (lines 199-202):
+```python
+if kind in ("RunStarted", "SessionStarted"):
+    session_run_started.add(rid)
+elif kind == "RunCompleted":
+    session_run_completed.add(rid)
+```
+
+And in the non-session branch (lines 203-206):
+```python
+elif kind in ("RunStarted", "SessionStarted"):
+    run_started.add(rid)
+elif kind == "RunCompleted":
+    run_completed.add(rid)
+```
+
+### Test additions:
+I need to add tests that:
+1. Test `lifecycle_for_scope()` recognizes `SessionStarted` without `RunStarted` 
+2. Test `find_stale_orphaned_runs()` recognizes `SessionStarted` without `RunStarted`
+
+Let me implement this now. I'll start with the source changes, then add tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have a clear picture. Let me implement the changes. I'll edit the two functions in `scripts/append_terminal_state_events.py`, then add a test.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (21ms)
+  ▶ todo ✓ (33ms)
+  ▶ todo ✓ (37ms)
+  ▶ todo ✓ (34ms)
+  ▶ todo ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the first edit - `lifecycle_for_scope()` line 92. I need to change the session-run detection to also include SessionStarted.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.7s (5 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the two edits to the source file.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me make the two edits to `scripts/append_terminal_state_events.py`:
+
+**Edit 1:** `lifecycle_for_scope()` — add `SessionStarted` alongside `RunStarted`:
+  -         if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+  +         if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+                session_run_ignored_count += 1
+  -             if kind == "RunStarted":
+  +             if kind in ("RunStarted", "SessionStarted"):
+                    session_run_started.add(rid)
+                elif kind == "RunCompleted":
+                    session_run_completed.add(rid)
+                continue
+  -         if kind == "RunStarted":
+  +         if kind in ("RunStarted", "SessionStarted"):
+                lifecycle_start_count += 1
+                run_started.add(rid)
+            elif kind == "RunCompleted":
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (11 → 11 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (11 → 11 lines)
+  -         if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+  +         if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+                session_run_ignored_count += 1
+  -             if kind == "RunStarted":
+  +             if kind in ("RunStarted", "SessionStarted"):
+                    session_run_started.add(rid)
+                elif kind == "RunCompleted":
+                    session_run_completed.add(rid)
+                continue
+  -         if kind == "RunStarted":
+  +         if kind in ("RunStarted", "SessionStarted"):
+                lifecycle_start_count += 1
+                run_started.add(rid)
+            elif kind == "RunCompleted":
+ ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now edit `find_stale_orphaned_runs()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+  ▶ todo ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+**Edit 2:** `find_stale_orphaned_runs()` — add `SessionStarted` alongside `RunStarted`:
+  -         if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+  -             if kind == "RunStarted":
+  +         if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+  +             if kind in ("RunStarted", "SessionStarted"):
+                    session_run_started.add(rid)
+                elif kind == "RunCompleted":
+                    session_run_completed.add(rid)
+  -         elif kind == "RunStarted":
+  +         elif kind in ("RunStarted", "SessionStarted"):
+                run_started.add(rid)
+            elif kind == "RunCompleted":
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (8 → 8 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (8 → 8 lines)
+  -         if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+  -             if kind == "RunStarted":
+  +         if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+  +             if kind in ("RunStarted", "SessionStarted"):
+                    session_run_started.add(rid)
+                elif kind == "RunCompleted":
+                    session_run_completed.add(rid)
+  -         elif kind == "RunStarted":
+  +         elif kind in ("RunStarted", "SessionStarted"):
+                run_started.add(rid)
+            elif kind == "RunCompleted":
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the docstring for `find_stale_orphaned_runs()` since it says "RunStarted but no RunCompleted". It should mention SessionStarted too.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also update the docstring for `find_stale_orphaned_runs()` to reflect the new capability:
+  -     """Scan ALL events for runs that have RunStarted but no RunCompleted.
+  +     """Scan ALL events for runs that have RunStarted/SessionStarted but no RunCompleted.
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 1 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (1 → 1 lines)
+  -     """Scan ALL events for runs that have RunStarted but no RunCompleted.
+  +     """Scan ALL events for runs that have RunStarted/SessionStarted but no RunCompleted.
+ ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the edits look correct by reading the changed sections.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (35ms)
+  ▶ todo ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test. I need to read the tail of the test file to know where to append new tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Now let me add tests. Let me read the end of the test file to find where to append:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:580.. ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add two tests:
+1. `test_lifecycle_for_scope_sees_session_started` - Tests that `lifecycle_for_scope()` directly treats `SessionStarted` as a lifecycle start
+2. `test_find_stale_orphaned_runs_sees_session_started` - Tests that `find_stale_orphaned_runs()` treats `SessionStarted` like `RunStarted`
+
+Let me add these before the `if __name__ == "__main__":` line.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add two test methods — one for `lifecycle_for_scope()` directly testing `SessionStarted` recognition, and one for `find_stale_orphaned_runs()`:                self.assertEqual(len(fo_rows), 0)
+  + 
+  +     def test_lifecycle_for_scope_session_started_as_lifecycle_start(self):
+  +         """SessionStarted is treated identically to RunStarted as a lifecycle start."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-ss-1",
+  +                 "event_type": "SessionStarted",
+  +                 "run_id": "orphan-run",
+  +                 "payload": {"model": "deepseek-v4-pro"},
+  +             },
+  +             {
+  +                 "event_id": "evt-mc-1",
+  +                 "event_type": "ModelCallStarted",
+  +                 "run_id": "orphan-run",
+  +                 "payload": {"model": "deepseek-v4-pro"},
+  +             },
+  +         ]
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (5 → 101 lines)
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (5 → 101 lines)
+                self.assertEqual(len(fo_rows), 0)
+  + 
+  +     def test_lifecycle_for_scope_session_started_as_lifecycle_start(self):
+  +         """SessionStarted is treated identically to RunStarted as a lifecycle start."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-ss-1",
+  +                 "event_type": "SessionStarted",
+  +                 "run_id": "orphan-run",
+  +                 "payload": {"model": "deepseek-v4-pro"},
+  +             },
+  +             {
+  +                 "event_id": "evt-mc-1",
+  +                 "event_type": "ModelCallStarted",
+  +                 "run_id": "orphan-run",
+  +                 "payload": {"model": "deepseek-v4-pro"},
+  +             },
+  +         ]
+  +         # SessionStarted-only (no RunStarted) should still count as a lifecycle start.
+  +         # The run is open because there's no RunCompleted.
+  ... (80 more lines)
+ ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the changes by running the import check and then the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify: first the import check, then run the tests:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c "from scripts.appen… ✓ (276ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That import error is expected when running from outside the scripts/ directory. Let me try running from the scripts directory or adjusting the path. The tests use `sys.path.insert(0, ...)` to handle this. Let me just run the tests directly.
+────────────────────────────────────────────────────────────────────────────────
+
+That import error is expected when running from outside `scripts/`. Let me run the tests directly instead:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 18 tests pass including the 4 new ones I added. Let me now mark the test task as done, verify things, and run the cargo fmt check as required by the evolve skill.
+────────────────────────────────────────────────────────────────────────────────
+
+All 18 tests pass including the 4 new ones. Let me verify the source changes look correct and run the required checks:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (29ms)
+  ▶ todo ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the git diff and run cargo fmt --check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both files in the diff are in the task's Edit Surface (the task says "Files: scripts/append_terminal_state_events.py"). Let me also check: the task also says "This is a Python-only fix" and "Do NOT modify src/state.rs". My diff only touches Python files in scripts/, good.
+
+Let me verify the exact diff content, then run cargo fmt --check.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — only the two Python files are modified. Let me verify the diff content and run `cargo fmt`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/append_termin…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (135ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo fmt -- --check` passed (no output = success). Let me verify the test diff too to make sure everything looks right.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+`cargo fmt` passes. Let me also verify the test diff:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/test_append_t… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything looks correct. Let me now commit the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Now let me commit:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (34ms)
+  ▶ todo ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me do a final verification - run the tests one more time to make sure everything is clean.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run tests one final time to confirm:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (197ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All 18 tests pass, `cargo fmt` is clean, and the commit is in. Here's a summary of what changed:
+
+## Summary
+
+**Files changed:**
+• `scripts/append_terminal_state_events.py` — 2 functions, 3 edits
+• `scripts/test_append_terminal_state_events.py` — 4 new test methods
+
+**What changed in `scripts/append_terminal_state_events.py`:**
+
+1. **`lifecycle_for_scope()` (line 92):** `SessionStarted` added alongside `RunStarted` in both the session-run detection set and the non-session lifecycle branches. `SessionStarted` events are now counted as lifecycle starts, added to `run_started` or `session_run_started` depending on `is_session_run()`, and increment `lifecycle_start_count`.
+
+2. **`find_stale_orphaned_runs()` (line 198):** Same treatment — `SessionStarted` recognized identically to `RunStarted` in both the session-run and non-session branches. Docstring updated to mention both event types.
+
+**New tests (all passing):**
+• `test_lifecycle_for_scope_session_started_as_lifecycle_start` — `SessionStarted` alone (no `RunStarted`) counts as a lifecycle start and correctly shows the run as open
+• `test_lifecycle_for_scope_session_started_session_scope` — `SessionStarted` with `phase=session` is tracked as a session run
+• `test_find_stale_orphaned_runs_session_started` — `SessionStarted` + `ModelCallStarted` but no `RunCompleted` is detected as an orphan
+• `test_find_stale_orphaned_runs_session_started_completed` — `SessionStarted` + `RunCompleted` is correctly not an orphan
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
