@@ -89,14 +89,14 @@ def lifecycle_for_scope(
         rid = run_id(event, data)
         if not rid:
             continue
-        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
+        if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
             session_run_ignored_count += 1
-            if kind == "RunStarted":
+            if kind == "RunStarted" or kind == "SessionStarted":
                 session_run_started.add(rid)
             elif kind == "RunCompleted":
                 session_run_completed.add(rid)
             continue
-        if kind == "RunStarted":
+        if kind == "RunStarted" or kind == "SessionStarted":
             lifecycle_start_count += 1
             run_started.add(rid)
         elif kind == "RunCompleted":
@@ -195,12 +195,12 @@ def find_stale_orphaned_runs(
         rid = run_id(event, data)
         if not rid:
             continue
-        if kind in {"RunStarted", "RunCompleted"} and is_session_run(data):
-            if kind == "RunStarted":
+        if kind in {"RunStarted", "SessionStarted", "RunCompleted"} and is_session_run(data):
+            if kind == "RunStarted" or kind == "SessionStarted":
                 session_run_started.add(rid)
             elif kind == "RunCompleted":
                 session_run_completed.add(rid)
-        elif kind == "RunStarted":
+        elif kind == "RunStarted" or kind == "SessionStarted":
             run_started.add(rid)
         elif kind == "RunCompleted":
             run_completed.add(rid)
