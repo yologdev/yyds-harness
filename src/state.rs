@@ -309,9 +309,10 @@ impl StateRecorder {
 /// (e.g., due to SIGKILL, SIGTERM, timeout, or CI cancellation).
 ///
 /// Scans backward from the end of the events file for a dangling RunStarted
-/// that has no matching RunCompleted. The scan stops at the first lifecycle
-/// event (RunStarted or RunCompleted) encountered, so it is efficient
-/// regardless of how many non-lifecycle events intervene.
+/// or SessionStarted that has no matching RunCompleted. The scan stops at
+/// the first lifecycle event (RunStarted, SessionStarted, or RunCompleted)
+/// encountered, so it is efficient regardless of how many non-lifecycle
+/// events intervene.
 fn close_orphaned_run_if_needed(
     events_path: &Path,
     store_path: Option<&Path>,
@@ -354,7 +355,7 @@ fn close_orphaned_run_if_needed(
             // Most recent lifecycle event is a RunCompleted — run is closed
             return Ok(());
         }
-        if event_type == "RunStarted" {
+        if event_type == "RunStarted" || event_type == "SessionStarted" {
             let rid = event
                 .get("run_id")
                 .and_then(|v| v.as_str())
@@ -7260,6 +7261,81 @@ mod tests {
         assert!(
             raw_after.contains(&format!("\"run_id\":\"{orphan_run_id}\"")),
             "retroactive RunCompleted should reference orphan run_id '{orphan_run_id}'"
+        );
+    }
+
+    #[test]
+    fn close_orphaned_run_detects_sessionstarted() {
+        // SessionStarted with no matching RunCompleted -> orphan closure.
+        // This covers sessions that crash after SessionStarted is emitted but
+        // before RunCompleted. The backward scan must recognize SessionStarted
+        // as a lifecycle start event alongside RunStarted.
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        let orphan_run_id = "run-sessionstarted-orphan";
+        // Write RunStarted first
+        let started = StateEvent {
+            event_id: "evt-ss-orphan-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_id.into()),
+            session_id: None,
+            trace_id: "trace-ss-orphan".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started).unwrap();
+
+        // Write SessionStarted — emitted later in the session lifecycle
+        let session_started = StateEvent {
+            event_id: "evt-ss-orphan-session".into(),
+            event_type: EventType::SessionStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 2,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_id.into()),
+            session_id: None,
+            trace_id: "trace-ss-orphan".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"model": "deepseek-v4", "context_tokens": 1000000}),
+        };
+        append_event(&events_path, &session_started).unwrap();
+
+        // Write intervening non-lifecycle events
+        for i in 0..10 {
+            let mid = StateEvent {
+                event_id: format!("evt-ss-mid-{i}"),
+                event_type: EventType::ModelCallStarted,
+                schema_version: STATE_SQLITE_SCHEMA_VERSION,
+                timestamp_ms: 3 + i,
+                actor: Actor::Yoyo,
+                run_id: Some(orphan_run_id.into()),
+                session_id: None,
+                trace_id: "trace-ss-orphan".into(),
+                parent_event_ids: Vec::new(),
+                payload: json!({"model": "deepseek-v4", "idx": i}),
+            };
+            append_event(&events_path, &mid).unwrap();
+        }
+
+        // Verify no RunCompleted yet
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(!raw.contains("\"kind\":\"RunCompleted\""));
+
+        // Call close_orphaned_run_if_needed — must detect orphan via SessionStarted
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw_after.contains("\"kind\":\"RunCompleted\""),
+            "should have emitted a RunCompleted for the sessionstarted orphan: {raw_after}"
+        );
+        assert!(
+            raw_after.contains("\"status\":\"error\""),
+            "orphan closure should have error status: {raw_after}"
         );
     }
 
