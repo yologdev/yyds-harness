@@ -32,6 +32,10 @@ PROTECTED_IMPLEMENTATION_FILES = (
     "scripts/evolve.sh",
     "scripts/format_issues.py",
     "scripts/build_site.py",
+    ".github/workflows/",
+    "IDENTITY.md",
+    "PERSONALITY.md",
+    "ECONOMICS.md",
     "skills/self-assess/SKILL.md",
     "skills/evolve/SKILL.md",
 )
@@ -682,7 +686,15 @@ def _has_protected_files(task: dict[str, object]) -> bool:
     """Return True if the task's files include any protected implementation file."""
     files_str = str(task.get("files") or "")
     task_files = {path.strip() for path in files_str.split(",") if path.strip()}
-    return bool(task_files & set(PROTECTED_IMPLEMENTATION_FILES))
+    for tf in task_files:
+        for protected in PROTECTED_IMPLEMENTATION_FILES:
+            if protected.endswith("/"):
+                # Directory-prefix match: e.g. .github/workflows/ matches .github/workflows/pages.yml
+                if tf == protected.rstrip("/") or tf.startswith(protected):
+                    return True
+            elif tf == protected:
+                return True
+    return False
 
 
 _GIT_AVAILABLE: bool | None = None
