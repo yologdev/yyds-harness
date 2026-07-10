@@ -3272,6 +3272,10 @@ pub fn read_events_bounded(path: &Path, limit: usize) -> Result<(Vec<Value>, Str
         Ok((events, String::new()))
     } else {
         // Tail-sample: read only the last `limit` lines
+        eprintln!(
+            "reading {} state events (sampling last {} of {} lines)...",
+            limit, limit, total_lines
+        );
         let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
         let start = lines.len().saturating_sub(limit);
         let mut events = Vec::new();
