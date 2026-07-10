@@ -5110,7 +5110,30 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
         "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
         "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],
         "transcript_only_failed_tool_session_count": totals["transcript_only_failed_tool_session_count"],
+        "recent_state_only_failed_tool_count": _recent_failed_tool_total(
+            session_states, "state_only_failed_tool_count"
+        ),
+        "recent_transcript_only_failed_tool_count": _recent_failed_tool_total(
+            session_states, "transcript_only_failed_tool_count"
+        ),
     }
+
+
+def _recent_failed_tool_total(
+    session_states: list[dict[str, Any]], key: str, window_size: int = 5
+) -> int:
+    recent = session_states[-window_size:]
+    total = 0
+    for row in recent:
+        if not isinstance(row, dict):
+            continue
+        action_evidence = row.get("action_evidence")
+        if not isinstance(action_evidence, dict):
+            continue
+        value = action_evidence.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total += int(value)
+    return total
 
 
 def task_state_summary_for_sessions(session_states: list[dict[str, Any]]) -> dict[str, Any]:
