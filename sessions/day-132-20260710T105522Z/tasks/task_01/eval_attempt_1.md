@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff correctly swaps `unmatched_completed_details` for `unmatched_non_validation_completed_details` in `lifecycle_imbalance_causes()`, which is already pre-filtered via `is_input_validation_completion()` at lines 2405-2419. This matches the task requirement to separate input-validation exits from real lifecycle gaps. The `append_terminal_state_events.py` change was not needed — the fallback clause covers the case where retroactive cleanup already happened. Build and tests pass.

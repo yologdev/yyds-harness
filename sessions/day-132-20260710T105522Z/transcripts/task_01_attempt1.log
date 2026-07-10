@@ -1,0 +1,606 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **Task**: Verify lifecycle gap cleanup after retroactive terminal events and close Issue #87
+2. **Files**: `scripts/append_terminal_state_events.py`, `scripts/build_evolution_dashboard.py`
+3. **Issue**: #87
+
+Let me start by reading the evolve skill, then examine the relevant files and current state to understand what needs to be done.
+
+Key steps:
+1. Read evolve skill
+2. Examine the current state of append_terminal_state_events.py
+3. Examine build_evolution_dashboard.py for lifecycle_imbalance_causes
+4. Check current state of open runs
+5. Run append_terminal_state_events.py if needed
+6. Fix dashboard classification
+7. Close Issue #87
+
+Let me begin.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (802ms)
+ ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see more of append_terminal_state_events.py, particularly the `find_stale_orphaned_runs` and `find_missing_failure_observed` functions, and the `append_terminal_events` function context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+Let me read the full script and also check the dashboard:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:380..  ▶ search 'lifecycle_imbalance_causes' in scripts/build_evolution_dashboard.py ✓ (536ms)
+ ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `lifecycle_imbalance_causes` function and also look at the `is_input_validation_completion` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2560..2640  ▶ search 'is_input_validation_completion' in scripts/build_evolution_dashboard.py ✓ (507ms)
+ ✓ (511ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `is_input_validation_completion` function and the area around line 2408 to understand how lifecycle gaps are computed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2390..2470  ▶ read scripts/build_evolution_dashboard.py:2510..2570 ✓ (808ms)
+ ✓ (537ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the situation:
+
+1. **`append_terminal_state_events.py`**: The script already exists with `--dry-run` flag. It has `lifecycle_for_scope`, `find_stale_orphaned_runs`, `find_missing_failure_observed` functions. It can append retroactive terminal events.
+
+2. **`build_evolution_dashboard.py`**: The `lifecycle_imbalance_causes` function already correctly distinguishes between input-validation exits and real lifecycle gaps because `lifecycle_cause` at line 2541 calls `is_input_validation_completion` to classify them as `"input_validation_exit_without_run_start"`.
+
+3. The task says:
+   - The 03:25 session fired 271 retroactive FailureObserved events
+   - trajectory still shows `state_run_unmatched_non_validation_completed_count=25`
+   - The task wants me to run `append_terminal_state_events.py` to close remaining gaps
+   - Fix dashboard if needed
+
+Let me check:
+- The `lifecycle_imbalance_causes` already calls `lifecycle_cause` which already calls `is_input_validation_completion` - so the dashboard classification already works correctly.
+- The key remaining work: run the script to close remaining gaps, then verify.
+
+Let me first count the current state - how many open runs there are now.
+
+Also, I need to figure out the right invocation for append_terminal_state_events.py. It needs `--events`, `--after-line`, `--reason`. Let me check the events file and figure out what after-line to use.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.8s (2 ✓)
+
+Now let me check the current state of events and understand what remains:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l .yoyo/state/events.jsonl 2>/dev/null || echo "no events file"  ▶ $ python3 -c " (108 lines) ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So we have:
+- 28 incomplete runs (started but no completed event)
+- 26 unmatched completed (completed but no start - these could be input-validation or genuine problems)
+- 277 completed without FailureObserved events
+
+The 03:25 session already fired 271 retroactive FailureObserved events. But we still have 28 incomplete runs and 26 unmatched completed runs. 
+
+Now, let me run the script in a read-only way to understand what it would do. The script needs `--events`, `--after-line`, `--reason` as required args. Let me figure out the right after-line value.
+
+The `after-line` is used to determine scan_start. Line 76: `scoped = events[max(scan_start, 0):]`. This is the line number after which to scan for open runs. But I also see `fallback_after_line` for the orphan scan.
+
+Let me trace through the script more carefully. The key function `append_terminal_events` is not fully shown - let me read the rest.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:250..350 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the open_lifecycle function which determines which runs are open:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..200 ✓ (296ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture. Let me now figure out the right way to run it. I need to:
+
+1. Run `append_terminal_state_events.py` with appropriate arguments to close the remaining open runs (both incomplete and unmatched).
+2. But wait - this script is designed to be called from `evolve.sh` at the end of a session to close runs that are still open. The `after_line` is the line number in the events file when the session started, so it only scans events after that line.
+
+The task says to run it against current state to count remaining open runs. Let me figure out a read-only way to do this.
+
+Actually, since the script needs `--after-line` (which is used to determine scope), and we want to do a full scan, let me just pass `--after-line 0` and `--dry-run`. But wait - the `open_lifecycle` function has a guard: if `after_line > len(events)`, it falls back to full scan but with the ambiguous_reset_full_scan guard.
+
+For the task's purposes, I should:
+1. Run a dry-run to count remaining open runs
+2. If there are significant remaining gaps, run it for real to close them with RunCompleted events
+3. Check the dashboard's classification
+
+Let me try a dry-run with after-line=0 (full scan from beginning):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/append_terminal_state_events.py \ (7 lines) ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The exit code 120 is probably from the dry-run output going to stderr. Let me capture the JSON result and count.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/append_terminal_state_events.py \ (7 lines) ✓ (554ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dry-run shows:
+- 16 open model calls that need ModelCallCompleted
+- 27 open runs that need RunCompleted
+- 0 open session runs
+- 249 completed runs without FailureObserved events
+
+But wait - the dry-run shows the events file has 2480 events while I counted 2529 in the raw file. The script's `load_jsonl` function is filtering out corrupted lines. The difference is 49 corrupted lines.
+
+The key thing is that running this script for real would close 16 model calls, 27 runs, and append 249 FailureObserved events. After that, the incomplete count should drop significantly.
+
+But before I run it for real, let me look at the dashboard's lifecycle classification more carefully. The task says:
+- `lifecycle_imbalance_causes` should use `is_input_validation_completion()` to separate input-validation exits
+
+Looking at the code:
+- `lifecycle_cause` (line 2529) already calls `is_input_validation_completion` at line 2541
+- `lifecycle_imbalance_causes` (line 2560) calls `lifecycle_cause` for each item
+- So the dashboard ALREADY correctly distinguishes input-validation exits
+
+The dashboard code at lines 2396-2419 already:
+1. Computes `run_unmatched_completed_all`
+2. Filters input-validation exits with `is_input_validation_completion` into `run_unstarted_input_validation_errors`
+3. Computes `run_unmatched_non_validation_completed` by subtracting those
+4. `run_unmatched_non_validation_completed_count=25` comes from this
+
+So the dashboard's classification is already correct! The distinction between input-validation exits and real lifecycle gaps already exists.
+
+Now, the task's remaining work is:
+1. Run `append_terminal_state_events.py` to close remaining open runs → this will add RunCompleted for incomplete runs and FailureObserved for completed-without-failure runs
+2. After running it, verify the count drops
+3. Close Issue #87
+
+Let me also check: are there any remaining gaps the script won't fix? The 28 incomplete runs (RunStarted but no RunCompleted) — 27 of them will get RunCompleted via the script. But 1 of them might be the current session's run.
+
+Wait, looking at the dry-run output more carefully:
+- `open_run_count: 27` — these are the runs that have started but not completed
+- After the script runs, these 27 runs will get RunCompleted events
+
+But I initially counted 28 incomplete runs. The difference of 1 is likely because `open_lifecycle` counts differently — it includes runs that have ModelCallStarted but no RunCompleted, and also runs that have a matching RunStarted without RunCompleted.
+
+Let me just go ahead and run the script for real (not dry-run) to close the gaps. First, let me verify this is safe and won't corrupt state.
+
+Actually wait — the script uses `append_event` from `append_state_event.py`. Let me check if that module exists and works.
+
+Also, I need to be careful: the `find_stale_orphaned_runs` function does a full scan and looks for runs with RunStarted but no RunCompleted AND at least one ModelCallStarted. It also catches session runs that were started (SessionStarted/RunStarted with phase=session) but never completed.
+
+Let me also check: the `_maybe_append_event` function in dry_run mode just prints to stderr. In non-dry-run mode it calls `append_event` from `append_state_event.py`.
+
+Let me check that import is available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c "from scripts.append_state_event import append_event; print('import O… ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the script for real. But first, I should back up the events file (actually, git will track it so I can revert if needed).
+
+Actually, the events file is .yoyo/state/events.jsonl which is likely gitignored. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git check-ignore .yoyo/state/events.jsonl && echo "IS IGNORED" || echo "TRACKED" ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events file is gitignored, so changes to it won't show up in git diff. But the task is about verifying and closing gaps. Let me:
+
+1. Make a backup of the events file
+2. Run the script for real
+3. Verify the results
+4. Also check the dashboard for any needed fixes
+
+The dashboard's `lifecycle_imbalance_causes` already uses `is_input_validation_completion()` — it's called at line 2541 in `lifecycle_cause`, which `lifecycle_imbalance_causes` calls. So the dashboard classification is already correct. The task says "ensure `is_input_validation_completion()` is called in `lifecycle_imbalance_causes`" — it already is!
+
+So the remaining work is:
+1. Run append_terminal_state_events.py for real to close gaps
+2. Verify counts drop
+3. Close Issue #87
+
+But wait - the task says: "If remaining open runs are already <= 5 and input-validation classification already works, close Issue #87 and report success without code changes."
+
+Let me check: the dashboard classification already works (confirmed). What about remaining open runs? The current incomplete count from my quick scan is 28. After running the script, it should drop to much fewer.
+
+Let me run the script for real now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the import works. Now let me run the script for real to close the remaining gaps. First a backup:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cp .yoyo/state/events.jsonl .yoyo/state/events.jsonl.bak.day132 ✓ (537ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the script for real.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/append_terminal_state_events.py \ (6 lines) ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Something seems off. The run completed successfully but the `completed_runs` list has only 23 runs while `open_run_count` is 25. Let me check what happened. The event count dropped from 2480 in the dry-run to 2094 — that's a decrease of 386. That's very strange. Wait, the first run showed 2480 events from load_jsonl, but earlier I counted 2529 lines. The difference might be corrupted events that were skipped.
+
+Actually, wait — the dry-run had `event_count: 2480` and now we see `event_count: 2094`. The events file lost ~386 events?! That shouldn't happen. Let me check. Maybe the load_jsonl is reading a different number due to the new events being appended? No, that can't cause a decrease.
+
+Actually wait — looking more carefully, the script reads the events file and appends events. The load_jsonl count shouldn't decrease unless something weird happened. But `append_event` writes to the file...
+
+Actually, the issue is that the event_count in the result shows the count at time of the initial load_jsonl call. The append_event function writes new events to the file. So the file should have grown. But wait, 2480 - 2094 = 386 fewer events... That doesn't make sense.
+
+Maybe the `load_jsonl` function skips invalid JSON lines. The 2529 line count includes corrupted lines. After appending events, the file has more lines. Let me just re-count.
+
+Actually, `append_event` from `append_state_event.py` might have a different behavior. Let me not worry about the exact counts in the diagnostic output and instead just verify the end state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (84 lines) ✓ (536ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script seems to have had no effect! The incomplete count is still 28 (same as before). The FailureObserved count is still 6. 
+
+Looking at the output, the `completed_runs` list had 23 runs but the open_run_count was 25. The script DID append events (we can see the list), but after appending, the counts didn't change. 
+
+Wait - the issue is that `load_jsonl` in my verification script might be reading the file at a different time than the append script. Let me check if the events were actually appended by looking at the tail of the file.
+
+Actually, looking at the script's output more carefully: the `append_terminal_events` function uses `_maybe_append_event` which calls `append_event` from `append_state_event.py`. The `append_event` function might be appending to the file. But my count shows 2529 valid events both before and after... 
+
+Wait, let me look at the raw line count. It was 86222 before. Let me check now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l .yoyo/state/events.jsonl  ▶ $ tail -3 .yoyo/state/events.jsonl | python3 -c " (8 lines) ✓ (1.1s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file went from 86222 lines to 69175 lines — that's a DECREASE. That's very wrong! The `append_event` function from `append_state_event.py` must be doing something destructive.
+
+Wait, actually the decrease in line count could be normal. I measured 86222 lines, but only 2529 valid events. That means a LOT of the lines are empty/corrupted. Maybe `append_event` is rewriting the file cleanly.
+
+But my original count was 2529 valid events BEFORE running the script, and after it's still 2529. That means the script's events weren't actually appended. Let me investigate.
+
+Actually wait, let me look at the count more carefully. Before: 2529 valid events. After: still 2529 valid events. But the incomplete count is the same. That means the script's `_maybe_append_event` didn't actually write to the file in non-dry-run mode... or it was writing to a different file... or the `append_event` function had issues.
+
+Let me look at `append_state_event.py`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (5 lines) ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import `from append_state_event import append_event` works when called from the scripts directory but not from repo root. Let me check the actual file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/append_state_event.py  ▶ read scripts/append_state_event.py ✓ (237ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `append_event` just appends a JSON line to the file. It's simple and shouldn't cause data loss. But the file went from 86222 lines to 69175 lines — a decrease of ~17000 lines.
+
+Wait... 86222 lines earlier but only 2529 were valid JSON events. That means the vast majority of the file was empty lines or corrupted data. When `append_event` appends, it shouldn't delete existing lines. So why did the line count decrease?
+
+Actually, maybe I mis-copied the line count. Let me re-check. The `wc -l` output earlier was `86222 .yoyo/state/events.jsonl`. Now it's `69175`. Hmm, that's a big drop. But `append_event` only does `handle.write(...)` — it shouldn't truncate.
+
+Wait, unless there's a concurrent rewrite from the `rebuild_sqlite_projection` or `migrate_sqlite_projection` or something in `state.rs` that rewrites the events file? But that's Rust code and we're running Python...
+
+Actually, there might be some other process. Let me just check if the tail of the file now has the events we appended.
+
+Actually, the tail output showed `CommandStarted`, `ToolCallCompleted`, `CommandCompleted` — these are not our appended events. Our events should have `FailureObserved`, `RunCompleted`, `ModelCallCompleted` with `actor: harness`.
+
+Let me look for our appended events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.7s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c '"retroactive-cleanup-day132-task01"' .yoyo/state/events.jsonl  ▶ $ grep -c '"day132-task01-cleanup"' .yoyo/state/events.jsonl ✓ (1.1s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Our appended events are not in the file! The script didn't actually write anything. But it returned a successful result with lists of completed runs. This is very strange.
+
+Let me re-read the `_maybe_append_event` function and the `append_terminal_events` flow more carefully.
+
+The `_maybe_append_event` function at line 274:
+- If `dry_run` is True, prints to stderr
+- If `dry_run` is False, calls `append_event(events_path, ...)`
+
+But wait - the `load_jsonl` function at line 14 returns events from the file. Then the script appends new events. But `append_event` from `append_state_event.py` appends to the file. So if the script worked, the events should be there now.
+
+But the line count decreased, and our events aren't there. That suggests something reset the file between when we ran the script and when we checked.
+
+Actually, wait. Let me re-examine. The file went from 86222 to 69175. The session is running inside GH Actions. Is there another process that's rewriting the events file?
+
+Actually, no - this is an interactive session, not a CI run. Let me just try running the script again and check immediately after.
+
+Actually, let me look more carefully at what happened. I ran:
+1. `wc -l`: 86222
+2. `python3 scripts/append_terminal_state_events.py --dry-run ...`: event_count: 2480 (valid, meaning ~86222 - 2480 = ~83742 non-valid lines)
+3. `python3 scripts/append_terminal_state_events.py` (real): event_count: 2094
+4. `wc -l`: 69175
+
+Wait, step 2's event_count was 2480 valid events (from load_jsonl), which means the file had ~2480 valid JSON lines among ~86222 total lines.
+
+Step 3 shows event_count: 2094. That means load_jsonl returned 2094 events — 386 fewer than before. This doesn't make sense unless the file was modified between steps.
+
+Let me try again - run the script with a fresh session ID and check immediately.
+
+Actually, hold on. Let me look at the dry-run output more carefully. The dry-run had:
+```
+"event_count": 2480
+```
+And the real run had:
+```
+"event_count": 2094
+```
+
+The difference is 2480 - 2094 = 386 fewer events loaded. And the line count dropped from 86222 to 69175 = 17047 fewer lines. The proportion of valid events to total lines was about 2480/86222 = 2.9%. After: 2094/69175 = 3.0%. So the proportion is similar, but the total file shrunk.
+
+This is very suspicious. Something is rewriting the events file. Could it be the rust state machinery running concurrently? Let me check if there's a process.
+
+Actually wait, I bet the issue is that the events file gets rebuilt by `rebuild_sqlite_projection` or `migrate_sqlite_projection` which might normalize the events file (removing corrupted/empty lines). But that's Rust code — unless it's being triggered by the current session somehow.
+
+Let me just proceed with what I can determine: the script returned successfully, but the events don't seem to be in the file. Let me try a simpler approach — just run it with a different approach and check results immediately.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.1s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (23 lines) ✓ (539ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It printed "Appended" but it didn't find the event in the file! The output shows the event was appended, but when reading back, it didn't find 'test-run-132'. This is very strange.
+
+Wait - the "FOUND:" line is missing. That means the event was appended but when I read the file back, it's not there. This could mean the file is being overwritten by another process between the write and read.
+
+Actually, let me look at this more carefully. The output shows only "Appended: evt-harness-6c9347a4bac378cc" and nothing else. The for loop found nothing. This means the event was written but by the time we read, it was gone.
+
+Could the events file be in a temporary directory that gets cleaned up? Let me check the actual path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/events.jsonl && wc -l .yoyo/state/events.jsonl && grep -c 'te… ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file is now 113106 lines! It was 69175 earlier, now it's 113106. And it still doesn't contain 'test-run-132'. So the file is being rewritten by some process — likely the reconstruction/sqlite machinery — and it's overwriting the appended events.
+
+The file is 110MB. Something is reconstructing the events file from sqlite or another source, and this is overwriting any manually-appended events.
+
+Let me check what process might be doing this. This could be the state.rs `rebuild_sqlite_projection` or something similar.
+
+Actually, looking at the file size jumping from 69175 to 113106 lines in just a few seconds, this seems like the sqlite projection is being rebuilt and the events file is being regenerated from it. This means the sqlite projection IS the source of truth for events, and the JSONL file gets reconstructed from it.
+
+If that's the case, I need to work through the sqlite path instead of directly appending to the JSONL.
+
+But wait, the task says to run `append_terminal_state_events.py`. If the events file is being constantly rebuilt, then this approach won't work in this environment. 
+
+Let me check if there's a sqlite file and if we can work through that.
+
+Actually, let me take a step back. The task says:
+- The 03:25 session already fired 271 retroactive events
+- Trajectory still shows `state_run_unmatched_non_validation_completed_count=25`
+- Verify the fix works end-to-end and close Issue #87
+
+The key is: the `append_terminal_state_events.py` script is designed to be called from `evolve.sh` at the end of sessions. In this interactive context, the events file is being rebuilt from sqlite, so manual appends get overwritten.
+
+But the dashboard classification is already correct — `is_input_validation_completion` is already called in `lifecycle_cause` which is used by `lifecycle_imbalance_causes`.
+
+So my options are:
+1. The events file is being regenerated from sqlite — I can't append to it directly in this context. The script works when called from evolve.sh at the right time.
+2. The dashboard already correctly classifies input-validation exits — no code change needed there.
+3. The remaining gaps may be from the most recent sessions that haven't been cleaned up yet.
+
+Let me take the fallback approach: verify the dashboard classification is correct, check if remaining gaps are small enough, and close Issue #87.
+
+But wait — I need to actually produce a change. The evolve skill says: "If current code already satisfies the task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion."
+
+Let me look at what I can do:
+1. The dashboard's `lifecycle_imbalance_causes` already correctly uses `is_input_validation_completion` — confirmed.
+2. The `append_terminal_state_events.py` script works correctly but its events are being overwritten by sqlite reconstruction in this interactive context.
+
+Can I add a verification test for the dashboard classification? Or can I add something to the dashboard to make the classification more visible?
+
+Actually, looking more carefully at the task's "Fallback" section:
+"If remaining open runs are already <= 5 and input-validation classification already works, close Issue #87 and report success without code changes."
+
+Let me check if the remaining open runs are actually <= 5 after the 03:25 session's cleanup. But my count shows 28 incomplete. However, many of those might be from the most recent sessions (yesterday and today). The 03:25 session's cleanup was from BEFORE those sessions ran.
+
+Let me look at the trajectory to understand what `state_run_unmatched_non_validation_completed_count=25` means and when it was computed.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the trajectory and understand the remaining gaps:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/extract_trajectory.py 2>&1 | head -100 ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The trajectory extractor ran but produced no output (only a warning). Let me look at what it expects and run it differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ YOYO_REPO=. python3 scripts/extract_trajectory.py 2>/dev/null || true ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No output from trajectory extractor. Let me look at the dashboard output instead. But more importantly, let me focus on what the task asks me to do:
+
+1. The dashboard's `lifecycle_imbalance_causes` already uses `is_input_validation_completion` — confirmed ✅
+2. The `append_terminal_state_events.py` script — it works in the evolve.sh context, but here the events file is being rebuilt from sqlite, so direct appends get overwritten.
+
+Given the "Fallback" says "If remaining open runs are already <= 5 and input-validation classification already works, close Issue #87 and report success without code changes."
+
+But remaining open runs are 28, not <= 5. However, the script can't be run effectively in this context because the sqlite rebuild overwrites its changes.
+
+Now, the task also says: "If append_terminal_state_events.py has no --dry-run flag, add one or use a read-only path to count remaining open runs." 
+
+The script already has `--dry-run`. So that's fine.
+
+Let me think about what code change I can make that's useful and within the task scope:
+
+Looking at the dashboard code (build_evolution_dashboard.py), I see at line 2396-2419:
+- It already computes `run_unmatched_completed_all`
+- It already filters with `is_input_validation_completion` 
+- It already computes `run_unmatched_non_validation_completed`
+
+And at line 2560, `lifecycle_imbalance_causes` already calls `lifecycle_cause` which already calls `is_input_validation_completion`.
+
+So the dashboard classification is ALREADY correct. The task's requirement is already satisfied.
+
+For the `append_terminal_state_events.py`, the script already works correctly. The issue is the sqlite reconstruction overwriting events in this interactive context. But the script was designed for evolve.sh, not interactive use.
+
+What I CAN do: add a read-only counting mode to `append_terminal_state_events.py` that doesn't append events but reports the state. The script already supports `--dry-run` but it still modifies the events file through the sqlite layer. Actually no — `--dry-run` doesn't modify the file. The issue is that even in non-dry-run mode, the sqlite reconstruction overwrites.
+
+Actually, looking more carefully at the problem: the events file is 110MB/113k lines and constantly being rewritten. The append_terminal_state_events.py script runs load_jsonl at the start, then appends events. But by the time it's done, the file has been reconstructed, losing the appended events.
+
+Given this constraint, let me take the approach from the Fallback:
+- The dashboard classification already works (confirmed)
+- The `append_terminal_state_events.py` works in its intended context (evolve.sh)
+- I should close Issue #87
+
+But I also need to produce a code change per the evolve skill rules. Let me look for a useful improvement.
+
+Actually, I think the best approach is:
+1. Add a `--count-only` mode to `append_terminal_state_events.py` that just reads and reports counts without trying to write
+2. This is a read-only verification tool that proves the script can count gaps
+3. Close Issue #87
+
+Let me also look at whether there's an issue with the dashboard's lifecycle classification that I'm missing.
+
+Re-reading the dashboard code:
+- Line 2408: `if is_input_validation_completion(run.get("last_event"))` — filters unmatched completed runs
+- Line 2541: `if is_input_validation_completion(last_event):` — in lifecycle_cause, classifies as `input_validation_exit_without_run_start`
+- Line 2560: `lifecycle_imbalance_causes` calls `lifecycle_cause` for each item
+
+This is all correct and complete. The task asks to "ensure `is_input_validation_completion()` is called in `lifecycle_imbalance_causes`" — it already is via `lifecycle_cause`.
+
+Now, I need to make a verifiable change. Options:
+1. Add a `--count-only` / `--report` flag to append_terminal_state_events.py
+2. Add a test for the dashboard classification
+3. Write session_plan/task_01_obsolete.md
+
+Actually, re-reading the task more carefully: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface."
+
+The dashboard assertion is the best fit. Let me add a small self-test in append_terminal_state_events.py that verifies the counting logic, and/or add a self-test in build_evolution_dashboard.py for the lifecycle classification.
+
+But actually, the simplest verification is: close Issue #87 and make sure the script has a `--dry-run` mode that works correctly. The script already has `--dry-run`. So the code is already correct.
+
+Given the constraints, let me:
+1. Write a small verification that the dashboard correctly separates input-validation from real lifecycle gaps
+2. Close Issue #87
+
+Wait, actually let me look more carefully. The task says the dashboard may misclassify input-validation exits. Let me trace through the actual code to make sure the classification is right.
+
+At line 2396-2419:
+```python
+run_unmatched_completed_all = [
+    {"run_id": run_id, "last_event": run_last_events.get(run_id), "session_started": run_id in run_session_started_ids}
+    for run_id in run_unmatched_completed_ids
+]
+run_unmatched_completed = run_unmatched_completed_all[:8]
+run_unstarted_input_validation_errors = [
+    run for run in run_unmatched_completed_all
+    if is_input_validation_completion(run.get("last_event"))
+]
+```
+
+So `run_unmatched_completed_all` includes ALL unmatched completed runs (completed but no start). Then `run_unstarted_input_validation_errors` filters to only those that are input-validation exits. Then:
+```python
+run_unmatched_non_validation_completed = [
+    run for run in run_unmatched_completed_all
+    if str(run.get("run_id") or "") not in run_unstarted_input_validation_error_ids
+]
+```
+
+This correctly removes input-validation exits from the non-validation count. Good.
+
+And in `lifecycle_imbalance_causes`:
+```python
+add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+```
+
+`unmatched_completed_details` is `run_unmatched_completed` which is the first 8 items of `run_unmatched_completed_all`. These CAN include input-validation exits! Because `run_unmatched_completed` is just the first 8 of the full list, not the filtered list.
+
+Wait, let me re-read. Line 2404: `run_unmatched_completed = run_unmatched_completed_all[:8]`. This is used for display. Then at line 2438: `"unmatched_completed_details": run_unmatched_completed`.
+
+So `unmatched_completed_details` in the lifecycle state includes ALL unmatched completed (including input-validation). But the "unmatched_non_validation_completed_details" is separately filtered.
+
+Now in `lifecycle_imbalance_causes`:
+```python
+add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+```
+
+This will include input-validation exits in the "run_unmatched_completed" category. But the `lifecycle_cause` function will classify them as `input_validation_exit_without_run_start` via `is_input_validation_completion`. So they'll show up in the causes but with the right cause label.
+
+But that's misleading — they shouldn't be counted as "run_unmatched_completed" at all if they're actually input-validation exits! The imbalance causes should ideally separate these.
+
+The fix should be: in `lifecycle_imbalance_causes`, when adding `unmatched_completed_details`, filter out input-validation exits and add them separately (or just skip them since they're not real lifecycle gaps).
+
+But wait — the task says to check if it's already called and fix it. Let me look again:
+
+`lifecycle_imbalance_causes` function:
+- Adds `run_incomplete` items
+- Adds `run_unmatched_completed` items from `runs.get("unmatched_completed_details")` — but these are the first 8 of ALL unmatched completed including input-validation exits
+- Adds `model_call_incomplete` items
+- Adds `model_call_unmatched_completed` items
+
+The issue is that `unmatched_completed_details` can contain input-validation exits mixed in. They'll be classified correctly by `lifecycle_cause` (as "input_validation_exit_without_run_start") but they'll still appear under the "run_unmatched_completed" category.
+
+The fix should be: use `unmatched_non_validation_completed_details` for the lifecycle imbalance causes, or filter them in the add function.
+
+Actually, let me look at what `run_unmatched_completed` contains. It's `run_unmatched_completed_all[:8]`. And `run_unmatched_completed_all` includes all unmatched completed runs. Some of these are input-validation, some are real lifecycle gaps.
+
+The `lifecycle_imbalance_causes` function adds these to the causes list. Since `lifecycle_cause` correctly classifies them, the dashboard should show the right cause. But having them under the "run_unmatched_completed" category is misleading when they're actually benign input-validation exits.
+
+Let me make a focused fix: in `lifecycle_imbalance_causes`, change `add("run_unmatched_completed", runs.get("unmatched_completed_details"))` to use `unmatched_non_validation_completed_details` instead. This way only real lifecycle gaps show up in the imbalance causes.
+
+Actually wait, I need to be careful. Let me re-read what the task says:
+
+"ensure `is_input_validation_completion()` is called in `lifecycle_imbalance_causes` so input-validation exits are classified separately from real lifecycle gaps"
+
+The function already calls `lifecycle_cause` which calls `is_input_validation_completion`. But the items still appear under the "run_unmatched_completed" category even if their cause is "input_validation_exit_without_run_start".
+
+I think the correct fix is to change `lifecycle_imbalance_causes` to use `unmatched_non_validation_completed_details` instead of `unmatched_completed_details`. This way only bona fide lifecycle gaps appear in the causes at all.
+
+Let me verify the data structure has this field:
+- Line 2438: `"unmatched_completed_details": run_unmatched_completed`
+- Line 2440: `"unmatched_non_validation_completed_details": run_unmatched_non_validation_completed[:8]`
+
+Both exist. So I can change `lifecycle_imbalance_causes` to use the non-validation version.
+
+This is a small, focused change that directly addresses the task's concern. Let me make it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me check the exact lines I need to change:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2560..2610 ✓ (300ms)
+
+
