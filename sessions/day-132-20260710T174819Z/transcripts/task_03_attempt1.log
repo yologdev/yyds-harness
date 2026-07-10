@@ -1,0 +1,373 @@
+warning: skipping corrupted event at line 12958 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 3893
+warning: skipping corrupted event at line 12959 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 68170 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 3511
+note: skipped 3 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source files to understand what needs to be done.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/build_evolution_dashboard.py:5040..5120 ✓ (540ms)
+ ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the function. Let me look at the session sorting pattern used elsewhere in the dashboard to understand how sessions are ordered, and look for any existing `recent_window_size` pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'recent_window_size' in scripts/build_evolution_dashboard.py  ▶ search 'session_sort_key' in scripts/build_evolution_dashboard.py ✓ (270ms)
+ ✓ (379ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `recent_window_size` usage around line 4942 and the `session_sort_key` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:4930..4960  ▶ read scripts/build_evolution_dashboard.py:3695..3720 ✓ (526ms)
+ ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The function `action_evidence_summary_for_sessions` takes `session_states` which is already a sorted list (the caller provides it as a list of session dicts). Let me check how `session_states` arrives at the function to understand if they're already sorted chronologically.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'action_evidence_summary_for_sessions' in scripts/build_evolution_dashboard.py ✓ (81ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5290..5310 ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see there's already `recent_action_evidence_summary` computed separately. Let me find how it's computed — it's probably computed by calling the same function with a recent subset of sessions. Let me look at that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'recent_action_evidence_summary' in scripts/build_evolution_dashboard.py ✓ (93ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's already a `recent_action_evidence_summary` computed by calling the same function with a recent subset! Let me see lines around 5275-5285 to understand how the recent subset is created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5265..5295 ✓ (178ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `action_evidence_summary` is already being computed for:
+1. All-time: `action_evidence_summary_for_sessions(session_states)` — this gives `state_only_failed_tool_count` etc.
+2. Recent: `action_evidence_summary_for_sessions(session_states[-recent_window_size:])` — this gives the same keys but for the recent window, stored as `recent_action_evidence_summary`
+
+So actually, the recent-window counts already exist in the dashboard output! The `recent_action_evidence_summary` already contains `state_only_failed_tool_count`, `transcript_only_failed_tool_count`, etc. computed from just the last 5 sessions.
+
+Wait, but the task says to add `recent_state_only_failed_tool_count` and `recent_transcript_only_failed_tool_count` to the ALL-TIME summary. Let me re-read the task...
+
+The task says: "Add `recent_state_only_failed_tool_count` and `recent_transcript_only_failed_tool_count` keys to `action_evidence_summary_for_sessions()` output, computed from only the last 5 sessions"
+
+But the function `action_evidence_summary_for_sessions` receives a list of session_states. It doesn't know about "last 5 sessions" — it just gets whatever list it's given. The task wants the all-time summary (the one stored at key `action_evidence_summary`) to ALSO include recent-window counts.
+
+Wait, let me re-read more carefully. The task says to change the function to also compute recent-window counts internally. But the function doesn't know about ordering — it just gets a list. Let me think about what makes sense here...
+
+The caller (`build_states_projection`) already computes both all-time and recent summaries separately. So there are two approaches:
+1. Add recent computation inside `action_evidence_summary_for_sessions` by taking the last N sessions from the input list
+2. Add the recent keys in `build_states_projection` by copying them from `recent_action_evidence_summary` into `action_evidence_summary` 
+
+Actually, the task says "in `action_evidence_summary_for_sessions()` (~line 5057 in build_evolution_dashboard.py), after computing the all-time aggregate, compute a second set of totals using only the last `recent_window_size` sessions."
+
+So the intent is inside the function itself. The function receives `session_states`, and should use the last N entries as the "recent" window. This makes sense since `session_states` is already in order (the full list is ordered chronologically).
+
+Let me also check: does the existing `recent_action_evidence_summary` already contain the needed keys? Yes, it does — it's the same function applied to the recent slice. So the `recent_action_evidence_summary` already has `state_only_failed_tool_count` for the recent window.
+
+But the task asks me to add `recent_state_only_failed_tool_count` and `recent_transcript_only_failed_tool_count` to the ALL-TIME summary output (the one at key `action_evidence_summary`). This way, consumers like the trajectory extractor can get both all-time and recent counts from a single call.
+
+Let me also check if the trajectory extractor reads from this key.
+
+Looking at the task description: "The graph-derived pressure signal says `state_only_failed_tool_count=37` but most of that is from resolved cascade failures."
+
+So the all-time summary currently returns 37, but we need to also include the recent count in the same output so consumers can see both. The `recent_action_evidence_summary` already exists but is a separate key. The task wants the recent counts embedded within the all-time summary.
+
+Let me implement this. I need to modify `action_evidence_summary_for_sessions` to also compute a recent window (last 5) and add the two new keys.
+
+Now, let me also check for tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TestActionEvidence' in scripts  ▶ search 'test_build_evolution_dashboard' in scripts ✓ (265ms)
+ ✓ (373ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing test file. Let me also check whether the `extract_trajectory.py` reads from `action_evidence_summary`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'action_evidence_summary' in scripts/extract_trajectory.py  ▶ search 'state_only_failed_tool_count' in scripts/extract_trajectory.py ✓ (242ms)
+ ✓ (367ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the trajectory extractor to understand the full picture — it already has separate handling for recent vs all-time. The all-time `action_evidence_summary` is read for the graph-derived counts and `recent_action_evidence_summary` for the recent counts.
+
+Now I understand the full picture. The task is to add recent-window counts directly into the all-time `action_evidence_summary` output, so that any consumer reading just `action_evidence_summary` can also see the recent window numbers.
+
+Let me now implement this. I'll modify `action_evidence_summary_for_sessions` to also compute a recent subset and add the two new keys.
+
+I also need to write a test. Let me first write the test, then make the edit.
+
+Let me check what test infrastructure exists for the dashboard:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ ls scripts (test_*.py) ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the existing test file for build_evolution_dashboard to see its structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py ✓ (185ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me search for existing tests related to `action_evidence_summary_for_sessions`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'action_evidence' in scripts/test_build_evolution_dashboard.py ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 4006 that tests action_evidence to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:3985..4065 ✓ (165ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look further at the test to see the full picture, particularly how it checks action_evidence_summary:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:4064..4184 ✓ (189ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context. Let me plan and implement the change:
+
+1. Modify `action_evidence_summary_for_sessions()` to add `recent_state_only_failed_tool_count` and `recent_transcript_only_failed_tool_count` computed from the last 5 sessions in the input list.
+
+2. Write a test to verify the new keys.
+
+Let me now make the edit. The function currently:
+1. Iterates over all sessions in `session_states` 
+2. Accumulates `buckets` (state, transcripts, audit, merged) and `totals` (state_only_failed_tool_count, transcript_only_failed_tool_count, session counts)
+3. Returns a dict with all-time aggregate keys
+
+I need to add: after computing the all-time aggregate, compute a second set using only the last 5 sessions.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. The function needs to compute recent-window counts alongside the all-time aggregate. Let me implement this.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (79ms)
+  ▶ todo ✓ (203ms)
+  ▶ todo ✓ (208ms)
+  ▶ todo ✓ (191ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the change. I'll edit the function to add recent-window computation.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.1s (4 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (94ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the surgical edit to add the recent-window computation to `action_evidence_summary_for_sessions`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
+            "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],
+            "transcript_only_failed_tool_session_count": totals["transcript_only_failed_tool_session_count"],
+  +         "recent_state_only_failed_tool_count": _recent_failed_tool_total(
+  +             session_states, "state_only_failed_tool_count"
+  +         ),
+  +         "recent_transcript_only_failed_tool_count": _recent_failed_tool_total(
+  +             session_states, "transcript_only_failed_tool_count"
+  +         ),
+        }
+  + 
+  + 
+  + def _recent_failed_tool_total(
+  +     session_states: list[dict[str, Any]], key: str, window_size: int = 5
+  + ) -> int:
+  +     recent = session_states[-window_size:]
+  +     total = 0
+  +     for row in recent:
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (16 → 34 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (16 → 34 lines)
+            "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
+            "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],
+            "transcript_only_failed_tool_session_count": totals["transcript_only_failed_tool_session_count"],
+  +         "recent_state_only_failed_tool_count": _recent_failed_tool_total(
+  +             session_states, "state_only_failed_tool_count"
+  +         ),
+  +         "recent_transcript_only_failed_tool_count": _recent_failed_tool_total(
+  +             session_states, "transcript_only_failed_tool_count"
+  +         ),
+        }
+  + 
+  + 
+  + def _recent_failed_tool_total(
+  +     session_states: list[dict[str, Any]], key: str, window_size: int = 5
+  + ) -> int:
+  +     recent = session_states[-window_size:]
+  +     total = 0
+  +     for row in recent:
+  +         value = row.get(key) if isinstance(row, dict) else None
+  +         if isinstance(value, (int, float)) and not isinstance(value, bool):
+  ... (2 more lines)
+ ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check that the `action_evidence` dict returned by `session_state_projection` already contains the `state_only_failed_tool_count` and `transcript_only_failed_tool_count` keys on each session row. Let me check `session_state_projection` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify that `session_state_projection` includes these keys in each session's `action_evidence` dict:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def session_state_projection' in scripts/build_evolution_dashboard.py ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, I realize I have an issue. The `action_evidence_summary_for_sessions` function receives `session_states` from `session_state_projection`. But when I look at the per-session data, each session's `action_evidence` dict is nested inside each session state row. Let me check how each session row is structured - does it have `state_only_failed_tool_count` at the top level or nested in `action_evidence`?
+
+From the earlier code (lines 5068-5096), the function reads `row.get("action_evidence")` to get the action evidence dict, and then looks for keys like `state_only_failed_tool_count` inside that dict. So the keys are at the `action_evidence` level within each session row, but NOT at the top level of the session row.
+
+My `_recent_failed_tool_total` helper tries to get `row.get(key)` at the top level, which won't work. I need to read from `row.get("action_evidence", {}).get(key)` instead, or better yet, iterate through the sessions the same way the all-time aggregate does.
+
+Let me fix this.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to fix the helper — the keys are nested in `action_evidence` within each session row, not at the top level:
+        recent = session_states[-window_size:]
+        total = 0
+        for row in recent:
+  -         value = row.get(key) if isinstance(row, dict) else None
+  +         if not isinstance(row, dict):
+  +             continue
+  +         action_evidence = row.get("action_evidence")
+  +         if not isinstance(action_evidence, dict):
+  +             continue
+  +         value = action_evidence.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total += int(value)
+        return total
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (10 → 15 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (10 → 15 lines)
+        recent = session_states[-window_size:]
+        total = 0
+        for row in recent:
+  -         value = row.get(key) if isinstance(row, dict) else None
+  +         if not isinstance(row, dict):
+  +             continue
+  +         action_evidence = row.get("action_evidence")
+  +         if not isinstance(action_evidence, dict):
+  +             continue
+  +         value = action_evidence.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total += int(value)
+        return total
+ ✓ (204ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the module loads correctly with a quick import check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c "import scripts.bui… ✓ (378ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to run from the scripts directory:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness/scripts && python3 -c "import bui… ✓ (386ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Module loads. Now let me verify the function works with a quick sanity check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness/scripts && py… (26 lines) ✓ (384ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that the recent window is getting the full session_states list (7 sessions), but the last 5 sessions have values 5,5,5,1,1 for state_only, so 5+5+5+1+1=17. Oh wait, the sessions are:
+- i=0: state_only=5
+- i=1: state_only=5
+- i=2: state_only=5
+- i=3: state_only=5
+- i=4: state_only=5
+- i=5: state_only=1
+- i=6: state_only=1
+
+The last 5 sessions would be i=2 through i=6: 5+5+5+1+1=17. That's correct! The test was wrong — I expected recent to be 2 but it should be 17 since 5 of the 7 sessions have state_only=5 and the recent 5 window includes 3 of those.
+
+Let me fix the test data to be more intuitive:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness/scripts && py… (28 lines) ✓ (386ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function works correctly. Now let me write a proper unit test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the test. I'll add it to the existing test file:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (79ms)
+  ▶ todo ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the right place to add the test. I need to find a test class that tests action_evidence_summary and add my test there. Let me look at the `test_action_evidence_summary_counts_source_coverage` test area and add after it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_build_evolution_dashboard.py:4155..4185 ✓ (188ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to also import `action_evidence_summary_for_sessions` in the test file. Let me check if it's already imported:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'action_evidence_summary_for_sessions' in scripts/test_build_evolution_dashboard.py ✓ (79ms)
+
+
