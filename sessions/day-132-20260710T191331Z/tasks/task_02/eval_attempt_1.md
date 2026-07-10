@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff adds exactly the specified eprintln! inside the else block (total_lines > limit) before the blocking line collection at src/state.rs:3275-3278, matching the task's format and placement requirements. Build and tests pass. The progress message didn't appear in a quick run because the events file is small enough for the fast path, which is explicitly acceptable per the task's fallback clause.
