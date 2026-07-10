@@ -101,13 +101,13 @@ pub fn handle_state_subcommand(args: &[String]) {
             // Determine effective limit: user-set limit always wins.
             // For "last-failure", use a larger sampling window (DEFAULT_WHY_LIMIT)
             // to avoid timing out on large 70K+ event logs. For specific event IDs
-            // (UUID-like), scan the full stream to guarantee the exact event is found.
+            // (UUID-like), scan up to BOUNDED_FULL_SCAN_CAP events.
             let limit = if let Some(l) = user_limit {
                 l
             } else if id == "last-failure" {
                 DEFAULT_WHY_LIMIT
             } else {
-                0 // full scan for specific event IDs
+                BOUNDED_FULL_SCAN_CAP
             };
             handle_why(id, summary, limit);
         }
@@ -1189,7 +1189,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
             let mut msg = format!("{YELLOW}  {e}{RESET}");
             if limit > 0 && events.len() >= limit {
                 msg.push_str(&format!(
-                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 0){RESET}"
+                    "\n{DIM}(note: only the most recent {limit} events were scanned; the target may be further back — retry with --limit 200000 for a deeper scan){RESET}"
                 ));
             }
             eprintln!("{msg}");
@@ -1247,7 +1247,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
         if events.len() >= limit {
             println!();
-            println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
+            println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 200000 for a deeper scan){RESET}");
         } else if events.len() < all_count {
             println!();
             println!("{DIM}(searched {all_count} events){RESET}");
