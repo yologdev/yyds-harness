@@ -2594,7 +2594,7 @@ def lifecycle_imbalance_causes(state_lifecycle: dict[str, Any]) -> list[dict[str
         else {}
     )
     add("run_incomplete", runs.get("incomplete_runs"))
-    add("run_unmatched_completed", runs.get("unmatched_completed_details"))
+    add("run_unmatched_completed", runs.get("unmatched_non_validation_completed_details"))
     add("model_call_incomplete", model_calls.get("incomplete_runs"))
     add("model_call_unmatched_completed", model_calls.get("unmatched_completed_details"))
     return sorted(
