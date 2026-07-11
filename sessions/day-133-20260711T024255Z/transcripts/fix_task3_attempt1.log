@@ -1,0 +1,421 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator says `task_external_only_mismatch()` is dead code - it has zero callers, no gnome aggregation, and the dashboard HTML wasn't updated.
+2. External-only mismatches are silently excluded from `task_scope_mismatch_count` but never surfaced anywhere else.
+3. I need to fix this by:
+   - Making the function actually get called
+   - Adding gnome aggregation for the external-only count
+   - Updating the dashboard HTML to render the distinction
+
+Let me start by reading the current state of the file around the relevant functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/build_evolution_dashboard.py:895..975 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the two functions. Now let me search for where `task_scope_mismatch` is called, and where gnome aggregation happens, and where the dashboard HTML renders scope-mismatch counts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_scope_mismatch' in scripts/build_evolution_dashboard.py  ▶ search 'task_external_only_mismatch' in scripts/build_evolution_dashboard.py ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `task_external_only_mismatch` only appears at lines 905 (in a comment) and 915 (the definition). It has zero callers. Let me now find:
+1. Where `task_scope_mismatch` is called in gnome aggregation
+2. Where the dashboard HTML renders scope-mismatch counts
+3. Where gnome keys/aggregation happens
+
+Let me look at the lines where `task_scope_mismatch_count` is used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_scope_mismatch_count' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the gnome aggregation around line 3181, and the dashboard HTML rendering around line 7292.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3165..3205  ▶ read scripts/build_evolution_dashboard.py:7280..7310 ✓ (18ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find where `scope_mismatches` is computed, and where the gnome value is used in the HTML rendering for scope mismatches. Let me look at the broader context around line 3181 to see where `scope_mismatches` comes from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3120..3180  ▶ search 'gnomeLabels' in scripts/build_evolution_dashboard.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now find where `scope_mismatches` is computed (before line 3181) and also look at the gnomeLabels around line 6114 for `task_scope_mismatch_count`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3060..3110  ▶ read scripts/build_evolution_dashboard.py:6110..6170 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of gnomeLabels and where task_scope_mismatch_count is rendered in the HTML. Also, let me look for where scope mismatches are rendered in the dashboard (e.g., text like "scope mismatch").
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:6169..6199  ▶ search 'scope mismatch' in scripts/build_evolution_dashboard.py ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for where the dashboard HTML renders the scope mismatch info - e.g., in the gnome deltas display or task state rows. Let me look at how the gnome values are displayed. The gnome priority list at line 7282 includes `task_scope_mismatch_count` but I need to understand the rendering context better. Also, let me find where the HTML renders task state rows - particularly where it shows "scope mismatch" as a problem.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'no_planned_file_overlap' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 6384 and the surrounding context where the HTML renders problem counts - this is where I need to update the rendering.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:6360..6440 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me now understand what needs to be done:
+
+1. `task_external_only_mismatch()` function exists but has zero callers
+2. The gnome aggregation at line 3064-3068 only counts `task_scope_mismatch` 
+3. The dashboard HTML at line 6394 renders `counts.noOverlap` as a single count without distinction
+4. The gnomeLabels at line 6169 only has `task_scope_mismatch_count`
+
+I need to:
+1. Add a new counter `task_external_only_mismatch_count` in gnome aggregation (near line 3064)
+2. Add it to the gnomeLabels (near line 6169)  
+3. Add it to the priority list if needed
+4. Update the HTML rendering at lines 6370-6394 to distinguish external-only vs source-edit mismatches
+5. Also update `explained_unverified` at line 3164 - currently it uses `task_scope_mismatch(row)` to explain away unverified tasks, but it should probably also handle external-only mismatches similarly (or keep them separate)
+
+Let me also check the `corrected_coding_log_score` function for how gnomes feed into scoring, and `corrected_gnome_lessons` for how they appear in pressure signals. But first, let me focus on the core changes.
+
+Let me also find where `counts.noOverlap` is rendered in the HTML more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the broader rendering context for `noOverlap` and where the gnome values appear in session/task summary rows:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'noOverlap' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to also check where gnomes are rendered in the HTML table, not just in the reason list. Let me search for where `task_scope_mismatch_count` is rendered as a gnome value.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'gnome_corrections' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `gnome_corrections` and how gnomes flow into the corrected values. Also let me check the `corrected_gnomes` function that processes these gnome values for the dashboard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3562..3622 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive picture. Let me plan the changes:
+
+1. **Line 3064-3068**: Add a companion counter `external_only_mismatches` that counts `task_external_only_mismatch(row)`.
+2. **Line 3181**: Add `gnomes["task_external_only_mismatch_count"] = external_only_mismatches`.
+3. **Line 3164**: In `explained_unverified`, the check for `task_scope_mismatch(row)` should probably also include `task_external_only_mismatch(row)` — but wait, looking more carefully, `task_scope_mismatch` now only returns True for genuine source-edit mismatches (not external-only), so external-only mismatches would NOT be explained away. This means external-only mismatches would inflate `evaluator_unverified_count`. That seems correct — if the task is external-only and has a scope mismatch, it should still be counted as unverified (or should it be explained?). Actually, looking at the logic: if a task has `no_planned_file_overlap` but it's external-only, the current `task_scope_mismatch` returns `False`, so it won't be explained away. This changes behavior. Let me think...
+
+Actually, looking at the original `task_scope_mismatch` — before the existing change was made, it would return `True` for ALL no_planned_file_overlap tasks, including external-only ones. The change made it return `False` for external-only ones. But if the function already exists and the evaluator says it's dead code... Let me re-read the original state.
+
+Wait, looking at the function at line 901-912:
+```python
+def task_scope_mismatch(row: dict[str, Any]) -> bool:
+    problems = row.get("problems") if isinstance(row.get("problems"), list) else []
+    if "no_planned_file_overlap" not in problems:
+        return False
+    if external_only_planned(row.get("planned_files") or []):
+        return False
+    return True
+```
+
+This was already modified to exclude external-only. But the evaluator says `task_external_only_mismatch()` is dead code — zero callers. So the existing code already silently drops external-only mismatches from `task_scope_mismatch_count`, but never surfaces them anywhere else. That's the bug.
+
+Now I need to:
+1. Add gnome aggregation for `task_external_only_mismatch_count` 
+2. Add rendering in HTML
+3. Update `gnome_correction_source` to include the new key
+4. Update `explained_unverified` to handle external-only mismatches (they should still be explained away since they're a planning issue, not an implementation failure)
+5. Update the HTML rendering at line 6380/6384/6394 to distinguish
+
+Let me also check `external_only_planned`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def external_only_planned' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and also check the `corrected_coding_log_score` function for how gnomes are scored.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:859..899  ▶ search 'def corrected_coding_log_score' in scripts/build_evolution_dashboard.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `corrected_coding_log_score` function to understand how gnomes map to scores:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3529..3569 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check SCORE_FAILURE_WEIGHTS to see if `task_scope_mismatch_count` is included:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SCORE_FAILURE_WEIGHTS' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the SCORE_FAILURE_WEIGHTS to see if task_scope_mismatch_count is there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3499..3529 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I also need to check how the graph-derived pressure suggestions reference `task_scope_mismatch_count`. Let me look at `scripts/extract_trajectory.py` for that.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me also check the trajectory extractor for `task_scope_mismatch_count`:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_scope_mismatch' in scripts/extract_trajectory.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the trajectory extractor doesn't directly reference this by key — the graph suggestions likely come from the dashboard data. Let me now check `failed_tool_graph_title` and `action_evidence_graph_suggestions` to see how `task_scope_mismatch_count` gets translated to pressure suggestions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'scope_mismatch' in scripts/extract_trajectory.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK. Now let me also check the `log_feedback.py` for `task_scope_mismatch`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_scope_mismatch' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how it's used in log_feedback.py — line 246 and 2787:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:240..260  ▶ read scripts/log_feedback.py:2780..2800 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK. Let me also look at the gnomes list in log_feedback.py — there's likely a GNOME_KEYS constant that lists all gnome keys. Let me find it:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GNOME_KEYS' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the GNOME_KEYS list in log_feedback.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:203..283 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check `summarize_state_gnomes.py` for similar gnome key references:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'task_scope_mismatch' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also look for `top_lessons` to understand how gnome values influence lessons:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def top_lessons' in scripts/build_evolution_dashboard.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `top_lessons` in the log_feedback.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def top_lessons' in scripts/log_feedback.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that function to see how gnomes drive lessons:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1955..2055 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive picture. Here's my plan:
+
+**Changes needed in `scripts/build_evolution_dashboard.py`:**
+
+1. **Line 3064-3068**: Add a parallel counter for `external_only_mismatches` using `task_external_only_mismatch(row)`.
+
+2. **Line 3181**: Add `gnomes["task_external_only_mismatch_count"] = external_only_mismatches`.
+
+3. **Line 3164**: Update `explained_unverified` to also include `task_external_only_mismatch(row)` — external-only mismatches should be explained away as a planning issue.
+
+4. **Lines 3607 and 3620**: Add `task_external_only_mismatch_count` to the gnome_correction_source set.
+
+5. **Lines 3513 and 3526**: Add `task_external_only_mismatch_count` to SCORE_FAILURE_WEIGHTS (maybe with a lower weight since it's a planning issue, not an implementation issue).
+
+6. **Line 6169**: Add gnomeLabel for `task_external_only_mismatch_count`.
+
+7. **Line 6370**: Add `externalOnlyOverlap: 0` to the counts object.
+
+8. **Lines 6380-6394**: Update the HTML rendering to distinguish external-only mismatches.
+
+9. **Line 7292**: Add `task_external_only_mismatch_count` to the priority list.
+
+**Changes needed in `scripts/log_feedback.py`:**
+
+10. **Line 246**: Add `task_external_only_mismatch_count` to GNOME_KEYS.
+
+11. **Lines 2022-2029**: Add a lesson for `task_external_only_mismatch_count` that gives different advice (focus on planning pipeline, not implementation discipline).
+
+Let me also check `log_feedback.py` for the SCORE_FAILURE_WEIGHTS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:280..300 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if there's a `corrected_gnome_lessons` in extract_trajectory.py that references `task_scope_mismatch`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ search 'lessons' in scripts/extract_trajectory.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the trajectory extractor reads from log_feedback. The lessons are generated by `top_lessons()` in log_feedback.py. So I need to update that function too.
+
+Now let me also check `preseed_session_plan.py` for any references:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ search 'scope_mismatch' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK. Let me now create a todo list and start implementing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan and implement the changes:
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the changes to `build_evolution_dashboard.py`. I'll make them incrementally.
+
+First, change 1 & 2: Add external_only_mismatches counter and gnome assignment.
+────────────────────────────────────────────────────────────────────────────────
+  8 tools completed in 3.0s (8 ✓)
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let's start editing. First, add the external_only_mismatches counter right after scope_mismatches:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                1
+                for row in (verification.get("rows") or [])
+                if isinstance(row, dict) and task_scope_mismatch(row)
+  +         )
+  +         external_only_mismatches = sum(
+  +             1
+  +             for row in (verification.get("rows") or [])
+  +             if isinstance(row, dict) and task_external_only_mismatch(row)
+            )
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (5 → 10 lines)
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (5 → 10 lines)
+                1
+                for row in (verification.get("rows") or [])
+                if isinstance(row, dict) and task_scope_mismatch(row)
+  +         )
+  +         external_only_mismatches = sum(
+  +             1
+  +             for row in (verification.get("rows") or [])
+  +             if isinstance(row, dict) and task_external_only_mismatch(row)
+            )
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the gnome assignment. Let me read the current state around line 3181 (offset adjusted):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3183..3193 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the external_only_mismatches gnome assignment:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            gnomes["task_scope_mismatch_count"] = scope_mismatches
+  +         gnomes["task_external_only_mismatch_count"] = external_only_mismatches
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (1 → 2 lines)
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (1 → 2 lines)
+            gnomes["task_scope_mismatch_count"] = scope_mismatches
+  +         gnomes["task_external_only_mismatch_count"] = external_only_mismatches
+ ✓ (6ms)
+
+

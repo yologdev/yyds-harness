@@ -1,0 +1,307 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is clear: create a held-out eval fixture at `eval/fixtures/local-smoke/037-deepseek-transport-error-recovery.json`. Let me first read the evolve skill, then study the existing fixtures (especially 036) to understand the schema, then create the fixture.
+
+Let me start by reading the evolve skill and the existing fixture pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read eval/fixtures/local-smoke/036-deepseek-transport-error-policy.json ✓ (852ms)
+ ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the fixture schema from 036. Let me also look at a few more fixtures to understand the full pattern, especially ones with more complex structures that might show how verdicts and scenarios work.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ ls eval/fixtures/local-smoke (*.json) ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's a lot of fixtures. Let me look at a few that seem more relevant to transport/error handling, and also look at the eval_fixtures.rs to understand the full schema better.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at a few more relevant fixtures and the eval infrastructure:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read eval/fixtures/local-smoke/123-deepseek-fim-http-protocol-regression.json  ▶ read eval/fixtures/local-smoke/277-deepseek-transport-check-record-pass.json  ▶ read eval/fixtures/local-smoke/278-state-why-transport-check-pass.json ✓ (1.4s)
+ ✓ (1.1s)
+ ✓ (742ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding of the fixture schema. Let me also look at the eval_fixtures.rs to understand how fixtures are validated and run, and to see what fields are part of the schema.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:1..101 ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding of the fixture schema. The `BenchmarkTask` struct has these fields:
+
+- `task_id`: String (unique identifier)
+- `category`: String
+- `repo_fixture`: String
+- `initial_commit`: String
+- `goal`: String
+- `tests`: Vec<String> (commands to run)
+- `hidden_failure_mode`: String
+- `expected_files`: Vec<String>
+- `timeout_secs`: Option<u64> (optional)
+- `risk_label`: String
+
+Now let me look at the existing transport error tests in the codebase to understand what concrete tests exist that I can reference in the fixture.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what transport error recovery tests already exist:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'transport_error_recovery' (*.rs)  ▶ search 'transport.*recovery' (*.rs)  ▶ search 'retry_success' (*.rs) ✓ (533ms)
+ ✓ (1.1s)
+ ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the transport error related tests in the deepseek.rs and prompt_retry.rs files.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*transport' in src/deepseek.rs (*.rs)  ▶ search 'fn.*transport' in src/prompt_retry.rs (*.rs) ✓ (520ms)
+ ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search might need case sensitivity adjustment. Let me try differently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn.*transport' src/deepseek.rs | head -30  ▶ $ grep -n 'fn.*transport' src/prompt_retry.rs | head -30 ✓ (1.1s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The transport error recovery tests live in `src/deepseek.rs`. Here are the key tests:
+
+- `transport_policy_classifies_retryable_failures_with_backoff` (line 2917)
+- `transport_policy_does_not_retry_request_or_auth_failures` (line 2939)
+- `transport_failure_payload_is_state_ready_for_main_loop_errors` (line 2962)
+- `transport_failure_classifies_401_as_authentication` (line 3789)
+- `transport_failure_classifies_403_as_permission_denied` (line 3803)
+- `transport_failure_classifies_429_as_rate_limited_and_retryable` (line 3814)
+- `transport_failure_classifies_5xx_as_server_error_and_retryable` (line 3824)
+- `transport_failure_classifies_404_as_not_found_not_retryable` (line 3835)
+- `transport_failure_classifies_timeout_from_error_text` (line 3844)
+- `transport_failure_classifies_connection_refused_as_network` (line 3856)
+- `transport_failure_classifies_context_length_as_non_retryable` (line 3864)
+- `transport_failure_retry_budget_exhausted_stops_retrying` (line 3873)
+
+Now I have enough understanding. Let me also check the eval infrastructure to understand how fixtures are loaded and run:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.1s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn.*fixture' src/eval_fixtures.rs | head -20 ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me also look at the `load_fixture_suite_from` function to understand how fixtures are discovered:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:139..199 ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding. Let me check the `reject_unknown_fields` function to ensure I don't include extra fields:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/eval_fixtures.rs:607..642 ✓ (257ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. The fixture schema is:
+
+Required fields:
+- `task_id`: String
+- `category`: String
+- `repo_fixture`: String
+- `initial_commit`: String
+- `goal`: String
+- `tests`: Vec<String>
+- `hidden_failure_mode`: String
+- `expected_files`: Vec<String>
+- `risk_label`: String
+
+Optional:
+- `timeout_secs`: Option<u64>
+
+Now let me create the fixture. The task is about DeepSeek transport error recovery. I need to reference existing tests in `src/deepseek.rs` that cover transport failure classification and retry behavior. The key tests are:
+
+1. `transport_failure_classifies_5xx_as_server_error_and_retryable` - tests 5xx classification
+2. `transport_failure_classifies_timeout_from_error_text` - tests timeout classification
+3. `transport_failure_classifies_connection_refused_as_network` - tests connection reset classification
+4. `transport_failure_retry_budget_exhausted_stops_retrying` - tests bounded retry
+5. `transport_failure_payload_is_state_ready_for_main_loop_errors` - tests state event emission
+
+Let me also check what exact test names exist with their function signatures:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding of the fixture schema. Let me create the fixture:
+  + {
+  +   "task_id": "deepseek-transport-error-recovery",
+  +   "category": "deepseek/transport recovery",
+  +   "repo_fixture": "self",
+  +   "initial_commit": "current",
+  +   "goal": "Ensure yyds handles DeepSeek transport errors (connection reset, timeout, HTTP 5xx) with correct error classification, bounded retry/backoff, state event recording, and graceful degradation without crashing or corrupting state.",
+  +   "tests": [
+  +     "cargo test deepseek::tests::transport_failure_classifies_5xx_as_server_error_and_retryable -- --nocapture",
+  +     "cargo test deepseek::tests::transport_failure_classifies_timeout_from_error_text -- --nocapture",
+  +     "cargo test deepseek::tests::transport_failure_classifies_connection_refused_as_network -- --nocapture",
+  +     "cargo test deepseek::tests::transport_failure_retry_budget_exhausted_stops_retrying -- --nocapture",
+  +     "cargo test deepseek::tests::transport_failure_payload_is_state_ready_for_main_loop_errors -- --nocapture",
+  +     "cargo test deepseek::tests::transport_policy_classifies_retryable_failures_with_backoff -- --nocapture",
+  +     "cargo test deepseek::tests::transport_policy_does_not_retry_request_or_auth_failures -- --nocapture",
+  +     "cargo run --quiet --bin yoyo -- eval fixtures validate --suite local-smoke"
+  +   ],
+  +   "hidden_failure_mode": "Transport error classification, retry/backoff logic, and state-event recording can silently regress when error string formats change, HTTP status handling shifts, or retry budget arithmetic is refactored — without an eval fixture the harness has no mechanical gate against these regressions.",
+  +   "expected_files": [
+  +     "src/deepseek.rs",
+  +     "src/prompt_retry.rs",
+  ... (4 more lines)
+  ✓ Auto-approved: write: eval/fixtures/local-smoke/037-deepseek-transport-error-recovery.json (24 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write eval/fixtures/local-smoke/037-deepseek-transport-error-recovery.json (24 lines) ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the fixture:
+
+1. Validate the JSON parses
+2. Validate against the fixture schema
+3. Run the fixture commands to make sure they pass
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the fixture:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (26 lines) ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me validate the fixture with the eval infrastructure to make sure it's loadable:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yoyo -- eval fixtures list --suite local-smoke 2>&1 | gr… ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the correct eval command is:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yoyo -- eval list --suite local-smoke 2>&1 | grep -E '03… ✓ (539ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the actual eval subcommands are:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yoyo -- eval --help 2>&1 | head -30 ✓ (451ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The binary is `yyds` (which is `yyds`), not `yoyo`. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls Cargo.toml && head -5 Cargo.toml ✓ (400ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the package name is `yoyo-ds-harness` and the binary is `yyds`. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval --help 2>&1 | head -40 ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the eval subcommand:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval --help 2>&1 | head -40 ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `eval` subcommand doesn't seem to appear here. Let me check the CLI more carefully — maybe it's a dispatch subcommand in `dispatch_sub.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'eval' src/cli.rs | head -20 ✓ (493ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the dispatch to understand how the eval command works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:255..285 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `eval` is a registered subcommand. Let me try to use it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval --help 2>&1 | head -40 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It seems the `eval` subcommand isn't being recognized. Let me check the dispatch module to see how it's handled:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'eval' src/dispatch_sub.rs | head -20 ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `eval` is handled like a subcommand but it's being dispatched differently. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke 2>&1 … ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fixture validates. The suite now has 374 tasks (up from 373), which confirms our new fixture was loaded. Let me now also try to run a specific validation test for the fixture.
+
+But actually, let me verify that our specific fixture is in the list:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval fixtures validate --suite local-smoke 2>&1 … ✓ (366ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The validate doesn't show individual fixtures. Let me check the `list` command:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval list --suite local-smoke 2>&1 | tail -20 ✓ (546ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `yyds eval fixtures list --suite local-smoke` should work. Let me try:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --quiet --bin yyds -- eval fixtures list --suite local-smoke 2>&1 | gr… ✓ (600ms)
+
+
