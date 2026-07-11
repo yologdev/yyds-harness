@@ -921,11 +921,51 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             exit_code = None
         provider_error = provider_error_str.lower() == "true"
 
+        # --- Trajectory evidence enrichment ---
+        trajectory_gnomes = numeric_metrics(assessment)
+        trajectory_lines: list[str] = []
+        _TRAJECTORY_GNOME_KEYS = (
+            "task_success_rate",
+            "task_no_edit_revert_count",
+            "bash_tool_error",
+            "bash_tool_errors",
+            "task_obsolete_count",
+            "task_analysis_only_attempt_count",
+            "task_reverted_count",
+            "task_failed_count",
+        )
+        for key in _TRAJECTORY_GNOME_KEYS:
+            val = trajectory_gnomes.get(key)
+            if val is not None:
+                trajectory_lines.append(f"  - {key}={val}")
+        trajectory_evidence_str = ""
+        if trajectory_lines:
+            trajectory_evidence_str = (
+                "Trajectory gnomes from recent sessions:\n"
+                + "\n".join(trajectory_lines)
+            )
+        else:
+            trajectory_evidence_str = (
+                "Trajectory evidence unavailable (no gnome metrics found in assessment text)."
+            )
+
+        # Bias Files toward src/*.rs when trajectory shows no-edit reverts
+        _no_edit_revert = trajectory_gnomes.get("task_no_edit_revert_count", 0)
+        if _no_edit_revert > 0:
+            # Prefer src/state.rs if it exists; fall back to src/deepseek.rs; keep preseed as backup
+            _src_candidates = ["src/state.rs", "src/deepseek.rs"]
+            _existing_src = [
+                f for f in _src_candidates if os.path.exists(f)
+            ]
+            if _existing_src:
+                fallback["files"] = f"{_existing_src[0]}, scripts/preseed_session_plan.py"
+        # --- End trajectory evidence enrichment ---
+
         if exit_code == 124:
             # Timeout
             timeout_secs = int(timeout_str) if timeout_str else "?"
             fallback["title"] = (
-                f"Diagnose assessment phase timeout after {timeout_secs}s"
+                f"Fix assessment phase timeout after {timeout_secs}s with trajectory evidence"
             )
             fallback["objective"] = (
                 f"The assessment phase timed out after {timeout_secs} seconds. "
@@ -936,7 +976,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         elif provider_error:
             # Provider/API error
             fallback["title"] = (
-                "Diagnose assessment phase provider/API error"
+                "Fix assessment phase provider/API error with trajectory evidence"
             )
             fallback["objective"] = (
                 "The assessment phase hit a provider or API error. "
@@ -948,7 +988,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         elif exit_code is not None and exit_code != 0:
             # Non-zero exit (not timeout)
             fallback["title"] = (
-                f"Diagnose assessment phase exit code {exit_code}"
+                f"Fix assessment phase exit code {exit_code} with trajectory evidence"
             )
             fallback["objective"] = (
                 f"The assessment phase exited with code {exit_code} "
@@ -961,7 +1001,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         elif exit_code == 0 and not provider_error:
             # Ran successfully but didn't write assessment.md
             fallback["title"] = (
-                "Diagnose assessment phase silent failure (exit 0, no output)"
+                "Fix assessment silent failure: write assessment_missing.md with trajectory evidence"
             )
             fallback["objective"] = (
                 "The assessment agent exited successfully (code 0) with no provider error "
@@ -972,13 +1012,25 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
                 "or the agent produced analysis in its response but never called write_file."
             )
         else:
-            # Couldn't parse specific fields — keep generic but improve it
+            # Couldn't parse specific fields — keep generic fallback title
+            # Don't change the title since we have no structured evidence
             fallback["objective"] = (
                 "The assessment phase failed to produce assessment.md. "
                 f"Check {transcript} for the assessment agent's output. "
                 "Improve harness planning reliability with a narrow, verifiable fix "
                 "scoped to a single file."
             )
+
+        # Enrich evidence with trajectory gnomes
+        fallback["evidence"] = [
+            f"Assessment missing at Day {{day}} ({{session_time}}): "
+            f"trajectory context: {'; '.join(trajectory_lines) if trajectory_lines else 'no gnomes found'}.",
+            f"Trajectory gnome evidence: {trajectory_evidence_str}",
+            "Next session with missing assessment produces a task_01.md with trajectory gnomes in Evidence.",
+            "Future trajectory: task_obsolete_count decreases (fewer stale tasks selected).",
+            "Dashboard shows assessment_missing sessions produce at least 1 verified task.",
+        ]
+
         return fallback
 
     if _assessment_is_healthy_codebase(lower, current):
@@ -1871,6 +1923,42 @@ Guard result:
         assert "exit code 2" in task_nonzero["title"].lower(), (
             f"Exit-2 should produce exit-code task, got: {task_nonzero['title']}"
         )
+
+        # --- Trajectory evidence enrichment in assessment_missing fallback ---
+        # Silent failure (exit 0, no provider error) + trajectory gnomes
+        assessment_trajectory = """# Assessment Missing - Day 133 (11:03)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+## Structured State Snapshot
+Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1; task_success_rate = 0; task_failed_count = 2; bash_tool_error = 3
+"""
+        task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
+        # Files should include src/*.rs when task_no_edit_revert_count > 0
+        assert "src/" in str(task_traj["files"]), (
+            f"Files should include src/*.rs when task_no_edit_revert_count > 0, got: {task_traj['files']}"
+        )
+        assert "scripts/preseed_session_plan.py" in str(task_traj["files"]), (
+            f"Files should still include preseed, got: {task_traj['files']}"
+        )
+        # Evidence should contain trajectory gnome data
+        evidence_str = str(task_traj["evidence"])
+        assert "task_no_edit_revert_count=1" in evidence_str or "task_no_edit_revert_count" in evidence_str, (
+            f"Evidence should include task_no_edit_revert_count gnome, got: {evidence_str[:200]}"
+        )
+        assert "task_obsolete_count" in evidence_str, (
+            f"Evidence should include task_obsolete_count gnome, got: {evidence_str[:200]}"
+        )
+        # Title should describe fixing, not just diagnosing
+        assert "Fix" in task_traj["title"] or "fix" in task_traj["title"].lower(), (
+            f"Title should say Fix not Diagnose when trajectory evidence is present, got: {task_traj['title']}"
+        )
+        # --- End trajectory evidence enrichment test ---
 
         # Unparseable → generic fallback still works
         task_parsefail = choose_task("garbage text", assessment_was_missing=True)
