@@ -987,6 +987,30 @@ impl ToolFailureTracker {
     }
 }
 
+/// Extract the exit code from a bash error message formatted like
+/// "Exit code: N." or "exit code N". Returns `None` if no parseable
+/// exit code is found.
+fn extract_exit_code(error_msg: &str) -> Option<i32> {
+    let msg_lower = error_msg.to_lowercase();
+    // Match patterns like "Exit code: 42." or "exit code 1\n"
+    if let Some(pos) = msg_lower.find("exit code") {
+        let after = &msg_lower[pos + "exit code".len()..];
+        // Skip optional colon and whitespace
+        let digits: String = after
+            .trim_start()
+            .strip_prefix(':')
+            .unwrap_or(after.trim_start())
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .collect();
+        if !digits.is_empty() {
+            return digits.parse::<i32>().ok();
+        }
+    }
+    None
+}
+
 /// Inspect an error message and return a tool-category-specific recovery hint
 /// when the message matches a known failure pattern (e.g., bash exit codes,
 /// regex parse errors). Returns `None` when the message doesn't match any
@@ -999,14 +1023,28 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                 || msg_lower.contains("exit status")
                 || msg_lower.contains("command failed")
             {
-                Some(
+                let exit_code_advice = extract_exit_code(error_msg).map(|code| match code {
+                    1 => " (exit code 1 = general error; check command syntax or try --help)",
+                    2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+                    126 => " (exit code 126 = not executable; try chmod +x)",
+                    127 => " (exit code 127 = command not found; check PATH or install the tool)",
+                    _ => "",
+                });
+                let mut hint = String::from(
                     "Use explicit paths like `./script.sh` to avoid PATH ambiguity, \
                      and check `$?` immediately after the failing command to understand the exit code. \
                      Start multi-command scripts with `set -e` (and `set -o pipefail` for pipelines) \
                      to fail fast on the first error. \
-                     Retry with `set -x` at the start of your command to trace each step."
-                        .to_string(),
-                )
+                     Retry with `set -x` at the start of your command to trace each step. \
+                     Inspect both stdout AND stderr output before retrying — the error message \
+                     may carry only part of the story. \
+                     Add bounded limits: pipe through `head -n 50`, `tail -n 20`, or use a \
+                     `--max-results` flag to avoid overwhelming output."
+                );
+                if let Some(advice) = exit_code_advice {
+                    hint.push_str(advice);
+                }
+                Some(hint)
             } else if msg_lower.contains("timed out") {
                 Some(
                     "The command timed out. Try reducing scope: limit file traversal depth, \
@@ -1060,7 +1098,8 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                     "The shell command failed. Check `$?` immediately for the exit code, \
                      use explicit paths (`./script`, not `script`), and retry with a \
                      simpler bounded command. Break pipelines into individual steps to \
-                     isolate the failure."
+                     isolate the failure. Inspect both stdout and stderr for clues, and \
+                     add bounded limits (`head -n 50`, `tail -n 20`) to keep output manageable."
                         .to_string(),
                 )
             }
@@ -2886,6 +2925,25 @@ mod tests {
     // =========================================================================
 
     #[test]
+    fn test_extract_exit_code_parses() {
+        assert_eq!(extract_exit_code("Exit code: 1\nsome output"), Some(1));
+        assert_eq!(extract_exit_code("Exit code: 42. Tip: ..."), Some(42));
+        assert_eq!(
+            extract_exit_code("exit code 127: command not found"),
+            Some(127)
+        );
+        assert_eq!(extract_exit_code("exit code 0"), Some(0));
+        assert_eq!(extract_exit_code("Command timed out"), None);
+        assert_eq!(extract_exit_code("Some generic error"), None);
+    }
+
+    #[test]
+    fn test_extract_exit_code_negative() {
+        // Negative exit codes from signal termination (e.g., -1 from SIGTERM)
+        assert_eq!(extract_exit_code("Exit code: -1. Killed"), Some(-1));
+    }
+
+    #[test]
     fn test_targeted_recovery_hint_bash_exit_code() {
         let hint = targeted_recovery_hint("bash", "Exit code: 1\nsome output");
         assert!(hint.is_some());
@@ -2905,6 +2963,50 @@ mod tests {
         assert!(
             hint.contains("immediately after") || hint.contains("right after"),
             "hint should advise checking $? immediately after the failing command: {hint}"
+        );
+        // New: bounded output limits
+        assert!(
+            hint.contains("head -n 50") || hint.contains("tail -n 20"),
+            "hint should suggest bounded output limits (head/tail): {hint}"
+        );
+        // New: stdout AND stderr inspection
+        assert!(
+            hint.contains("stdout") && hint.contains("stderr"),
+            "hint should mention inspecting both stdout and stderr: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_exit_code_specific_advice() {
+        // Exit code 1 should get general error advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 1\nfailed").unwrap();
+        assert!(
+            hint.contains("exit code 1 = general error"),
+            "exit code 1 should get specific advice: {hint}"
+        );
+        // Exit code 2 should get misuse advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 2\nfailed").unwrap();
+        assert!(
+            hint.contains("exit code 2 = misuse"),
+            "exit code 2 should get specific advice: {hint}"
+        );
+        // Exit code 127 should get command-not-found advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 127\nfailed").unwrap();
+        assert!(
+            hint.contains("exit code 127 = command not found"),
+            "exit code 127 should get specific advice: {hint}"
+        );
+        // Exit code 126 should get not-executable advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 126\nfailed").unwrap();
+        assert!(
+            hint.contains("exit code 126 = not executable"),
+            "exit code 126 should get specific advice: {hint}"
+        );
+        // Exit code 42 (unknown) should not have specific advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 42\nfailed").unwrap();
+        assert!(
+            !hint.contains("exit code 42"),
+            "unknown exit codes should not get extra tag: {hint}"
         );
     }
 
@@ -2986,6 +3088,20 @@ mod tests {
         assert!(hint.contains("explicit path"));
         assert!(hint.contains("bounded command"));
         assert!(hint.contains("individual steps"));
+        // New: stdout and stderr inspection
+        assert!(
+            hint.contains("stdout"),
+            "catch-all hint should mention stdout: {hint}"
+        );
+        assert!(
+            hint.contains("stderr"),
+            "catch-all hint should mention stderr: {hint}"
+        );
+        // New: bounded limits
+        assert!(
+            hint.contains("head -n"),
+            "catch-all hint should suggest head bounds: {hint}"
+        );
     }
 
     #[test]
@@ -3081,6 +3197,19 @@ mod tests {
         assert!(err.contains("🎯 Targeted hint:"));
         assert!(err.contains("$?"));
         assert!(err.contains("set -x"));
+        // New: stdout+stderr inspection and bounded limits
+        assert!(
+            err.contains("stdout"),
+            "targeted hint should mention stdout: {err}"
+        );
+        assert!(
+            err.contains("stderr"),
+            "targeted hint should mention stderr: {err}"
+        );
+        assert!(
+            err.contains("head -n"),
+            "targeted hint should suggest head bounds: {err}"
+        );
     }
 
     #[tokio::test]

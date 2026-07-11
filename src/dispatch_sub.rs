@@ -49,7 +49,7 @@ pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>>
     // Only short-circuit --help/--version when args[1] is not a subcommand
     // name (i.e. it's missing or starts with '-'). This lets `yyds state --help`
     // route to the state handler instead of printing main CLI help.
-    let args1_is_flag = args.get(1).map_or(true, |s| s.starts_with('-'));
+    let args1_is_flag = args.get(1).is_none_or(|s| s.starts_with('-'));
     if args1_is_flag {
         if args.iter().any(|a| a == "--help" || a == "-h") {
             print_help();

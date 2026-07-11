@@ -137,10 +137,12 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
         match tool_name {
             "bash" => {
                 "The shell command failed. Inspect the exit code and stderr output above \
-                 to understand why. Before retrying, verify any file paths exist: \
+                 to understand why — both stdout and stderr carry diagnostic signals. \
+                 Before retrying, verify any file paths exist: \
                  use `test -f <path>` for files, `ls <dir>` for directories, or \
                  `rg --files | head` to list available project files. \
-                 Then try a simpler bounded version of the command."
+                 Then try a simpler bounded version of the command: pipe through \
+                 `head -n 50` or `tail -n 20` to keep output manageable."
             }
             "edit_file" => {
                 "The edit failed (likely old_text mismatch or wrong file path). \
