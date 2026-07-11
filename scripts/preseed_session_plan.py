@@ -466,7 +466,13 @@ _RESOLUTION_SIGNALS = (
     "already addressed",
     "already resolved",
     "already in place",
+    "already done",
+    "already complete",
+    "already completed",
     "no longer",
+    "no longer needed",
+    "no longer required",
+    "no longer necessary",
     "has been fixed",
     "has been resolved",
     "fixed ",
@@ -529,6 +535,32 @@ def _line_shows_obsolete_or_reverted(
     # Match via task keys (substring)
     if any(key in lower for key in task_keys):
         return True
+    # Match via significant words from the task title
+    title_lower = task_title.lower()
+    title_words = title_lower.split()
+    for phrase_len in (3, 2, 1):
+        for i in range(len(title_words) - phrase_len + 1):
+            phrase = " ".join(title_words[i : i + phrase_len])
+            if len(phrase) > 5 and phrase in lower:
+                return True
+    return False
+
+
+def _line_shows_title_resolution(line: str, task_title: str) -> bool:
+    """Return True if line shows resolution language related to task title.
+
+    This is a semantic fallback for `_line_shows_resolution`: when the
+    assessment describes resolution in prose but the task's structured
+    keys (metric names like ``obsolete_already_satisfied``) don't appear
+    verbatim in the line, this function matches resolution signals against
+    significant words from the task title.
+    """
+    lower = line.lower()
+    # Session-date prefix (Day NNN) alone triggers resolution
+    if re.match(r"day\s+\d+", lower):
+        return True
+    if not any(signal in lower for signal in _RESOLUTION_SIGNALS):
+        return False
     # Match via significant words from the task title
     title_lower = task_title.lower()
     title_words = title_lower.split()
