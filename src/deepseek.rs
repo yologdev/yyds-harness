@@ -4061,6 +4061,54 @@ mod tests {
         assert_eq!(genome1, genome2, "harness genome must be deterministic");
     }
 
+    #[test]
+    fn transport_failure_classifies_timeout_and_network_from_error_text() {
+        // Timeout patterns: classify as Timeout, are transient
+        for text in &["timed out", "connection timeout", "deadline exceeded"] {
+            let class = classify_transport_error(None, text);
+            assert_eq!(
+                class,
+                DeepSeekTransportErrorClass::Timeout,
+                "text '{}' should classify as Timeout",
+                text
+            );
+            assert!(
+                is_transient_transport_error(class),
+                "timeout '{}' should be transient",
+                text
+            );
+        }
+
+        // Network patterns: classify as Network, are transient
+        for text in &[
+            "connection refused",
+            "connection reset",
+            "dns error",
+            "tls handshake failed",
+            "network unreachable",
+        ] {
+            let class = classify_transport_error(None, text);
+            assert_eq!(
+                class,
+                DeepSeekTransportErrorClass::Network,
+                "text '{}' should classify as Network",
+                text
+            );
+            assert!(
+                is_transient_transport_error(class),
+                "network error '{}' should be transient",
+                text
+            );
+        }
+
+        // Verify timeout is retryable through the full classification pipeline
+        let policy = default_transport_policy();
+        let decision =
+            classify_deepseek_transport_failure(None, "connection reset by peer", 0, &policy);
+        assert!(decision.retryable, "connection reset should be retryable");
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::Network);
+    }
+
     fn default_transport_policy() -> DeepSeekTransportPolicy {
         DeepSeekTransportPolicy {
             connect_timeout_ms: 10_000,
