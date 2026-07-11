@@ -1,0 +1,352 @@
+warning: skipping corrupted event at line 44530 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 440
+warning: skipping corrupted event at line 44532 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The task is about broadening the verification gate in `scripts/task_verification_gate.py` to accept non-code tasks like issue management. Let me start by reading the relevant files.
+
+The key issue is in the `external_only_planned()` function which is too strict - it only recognizes "none" + "gh cli" pattern, but doesn't match "none — GitHub issue management only, no source edits" or similar descriptions.
+
+Let me follow the evolve skill rules:
+1. Read the evolve skill first
+2. Read the current source
+3. Write a test first
+4. Make surgical edits
+5. Verify with `python3 scripts/task_verification_gate.py --test`
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (60 lines)  ▶ read scripts/task_verification_gate.py ✓ (291ms)
+ ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me analyze:
+
+1. The `external_only_planned()` function on line 38-42 only recognizes `"none"` + `"gh cli"` pattern
+2. The self-test at line 214 only tests `"none (gh CLI only)"` 
+3. I need to broaden the function to also recognize patterns like `"none — GitHub issue management only, no source edits"`
+
+The task suggests option (c): add a secondary check if the planned entry starts with "none" AND contains any of {"github", "gh cli", "issue management", "no source edits", "no code"}.
+
+But wait - the task says `external_only_planned` needs to handle patterns where "none" is followed by "any description indicating no source file edits". Let me think about what's the best approach.
+
+Looking at line 42: `return all(item.startswith("none") and "gh cli" in item for item in normalized)`
+
+The simplest fix: broaden the check to also match "github" (lowercase) since "GitHub" becomes "github" after normalization. This would catch "none — GitHub issue management only, no source edits".
+
+But the task notes this could have false positives like "none — update GitHub README". However, "github readme" wouldn't start with "none"... wait, it would: "none — update github readme". Let me think...
+
+Actually, "none — update GitHub README" is still a valid non-code task (it suggests updating a README, not modifying source code). The key insight is that the "Files:" entry starting with "none" is a signal from the task planner that this task has no source file edits. So "github" is a reasonable secondary keyword.
+
+But to be safer, the task suggests option (c): check for multiple keywords. Let me implement this:
+
+```python
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned]
+    external_keywords = {"github", "gh cli", "issue management", "no source edits", "no code", "no source code"}
+    return all(
+        item.startswith("none") and (
+            "gh cli" in item or 
+            any(kw in item for kw in external_keywords)
+        )
+        for item in normalized
+    )
+```
+
+Wait, but "gh cli" is already in the set, so we could simplify. Let me re-read the original:
+
+```python
+return all(item.startswith("none") and "gh cli" in item for item in normalized)
+```
+
+So the simplest change would be to add "github" as an additional check:
+
+```python
+return all(item.startswith("none") and ("gh cli" in item or "github" in item) for item in normalized)
+```
+
+But the task says option (c) is the best balance. Let me implement that:
+
+```python
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned]
+    external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+    return all(
+        item.startswith("none") and any(signal in item for signal in external_signals)
+        for item in normalized
+    )
+```
+
+Now I also need to add test cases in `run_self_tests()`. Let me add a test for "none — GitHub issue management only, no source edits" and maybe a couple more patterns.
+
+Let me write the edit now and then run the test.
+
+Also - regarding the task's "Early action requirement": by my 5th tool turn, I must have edited a file. I'm on turn 2 (reading the files). Let me make this quick.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.9s (2 ✓)
+
+Good. I can see the problem clearly. The `external_only_planned()` function at line 38-42 only recognizes `"none"` + `"gh cli"`. I need to broaden it to also match `"github"` and other non-code descriptors. Let me make the edit now (turn 3-4 target for the early-action rule).
+        if not planned:
+            return False
+        normalized = [" ".join(str(item).lower().split()) for item in planned]
+  -     return all(item.startswith("none") and "gh cli" in item for item in normalized)
+  +     external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+  +     return all(
+  +         item.startswith("none") and any(signal in item for signal in external_signals)
+  +         for item in normalized
+  +     )
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (5 → 9 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (5 → 9 lines)
+        if not planned:
+            return False
+        normalized = [" ".join(str(item).lower().split()) for item in planned]
+  -     return all(item.startswith("none") and "gh cli" in item for item in normalized)
+  +     external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+  +     return all(
+  +         item.startswith("none") and any(signal in item for signal in external_signals)
+  +         for item in normalized
+  +     )
+ ✓ (126ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add test cases for the broader patterns. Let me add tests after the existing external-only test at line 233. I'll add tests for:
+1. "none — GitHub issue management only, no source edits"
+2. "none (no source edits)"
+3. "none" without any signal (should fail - missing external evidence)
+4. A borderline case like "none — update README" (which wouldn't match any signal - but actually wait, this would be treated as not external-only, which means it would need to touch files... Actually let me think about this differently)
+
+Actually, `"none — update README"` would NOT match any of the external signals (no "gh cli", "github", "issue management", "no source edits", "no code"), so it would return False, meaning the task would need file changes. That seems reasonable.
+
+Let me add tests for the key patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add test cases for the broader patterns after the existing external-evidence tests.
+            invalid_external = verify(repo, base, task)
+            assert invalid_external["ok"] is False
+            assert invalid_external["reason"] == "external-only task external evidence artifact is invalid"
+  +         # Test broader external-only patterns from task verification gate broadening.
+  +         broader_patterns = [
+  +             "none — GitHub issue management only, no source edits",
+  +             "none (no source code changes, issue management only)",
+  +             "none (no source edits)",
+  +         ]
+  +         for pattern in broader_patterns:
+  +             task.write_text(f"Title: x\nFiles: {pattern}\n", encoding="utf-8")
+  +             (repo / "session_plan/task_01_external_evidence.json").write_text(
+  +                 json.dumps(
+  +                     {
+  +                         "status": "completed",
+  +                         "evidence": [{"kind": "github_issue", "url": "https://example.test/1"}],
+  +                     }
+  +                 ),
+  +                 encoding="utf-8",
+  +             )
+  ... (9 more lines)
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (3 → 29 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (3 → 29 lines)
+            invalid_external = verify(repo, base, task)
+            assert invalid_external["ok"] is False
+            assert invalid_external["reason"] == "external-only task external evidence artifact is invalid"
+  +         # Test broader external-only patterns from task verification gate broadening.
+  +         broader_patterns = [
+  +             "none — GitHub issue management only, no source edits",
+  +             "none (no source code changes, issue management only)",
+  +             "none (no source edits)",
+  +         ]
+  +         for pattern in broader_patterns:
+  +             task.write_text(f"Title: x\nFiles: {pattern}\n", encoding="utf-8")
+  +             (repo / "session_plan/task_01_external_evidence.json").write_text(
+  +                 json.dumps(
+  +                     {
+  +                         "status": "completed",
+  +                         "evidence": [{"kind": "github_issue", "url": "https://example.test/1"}],
+  +                     }
+  +                 ),
+  +                 encoding="utf-8",
+  +             )
+  ... (9 more lines)
+ ✓ (102ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the self-tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_verificat… ✓ (190ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that `split_files` splits on commas and semicolons too. The planned files entry `"none — GitHub issue management only, no source edits"` gets split into `["none — GitHub issue management only", "no source edits"]` because of the comma after "only". 
+
+The `external_only_planned` checks ALL items must start with "none" and contain a signal. "no source edits" starts with "no" not "none", so it fails.
+
+I need to handle this differently. The problem is in how `split_files` parses the line. The comma in the middle of the description causes it to split. Let me look at the `split_files` function:
+
+```python
+def split_files(value: str) -> list[str]:
+    return compact([part.strip() for part in value.replace(";", ",").split(",")])
+```
+
+So the `Files:` line gets split on commas. The entry `"none — GitHub issue management only, no source edits"` becomes two entries.
+
+For a non-code task, we need to handle this better. One approach: join back entries that look like continuations. But that's fragile.
+
+Better approach: In `external_only_planned`, if the first entry starts with "none" and contains a signal keyword, consider the whole thing external-only. We shouldn't require ALL entries to match — instead, if the first entry signals external-only, that's sufficient. 
+
+Actually, looking more carefully: the `Files:` line format for this case is: `Files: none — GitHub issue management only, no source edits`
+
+The comma after "only" is being treated as a file separator. We could fix `split_files`, but that might have side effects. 
+
+A simpler fix: In `external_only_planned`, join all entries back together and check the combined text. Or, check if the first entry starts with "none" and has a signal, and if so, treat the whole thing as external-only.
+
+Wait, but `all()` requires every entry to match. If we change to checking just the first entry, that would work. Let me think about what the actual meaning is: the `Files:` line is supposed to list files. When it says "none (gh CLI only)" or "none — GitHub issue management only, no source edits", the intent is clear: no source files, this is an external task. The comma splitting is just a parsing artifact.
+
+Let me change the approach: instead of requiring ALL entries to match, check if any entry in the planned list signals external-only. The rationale: if the planner says "none" followed by external work description, the commas are just punctuation in the description, not file separators.
+
+Actually, a cleaner fix: in `external_only_planned`, first join all normalized entries into one string and check that. Or, check if the first (or any) normalized entry starts with "none" and has a signal, and if so it's external-only.
+
+Let me go with: check if the joined normalized string starts with "none" and contains a signal. This is the most robust.
+
+```python
+def external_only_planned(planned: list[str]) -> bool:
+    if not planned:
+        return False
+    normalized = [" ".join(str(item).lower().split()) for item in planned]
+    joined = " ".join(normalized)
+    if not joined.startswith("none"):
+        return False
+    external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+    return any(signal in joined for signal in external_signals)
+```
+
+Wait, but this would match something like "none, src/lib.rs, github readme". That's unlikely but let me think... Actually no, the planner writes these planned files entries, and they're either "none (gh CLI only)" or actual file paths. The "none" prefix only appears for external-only tasks. So joining and checking the combined string should be safe.
+
+But there's a subtle issue: the original code required ALL entries to match. What if there's a multi-entry case like `Files: none (gh CLI only), README.md`? With `all()`, this would fail as external-only. With `any()` or joined, it would treat it as external-only. Is that correct?
+
+Actually, in practice, the planner writes either:
+- `Files: src/lib.rs, src/tools.rs` (normal code task)
+- `Files: none (gh CLI only)` (external-only task)
+- `Files: none — GitHub issue management only, no source edits` (external-only task)
+
+The comma within the "none" description is just punctuation. The planner wouldn't mix "none" with actual file paths. So joining and checking is safe.
+
+Let me also think: what if "no source edits" appears in a non-"none" context? Like `Files: src/edit.rs, docs/source-edits.md`? With the joined approach, `"no source edits"` wouldn't trigger because the joined string wouldn't start with "none".
+
+OK, let me implement the joined approach:
+────────────────────────────────────────────────────────────────────────────────
+
+The issue is that the comma in the description causes `split_files` to break it into two entries. `"no source edits"` doesn't start with "none", so `all()` fails. I need to join the entries back and check the combined text.
+        if not planned:
+            return False
+        normalized = [" ".join(str(item).lower().split()) for item in planned]
+  +     joined = " ".join(normalized)
+  +     if not joined.startswith("none"):
+  +         return False
+        external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+  -     return all(
+  -         item.startswith("none") and any(signal in item for signal in external_signals)
+  -         for item in normalized
+  -     )
+  +     return any(signal in joined for signal in external_signals)
+  ✓ Auto-approved: edit: scripts/task_verification_gate.py (9 → 9 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_verification_gate.py (9 → 9 lines)
+        if not planned:
+            return False
+        normalized = [" ".join(str(item).lower().split()) for item in planned]
+  +     joined = " ".join(normalized)
+  +     if not joined.startswith("none"):
+  +         return False
+        external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+  -     return all(
+  -         item.startswith("none") and any(signal in item for signal in external_signals)
+  -         for item in normalized
+  -     )
+  +     return any(signal in joined for signal in external_signals)
+ ✓ (154ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_verificat… ✓ (172ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me run the focused verification checks as required by the evolve skill: `cargo fmt -- --check` for formatting, then the narrowest Rust test.
+
+Let me also verify the final file looks correct.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me verify the final file and run the focused checks:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_verification_gate.py:38..53  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | ta… ✓ (260ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed (no output means no issues). This is a Python-only change, so there's no need to run cargo build or cargo test - but let me verify that the change is only in the Python script.
+
+Let me now check git status and confirm the diff is only in the expected file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+`cargo fmt -- --check` passes clean. Now let me confirm the diff and commit:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (152ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `scripts/task_verification_gate.py` which matches the task's Edit Surface. Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only the expected file changed. Let me commit:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (150ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me verify by looking at the diff one more time to make sure everything is right.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the commit looks right:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show --stat HEAD ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything is committed. Let me summarize what was done and provide the terminal evidence marker.
+
+Summary:
+- Changed `external_only_planned()` in `scripts/task_verification_gate.py` to use a joined-string approach with a broader set of signal keywords (`{"gh cli", "github", "issue management", "no source edits", "no code"}`)
+- Added test cases for three broader patterns: "none — GitHub issue management only, no source edits", "none (no source code changes, issue management only)", "none (no source edits)"
+- Added a test case confirming that bare "none" without a signal keyword is NOT treated as external-only
+- All self-tests pass: `python3 scripts/task_verification_gate.py --test`
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** `scripts/task_verification_gate.py` — the `external_only_planned()` function.
+
+**Before:** Only recognized planned file entries containing both `"none"` AND `"gh cli"`. Failed on `"none — GitHub issue management only, no source edits"` because the comma caused `split_files` to break it into two entries, and `"no source edits"` doesn't contain `"gh cli"`.
+
+**After:** Joins all normalized entries into one string, checks it starts with `"none"`, then checks for any of these signal keywords: `{"gh cli", "github", "issue management", "no source edits", "no code"}`. This handles comma-containing descriptions and broader non-code task descriptions.
+
+**Tests added:**
+• `"none — GitHub issue management only, no source edits"` → external-only ✅
+• `"none (no source code changes, issue management only)"` → external-only ✅
+• `"none (no source edits)"` → external-only ✅
+• `"none"` alone (no signal) → NOT external-only ✅
+
+**Verification:** `python3 scripts/task_verification_gate.py --test` passes all tests including the new broader patterns.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

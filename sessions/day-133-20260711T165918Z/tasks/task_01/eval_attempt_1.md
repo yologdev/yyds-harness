@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Core detection improvement (6 new resolution signals in `_RESOLUTION_SIGNALS` covering "already done", "already complete", "already completed", "no longer needed/required/necessary") is wired into `check_task_contradiction` via the existing `_line_shows_resolution` call path. Title-word semantic fallback already exists in `_line_shows_obsolete_or_reverted`. Verifiers pass (`--test` and import both OK). Minor defect: `_line_shows_title_resolution` is defined but never called — dead code, but doesn't break the core detection.

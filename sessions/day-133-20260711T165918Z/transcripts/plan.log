@@ -1,0 +1,579 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation. I'm in Phase A2 (PLANNING) and need to produce task files in session_plan/. Let me start by checking if any pre-existing task files exist.
+
+Key evidence from the assessment and trajectory:
+
+1. **Run overlap problem** (#262): Alternating success/cancelled pattern. The wall-clock budget infrastructure exists (`YOYO_SESSION_BUDGET_SECS`, `session_budget_remaining()`) but the shell-side export in `scripts/evolve.sh` hasn't landed. This wastes every other cron slot.
+
+2. **Issue #93 keeps reverting**: Task to close resolved issues #89, #91, #92 keeps reverting because the verification gate rejects issue-management-only tasks that don't touch source files. The verifier doesn't have a path for non-code tasks.
+
+3. **Issue #37**: Held-out eval coverage for DeepSeek harness gnomes — ongoing tracking.
+
+4. **Graph pressure**: 
+   - Lifecycle gaps (deepseek_model_call_abnormal_completed_count=2)
+   - Bash tool errors (30)
+   - State-only tool failures (63)
+   - Transcript-only tool failures (1)
+
+5. **Subcommand help**: `yyds state --help` shows main CLI help instead of subcommand-specific help.
+
+Let me prioritize:
+
+**Priority 0**: No CI failures. The integration test timeout is known, not a regression.
+
+**Priority 1**: yoagent-state DeepSeek feedback. The graph pressure shows lifecycle gaps, bash errors, and tool-failure reconciliation. The most impactful fix is the run overlap problem — it literally wastes every other cron slot. This directly improves task_success_rate (fitness gnome) because cancelled runs are wasted capacity.
+
+**Priority 2**: DeepSeek harness eval/replay/promotion quality. Issue #93's reversion pattern is a verification gate bug — issue-management tasks should be verifiable. This is a harness quality issue.
+
+Let me check for pre-existing task files first, then write my plan.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty or miss…  ▶ $ cat session_plan/task_01.md 2>/dev/null || echo "NO TASK_01" ✓ (1.1s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze what's here:
+
+1. There's a pre-seeded `task_01.md` from the harness about "Repair evidence-backed planning after no-task sessions." 
+2. There's also an `assessment.md` already written.
+
+Looking at this seed task more carefully: it claims "The harness reached planning with no task artifacts." But the assessment and trajectory show that the most recent session (11:28) was 2/2 strict verified. This session isn't in a no-task situation. The seed task was generated before the full assessment was available.
+
+Let me verify: the trajectory says:
+- day-133 (2026-07-11 11:28:00): tasks 2/2 ✅ — 2/2 strict verified; build OK, tests OK
+- day-133 (2026-07-11 04:55:33): tasks 0/2 ⚠️
+- day-133 (2026-07-11 04:41:02): tasks 1/3 ⚠️
+
+The 04:55 session had 0/2 tasks, and the 04:41 session had 1/3. But the 11:28 session was 2/2. So the "stuck" pattern is recent but not current — the last session successfully landed work.
+
+However, the seed task's evidence says: "Current assessment matched this harness seed: The harness reached planning with no task artifacts." This is the seed's rationale. But the assessment I have shows a healthy, productive harness. The seed task about "planning reliability" is addressing a stale concern.
+
+Looking at the trajectory more carefully: the 04:55 session had `obsolete_already_satisfied=1, reverted_no_edit=1` — meaning the seed task was marked obsolete AND another task reverted without edits. The 04:41 had `reverted_no_edit=1, reverted_unlanded_source_edits=1`. These ARE planning-level problems — tasks got selected but couldn't land.
+
+But the most recent session (11:28) was 2/2. So the immediate "no-task" crisis isn't current.
+
+Let me think about what tasks to plan:
+
+**Task priorities from evidence:**
+
+1. **Run overlap fix (HIGHEST IMPACT)**: The alternating success/cancelled pattern wastes every other cron slot. The infrastructure exists (`YOYO_SESSION_BUDGET_SECS`, `session_budget_remaining()`) — only the shell-side export in `scripts/evolve.sh` needs to land. This directly improves task throughput and is a simple fix.
+
+2. **Issue #93 verification gate fix**: The verifier rejects issue-management-only tasks. The verifier needs a path for non-code tasks. This is a harness quality improvement.
+
+3. **Held-out eval coverage**: Issue #37 — add eval fixtures for FIM routing, prompt layout, cache behavior, etc. Incremental progress.
+
+Let me check the seed task more carefully. The assessment says the seed task exists. The planning instructions say: "You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+The seed task's evidence: "Current assessment matched this harness seed: The harness reached planning with no task artifacts." — this is misleading because the harness ALWAYS seeds this task when it reaches planning, not because we're currently in a no-task crisis. The assessment clearly shows recent success (2/2 strict verified). 
+
+But I should NOT delete the seed task unless I write an equal-or-better replacement. Let me instead refine it: I can modify it to focus on something concrete from the evidence, or I can keep it and add task_02 and task_03.
+
+Actually, re-reading the instructions more carefully: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The harness reached planning with no task artifacts" — but the assessment says the last session was 2/2. The seed task is about a different pattern (the 04:55 session had 0/2). But since the 11:28 session was successful, this isn't a current crisis. The seed task is based on stale assumptions.
+
+However, looking at the task more carefully — it's about "planning reliability" more broadly, including fallback task selection. The recent sessions DID have reverted_no_edit tasks (2 in the 04:55 session). So there IS a planning reliability issue — tasks get selected but can't land because they don't touch source files (like issue #93).
+
+Let me refine the seed task to be more evidence-backed AND plan two additional tasks.
+
+**My plan:**
+
+1. **Task 01 (refine seed)**: Fix the verification gate to allow issue-management-only tasks that close GitHub issues. This directly addresses the #93 reversion pattern. The seed task is about planning reliability → this is a concrete manifestation of planning unreliability (tasks get selected but can't land).
+
+2. **Task 02**: Add shell-side `YOYO_SESSION_BUDGET_SECS` export to `scripts/evolve.sh` to fix the run overlap problem. This is a one-line change with huge impact.
+
+3. **Task 03**: Add held-out eval fixture for DeepSeek FIM routing correctness (incremental progress on #37). Or alternatively, fix the subcommand `--help` issue.
+
+Let me think about which tasks are most evidence-backed and impactful:
+
+- Task 02 (run overlap) is the highest impact per line changed. It's literally exporting an env var that the code already supports. One line.
+- Task 01 (verification gate for issue-management tasks) directly addresses the #93 reversion pattern that the trajectory shows.
+- Task 03: I have options. The graph pressure shows bash_tool_error=30, lifecycle gaps, etc. But those are harder to fix concretely in 20 min. An eval fixture for FIM routing is additive and verifiable.
+
+Let me go with: Task 01 refined to verification gate fix, Task 02 run overlap fix, Task 03 eval fixture or subcommand help fix.
+
+Actually, wait — let me re-read the seed task more carefully. It says:
+- Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+- It's about "fallback task selection and manifest validation"
+
+This is about planning infrastructure reliability. Issue #93's reversion is about the VERIFICATION gate, not planning. Different code paths.
+
+The seed task is specifically about planning failures. Let me keep it but refine the evidence to be more current. The 04:55 session had `obsolete_already_satisfied=1` — meaning the seed task was marked obsolete. The planning pipeline needs to not re-seed already-obsolete tasks. This is a real pattern.
+
+Let me refine task_01 to address a concrete planning reliability issue: the re-seeding of obsolete tasks.
+
+OK let me just plan task files now. Let me check what files would be involved.
+
+For Task 01 (refining seed): scripts/preseed_session_plan.py is the primary file. Let me think about what concrete fix I can propose.
+
+The seed task says to "improve fallback task selection and manifest validation." Looking at the evidence:
+- The 04:55 session had `obsolete_already_satisfied=1` — the seed task was marked as already satisfied
+- The 04:41 session had `reverted_no_edit=1` and `reverted_unlanded_source_edits=1`
+
+The concrete issue: the preseed script picks tasks that get marked obsolete because the assessment shows they're already done. The contradiction detector (from Day 118 learning) added a semantic fallback, but it may still miss cases.
+
+Let me refine task_01 to be more concrete: improve the stale-seed contradiction detection in preseed_session_plan.py so it doesn't re-seed tasks the assessment already shows are resolved. This is a ~20-min fix in one file.
+
+For Task 02: run overlap fix. Let me check if there's something more concrete than "add env var export." Let me look at how the budget is used.
+
+Actually, let me just plan and write the task files now. I have enough evidence.
+
+Plan:
+1. Task 01 (refined seed): Improve stale-seed contradiction detection in preseed_session_plan.py — prevent re-seeding tasks assessment already shows as resolved. Files: scripts/preseed_session_plan.py
+2. Task 02: Add YOYO_SESSION_BUDGET_SECS export to evolve.sh to prevent run overlap. Files: scripts/evolve.sh
+3. Task 03: Add held-out eval fixture for DeepSeek FIM routing correctness. Files: eval/fixtures/local-smoke/ (new fixture file)
+
+Let me verify ownership of these files.
+
+Wait, `scripts/evolve.sh` is in the protected files list: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So I can't touch evolve.sh. The task for run overlap would need to be done by a human. Let me note that.
+
+Hmm, but the assessment says: "The wall-clock budget infrastructure exists (YOYO_SESSION_BUDGET_SECS, session_budget_remaining()) but the shell-side export in scripts/evolve.sh hasn't landed — it was marked as a separate human-approved follow-up." This is explicitly a human-gated change.
+
+So I can't make task 02 about evolve.sh directly. Let me reconsider.
+
+OK, let me pivot:
+
+1. **Task 01 (refine seed)**: Improve stale-seed contradiction detection in preseed_session_plan.py. Concrete, one file, testable.
+
+2. **Task 02**: Fix the verification gate to allow non-code tasks (issue management). This addresses #93 reversion. Let me find the verification code.
+
+3. **Task 03**: Held-out eval fixture for FIM routing or subcommand help fix.
+
+Let me check where the verification gate lives.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 36.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/evolve.sh | head -1 && echo "---" && grep -n "protected\|do…  ▶ $ grep -n "scope.mismatch\|task.changes.do.not.overlap\|task_scope_mismatch\|rever… ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check where the verification gate that rejects non-code tasks lives. The assessment mentions "The verification gate rejects it because task changes don't overlap planned files."
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "task changes do not overlap\|planned_files\|touched_files\|overlapping_…  ▶ $ grep -n "task changes do not overlap\|planned_files\|scope.mismatch\|ok.:.false"… ✓ (601ms)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the actual verification script that checks task scope. The evolve.sh line 2406 references a `--task-file` flag. Let me find the verify script.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "task.file\|task_scope\|verify.*task\|TASK_SCOPE" scripts/evolve.sh | he…  ▶ $ grep -rn "overlapping_files\|task changes do not overlap" scripts/ --include="*.… ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The verification gate is in `scripts/task_verification_gate.py`. Let me read that file to understand how it works and how to make it accept non-code tasks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_verification_gate.py ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the verification gate. Let me trace the logic:
+
+1. `external_only_planned()` checks if ALL planned files are "none" with "gh cli" in them. This is for tasks that only do GitHub CLI operations.
+2. If `external_only` is true AND `valid_external_evidence()` returns true AND there are no touched files, the task passes via `external_ok`.
+3. The `valid_external_evidence()` function checks for status "completed" or "changed" and non-empty evidence list.
+
+The issue #93 task has:
+- Files: `(none — GitHub issue management only, no source edits)` 
+
+Let me check: `external_only_planned(["none — GitHub issue management only, no source edits"])` → `normalized = ["none — github issue management only, no source edits"]` → `item.startswith("none") = True` AND `"gh cli" in item`... wait, the text is "none — GitHub issue management only, no source edits". Does "gh cli" appear? Let me look: "none — **G**it**H**ub issue management only, no source edits" — no, "gh cli" is NOT in this text. The text has "GitHub" but not "gh cli".
+
+So the task fails the `external_only_planned` check because the planned files text doesn't contain "gh cli". Then the verification proceeds to check for file overlap, finds none, and rejects.
+
+The fix path: The `external_only_planned` function is too narrow. It only recognizes planned files entries that say "none ... gh cli ...". But the issue #93 task uses a different pattern: "none — GitHub issue management only, no source edits". 
+
+There are two approaches:
+1. Broaden `external_only_planned` to recognize more patterns of "no source file edits" tasks.
+2. Change the task to use the recognized format.
+
+But the issue is that even if we fix `external_only_planned`, the task also needs external evidence (a JSON file written by the implementation agent). The verification flow for external-only tasks is:
+1. `external_only = external_only_planned(planned)` — is this a source-file-less task?
+2. `external_ok = external_only and valid_external_evidence(external_evidence)` — was external evidence produced?
+3. `ok = bool(planned and ((touched and overlapping) or external_ok))` — pass if external evidence is valid
+
+So even with broader detection, the implementation agent still needs to write the external evidence JSON file. Let me check if issue #93's task actually produced that file... Looking at the error evidence:
+```
+"external_evidence_path": "session_plan/task_01_external_evidence.json"
+"external_evidence": null
+```
+
+The file EXISTS (external_evidence_path is set) but external_evidence is null, meaning `valid_external_evidence` returned false. Let me check what the file contains... Wait, the error says:
+
+```json
+{"ok": false, "reason": "task changes do not overlap planned Files entries", ...}
+```
+
+The reason is "task changes do not overlap planned Files entries" — NOT "external-only task missing external evidence artifact" or "external-only task external evidence artifact is invalid". This means `external_only_planned` returned False, so the code never even checked for external evidence!
+
+Let me trace through the logic again with the planned files "none — GitHub issue management only, no source edits":
+
+1. `planned = parse_planned_files(task_file)` → calls `split_files` on the Files line → `["none — GitHub issue management only", "no source edits"]`
+2. `external_only = external_only_planned(planned)` → normalizes each: "none — github issue management only" → starts with "none"? yes → contains "gh cli"? "github" but not "gh cli" → False. "no source edits" → doesn't start with "none" → False. Result: False.
+3. `touched = changed_files(repo, base)` → includes `session_plan/task_01_external_evidence.json` (the evidence file the task wrote)
+4. `overlapping = []` — none of the planned files match any touched files
+5. `ok = bool(planned and ((touched and overlapping) or external_ok))` → planned=True, touched=True, overlapping=False → when `external_ok` is False, this becomes: True and ((True and False) or False) = False
+6. Reason: "task changes do not overlap planned Files entries"
+
+So there are two problems:
+1. `external_only_planned` is too narrow — it doesn't recognize "none — GitHub issue management only" as an external-only pattern.
+2. Even if fixed, the task still needs valid external evidence.
+
+But the first problem is the blocker: the verification never even GETS to checking external evidence because `external_only_planned` returns False.
+
+Now, for my plan:
+
+**Task 01 (refine seed)**: Fix `external_only_planned` in `scripts/task_verification_gate.py` to recognize broader patterns of non-code tasks. Also update the self-test.
+
+**Task 02**: Add a held-out eval fixture for DeepSeek FIM routing. This is incremental progress on #37.
+
+**Task 03**: Fix the subcommand `--help` display issue. Or something else.
+
+Actually, let me reconsider. The assessment says: "The evolution run overlap is the most impactful waste — every other cron slot gets cancelled." But `scripts/evolve.sh` is protected. Let me check if there's another way to fix this.
+
+Wait, I should also look at the preseed seed task's Files entry. The seed task says Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py. But `task_manifest.py` and `test_task_manifest.py` might not exist. Let me check.
+
+Actually, let me stop overthinking and plan. I'll refine task_01 and write task_02, task_03.
+
+Plan:
+1. **Task 01 (refine seed)**: Broaden `external_only_planned()` in `scripts/task_verification_gate.py` to detect non-code tasks with patterns beyond "gh cli". Add detection for "(none" patterns, "no source edits", and "issue management only". This fixes the #93 reversion pattern.
+
+2. **Task 02**: Add eval fixture for DeepSeek FIM routing correctness under `eval/fixtures/local-smoke/`. Test that FIM route decisions are correct for file-based prompts.
+
+3. **Task 03**: Fix subcommand `--help` display so `yyds state --help` shows state subcommand help, not main CLI help.
+
+Let me verify the subcommand help issue is real and find the owning module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ./target/debug/yyds state --help 2>&1 | head -10  ▶ $ git ls-files scripts/task_manifest.py scripts/test_task_manifest.py 2>/dev/null;… ✓ (1.0s)
+ ✓ (993ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, confirmed:
+
+1. `yyds state --help` shows main CLI help, not state subcommand help — this is the subcommand help bug.
+2. `scripts/task_manifest.py` and `scripts/test_task_manifest.py` exist — the seed task's Files entries are valid.
+3. Eval fixtures exist under `eval/fixtures/local-smoke/`.
+
+Now let me check `task_manifest.py` to understand the seed task's scope better, and verify the subcommand help bug's source.
+
+For the subcommand help bug, let me check if there are existing eval fixtures that test it, and find where the subcommand routing happens.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "subcommand.*help\|--help.*subcommand\|flag_value_check\|require_flag_va…  ▶ $ ls eval/fixtures/local-smoke/ | grep -i "help\|subcmd\|cli"  ✓ (1.0s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the cli.rs code around line 803 where early-exit subcommands (--help, --version) are handled, to understand the subcommand help bug.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:798..908 ✓ (204ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The subcommand help bug: `yyds state --help` calls `try_dispatch_subcommand(args)` which sees "state" as a subcommand and "--help" as a flag. But the subcommand dispatcher probably doesn't forward `--help` to the subcommand's help handler.
+
+Let me check `dispatch_sub.rs`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "fn try_dispatch_subcommand\|--help\|help_flag\|args.*help" src/dispatch… ✓ (453ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 49 shows the problem clearly: `if args.iter().any(|a| a == "--help" || a == "-h")` — this catches `--help` at ANY position, including after a subcommand like `state --help`. When `--help` is in the args, the function probably returns early with the main help text instead of routing to the subcommand-specific help.
+
+Let me read more of this function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:48..98 ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the bug clearly. Line 49:
+
+```rust
+if args.iter().any(|a| a == "--help" || a == "-h") {
+    print_help();
+    return Some(None);
+}
+```
+
+This catches `--help` ANYWHERE in the args, even when it's after a subcommand like `state --help`. It should only catch `--help` when it's the first positional argument (i.e., `yyds --help`), not when it follows a subcommand.
+
+The fix: when `--help` is found in args, check if there's a recognized subcommand before it. If there is, route to the subcommand's help handler instead of the main help.
+
+Let me think about what subcommands exist that might have their own help handlers... Looking at the match arms below line 63, I see: doctor, health, help, version, setup, state, deepseek, eval, evolve, tools, complete. Some of these have their own `--help` handling within their match arm.
+
+Let me check how `state` subcommand handles `--help`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "\"state\"" src/dispatch_sub.rs | head -10  ▶ read src/dispatch_sub.rs:130..180 ✓ (256ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the "state" subcommand is handled in dispatch_sub.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:110..130 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The bug is on line 49 of `dispatch_sub.rs`:
+
+```rust
+if args.iter().any(|a| a == "--help" || a == "-h") {
+    print_help();
+    return Some(None);
+}
+```
+
+This catches `--help` before the subcommand routing on line 62 (`if let Some(sub) = args.get(1)`). So `yyds state --help` hits line 49 because `--help` is present in args, prints the main help, and returns — never reaching the `"state"` match arm on line 112.
+
+The fix: Move the `--help`/`--version` check AFTER the subcommand routing, OR make it check whether `--help` is the first positional arg (args[1]) rather than anywhere in args.
+
+Let me think about the cleanest fix. The current behavior for `yyds --help` should still work (print main help). For `yyds state --help`, it should route to the state subcommand handler which presumably has its own help.
+
+The simplest fix: check if args[1] is a recognized subcommand WITH `--help` later in args. If so, route to the subcommand. Otherwise, show main help.
+
+But actually, a simpler approach: move the `--help`/`--version` check to just before the subcommand routing, and only trigger it when there's no recognized subcommand in args[1].
+
+Or even simpler: check that the `--help` is in the FIRST position (args[1] == "--help"), not anywhere in args.
+
+Wait, but `yyds --model deepseek-v4-pro --help` should also work. Let me think...
+
+The cleanest fix is:
+1. Check if args[1] is a recognized subcommand
+2. If so, route to the subcommand handler (which can handle --help itself)
+3. Only if args[1] is NOT a recognized subcommand, check for --help/--version in the args
+
+Let me look at the match arms to see which subcommands are recognized:
+
+"doctor", "health", "help", "version", "setup", "state", "deepseek", "eval", "evolve", "tools", "complete", "init", "lint", "test", "tree", "map", "outline", "run", "diff", "commit", "context", "review", ...
+
+OK, for the planning, I need to decide on concrete tasks. Let me now write the task files.
+
+**Final plan:**
+
+1. **Task 01 (refine the seed "Repair evidence-backed planning")**: I'll refine the seed to focus on the concrete verification gate bug — broaden `external_only_planned()` in `scripts/task_verification_gate.py` so non-code tasks (issue management, gh CLI) are recognized and allowed through when they produce valid external evidence. Files: `scripts/task_verification_gate.py` (the actual file with the bug, more relevant than the seed's broader scope).
+
+2. **Task 02**: Fix subcommand `--help` display so `yyds state --help` shows state-specific help. Files: `src/dispatch_sub.rs`.
+
+3. **Task 03**: Add held-out eval fixture for DeepSeek FIM routing correctness. Files: new fixture file under `eval/fixtures/local-smoke/`.
+
+Wait, but the planning instructions say: "Do not delete it unless you immediately write an equal-or-better evidence-backed task file." I'm not deleting it — I'm refining it. Let me write a refined task_01.md.
+
+Actually, the seed task's Files are `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. If I change the focus to the verification gate, the Files would change to `scripts/task_verification_gate.py`. That's a substantial change. The planning instructions say I can refine the seed task. Let me just refine the evidence and keep the verification gate fix as a separate task.
+
+Let me reconsider:
+1. **Task 01 (refine seed)**: Keep the seed's focus on planning reliability but narrow the evidence. The evidence should point to the concrete reversion patterns (reverted_no_edit, reverted_unlanded_source_edits) and improve the preseed script's contradiction detection. Files: `scripts/preseed_session_plan.py`.
+
+2. **Task 02**: Fix `external_only_planned` in verification gate to recognize non-code tasks. Files: `scripts/task_verification_gate.py`.
+
+3. **Task 03**: Fix subcommand `--help` display. Files: `src/dispatch_sub.rs`.
+
+These are three concrete, independently verifiable tasks that all address real evidence from the assessment.
+
+Let me finalize and write them.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me refine the seed task and plan two additional evidence-backed tasks.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write the three task files. Let me write them all at once.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Repair evidence-backed planning after no-task sessions
+  - Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+  + Title: Improve stale-seed contradiction detection in preseed task picker
+  + Files: scripts/preseed_session_plan.py
+    Issue: none
+  - Origin: harness-seed
+  + Origin: planner
+    validated_against_assessment: true
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - Day 133 04:55 session had `obsolete_already_satisfied=1`: the seed task was
+  +   marked obsolete because the assessment showed the problem was already resolved.
+  +   The contradiction detector should have caught this before seeding but didn't.
+  + - Day 133 04:41 session had `reverted_no_edit=1` and `reverted_unlanded_source_edits=1`:
+  +   tasks were selected but couldn't produce overlapping file changes.
+  + - The assessment says: "Day 133 (2026-07-11 11:28:00): tasks 2/2" — the harness
+  +   recovered, but the preseed picker wasted a task slot on an obsolete seed.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (82 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (82 lines) ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_02: Fix the verification gate to recognize non-code tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Broaden verification gate to accept issue-management and non-code tasks
+  + Files: scripts/task_verification_gate.py
+  + Issue: #93
+  + Origin: planner
+  + validated_against_assessment: true
+  + 
+  + Evidence:
+  + - Issue #93 ("Close resolved issues #89, #91, #92") keeps reverting because the
+  +   verification gate rejects it with "task changes do not overlap planned Files
+  +   entries". The task has Files: "(none — GitHub issue management only, no source
+  +   edits)".
+  + - The root cause is `external_only_planned()` in scripts/task_verification_gate.py
+  +   line 38-42: it only recognizes planned files entries that contain both "none"
+  +   AND "gh cli". The #93 task's planned files entry says "none — GitHub issue
+  +   management only, no source edits" which contains "GitHub" but not "gh cli".
+  + - Because `external_only_planned` returns False, the verification never reaches
+  +   the external-evidence check. The task produces a valid `task_01_external_evidence.json`
+  +   with gh CLI output but the gate never evaluates it.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (99 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (99 lines) ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now task_03: Fix subcommand --help display.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Fix subcommand --help flag to show subcommand-specific help
+  + Files: src/dispatch_sub.rs
+  + Issue: none
+  + Origin: planner
+  + validated_against_assessment: true
+  + 
+  + Evidence:
+  + - Running `yyds state --help` shows the main CLI help text instead of state
+  +   subcommand-specific help. Same for `yyds state graph --help`, `yyds deepseek
+  +   --help`, and other subcommands.
+  + - The assessment confirms: "Subcommand --help flags (yyds state --help, yyds
+  +   state graph --help) show the main CLI help instead of subcommand-specific
+  +   help. This is a minor UX papercut."
+  + - Root cause is in `src/dispatch_sub.rs` line 49:
+  +   ```rust
+  +   if args.iter().any(|a| a == "--help" || a == "-h") {
+  +       print_help();
+  +       return Some(None);
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_03.md (118 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_03.md (118 lines) ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 133 Planning
+  + 
+  + ## Agent-Self Issues
+  + 
+  + ### #93: Task reverted: Close resolved issues #89, #91, #92
+  + **Plan:** Implement as task_02. The verification gate (`scripts/task_verification_gate.py`)
+  + is the blocker — its `external_only_planned()` function is too narrow and doesn't
+  + recognize non-code tasks. Task 02 broadens the detection so this task can pass
+  + verification on retry.
+  + 
+  + ### #37: Add held-out coding eval coverage for DeepSeek harness gnomes
+  + **Plan:** Defer. Progress was made Day 133 02:42 (transport error fixture added).
+  + This session's three slots are filled with higher-impact work: planning reliability
+  + (task_01), verification gate fix (task_02), and subcommand help UX (task_03).
+  + Eval coverage is incremental tracking — each session that has spare capacity
+  + should add one fixture. Continue next session.
+  + 
+  + ## Help-Wanted
+  + 
+  + ### #90: yoagent Usage struct drops DeepSeek cache fields
+  ... (10 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (30 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (30 lines) ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify all three task files are properly formed and the directory has everything it needs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (238ms)
+  ▶ $ ls -la session_plan/ && echo "---" && for f in session_plan/task_*.md; do echo "… ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three task files are written. Let me verify the task files have all required fields by doing a quick sanity check.
+
+Let me also verify ownership of the Files entries:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/preseed_session_plan.py scripts/task_verification_gate.py s… ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three file paths are valid git-tracked files. The plan is complete. Let me summarize.
+────────────────────────────────────────────────────────────────────────────────
+
+All three task files are written and all `Files:` entries are confirmed git-tracked. Here's the plan summary:
+
+────────────────────────────────────────
+
+## Session Plan — Day 133 (16:59)
+
+### Task 01: Improve stale-seed contradiction detection in preseed task picker
+• **File:** `scripts/preseed_session_plan.py`
+• **Evidence:** The 04:55 session had `obsolete_already_satisfied=1` — the seed task was marked obsolete because the assessment already resolved it. The contradiction detector (`check_task_contradiction`) uses a fixed vocabulary that doesn't match assessment resolution language ("already satisfied", "Day NNN made this landable").
+• **Fix:** Add semantic fallback patterns to detect when the assessment describes a seed task as already resolved.
+
+### Task 02: Broaden verification gate to accept non-code tasks
+• **File:** `scripts/task_verification_gate.py`
+• **Issue:** #93 keeps reverting because `external_only_planned()` only recognizes `"none"` + `"gh cli"` patterns. Tasks with `"none — GitHub issue management only, no source edits"` fail.
+• **Fix:** Broaden the detection to include `"github"`, `"issue management"`, `"no source edits"`, `"no code"` as valid non-code indicators.
+
+### Task 03: Fix subcommand `--help` flag to show subcommand-specific help
+• **File:** `src/dispatch_sub.rs`
+• **Evidence:** `yyds state --help` shows main CLI help (line 49 catches `--help` anywhere in args before subcommand routing on line 62).
+• **Fix:** Check if `args[1]` is a recognized subcommand before triggering the early `--help` return.
+
+### Issue Responses
+• **#93:** Addressed by Task 02 (verification gate fix)
+• **#37:** Deferred — eval coverage is incremental, higher-impact work takes priority
+• **#90:** Deferred — blocked on upstream yoagent, no human reply yet
+
+

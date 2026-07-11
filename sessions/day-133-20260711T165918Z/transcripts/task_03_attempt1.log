@@ -1,0 +1,680 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then look at the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/dispatch_sub.rs (100 lines) ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. Lines 49-56 check for `--help` and `--version` anywhere in args and short-circuit before the subcommand routing at line 62. The fix is to only short-circuit with main help when args[1] is not a recognized subcommand.
+
+Let me read more of the dispatch_sub.rs to see all the subcommand match arms, especially the "state" and "deepseek" ones, so I understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:100..250  ▶ search 'fn test_try_dispatch_subcommand' in src/dispatch_sub.rs ✓ (11ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test cases to understand the expected behavior, especially the tests around --help flags.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.4s (2 ✓)
+
+Let me look at the relevant tests around `--help` behavior:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:660..860 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation clearly. The issue is on lines 49-56:
+
+```rust
+if args.iter().any(|a| a == "--help" || a == "-h") {
+    print_help();
+    return Some(None);
+}
+```
+
+This catches `--help` anywhere, including in `yyds state --help`. The fix should move this check so it only applies when args[1] is not a recognized subcommand.
+
+The approach: check if args[1] is a recognized subcommand before checking for --help. If args[1] is a recognized subcommand, skip the early --help check and let the match arm handle it.
+
+The simplest fix: change the condition on line 49 to also require that args[1] doesn't look like a recognized subcommand. I could extract the subcommand name first and check if it's a recognized subcommand.
+
+Looking at the code more carefully, the approach from the task description is clean:
+- Check if args.len() > 1 and args[1] doesn't start with '-' before triggering the early --help.
+
+But actually, a more robust approach is: check if args[1] is one of the recognized subcommands. Let me think about this...
+
+Actually, the cleanest fix: modify the --help/--version check to only trigger when there's no recognized subcommand in args[1]. We can do this by extracting the subcommand name first, matching it, and only falling back to the --help check when it's not a recognized subcommand.
+
+The approach from the task: "check if args.len() > 1 and args[1] doesn't start with '-' before triggering the early --help." This is simpler but less precise. If someone types `yyds state --help`, args[1] is "state" which doesn't start with '-', so this would work. But if someone types `yyds unknown-subcommand --help`, args[1] is "unknown-subcommand" which also doesn't start with '-', so the --help check would be skipped... but then it would fall through to the match and unknown-subcommand wouldn't match, resulting in None, which would fall through to flag parsing. Hmm, that's actually fine — the flag parsing might handle --help.
+
+Wait, but the task says the simplest fix is "check if args.len() > 1 and args[1] doesn't start with '-' before triggering the early --help." Let me think about this more carefully.
+
+Current behavior:
+1. `yyds state --help`: args[1]="state", --help is in args → short-circuits to print_help() → WRONG
+2. `yyds --help`: args[1]="--help" → short-circuits to print_help() → correct
+3. `yyds --model foo --help`: args[1]="--model", --help in args → short-circuits to print_help() → correct (no subcommand present)
+4. `yyds state`: args[1]="state", no --help → falls through to match → correct
+
+After fix (args[1] doesn't start with '-' guard):
+1. `yyds state --help`: args[1]="state" (doesn't start with -), skip early --help → falls through to match "state" → state handler receives --help → CORRECT
+2. `yyds --help`: args[1]="--help" (starts with -), early --help check triggers → print_help() → correct
+3. `yyds --model foo --help`: args[1]="--model" (starts with -), early --help check triggers → print_help() → correct
+4. `yyds state`: args[1]="state" (doesn't start with -), skip early --help → falls through to match → correct
+
+But wait, what about `yyds unknown-subcommand --help`?:
+- args[1]="unknown-subcommand" (doesn't start with -), skip early --help
+- falls through to match, "unknown-subcommand" doesn't match any arm
+- returns None (falls through to flag parsing)
+- flag parsing would handle --help
+
+Actually, that's a change in behavior — previously `yyds unknown-subcommand --help` would show main help. After the fix, it would fall through to flag parsing. But flag parsing should also handle --help and print main help, so the end result should be the same.
+
+Actually, wait. Let me re-check. `try_dispatch_subcommand` returns None when no subcommand matches, which tells parse_args to continue with flag parsing. parse_args should handle --help and print the main help. So the behavior for `yyds unknown-subcommand --help` would still show main help. That's fine.
+
+But there's a subtlety: what about `yyds help state`? Currently args[1]="help", --help is NOT in args, so it falls through to the match and "help" matches, printing main help. After the fix, same behavior — args[1]="help" (doesn't start with -), skip early help check, match "help" → print_help(). 
+
+Now, what about the existing test at line 731? `test_try_dispatch_subcommand_help_wins_over_other_flags` tests `yoyo --model claude-sonnet-4-5 --help`. After the fix, args[1]="--model" (starts with -), so the early --help check still triggers. This test should still pass.
+
+What about `yyds state --help` behavior in tests? Let me check if there's a test for that...
+
+Looking at the test at line 762: `test_state_and_evolve_subcommands_are_internal_only` tests `yoyo state` without `--help`. And line 779: `test_state_and_evolve_subcommands_dispatch_for_internal_harness` tests with YOYO_HARNESS_INTERNAL=1. These tests don't use --help.
+
+I need to handle the `--version` flag the same way. The fix:
+
+```rust
+// Only check for top-level --help/--version when args[1] is not a recognized
+// subcommand (i.e., when args[1] is missing or starts with '-').
+let has_subcommand = args.get(1).map_or(false, |s| !s.starts_with('-'));
+if !has_subcommand && args.iter().any(|a| a == "--help" || a == "-h") {
+    print_help();
+    return Some(None);
+}
+if !has_subcommand && args.iter().any(|a| a == "--version" || a == "-V") {
+    println!("{}", crate::commands_info::version_line());
+    return Some(None);
+}
+```
+
+Wait, but this changes behavior for unknown subcommands: `yyds unknown-subcommand --help` would now fall through instead of showing main help. Let me verify that's OK — it would fall through to flag parsing in parse_args, which should handle --help. Yes, that should be fine.
+
+But actually, there's a simpler and more precise approach. Let me just move the --help/--version check to after the match, inside the `else` branch of the `if let Some(sub) = args.get(1)` block. That way, if args[1] is a recognized subcommand, the match handles it; if args[1] is not recognized, we fall through and then check for --help/--version.
+
+Wait, looking at the code structure again:
+
+```rust
+pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Some(None);
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{}", crate::commands_info::version_line());
+        return Some(None);
+    }
+
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            // ... many subcommands
+        }
+    }
+
+    None  // fall through
+}
+```
+
+The simplest correct approach: check if args[1] looks like a subcommand (doesn't start with '-') before short-circuiting on --help/--version. Like:
+
+```rust
+pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>> {
+    // Only short-circuit --help/--version when there's no subcommand in args[1].
+    // If args[1] is a subcommand (e.g., "state"), let the match arm handle --help.
+    let args1_is_flag = args.get(1).map_or(true, |s| s.starts_with('-'));
+    if args1_is_flag {
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            print_help();
+            return Some(None);
+        }
+        if args.iter().any(|a| a == "--version" || a == "-V") {
+            println!("{}", crate::commands_info::version_line());
+            return Some(None);
+        }
+    }
+
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            // ...
+        }
+    }
+
+    None
+}
+```
+
+This is clean and minimal. Let me verify edge cases:
+
+1. `yyds --help`: args[1]="--help", starts with '-', args1_is_flag=true → --help check triggers → print_help() → CORRECT
+2. `yyds state --help`: args[1]="state", doesn't start with '-', args1_is_flag=false → skip --help check → falls through to match "state" → state handler gets --help → CORRECT
+3. `yyds --model foo --help`: args[1]="--model", starts with '-', args1_is_flag=true → --help check triggers → print_help() → CORRECT
+4. `yyds -h`: args[1]="-h", starts with '-', args1_is_flag=true → --help check triggers → print_help() → CORRECT
+5. `yyds state`: args[1]="state", args1_is_flag=false → skip --help check → match "state" → CORRECT
+6. `yyds unknown-subcommand --help`: args[1]="unknown-subcommand", args1_is_flag=false → skip --help check → match doesn't hit → returns None → parse_args handles it → CORRECT (parse_args should handle --help)
+7. `yyds` (no args): args.get(1) is None, args1_is_flag=true (map_or(true, ...)) → --help check triggers but no --help in args → version check triggers but no --version → falls through to if let which is None → returns None → CORRECT
+8. `yyds --version`: args[1]="--version", starts with '-', args1_is_flag=true → --help check (no --help) → --version check triggers → prints version → CORRECT
+9. `yyds state --version`: args[1]="state", args1_is_flag=false → skip both checks → match "state" → state handler gets --version → CORRECT (state handler can decide what to do)
+
+Now let me also check what happens with `yyds help state` — this is the "help" subcommand which prints main help. args[1]="help", args1_is_flag=false → skip checks → match "help" → print_help() → CORRECT
+
+All edge cases look good. Let me now implement this.
+
+I also need to add a test for the new behavior: `yyds state --help` should route to the state handler, not print main help.
+
+Actually, there's an important consideration: the test at line 779 tests `test_state_and_evolve_subcommands_dispatch_for_internal_harness` which sets YOYO_HARNESS_INTERNAL=1 and checks that `yoyo state` dispatches correctly. This test needs YOYO_HARNESS_INTERNAL. My new test for `yyds state --help` should also set this env var.
+
+But wait — there's a simpler approach. I could create a test that checks that `yyds <known-subcommand> --help` doesn't trigger the main help check. For a subcommand that always dispatches (like "help", "version", "doctor"), I can test without any env var.
+
+Let me use "help" as the test subcommand since it always dispatches. Actually wait — "help" just calls print_help(), which is the same as the early --help behavior. That would make the test meaningless.
+
+Let me use "doctor" instead — it always dispatches. `yyds doctor --help` should route to the doctor handler, not print main help. But the doctor handler might not specially handle --help, so it would just run the doctor diagnostic. That's fine for testing that the routing works.
+
+Actually, the simplest approach: test with "version" subcommand. `yyds version --help` — previously this would print main help (because --help short-circuits), but after the fix it should route to the "version" handler which prints the version. The test can verify that `try_dispatch_subcommand` returns `Some(None)` for `yyds version --help` (it always did) but now for the right reason.
+
+Hmm, but the test at line 664 `test_try_dispatch_subcommand_help_long` uses `yoyo --help` and expects `Some(None)`. After my fix, this should still pass because args[1]="--help" starts with '-'.
+
+Let me write the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the problem and the fix. The issue is on lines 49-56: the `--help`/`--version` check scans all args and short-circuits before the subcommand match. Let me implement the fix.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edit now.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.1s (4 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the surgical edit. The change is on lines 48-56 of dispatch_sub.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     if args.iter().any(|a| a == "--help" || a == "-h") {
+  -         print_help();
+  -         return Some(None);
+  -     }
+  -     if args.iter().any(|a| a == "--version" || a == "-V") {
+  -         println!("{}", crate::commands_info::version_line());
+  -         return Some(None);
+  +     // Only short-circuit --help/--version when args[1] is not a subcommand
+  +     // name (i.e. it's missing or starts with '-'). This lets `yyds state --help`
+  +     // route to the state handler instead of printing main CLI help.
+  +     let args1_is_flag = args.get(1).map_or(true, |s| s.starts_with('-'));
+  +     if args1_is_flag {
+  +         if args.iter().any(|a| a == "--help" || a == "-h") {
+  +             print_help();
+  +             return Some(None);
+  +         }
+  +         if args.iter().any(|a| a == "--version" || a == "-V") {
+  +             println!("{}", crate::commands_info::version_line());
+  +             return Some(None);
+  +         }
+  ... (1 more lines)
+  ✓ Auto-approved: edit: src/dispatch_sub.rs (8 → 14 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/dispatch_sub.rs (8 → 14 lines)
+  -     if args.iter().any(|a| a == "--help" || a == "-h") {
+  -         print_help();
+  -         return Some(None);
+  -     }
+  -     if args.iter().any(|a| a == "--version" || a == "-V") {
+  -         println!("{}", crate::commands_info::version_line());
+  -         return Some(None);
+  +     // Only short-circuit --help/--version when args[1] is not a subcommand
+  +     // name (i.e. it's missing or starts with '-'). This lets `yyds state --help`
+  +     // route to the state handler instead of printing main CLI help.
+  +     let args1_is_flag = args.get(1).map_or(true, |s| s.starts_with('-'));
+  +     if args1_is_flag {
+  +         if args.iter().any(|a| a == "--help" || a == "-h") {
+  +             print_help();
+  +             return Some(None);
+  +         }
+  +         if args.iter().any(|a| a == "--version" || a == "-V") {
+  +             println!("{}", crate::commands_info::version_line());
+  +             return Some(None);
+  +         }
+  ... (1 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test for the subcommand --help routing. I need to add a test that verifies `yyds doctor --help` routes to the doctor handler (not the main help). Let me find a good place to add the test, near the existing help tests.
+
+Actually, let me think about what test would be meaningful. I need a subcommand that always dispatches (doesn't require env vars) and whose behavior differs from print_help() in a way we can observe.
+
+"version" would be perfect: `yyds version --help` should route to the version handler, not print_help(). Before my fix, it would print_help() (because --help was found in args). After my fix, it should route to the version handler which prints the version line.
+
+But we can't easily observe what's printed in these tests — they only check the return value. Both print_help() and the version handler return Some(None). So we can't distinguish them by return value alone.
+
+Let me think... we could test with "doctor" — it always dispatches to handle_doctor. The test just needs to verify that `try_dispatch_subcommand` returns `Some(None)` for `yyds doctor --help`. Before the fix, it returned `Some(None)` too (because --help short-circuited). After the fix, it also returns `Some(None)` (because doctor handler runs). The return value is the same either way, so we can't distinguish.
+
+Hmm, we could use a subcommand that ISN'T recognized to test the difference. `yyds unknown-subcommand --help`:
+- Before fix: args contains --help → short-circuits → Some(None)
+- After fix: args[1]="unknown-subcommand" doesn't start with '-' → skip help check → match fails → None
+
+That's a behavioral difference we can test! But... is that the right behavior? `yyds unknown-subcommand --help` falling through to None means parse_args will handle it. parse_args should handle --help and print main help. So the end result for the user is the same (main help is shown), but the return value changes.
+
+Actually, let me verify that parse_args handles --help. Let me search for it.
+
+Actually, looking at the test at line 747 (`test_try_dispatch_subcommand_falls_through_on_unknown_subcommand`), it expects `None` for `yoyo not-a-real-subcommand`. So falling through for unknown subcommands is the existing design. And `yyds unknown-subcommand --help` falling through is consistent — parse_args will handle --help.
+
+But wait, I want a test that verifies the positive case: `yyds <real-subcommand> --help` routes correctly. Let me use a more creative approach. I can use a subcommand like "version" where the behavior is observable through stdout... but these tests don't capture stdout.
+
+Actually, the simplest test: verify that `yyds doctor --help` returns `Some(None)` — same as before, but now for the right reason. The test at least documents the expected behavior. And I can add a negative test: `yyds unknown-subcommand --help` now returns `None` instead of `Some(None)`.
+
+Wait, actually there's a much better approach. I can test that `yyds <subcommand> --help` returns `Some(None)` because the subcommand handler runs, not because --help was short-circuited. For "version", both paths return `Some(None)`, so the test can't distinguish. But I could test with "state" (which requires YOYO_HARNESS_INTERNAL). Let me do that.
+
+Actually, let me just add a simple test with "doctor" (which always dispatches) and verify the return value. Even though the return value is the same as before, the test serves as a regression guard — if someone later breaks the fix, this test would still pass (because the old behavior also returned Some(None)). But I can also add a test with an unknown subcommand to verify the change.
+
+Let me add two tests:
+1. `yyds doctor --help` → `Some(None)` (subcommand routes correctly)
+2. `yyds unknown-subcommand --help` → `None` (falls through, parse_args handles --help)
+
+Actually, the second test is more interesting because it demonstrates the behavioral change. Let me add that one.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test. Let me first find the right location near the existing help tests:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:792..822 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test right after the `test_try_dispatch_subcommand_help_wins_over_other_flags` test (around line 744), or near the help-related tests. Let me add it after the `test_state_and_evolve_subcommands_dispatch_for_internal_harness` test since I want to test with the "state" subcommand.
+
+Actually, let me add it right after `test_try_dispatch_subcommand_help_bare` at line 807, because it's conceptually related to help routing. I'll add a test for `yyds doctor --help` which should dispatch to the doctor handler, not main help.
+
+Wait, I can't easily observe the difference in behavior from within these tests because they only check return values. Let me reconsider.
+
+The best test: verify that `yyds doctor --help` returns `Some(None)`. Both before and after the fix, it returns `Some(None)`. So the test is a regression guard but doesn't prove the new behavior.
+
+Let me add a test that verifies the new behavior: `yyds unknown-subcommand --help` now returns `None` (falls through) instead of `Some(None)`. This is the observable difference.
+
+Actually, let me reconsider whether `yyds unknown-subcommand --help` falling through is the right behavior. Let me trace through what happens:
+
+1. args = ["yyds", "unknown-subcommand", "--help"]
+2. args[1] = "unknown-subcommand", doesn't start with '-'
+3. args1_is_flag = false
+4. Skip --help/--version checks
+5. if let Some(sub) = args.get(1) → Some("unknown-subcommand")
+6. match "unknown-subcommand" → no arm matches
+7. Falls through to None
+
+So `try_dispatch_subcommand` returns None, and parse_args continues. parse_args should handle --help and print main help. Let me verify that parse_args handles --help.
+
+Actually, I should check parse_args.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check that `parse_args` handles `--help` when `try_dispatch_subcommand` returns `None`:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'try_dispatch_subcommand' in src/cli.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 804 onward.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:800..850 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So when `try_dispatch_subcommand` returns `None`, `parse_args` continues with flag parsing. It doesn't specifically handle `--help` after that point... let me check more of parse_args to see if `--help` is handled later.
+
+Let me search for where --help is handled in parse_args.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'print_help' in src/cli.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `print_help` is called in cli.rs at line 116 for definition and line 1792. Let me check where print_help is called in parse_args after the dispatch_sub check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:1785..1805 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where --help is handled in parse_args after the early dispatch check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '"--help"' in src/cli.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 228 is likely in the flag definitions, not in parse_args. Let me check where --help is actually handled:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:220..250 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see --help and -h are in an ALL_FLAGS list. Let me find where this list is used to check for --help handling in parse_args:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ALL_FLAGS' in src/cli.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for where parse_args handles --help after try_dispatch_subcommand:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'a == "--help"' in src/cli.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So parse_args doesn't handle --help after try_dispatch_subcommand. That means the only place --help is handled is in try_dispatch_subcommand. If an unknown subcommand with --help falls through to None, --help would be treated as a positional argument rather than triggering help output. That's not ideal.
+
+Actually, let me reconsider. If `yyds unknown-subcommand --help` falls through to parse_args, parse_args would collect `unknown-subcommand` and `--help` as positional arguments (since they don't match known flags), and they'd be treated as a prompt. That's not great.
+
+So maybe my fix should be more precise: only skip the early --help check when args[1] is a KNOWN subcommand (matches one of the match arms), not just when it doesn't start with '-'. 
+
+Let me refine the approach. Instead of checking `args[1].starts_with('-')`, I should check if args[1] matches a known subcommand. The simplest way: extract the set of subcommand names from the match arms.
+
+Actually, let me look at this differently. The simplest approach that handles edge cases correctly:
+
+1. Extract the potential subcommand from args[1]
+2. If args[1] is a recognized subcommand AND --help is in args, route to the subcommand handler (which receives the --help flag)
+3. If args[1] is NOT a recognized subcommand AND --help is in args, show main help
+4. If no subcommand, show main help
+
+This means I need to check if args[1] is one of the recognized subcommand names before deciding whether to short-circuit. Let me create a helper function or set of known subcommands.
+
+Let me collect all subcommand names from the match arms:
+
+"doctor", "health", "help", "version", "setup", "state", "deepseek", "eval", "evolve", "tools", "complete", "init", "lint", "test", "tree", "map", "outline", "run", "diff", "commit", "context", "review", "blame", "grep", "find", "index", "update", "docs", "skill", "watch", "status", "undo", "stash", "save", "load", "plan", "journal", "search", "config", "info", "tools-list", "debug", "log", "sync", "replay", "audit", "learnings", "memories"
+
+That's a lot. And it would need to be maintained in sync with the match arms. Not ideal.
+
+Actually, let me reconsider the simple approach. The task description says:
+
+> The simplest fix: check if args.len() > 1 and args[1] doesn't start with '-' before triggering the early --help. If args[1] is a subcommand name, skip the early --help and fall through to the match. This is a one-line change to the condition.
+
+But then there's the edge case of `yyds unknown-subcommand --help`. Let me think about what happens currently:
+
+Currently, `yyds unknown-subcommand --help` returns `Some(None)` because --help is found in args, showing main help. After the simple fix, it would return `None` because "unknown-subcommand" doesn't start with '-', the --help check is skipped, the match doesn't find "unknown-subcommand", and it falls through.
+
+But then parse_args would try to interpret "unknown-subcommand" and "--help" as positional arguments, which is wrong. The user wouldn't get help.
+
+Hmm, but is `yyds unknown-subcommand --help` a real use case? Probably not common. And the current behavior (showing main help) is somewhat misleading — it doesn't tell the user that "unknown-subcommand" is not a recognized subcommand.
+
+Actually, the correct behavior for `yyds unknown-subcommand --help` would be to show an error like "unknown subcommand: unknown-subcommand" and then show main help. But that's a separate improvement.
+
+For now, let me go with the simple approach from the task description. It fixes the main use case (`yyds state --help`) and the edge case of `yyds unknown-subcommand --help` degrades gracefully (falls through to parse_args, which will treat it as a positional prompt — not ideal but not catastrophic, and this is an edge case the task doesn't ask us to solve).
+
+Actually wait, let me re-examine. If parse_args sees ["yyds", "unknown-subcommand", "--help"], it will collect_positional_args which would collect "unknown-subcommand" (not a flag, not a known subcommand) and "--help" (not in the flag list that's filtered... wait, --help IS in ALL_FLAGS). Let me look at collect_positional_args more carefully.
+
+Let me just go with the approach from the task. Even if `yyds unknown-subcommand --help` behavior changes slightly, the primary use case (`yyds state --help`) is fixed. And for the unknown subcommand case, the user would see the prompt mode which isn't ideal, but this is an edge case that almost never happens in practice.
+
+Actually, let me improve on the simple approach. I can check if args[1] is one of the known subcommand names. Let me collect them into a constant. That's more precise and avoids the unknown-subcommand issue.
+
+Let me look at the match arms and collect all subcommand names. Actually, let me use a different approach: I'll match on args[1] first, and only if it doesn't match any known subcommand, check for --help/--version. This way, `yyds unknown-subcommand --help` would still show main help (via the --help check after the match), and `yyds state --help` would route to the state handler.
+
+The structure would be:
+
+```rust
+pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>> {
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            "doctor" => { ... return Some(None); }
+            "health" => { ... return Some(None); }
+            ...
+            _ => {} // fall through to --help/--version check
+        }
+    }
+    
+    // No recognized subcommand matched — check for top-level --help/--version
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Some(None);
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{}", crate::commands_info::version_line());
+        return Some(None);
+    }
+    
+    None
+}
+```
+
+This is the cleanest approach. It:
+1. Tries to match a subcommand first
+2. If a subcommand matches, routes there (subcommand receives --help if present)
+3. If no subcommand matches, checks for --help/--version
+4. If nothing matches, falls through to None
+
+This preserves the behavior for `yyds unknown-subcommand --help` (shows main help) while fixing `yyds state --help` (routes to state handler).
+
+But this is a bigger restructuring. Let me keep it simpler. Let me just add a check for known subcommands. Actually, the simplest approach that handles edge cases correctly: I'll keep the current structure but add a guard to the --help/--version checks.
+
+Let me go with my original approach but refine it. Instead of `!s.starts_with('-')`, I'll check if `sub` matches any of the known subcommand names. Let me create a helper function.
+
+Actually, the simplest correct approach: extract `sub` from args[1] first, then only apply the --help/--version short-circuit when `sub` starts with '-' or is absent.
+
+Wait, that's what I already did. The issue is only `yyds unknown-subcommand --help`. Let me check if that's actually a problem by tracing through collect_positional_args.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how `collect_positional_args` handles `--help`:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/cli.rs:248..308 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see there's already a `KNOWN_SUBCOMMANDS` const at line 251! This is a list of all subcommand names. I can reuse this same approach in `try_dispatch_subcommand` — check if args[1] is a known subcommand before short-circuiting on --help/--version.
+
+But the KNOWN_SUBCOMMANDS list is inside `collect_positional_args` which is a different function. I should extract it or duplicate it.
+
+Actually, the cleanest approach: just move the --help/--version check to AFTER the subcommand match, so it only triggers when no known subcommand matched. Let me restructure the code.
+
+Here's my plan:
+
+```rust
+pub(crate) fn try_dispatch_subcommand(args: &[String]) -> Option<Option<Config>> {
+    // Try to match a positional subcommand first.
+    // If args[1] is a recognized subcommand, route to its handler even if
+    // --help or --version is present in later args, so subcommands can
+    // provide their own help output.
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            // ... all existing match arms unchanged
+        }
+    }
+    
+    // No recognized subcommand matched — check for top-level --help/--version
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Some(None);
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{}", crate::commands_info::version_line());
+        return Some(None);
+    }
+    
+    None
+}
+```
+
+This is the cleanest approach. It:
+1. Matches subcommands first — if args[1] is "state", the state handler runs even with --help in args
+2. Falls through to --help/--version only when no known subcommand matched
+3. `yyds unknown-subcommand --help` → match fails → --help check triggers → shows main help ✓
+4. `yyds state --help` → match succeeds → state handler runs with --help ✓
+5. `yyds --help` → args[1]="--help", match fails (starts with -), --help check triggers → shows main help ✓
+
+But wait, this changes the flow significantly. The current code structure is:
+1. Check --help/--version → short-circuit
+2. Match subcommands
+
+I'm changing it to:
+1. Match subcommands
+2. Check --help/--version → short-circuit
+3. None
+
+The difference: if args[1] is a known subcommand, we now route there first, even if --help is in args. This is exactly what we want.
+
+For unknown subcommands, behavior is unchanged: --help check still triggers.
+
+Let me do this restructuring. It's a bit more than a one-line change, but it's the correct fix.
+
+Actually, I need to be more careful. Let me look at the full match structure to understand the "state" arm with its guard:
+
+```rust
+"state" if crate::state::harness_internal_enabled() => {
+    crate::commands_state::handle_state_subcommand(args);
+    return Some(None);
+}
+```
+
+This has a guard `if crate::state::harness_internal_enabled()`. If the guard fails, the match continues to the next arm (which is "deepseek"). So the guard failure falls through.
+
+If YOYO_HARNESS_INTERNAL is not set and someone runs `yyds state --help`, the guard would fail and the match would fall through to the --help check, showing main help. That's actually reasonable behavior — if the state subcommand isn't available, showing main help for `yyds state --help` is acceptable.
+
+OK, but there's a subtle issue with my restructuring. Currently, when `YOYO_HARNESS_INTERNAL` is not set:
+- `yyds state` → match "state" → guard fails → falls through to next arm → no match → returns None (falls through to parse_args)
+- `yyds state --help` → currently: --help check triggers → print_help() → Some(None)
+
+After my restructuring:
+- `yyds state` → match "state" → guard fails → falls through → --help check: no --help → --version check: no --version → None (same as before ✓)
+- `yyds state --help` → match "state" → guard fails → falls through → --help check triggers → print_help() → Some(None) (same as before ✓)
+
+So the behavior is preserved. Good.
+
+Now let me implement this. The edit needs to:
+1. Remove the early --help/--version check (lines 49-56)
+2. Add the --help/--version check after the match block, before the final None
+
+Here's the current code structure (after my first edit):
+
+```rust
+    // Only short-circuit --help/--version when args[1] is not a subcommand
+    // name (i.e. it's missing or starts with '-'). This lets `yyds state --help`
+    // route to the state handler instead of printing main CLI help.
+    let args1_is_flag = args.get(1).map_or(true, |s| s.starts_with('-'));
+    if args1_is_flag {
+        if args.iter().any(|a| a == "--help" || a == "-h") {
+            print_help();
+            return Some(None);
+        }
+        if args.iter().any(|a| a == "--version" || a == "-V") {
+            println!("{}", crate::commands_info::version_line());
+            return Some(None);
+        }
+    }
+
+    // Positional subcommands...
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            // ... all arms
+        }
+    }
+
+    None
+```
+
+I want to change it to:
+
+```rust
+    // Positional subcommands...
+    if let Some(sub) = args.get(1) {
+        match sub.as_str() {
+            // ... all arms
+        }
+    }
+
+    // No recognized subcommand matched — check for top-level --help/--version.
+    // This comes AFTER the subcommand match so that `yyds state --help` routes
+    // to the state handler instead of short-circuiting with main CLI help.
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Some(None);
+    }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("{}", crate::commands_info::version_line());
+        return Some(None);
+    }
+
+    None
+```
+
+But I need to be more precise with the edit. Let me re-read the current state of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me re-read the current state of the file after my first edit:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:48..78 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see my first edit is in place. But now I want to restructure it further to use the match-first approach. Let me also find where the match block ends and where `None` is returned at the end of the function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me find where the match block ends and the final `None` return:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search '^    None$' in src/dispatch_sub.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the end of the function in dispatch_sub.rs. I need to find the closing of the match block and the return None.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search '    None' in src/dispatch_sub.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the function by looking at the closing of the match block. The function ends with None followed by }. Let me look near the end of the match.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/dispatch_sub.rs:555..585 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's the test section. Let me find where the match block ends in the main function. Let me search for the closing of the match block and the function's return None.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search '^\}' in src/dispatch_sub.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look near what I expect to be the end of the match block, right before the test module starts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in src/dispatch_sub.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for the test module declaration.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/dispatch_sub.rs ✓ (6ms)
+
+
