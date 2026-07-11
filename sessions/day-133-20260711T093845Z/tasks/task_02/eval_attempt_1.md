@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The test function `transport_failure_classifies_timeout_and_network_from_error_text` was added to the `#[cfg(test)] mod tests` block in `src/deepseek.rs`, exercises both timeout and network error text patterns via `classify_transport_error` and the full pipeline via `classify_deepseek_transport_failure`, and passes cleanly with `cargo test --lib -- deepseek::tests::transport_failure_classifies_timeout_and_network_from_error_text -- --nocapture`.

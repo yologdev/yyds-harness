@@ -1,0 +1,262 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source file to understand the current state of things before implementing the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/deepseek.rs:1020..1100 ✓ (855ms)
+ ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the end of the tests module to understand where to add the new test, and also look at the existing test structure including the `default_transport_policy` helper and any existing transport error tests (e.g., from Task 01).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:3980..  ▶ search 'default_transport_policy' in src/deepseek.rs  ▶ search 'transport_failure_classifies' in src/deepseek.rs ✓ (851ms)
+ ✓ (840ms)
+ ✓ (841ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are already tests for transport failure classification! Let me look at them to understand the full picture:
+
+- `transport_failure_classifies_401_as_authentication` (line 3789)
+- `transport_failure_classifies_403_as_permission_denied` (line 3803)
+- `transport_failure_classifies_429_as_rate_limited_and_retryable` (line 3814)
+- `transport_failure_classifies_5xx_as_server_error_and_retryable` (line 3824)
+- `transport_failure_classifies_404_as_not_found_not_retryable` (line 3864)
+- `transport_failure_classifies_timeout_from_error_text` (line 3873)
+- `transport_failure_classifies_connection_refused_as_network` (line 3885)
+- `transport_failure_classifies_context_length_as_non_retryable` (line 3893)
+
+Wait, there are already tests for timeout from error text and connection refused as network! Let me read these to see exactly what they cover.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+The existing tests already cover some of these patterns! Let me read the existing timeout and network tests to see exactly what they cover.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:3870..3910  ▶ read src/deepseek.rs:3784..3899 ✓ (844ms)
+ ✓ (558ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. The existing tests already cover:
+- `transport_failure_classifies_timeout_from_error_text`: Tests only one text pattern ("request timed out")
+- `transport_failure_classifies_connection_refused_as_network`: Tests only one text pattern ("connection refused")
+
+The task asks me to add a combined test that exercises multiple timeout and network patterns. But looking more carefully at what already exists:
+
+1. There's already a test for timeout from error text (line 3873) - but it only tests "request timed out"
+2. There's already a test for connection refused as network (line 3885) - but it only tests "connection refused"
+
+The task specifically asks for a test `transport_failure_classifies_timeout_and_network_from_error_text` that exercises multiple patterns:
+- Timeout: "timed out", "connection timeout", "deadline exceeded"
+- Network: "connection refused", "connection reset", "dns error", "tls handshake failed", "network unreachable"
+
+And also verifies `is_transient_transport_error` at the function level, not just through `classify_deepseek_transport_failure`.
+
+The task acknowledges the code works - the tests just don't exist at this breadth yet. The existing tests are scoped to one pattern each. The new test would be a more thorough coverage of the error text matching.
+
+This is not a case where "the code already satisfies this task" - the task is about adding tests, and those specific tests (with multiple patterns, testing both `classify_transport_error` directly and `is_transient_transport_error`) don't exist yet.
+
+Let me also check the `classify_deepseek_transport_failure` function signature to understand the argument order since the existing tests use it.
+
+Now let me look at the `classify_deepseek_transport_failure` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn classify_deepseek_transport_failure' in src/deepseek.rs ✓ (243ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function signature to confirm the argument order.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:954..1004 ✓ (256ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. The existing tests already exist, but they are narrowly scoped (one pattern each). The task asks me to add a combined test that:
+
+1. Tests multiple timeout text patterns against `classify_transport_error` directly
+2. Tests multiple network text patterns against `classify_transport_error` directly
+3. Verifies both are transient via `is_transient_transport_error`
+4. Also tests the full classification pipeline with "connection reset by peer"
+
+The task's test function name is `transport_failure_classifies_timeout_and_network_from_error_text`.
+
+But wait - let me re-read the task more carefully. It says:
+
+> This task covers timeout and network error text patterns.
+
+And:
+
+> Add 1 `#[test]` function at the end of the existing `#[cfg(test)] mod tests` block
+
+Let me check if Task 01 has already been done (it mentions 5xx classification tests which I can already see exist). Looking at the existing tests, it seems like:
+
+- Task 01 (5xx classification) - already done (lines 3824-3861)
+- The timeout-from-error-text test exists (line 3873) but only tests "request timed out"
+- The connection-refused test exists (line 3885) but only tests "connection refused"
+
+The task wants a new combined test with a specific name and covering multiple patterns. The existing tests are simpler, narrower versions.
+
+Now, looking at the task's test implementation notes, the test should be added before the closing `}`. The closing `}` is at line 4074. The `default_transport_policy` helper is at lines 4064-4073. So I should add the test before line 4064, after the last test at line 4062.
+
+Let me write the test. The task's provided test code uses:
+- `classify_transport_error(None, text)` - direct classification
+- `is_transient_transport_error(class)` - transient check
+- `classify_deepseek_transport_failure(None, "connection reset by peer", 0, &policy)` - full pipeline
+
+All these functions exist and the imports are already in the test module via `use super::*`. Let me add the test.
+
+Actually, I need to also check: the existing tests at line 3873 and 3885 test the same patterns but with narrower scope. The new test doesn't conflict - it's additive coverage.
+
+Let me implement it now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The existing tests cover single patterns each. The task wants a combined test with multiple timeout and network patterns, plus direct `classify_transport_error` + `is_transient_transport_error` assertions vs. the existing single-pattern `classify_deepseek_transport_failure` tests. Let me add the test.
+  +     #[test]
+  +     fn transport_failure_classifies_timeout_and_network_from_error_text() {
+  +         // Timeout patterns: classify as Timeout, are transient
+  +         for text in &["timed out", "connection timeout", "deadline exceeded"] {
+  +             let class = classify_transport_error(None, text);
+  +             assert_eq!(
+  +                 class,
+  +                 DeepSeekTransportErrorClass::Timeout,
+  +                 "text '{}' should classify as Timeout",
+  +                 text
+  +             );
+  +             assert!(
+  +                 is_transient_transport_error(class),
+  +                 "timeout '{}' should be transient",
+  +                 text
+  +             );
+  +         }
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/deepseek.rs (1 → 49 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/deepseek.rs (1 → 49 lines)
+  +     #[test]
+  +     fn transport_failure_classifies_timeout_and_network_from_error_text() {
+  +         // Timeout patterns: classify as Timeout, are transient
+  +         for text in &["timed out", "connection timeout", "deadline exceeded"] {
+  +             let class = classify_transport_error(None, text);
+  +             assert_eq!(
+  +                 class,
+  +                 DeepSeekTransportErrorClass::Timeout,
+  +                 "text '{}' should classify as Timeout",
+  +                 text
+  +             );
+  +             assert!(
+  +                 is_transient_transport_error(class),
+  +                 "timeout '{}' should be transient",
+  +                 text
+  +             );
+  +         }
+  + 
+  +         // Network patterns: classify as Network, are transient
+  +         for text in &[
+  ... (29 more lines)
+ ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit applied. Now let me verify by running `cargo fmt -- --check` and then the focused test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify: format check, build, and the focused test.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Let me now run the focused test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test deepseek::tests::tr… ✓ (31.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me verify with `cargo build` to make sure everything compiles, then run the broader transport tests to make sure no regressions.
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Let me also run the full transport test suite to confirm no regressions, then check the diff.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test deepseek::tests::tr… ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 11 transport failure tests pass (8 existing + 1 from Task 01 + 1 from this task + 1 other? Let me count... actually looking at existing tests:
+
+1. `transport_failure_classifies_401_as_authentication` (was 3789)
+2. `transport_failure_classifies_403_as_permission_denied` (was 3803)
+3. `transport_failure_classifies_429_as_rate_limited_and_retryable` (was 3814)
+4. `transport_failure_classifies_5xx_as_server_error_and_retryable` (was 3824)
+5. `transport_failure_classifies_404_as_not_found_not_retryable` (was 3864)
+6. `transport_failure_classifies_timeout_from_error_text` (was 3873)
+7. `transport_failure_classifies_connection_refused_as_network` (was 3885)
+8. `transport_failure_classifies_context_length_as_non_retryable` (was 3893)
+9. `transport_failure_retry_budget_exhausted_stops_retrying` (was 3902)
+10. `transport_failure_classifies_timeout_and_network_from_error_text` (new!)
+11. another one - let me check what I might have missed
+
+Actually looking at line 3787 there might be one more test between `harness_genome_prompt_layout_is_deterministic` (the 5xx test) and the 401 test. Let me check the full list of transport tests. 
+
+Actually, I already know there are 11 tests because it said "running 11 tests" and "11 passed". This includes our new test. No regressions.
+
+Let me now verify the diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 11 transport tests pass, no regressions. Let me verify the diff.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (554ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows only `src/deepseek.rs` was changed, which matches the task's Edit Surface. Let me now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only `src/deepseek.rs` changed — matches the Edit Surface. Now commit.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Commit successful. Let me summarize what was done.
+
+The task is complete. I:
+1. Read the evolve skill and confirmed the task scope
+2. Read the existing transport error tests to understand the current coverage
+3. Added `transport_failure_classifies_timeout_and_network_from_error_text` test at the end of the `#[cfg(test)] mod tests` block, before `default_transport_policy`
+4. The test covers:
+   - Multiple timeout patterns ("timed out", "connection timeout", "deadline exceeded") → `DeepSeekTransportErrorClass::Timeout`, transient
+   - Multiple network patterns ("connection refused", "connection reset", "dns error", "tls handshake failed", "network unreachable") → `DeepSeekTransportErrorClass::Network`, transient
+   - Full classification pipeline with "connection reset by peer"
+5. Verified: `cargo fmt -- --check` passed, focused test passed, all 11 transport tests passed
+6. Committed
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed**: Added `transport_failure_classifies_timeout_and_network_from_error_text` test to `src/deepseek.rs` in the `#[cfg(test)] mod tests` block.
+
+**What it covers**:
+• **Timeout patterns**: "timed out", "connection timeout", "deadline exceeded" → `DeepSeekTransportErrorClass::Timeout`, all transient
+• **Network patterns**: "connection refused", "connection reset", "dns error", "tls handshake failed", "network unreachable" → `DeepSeekTransportErrorClass::Network`, all transient
+• **Full pipeline**: `classify_deepseek_transport_failure` with "connection reset by peer" verifies retryable + Network class
+
+**Verification**:
+• `cargo fmt -- --check` — clean
+• `cargo test deepseek::tests::transport_failure_classifies_timeout_and_network_from_error_text` — **PASSED**
+• All 11 transport failure tests — **PASSED** (no regressions)
+• Commit: `05dbd0b8`
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

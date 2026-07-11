@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The test function `transport_failure_classifies_5xx_as_server_error_and_retryable` is added in `src/deepseek.rs` with correct assertions covering direct classification of 500/502/503/504/520 as ServerError and transient, plus full pipeline verification through `classify_deepseek_transport_failure`. Build and tests pass. Implementation exceeds the template by also looping all 5xx statuses through the full pipeline and checking `next_backoff_ms`.
