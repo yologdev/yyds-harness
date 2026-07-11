@@ -1338,10 +1338,41 @@ fn handle_lineage(id: &str) {
 }
 
 fn read_tail(path: &Path, limit: usize) -> Result<Vec<String>, std::io::Error> {
-    let raw = std::fs::read_to_string(path)?;
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let file = std::fs::File::open(path)?;
+    let file_size = file.metadata()?.len();
+
+    if file_size == 0 {
+        return Ok(Vec::new());
+    }
+
+    // Estimate bytes needed: event JSON lines average ~500 bytes.
+    // Use 3x safety factor to handle large payloads and variable line lengths.
+    // This avoids reading the entire multi-MB file when we only need the
+    // last N lines — a pattern reusable by other diagnostic paths that hit
+    // the event-volume timeout (Day 117 lesson: "Diagnostic tools fail at the
+    // scale of success, not the scale of failure").
+    const EST_BYTES_PER_LINE: u64 = 500;
+    let estimated_bytes = (limit as u64)
+        .saturating_mul(EST_BYTES_PER_LINE)
+        .saturating_mul(3);
+    let start_pos = file_size.saturating_sub(estimated_bytes);
+
+    let mut reader = BufReader::new(file);
+    reader.seek(SeekFrom::Start(start_pos))?;
+
     let mut lines = VecDeque::new();
-    for line in raw.lines() {
-        lines.push_back(line.to_string());
+    // When we seek into the middle of a file, the first line is almost
+    // certainly partial — skip it to avoid a mangled first entry.
+    let mut skip_first = start_pos > 0;
+    for line in reader.lines() {
+        let line = line?;
+        if skip_first {
+            skip_first = false;
+            continue;
+        }
+        lines.push_back(line);
         if lines.len() > limit {
             lines.pop_front();
         }
