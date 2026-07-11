@@ -3822,6 +3822,29 @@ mod tests {
 
     #[test]
     fn transport_failure_classifies_5xx_as_server_error_and_retryable() {
+        // Direct classification: 500, 502, 503, 504 all map to ServerError
+        // and are transient (retryable).
+        for status in &[500u16, 502, 503, 504] {
+            let class = classify_transport_error(Some(*status), "");
+            assert_eq!(
+                class,
+                DeepSeekTransportErrorClass::ServerError,
+                "status {} should classify as ServerError",
+                status
+            );
+            assert!(
+                is_transient_transport_error(class),
+                "status {} should be transient",
+                status
+            );
+        }
+
+        // Generic 5xx >= 500: status 520 also maps to ServerError
+        let class = classify_transport_error(Some(520), "");
+        assert_eq!(class, DeepSeekTransportErrorClass::ServerError);
+        assert!(is_transient_transport_error(class));
+
+        // Through full classification pipeline
         let policy = default_transport_policy();
         for status in [500, 502, 503, 504] {
             let decision = classify_deepseek_transport_failure(Some(status), "", 1, &policy);
@@ -3829,6 +3852,12 @@ mod tests {
             assert!(decision.retryable);
             assert!(decision.next_backoff_ms.is_some());
         }
+
+        // Verify with descriptive error text
+        let decision =
+            classify_deepseek_transport_failure(Some(503), "service unavailable", 0, &policy);
+        assert!(decision.retryable, "503 should be retryable");
+        assert_eq!(decision.class, DeepSeekTransportErrorClass::ServerError);
     }
 
     #[test]
