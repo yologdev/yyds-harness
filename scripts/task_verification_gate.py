@@ -39,7 +39,11 @@ def external_only_planned(planned: list[str]) -> bool:
     if not planned:
         return False
     normalized = [" ".join(str(item).lower().split()) for item in planned]
-    return all(item.startswith("none") and "gh cli" in item for item in normalized)
+    joined = " ".join(normalized)
+    if not joined.startswith("none"):
+        return False
+    external_signals = {"gh cli", "github", "issue management", "no source edits", "no code"}
+    return any(signal in joined for signal in external_signals)
 
 
 def external_evidence_path(task_file: Path) -> Path:
@@ -232,6 +236,32 @@ def run_self_tests() -> int:
         invalid_external = verify(repo, base, task)
         assert invalid_external["ok"] is False
         assert invalid_external["reason"] == "external-only task external evidence artifact is invalid"
+        # Test broader external-only patterns from task verification gate broadening.
+        broader_patterns = [
+            "none — GitHub issue management only, no source edits",
+            "none (no source code changes, issue management only)",
+            "none (no source edits)",
+        ]
+        for pattern in broader_patterns:
+            task.write_text(f"Title: x\nFiles: {pattern}\n", encoding="utf-8")
+            (repo / "session_plan/task_01_external_evidence.json").write_text(
+                json.dumps(
+                    {
+                        "status": "completed",
+                        "evidence": [{"kind": "github_issue", "url": "https://example.test/1"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = verify(repo, base, task)
+            assert result["ok"] is True, f"pattern {pattern!r}: {result}"
+            assert result["external_only"] is True, f"pattern {pattern!r}: external_only was False"
+        # "none" alone without a signal keyword should not be treated as external-only.
+        task.write_text("Title: x\nFiles: none\n", encoding="utf-8")
+        none_only = verify(repo, base, task)
+        assert none_only["external_only"] is False, f"'none' alone should not be external-only: {none_only}"
+        # Clean up the external evidence artifact so it doesn't leak into other tests.
+        (repo / "session_plan/task_01_external_evidence.json").unlink()
     print("task_verification_gate self-tests passed")
     return 0
 
