@@ -1,0 +1,678 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and then reading the evolve skill and the relevant source files. The task is to fix a timeout in `yyds state why last-failure` by consolidating redundant event scanning passes in `src/commands_state.rs`.
+
+Let me first read the evolve skill, then examine the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines) ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the codebase. I need to find the `build_why_report` and `build_state_summary` functions in `commands_state.rs`. Let me search for them.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs  ▶ search 'fn build_state_summary' in src/commands_state.rs  ▶ search 'fn find_target_event' in src/commands_state.rs ✓ (16ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these three functions to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2899..3019  ▶ read src/commands_state.rs:3167..3367  ▶ read src/commands_state.rs:14230..14310 ✓ (25ms)
+ ✓ (21ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of `build_why_report` to understand all the passes, plus the `related_events` function and the error path more fully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3366..3426  ▶ read src/commands_state.rs:14309..14359 ✓ (5ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the problem clearly. Let me count the passes in `build_why_report` and `build_state_summary`:
+
+**`build_state_summary` (line 2899)**:
+1. `events.iter().filter(...).count()` for `run_completed_count` (lines 2914-2917)
+2. `events.iter().filter(...).count()` for `run_started_count` (lines 2918-2921)
+3. `for e in events { ... }` for event_types map (lines 2923-2928)
+4. `events.iter().filter(...).count()` for `failure_count` (lines 2930-2937)
+5. `events.iter().filter_map(...).min()` for first_ts (line 2939)
+6. `events.iter().filter_map(...).max()` for last_ts (line 2940)
+
+That's 6 passes over the same events slice.
+
+**`build_why_report` error path** (starting at line 3167):
+1. `find_target_event` — 1 pass (but early-exits on reverse scan for last-failure)
+2. If target not found, calls `build_state_summary` — 6 more passes
+3. Then lines 3180-3205: 4 more passes for run_completed_count, failure_count, run_started, error_run_completed_count
+4. Lines 3206-3218: another pass for error_run_ids
+
+So in the common "last-failure not found" case, we have `find_target_event` + `build_state_summary` + 5 more counting passes = ~12 passes over the events.
+
+**`build_why_report` happy path** (target found):
+1. `find_target_event` — 1 pass
+2. Then `parent_ids` lookups: for each parent, `find_target_event` again (O(n) each)
+3. Then `evidence_ids` lookups: same pattern
+4. `related_events` — 1 more pass
+
+The key optimization targets are `build_state_summary` and the error-path counting in `build_why_report`.
+
+Let me think about the approach:
+1. **`build_state_summary`**: Merge all 6 passes into 1. This is a straightforward refactor.
+2. **`build_why_report` error path**: The redundant counting passes (run_completed_count, failure_count, run_started, error_run_completed_count, error_run_ids) can be computed from `build_state_summary`'s output if we make it return a struct instead of a String. But the task says "No output format changes" so I need to be careful.
+
+Actually, looking more carefully: `build_state_summary` is called from `build_why_report` only when the target isn't found. In the error path, `build_state_summary` does 6 passes, then the code does 5 more passes for the same data. We could:
+- Make `build_state_summary` return a struct with all the computed values AND the string
+- OR: merge the counting in the error path since they're done right after `build_state_summary` finishes its passes
+
+But the cleanest approach: refactor `build_state_summary` to do everything in 1 pass, and then refactor the error path in `build_why_report` to either reuse the struct or do its counting in 1 pass too.
+
+Let me think about this more carefully. The task says:
+- "consolidate the redundant event scans in build_why_report and build_state_summary into a single pass that collects all needed metrics"
+- "Merge these into one loop."
+
+So the approach is:
+1. In `build_state_summary`: replace the 6 separate passes with a single `for` loop that collects all metrics simultaneously. Keep the output format identical.
+2. In `build_why_report` error path: the redundant passes after `build_state_summary` can also be merged. But since `build_state_summary` is called first and does its own passes, we can instead merge the error-path passes into `build_state_summary` by making it return additional data.
+
+Actually wait - the simplest approach that doesn't change the output format:
+- Add a struct that holds the computed values
+- Have `build_state_summary` do 1 pass collecting everything
+- Have `build_state_summary` return both the string and the struct
+- In `build_why_report` error path, use the struct values instead of re-scanning
+
+Alternatively, even simpler: since `build_state_summary` already collects all the same data (run_completed_count, failure_count, etc.), I can make it return a struct along with the string, and then use those cached values in the error path.
+
+Let me plan the edit:
+
+**Step 1**: Create a `StateSummaryCounts` struct with all the collected metrics.
+**Step 2**: Refactor `build_state_summary` to do 1 pass collecting all metrics.
+**Step 3**: Change the return type to include the counts struct.
+**Step 4**: Update `build_why_report` error path to use the cached counts.
+
+Actually, wait. Let me re-read the task's Edit Surface more carefully:
+
+"src/commands_state.rs — consolidate the redundant event scans in build_why_report and build_state_summary into a single pass that collects all needed metrics."
+
+"Merge these into one loop."
+
+So the task wants me to merge into one loop. Let me do this:
+
+1. Make `build_state_summary` collect everything in 1 loop and return both the string and a counts structure.
+2. In `build_why_report` error path, use the returned counts instead of re-scanning.
+
+Let me also check: does `build_state_summary` get called from anywhere else?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_state_summary' in src/commands_state.rs ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the callers to understand the current usage pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1180..1190  ▶ read src/commands_state.rs:24598..24608  ▶ search 'fn handle_state_summary' in src/commands_state.rs ✓ (20ms)
+ ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The callers are:
+1. `handle_state_summary` at line 1183 — just prints it
+2. `build_why_report` at line 3176 — included in error message
+3. Tests at line 24601
+
+Now, let me look at the tests for `build_state_summary` and `build_why_report` to understand the expected behavior.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn state_summary' in src/commands_state.rs  ▶ search 'fn build_why_report' in src/commands_state.rs ✓ (11ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at tests for `state_why_last_failure` or similar.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn state_why' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no tests named `state_why`. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'why_report' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test at line 17201 to understand what kind of testing exists for `build_why_report`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:17180..17240 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I now have a good understanding of the code. Let me also check `find_target_event` to understand the reverse scan for `last-failure`:
+
+The key insight: in `find_target_event`, for `last-failure`, it does `events.iter().rev().find(...)` which scans potentially the entire array in reverse, but stops as soon as it finds a match. This is fairly efficient for finding the *last* failure.
+
+The issue is that after `find_target_event` returns `None` (no failures found), the error path in `build_why_report` calls `build_state_summary` (6 more passes) and then does 5 more counting passes. All of this for data that could be collected in a single pass.
+
+Now let me plan my implementation:
+
+1. Create a `StateSummaryCounts` struct with fields for: run_completed_count, run_started_count, failure_count, error_run_completed_count, error_run_ids, event_types, first_ts, last_ts, total events.
+
+2. Refactor `build_state_summary` to return both a `String` and the `StateSummaryCounts` struct. The function currently returns `String`. I can change it to return `(String, StateSummaryCounts)` and update callers.
+
+Wait, but the task says "No output format changes (same text, same sections, same ordering)." Changing the return type is fine as long as the callers are updated.
+
+Actually, let me think more carefully. The existing callers:
+- `handle_state_summary` at line 1183: `println!("{}", build_state_summary(&events));`
+- `build_why_report` at line 3176: `err.push_str(&build_state_summary(events));`
+- Tests at line 24601: `let summary = build_state_summary(&events);`
+
+If I change the return type to `(String, StateSummaryCounts)`, all callers need updating. The cleanest approach might be to:
+- Keep `build_state_summary` returning `String` for backward compatibility
+- Add a new function `collect_state_counts` that does the single-pass collection
+- Have `build_state_summary` call `collect_state_counts` and format from the struct
+- Update `build_why_report` error path to call `collect_state_counts` and reuse
+
+OR even simpler:
+- Change `build_state_summary` to return `(String, StateSummaryCounts)`
+- Update all callers
+
+Let me go with the simpler approach. Let me update the callers:
+
+1. `handle_state_summary` line 1183: `println!("{}", build_state_summary(&events).0);`
+2. `build_why_report` line 3176: `err.push_str(&build_state_summary(events).0);`
+3. Tests: `let summary = build_state_summary(&events).0;`
+
+Then in `build_why_report` error path, compute the values from the struct instead of re-scanning.
+
+Actually wait, I need to be more careful. Let me re-read the error path in `build_why_report`:
+
+```rust
+fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
+    let Some(target) = find_target_event(events, id) else {
+        // ... error handling ...
+        err.push_str(&build_state_summary(events));  // 6 passes
+        // ... then 5 more counting passes ...
+    };
+    // happy path...
+}
+```
+
+In the error path, `find_target_event` for last-failure does a reverse scan. If it finds nothing, that's 1 pass. Then `build_state_summary` does 6 more passes. Then the counting code does 5 more passes. Total: ~12 passes.
+
+My plan:
+1. Create `StateSummaryCounts` struct with all needed fields
+2. Refactor `build_state_summary` to do 1 pass collecting everything, storing in the struct, then formatting from it. Return `(String, StateSummaryCounts)`.
+3. Update callers of `build_state_summary`.
+4. In `build_why_report` error path, use `build_state_summary`'s returned counts struct instead of re-scanning.
+
+But wait — in the `build_why_report` error path, `build_state_summary` is called first, then the counting passes. If `build_state_summary` already computed all those values, we can just use them. The struct would have: run_completed_count, run_started_count, failure_count, error_run_completed_count, error_run_ids.
+
+Let me think about `error_run_completed_count` and `error_run_ids` — these are NOT computed in the current `build_state_summary`. I need to add them to the struct/single-pass collection.
+
+OK, let me proceed.
+
+Let me also check what `event_string`, `event_timestamp_ms`, `is_failure_event_type`, and `event_type` look like to understand the field access.
+
+Actually, I already have enough understanding. Let me implement.
+
+First, let me also check if `find_target_event` has optimization potential. For `last-failure`, it does `events.iter().rev().find(...)`. This is O(n) in worst case (no failures) but O(position_of_last_failure) on average. In the error path, `find_target_event` returns None, meaning it scans the whole array (10k events). That's 1 pass. Not the main bottleneck though — the real issue is the 10+ redundant passes that follow.
+
+My implementation plan:
+1. Define `StateSummaryCounts` struct
+2. Rewrite `build_state_summary` to use 1 loop
+3. Update all callers
+4. Update `build_why_report` error path to use the struct
+
+Let me write this out.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the `handle_state_summary` call site and understand the full picture of callers and the `event_string` / `event_timestamp_ms` helpers:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1295..1345  ▶ search 'fn event_string' in src/commands_state.rs  ▶ search 'fn event_timestamp_ms' in src/commands_state.rs ✓ (15ms)
+ ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me also see the `handle_state_why` function to understand where `build_why_report` is called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:100..160 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now find `handle_why`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1094..1204 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me plan the implementation:
+
+1. Create a `StateSummaryCounts` struct containing all the aggregated data
+2. Rewrite `build_state_summary` to use a single pass to collect all data and return `(String, StateSummaryCounts)`
+3. Update callers in `handle_state_summary` (line 1302) and `handle_why` (line 1183)
+4. Update the error path in `build_why_report` to reuse the counts struct
+5. Update tests
+
+Let me now implement this step by step.
+
+For the `StateSummaryCounts` struct, I need:
+- run_completed_count: usize
+- run_started_count: usize  
+- failure_count: usize
+- error_run_completed_count: usize
+- error_run_ids: Vec<String>
+- event_types: BTreeMap<String, usize> (owned strings)
+- first_ts: Option<i64>
+- last_ts: Option<i64>
+- total: usize
+
+Actually, `event_types` is currently `BTreeMap<&str, usize>`. I need to use owned strings since I'll be collecting in a single pass and returning from the function. Let me use `BTreeMap<String, usize>`.
+
+Wait, actually for the existing code that uses `event_string(e, "event_type")`, the returned `&str` borrows from the `Value`. In a single pass, this is fine since we're inside the loop. But I want to store the type strings. Let me use `String` keys.
+
+Let me also check: in the error path of `build_why_report`, `error_run_ids` is used as `Vec<&str>` and the code does `for rid in &error_run_ids`. If I store `Vec<String>`, that's fine — just adjust the iteration.
+
+Now let me code the changes. I'll start with the struct definition, then `build_state_summary`, then `build_why_report`.
+
+Let me also check if `StateSummaryCounts` should be public or private. Since tests call these functions, it should be at least `pub(crate)`.
+
+Actually, looking at the test at line 24601:
+```rust
+let summary = build_state_summary(&events);
+assert!(summary.contains("State: empty"), ...);
+```
+
+I need to update these. Let me search for all test references to `build_state_summary` and `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me see all test references to `build_state_summary`:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'build_state_summary\|build_why_report' src/commands_state.rs | head -40 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check how many places call `build_state_summary` directly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'build_state_summary(' src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see 5 call sites (including the definition). Now let me also check the error-path lines in `build_why_report` that I need to update, specifically the runs of passes between lines 3180-3218. Let me also check what `build_why_report` tests look like when they call with `last-failure`.
+
+Actually, I now have enough information. Let me implement the changes.
+
+Plan:
+1. Add `StateSummaryCounts` struct before `build_state_summary`
+2. Rewrite `build_state_summary` to return `(String, StateSummaryCounts)` with single-pass collection
+3. Update callers at lines 1183, 1302, 3176, 24601
+4. In `build_why_report` error path (lines 3178-3218), use the counts struct instead of redundant passes
+
+Let me also look at the error path more carefully to understand all the variables used. The error path at lines 3180-3218 uses:
+- `run_completed_count`
+- `failure_count`
+- `run_started` (bool)
+- `error_run_completed_count`
+- `error_run_ids`
+
+And `events.is_empty()` which we get from the struct as `total == 0`.
+
+All of these can be in the struct.
+
+Now, one thing I need to be careful about: in the current error path, `build_state_summary` is called on line 3176, and `run_completed_count`, `failure_count`, `run_started`, etc. are computed on separate passes. If I consolidate all into `build_state_summary`, the error path still needs those values. I can grab them from the returned struct.
+
+Here's my implementation plan in detail:
+
+```rust
+/// Pre-computed counts from a single pass over events, used to avoid
+/// redundant scanning in build_state_summary and build_why_report.
+struct StateSummaryCounts {
+    run_completed_count: usize,
+    run_started_count: usize,
+    failure_count: usize,
+    error_run_completed_count: usize,
+    error_run_ids: Vec<String>,
+    event_types: BTreeMap<String, usize>,
+    first_ts: Option<i64>,
+    last_ts: Option<i64>,
+    total: usize,
+}
+```
+
+Then `build_state_summary`:
+
+```rust
+fn build_state_summary(events: &[Value]) -> (String, StateSummaryCounts) {
+    if events.is_empty() {
+        return (empty_message, StateSummaryCounts { all zeros });
+    }
+    
+    let mut run_completed_count = 0usize;
+    let mut run_started_count = 0usize;
+    let mut failure_count = 0usize;
+    let mut error_run_completed_count = 0usize;
+    let mut error_run_ids = Vec::new();
+    let mut event_types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut first_ts: Option<i64> = None;
+    let mut last_ts: Option<i64> = None;
+    
+    for e in events {
+        let et = event_string(e, "event_type");
+        
+        // event_types
+        if let Some(et) = et {
+            *event_types.entry(et.to_string()).or_insert(0) += 1;
+        }
+        
+        match et {
+            Some("RunCompleted") => {
+                run_completed_count += 1;
+                let status = e.get("payload")
+                    .and_then(|p| p.get("status"))
+                    .and_then(|s| s.as_str());
+                if status.map(|s| s != "success" && s != "completed").unwrap_or(false) {
+                    error_run_completed_count += 1;
+                    if error_run_ids.len() < 5 {
+                        if let Some(rid) = event_string(e, "run_id") {
+                            error_run_ids.push(rid.to_string());
+                        }
+                    }
+                }
+            }
+            Some("RunStarted") => {
+                run_started_count += 1;
+            }
+            _ => {}
+        }
+        
+        if et.map(is_failure_event_type).unwrap_or(false) {
+            failure_count += 1;
+        }
+        
+        if let Some(ts) = event_timestamp_ms(e) {
+            first_ts = Some(first_ts.map_or(ts, |f| f.min(ts)));
+            last_ts = Some(last_ts.map_or(ts, |l| l.max(ts)));
+        }
+    }
+    
+    let total = events.len();
+    
+    // Format output
+    let mut out = String::new();
+    // ... same formatting as before ...
+    
+    let counts = StateSummaryCounts {
+        run_completed_count,
+        run_started_count,
+        failure_count,
+        error_run_completed_count,
+        error_run_ids,
+        event_types,
+        first_ts,
+        last_ts,
+        total,
+    };
+    
+    (out, counts)
+}
+```
+
+Then in `build_why_report` error path:
+
+```rust
+let summary_counts;
+err.push_str(&build_state_summary(events).0);
+// Or better: capture both
+let (summary_text, summary_counts) = build_state_summary(events);
+err.push_str(&summary_text);
+
+// Then use summary_counts.run_completed_count instead of re-scanning
+```
+
+Wait, but now there's a subtlety: in the error path of `build_why_report`, `build_state_summary` is called twice potentially? Let me re-read the error path code...
+
+Actually, looking at lines 3167-3316 more carefully:
+
+```rust
+fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
+    let Some(target) = find_target_event(events, id) else {
+        let mut err = String::new();
+        // ... initial error message ...
+        err.push('\n');
+        err.push_str(&build_state_summary(events));   // <-- HERE
+        err.push('\n');
+        err.push('\n');
+        // Add actionable guidance
+        let run_completed_count = events.iter().filter(...).count();  // redundant
+        let failure_count = events.iter().filter(...).count();        // redundant
+        let run_started = events.iter().any(...);                     // redundant
+        let error_run_completed_count = events.iter().filter(...).count();  // redundant
+        let error_run_ids: Vec<&str> = events.iter().filter(...).collect(); // redundant
+        // ... uses these values ...
+    };
+    // happy path...
+}
+```
+
+So `build_state_summary` is called once and then 5 more passes are done afterward. The fix: call `build_state_summary` once, capture the counts, use them for the guidance logic.
+
+Let me now write the code. I need to be surgical with edits.
+
+Let me start by adding the struct and rewriting `build_state_summary`, then update `build_why_report`'s error path.
+
+I'll use `edit_file` for each change. Let me start with the struct and `build_state_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first replace `build_state_summary` with the optimized version. I'll add the struct right before the function and rewrite the function body.
+
+Let me start with the struct + function replacement. The function is at lines 2899-2967.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.7s (5 ✓)
+
+Now let me implement. First, I'll replace `build_state_summary` with a single-pass version that returns both the formatted string and a counts struct:
+  - fn build_state_summary(events: &[Value]) -> String {
+  + /// Pre-computed counts from a single pass over events. Used to avoid
+  + /// redundant scanning in `build_state_summary` and `build_why_report`.
+  + struct StateSummaryCounts {
+  +     run_completed_count: usize,
+  +     run_started_count: usize,
+  +     failure_count: usize,
+  +     error_run_completed_count: usize,
+  +     error_run_ids: Vec<String>,
+  +     event_types: BTreeMap<String, usize>,
+  +     first_ts: Option<i64>,
+  +     last_ts: Option<i64>,
+  +     total: usize,
+  + }
+  + 
+  + /// Returns (formatted_summary_string, pre-computed_counts).
+  + /// The counts are collected in a single pass so callers that need them
+  + /// (e.g. `build_why_report` error path) can reuse them without re-scanning.
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (69 → 134 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (69 → 134 lines)
+  - fn build_state_summary(events: &[Value]) -> String {
+  + /// Pre-computed counts from a single pass over events. Used to avoid
+  + /// redundant scanning in `build_state_summary` and `build_why_report`.
+  + struct StateSummaryCounts {
+  +     run_completed_count: usize,
+  +     run_started_count: usize,
+  +     failure_count: usize,
+  +     error_run_completed_count: usize,
+  +     error_run_ids: Vec<String>,
+  +     event_types: BTreeMap<String, usize>,
+  +     first_ts: Option<i64>,
+  +     last_ts: Option<i64>,
+  +     total: usize,
+  + }
+  + 
+  + /// Returns (formatted_summary_string, pre-computed_counts).
+  + /// The counts are collected in a single pass so callers that need them
+  + /// (e.g. `build_why_report` error path) can reuse them without re-scanning.
+  + fn build_state_summary(events: &[Value]) -> (String, StateSummaryCounts) {
+        if events.is_empty() {
+  ... (121 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the callers. Let me update them one by one:
+
+1. Line 1183 (shifted now, need to find it again): `build_state_summary(&events)` → needs `.0`
+2. Line 1302: same
+3. Line 3176 (will be shifted): in `build_why_report` error path
+4. Test at line 24601
+
+Let me also update the `build_why_report` error path to use the counts struct from `build_state_summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update callers. Let me find the new line numbers:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'build_state_summary(' src/commands_state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me update callers:
+
+1. Line 1183: `build_state_summary(&events)` → `build_state_summary(&events).0`
+2. Line 1302: `build_state_summary(&events)` → `build_state_summary(&events).0`
+3. Line 3241: This is inside `build_why_report` error path — I'll change this to capture the tuple
+4. Line 24666: Test — `build_state_summary(&events).0`
+
+Now for the `build_why_report` error path, I need to refactor to use the counts struct. Let me read the affected region:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3230..3340 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full error path. I need to:
+
+1. Replace the call on line 3241 to capture the tuple: `let (summary_text, counts) = build_state_summary(events);`
+2. Replace the redundant passes (lines 3245-3283) with reads from `counts`
+3. Replace `events.is_empty()` with `counts.total == 0`
+4. Replace `run_started` (bool) with `counts.run_started_count > 0`
+
+For the incomplete_runs section (lines 3299-3313), this uses `completed_ids` HashSet which I can't easily precompute without storing it. But that's a detail for the error path that fires when `run_completed_count == 0 && run_started` — which is a less common path. Let me keep that section as-is for now since it's a fallback path, not the hot path.
+
+Actually, wait. The task says to consolidate the passes. The `completed_ids` is used to find incomplete runs. I can pre-compute this in the single pass too. But that would be additional state I need to carry. Let me think...
+
+Actually, `completed_ids` is only used in the `run_completed_count == 0 && run_started` branch, which is the "session in progress" case. This is not the common timeout case. The common timeout case is when there are 10,000 events being scanned and `find_target_event` returns `None`. In that case, the `build_state_summary` call already did the single pass.
+
+For the `completed_ids` computation, it's done within the `id == "last-failure"` and `run_completed_count == 0 && run_started` branch. I could store it in the counts struct, but that's adding complexity for a rarely-taken path. Let me keep it for now and focus on the main optimization.
+
+Let me now write the edit for `build_why_report` error path:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the `build_why_report` error path to reuse the counts struct:
+                err.push_str(&format!("no state event found for '{id}'\n"));
+            }
+            err.push('\n');
+  -         err.push_str(&build_state_summary(events));
+  +         let (summary_text, counts) = build_state_summary(events);
+  +         err.push_str(&summary_text);
+            err.push('\n');
+            err.push('\n');
+  -         // Add actionable guidance
+  -         let run_completed_count = events
+  -             .iter()
+  -             .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  -             .count();
+  -         let failure_count = events
+  -             .iter()
+  -             .filter(|e| {
+  -                 event_string(e, "event_type")
+  -                     .map(is_failure_event_type)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (51 → 23 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (51 → 23 lines)
+                err.push_str(&format!("no state event found for '{id}'\n"));
+            }
+            err.push('\n');
+  -         err.push_str(&build_state_summary(events));
+  +         let (summary_text, counts) = build_state_summary(events);
+  +         err.push_str(&summary_text);
+            err.push('\n');
+            err.push('\n');
+  -         // Add actionable guidance
+  -         let run_completed_count = events
+  -             .iter()
+  -             .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  -             .count();
+  -         let failure_count = events
+  -             .iter()
+  -             .filter(|e| {
+  -                 event_string(e, "event_type")
+  -                     .map(is_failure_event_type)
+  -                     .unwrap_or(false)
+  -             })
+  ... (37 more lines)
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I also need to update the `events.is_empty()` check to use `counts.total == 0`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now replace `events.is_empty()` with `counts.total == 0`:
+  -         if events.is_empty() || (run_completed_count == 0 && !run_started) {
+  +         if counts.total == 0 || (run_completed_count == 0 && !run_started) {
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         if events.is_empty() || (run_completed_count == 0 && !run_started) {
+  +         if counts.total == 0 || (run_completed_count == 0 && !run_started) {
+ ✓ (5ms)
+
+

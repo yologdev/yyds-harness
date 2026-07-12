@@ -1,0 +1,506 @@
+warning: skipping corrupted event at line 7553 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 1206
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant files to understand the current code before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (27ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full preseed file to understand the key functions - particularly `choose_task` and the main flow. I also need to check if `task_manifest.py` and `test_task_manifest.py` exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/task_manifest.py scripts/test_task_manifest.py 2>&1  ▶ read scripts/preseed_session_plan.py:2050.. ✓ (8ms)
+ ✓ (45ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current flow:
+
+1. In `main()`, lines 2052-2068:
+   - If task files already exist, return 0 (line 2052-2053)
+   - Try to read assessment file; if OSError, set assessment to "" (lines 2054-2057)
+   - If assessment is empty (no non-whitespace content), return 0 (line 2058-2059)
+   - Otherwise, choose_task and render_task (lines 2060-2067)
+
+So the current code already handles the case where the assessment file can't be read (OSError → assessment = "") or has no content (not assessment.strip() → return 0). But the task says we need to add a guard that writes `planning_failure.md` instead of silently returning 0.
+
+Let me re-read the task requirements more carefully:
+
+The task says:
+- When the assessment file is missing or empty, produce `session_plan/planning_failure.md` instead of just returning 0 silently.
+- The guard goes BEFORE the existing dead-transcript path check (from c2da82f3).
+
+Looking at the current code flow:
+- Lines 2052-2053: if task files exist, return 0 (no-op)
+- Lines 2054-2057: read assessment, handle OSError
+- Lines 2058-2059: if assessment is empty, return 0 silently ← THIS IS THE GAP
+- Lines 2060-2068: produce task
+
+The task wants us to:
+1. Before the dead-transcript-path check (which is in `choose_task`), add a guard in `main()` that detects missing/empty assessment and writes `planning_failure.md`
+2. In `task_manifest.py`, add a warning when a task references a nonexistent or empty assessment artifact path
+3. Add test coverage in `test_task_manifest.py`
+
+Let me read the task_manifest.py and test_task_manifest.py to understand their structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py  ▶ read scripts/test_task_manifest.py ✓ (29ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the task_manifest.py better, especially the `build_manifest` function and the Evidence parsing. Let me look at the middle section of task_manifest.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:100.. ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_manifest` function to understand how tasks are parsed and what the evidence section looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:200.. ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me plan the changes:
+
+### 1. `scripts/preseed_session_plan.py` — Add assessment-output-gap guard
+
+In `main()`, currently at lines 2052-2068:
+- Lines 2054-2057: `except OSError: assessment = ""`
+- Lines 2058-2059: `if not assessment.strip(): return 0`
+
+I need to add a guard BEFORE line 2058 that:
+- When the assessment file is missing entirely (already handled by OSError → assessment = "")
+- OR when the assessment file has zero/negligible content (only whitespace/newlines)
+- Write `session_plan/planning_failure.md` with a specific reason
+- Then return 0
+
+The current code already handles both cases (OSError → assessment = "" → not assessment.strip() → return 0), but it returns silently. The task wants it to write `planning_failure.md` instead.
+
+I need to be careful: the task says "The guard goes BEFORE the existing dead-transcript path check (from c2da82f3)." The dead-transcript path check is in `choose_task` when `assessment_was_missing=True` and the assessment references a nonexistent transcript. So the guard in `main()` should fire before we even reach `choose_task`.
+
+Let me also look at what `choose_task` does with `assessment_was_missing`.
+
+Actually, looking more closely at the code in `main()`:
+
+```python
+if any(args.output_dir.glob("task_*.md")):
+    return 0  # task files already exist, nothing to do
+try:
+    assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    assessment = ""
+if not assessment.strip():
+    return 0  # silently returns 0 when empty
+args.output_dir.mkdir(parents=True, exist_ok=True)
+task = choose_task(assessment, assessment_was_missing=(...))
+```
+
+So the flow is:
+1. If task files already exist → return 0
+2. Read assessment; if OSError → ""  
+3. If assessment is empty (after stripping whitespace) → return 0 silently
+4. Otherwise, choose_task and render_task
+
+The change needed: at step 3, instead of silently returning 0, write `planning_failure.md` with a reason.
+
+But wait — I need to be careful about the distinction. Currently the assessment file is always present (it's a required argument), and the OSError handler catches the case where reading fails. The `if not assessment.strip()` check catches the case where the file is empty or whitespace-only.
+
+But there's another case: what if the assessment file doesn't exist at all? Looking at the argument parser... Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1970.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the argument parser to see how `--assessment` is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1890.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the argument parser to see how `--assessment` and `--output-dir` are defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1840.. ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the argparser setup to understand the --assessment flag:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1790.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the argparser setup:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1727.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the argparser setup more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def main' in scripts/preseed_session_plan.py ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the top of main():
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1241..1281 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding of the code. Let me now plan the implementation:
+
+### Plan
+
+#### 1. `scripts/preseed_session_plan.py` — Add assessment-output-gap guard
+
+Currently in `main()`, lines 2054-2059:
+```python
+try:
+    assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    assessment = ""
+if not assessment.strip():
+    return 0
+```
+
+I need to change this to write `planning_failure.md` instead of silently returning 0. The guard should fire BEFORE `choose_task` is called, i.e., as a replacement for the silent `return 0` at line 2059.
+
+The changes:
+1. After the OSError or empty-content check, write `planning_failure.md` with a specific reason
+2. Then return 0
+
+I also need to write a `check_assessment_gap` function or inline the logic. Let me keep it simple and inline it.
+
+The `planning_failure.md` should contain:
+```markdown
+# Planning Failure
+
+**Reason:** assessment file missing | assessment file is empty
+**Assessment path:** <path>
+```
+
+#### 2. `scripts/task_manifest.py` — Add Evidence artifact path check
+
+In `build_manifest()`, for each task, after parsing, check if the task's Evidence section references a file path. The Evidence section is already extracted via `section_summary(text, "Expected Evidence")` at line 222. But the task says to check the "Evidence" section, not "Expected Evidence". Let me re-read the task description:
+
+> task_manifest.py emits a warning (not an error) when a task's Evidence section references an assessment artifact path that doesn't exist.
+
+Looking at the task file format, tasks have an "Evidence" section (the task format uses "Evidence:" as a field). Let me check the field parsing. The task template in the main body has fields like "Evidence:", "Title:", "Files:", etc. But the field parser `FIELD_RE` only matches `Title:`, `Files:`, `Issue:`, `Origin:`, `Objective:`, etc.
+
+Wait, looking at the field regex: `FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z 0-9_-]*):\s*(.*)$")`. This matches any "FieldName: value" pattern. So "Evidence:" would be parsed as a field.
+
+But wait, the task format uses sections in the body, like:
+```
+Evidence:
+- Some evidence
+```
+
+Looking at `parse_task()`, the field parser first tries to match `FIELD_RE` against header lines. After the header fields, it goes into body mode.
+
+Looking at the task files in the test:
+```python
+"""Title: Improve evaluator timeout evidence
+Files: scripts/log_feedback.py, scripts/build_evolution_dashboard.py
+Issue: none
+Origin: planner
+
+Objective:
+Make evaluator timeout visible...
+
+Expected Evidence:
+- task_verification_rate drops when evaluator times out
+"""
+```
+
+So "Evidence:" would be a body section, not a header field. The section_summary function could be used to parse it.
+
+But actually, looking at this more carefully, the task says:
+> task_manifest.py — add a warning when the task manifest contains a task whose Evidence section references a nonexistent or empty assessment artifact path.
+
+So I need to:
+1. Extract the Evidence section from the task text
+2. Check for file paths in it (using `extract_file_mentions`)
+3. For each file path, check if it exists on disk
+4. If a referenced path doesn't exist, add a warning
+
+Let me implement this in `build_manifest()`. I need to add a new function `evidence_artifact_paths(text)` that extracts paths from the Evidence section, then check existence.
+
+Actually, let me think about this differently. The Evidence section in a task typically references assessment artifacts like:
+```
+Evidence:
+- The assessment file at session_plan/assessment.md shows...
+- Trajectory data confirms...
+```
+
+The key is: the Evidence section may reference a path like `session_plan/assessment.md` or `transcripts/assess.log` that doesn't exist. We want to warn about that.
+
+Let me add a function that extracts paths from the Evidence section and checks if they exist.
+
+#### 3. `scripts/test_task_manifest.py` — Add test coverage
+
+Add a test that verifies the new warning is emitted when a task's Evidence section references a nonexistent path.
+
+### Implementation order:
+1. First write the test
+2. Then modify preseed_session_plan.py
+3. Then modify task_manifest.py
+4. Run all tests
+
+Let me start by writing the test in test_task_manifest.py, then make the changes.
+
+Actually, let me first run the existing tests to make sure they pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the existing tests first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (58ms)
+ ✓ (118ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, baseline tests pass. Now let me implement the changes.
+
+### 1. Preseed change: Write planning_failure.md instead of silently returning 0
+
+In `main()`, lines 2052-2059:
+```python
+if any(args.output_dir.glob("task_*.md")):
+    return 0
+try:
+    assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+except OSError:
+    assessment = ""
+if not assessment.strip():
+    return 0
+```
+
+I need to replace the silent `return 0` at line 2059 with writing `planning_failure.md`.
+
+Let me also write a small helper function `write_planning_failure` that writes the file.
+
+For the planning_failure.md format, let me keep it simple. The reason needs to be discoverable:
+- "assessment file missing" when OSError caught
+- "assessment file is empty" when file exists but has no non-whitespace content
+
+### 2. Task_manifest change: Add Evidence artifact path check
+
+In `build_manifest()`, for each task, I need to:
+1. Extract the Evidence section from the task text
+2. Find file paths in it
+3. Check if they exist on disk
+4. Add a warning if any don't exist
+
+Let me look at how tasks are parsed and where I can add this check. The `parse_task` function at line 201 returns a dict. In `build_manifest`, after tasks are parsed, there's a loop over tasks at line 290 that already adds warnings.
+
+I need to:
+1. Add a function `evidence_section_text(text)` to extract the Evidence section
+2. Add a function `check_evidence_artifact_paths(text)` that checks for nonexistent paths
+3. Add the warning in the task loop
+
+Let me also look at what `section_summary` does already - it can parse sections. I can reuse that.
+
+Actually, `section_summary` already handles section parsing. I just need to call it with "Evidence" as the label and then check paths in the result.
+
+But wait - `section_summary` returns a truncated string. For path checking, I need the actual paths, not a summary. Let me read the Evidence section more directly.
+
+Actually, looking at the task format again, the Evidence section looks like:
+```
+Evidence:
+- Some evidence text mentioning session_plan/assessment.md
+- More evidence
+```
+
+The `section_summary` function joins lines and strips bullet markers, so paths would be visible in the result. Let me use that and then run `extract_file_mentions` on the result.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the test first, then the implementation changes. This follows the "write test first" rule.
+
+For test_task_manifest.py, I'll add a test that creates a task with an Evidence section referencing a nonexistent path and verifies that the manifest includes a warning.
+
+For preseed_session_plan.py, I'll modify the main() function to write planning_failure.md instead of silently returning 0.
+
+For task_manifest.py, I'll add the evidence artifact path check in build_manifest().
+
+Let me start with the test for task_manifest.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.4s (4 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first. I'll add it near the end of the test file, before the `if __name__ == "__main__":` line.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     def test_evidence_references_nonexistent_artifact_path(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix something
+  + Files: src/main.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Make something work.
+  + 
+  + Evidence:
+  + - The assessment at session_plan/assessment.md shows the issue.
+  + - Referenced artifact: nonexistent/path/to/dead/artifact.log
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (2 → 93 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_task_manifest.py (2 → 93 lines)
+  +     def test_evidence_references_nonexistent_artifact_path(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix something
+  + Files: src/main.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Make something work.
+  + 
+  + Evidence:
+  + - The assessment at session_plan/assessment.md shows the issue.
+  + - Referenced artifact: nonexistent/path/to/dead/artifact.log
+  + - Another reference: also/does/not/exist.json
+  + """,
+  ... (73 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test is written. Now let me implement the preseed change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let's edit preseed_session_plan.py. I need to:
+
+1. Add a `write_planning_failure` helper function
+2. Replace the silent `return 0` in main() with writing planning_failure.md
+
+Let me add the helper function near the top (after the constants, before the functions) and modify main().
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  - def _candidate_files_exist(candidate: dict) -> bool:
+  + def write_planning_failure(output_dir: Path, reason: str, assessment_path: str = "") -> None:
+  +     """Write session_plan/planning_failure.md when the assessment produced no usable output."""
+  +     output_dir.mkdir(parents=True, exist_ok=True)
+  +     content = f"# Planning Failure\n\n**Reason:** {reason}\n"
+  +     if assessment_path:
+  +         content += f"**Assessment path:** {assessment_path}\n"
+  +     (output_dir / "planning_failure.md").write_text(content, encoding="utf-8")
+  + 
+  + 
+  + def check_assessment_gap(assessment_path: Path) -> tuple[bool, str]:
+  +     """Check whether the assessment file is missing or has negligible content.
+  + 
+  +     Returns (is_gap, reason) where is_gap=True means the assessment produced
+  +     no usable output and planning_failure.md should be written.
+  +     """
+  +     if not assessment_path.exists():
+  +         return True, "assessment file missing"
+  +     if not assessment_path.is_file():
+  +         return True, "assessment path is not a regular file"
+  ... (7 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (1 → 26 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (1 → 26 lines)
+  - def _candidate_files_exist(candidate: dict) -> bool:
+  + def write_planning_failure(output_dir: Path, reason: str, assessment_path: str = "") -> None:
+  +     """Write session_plan/planning_failure.md when the assessment produced no usable output."""
+  +     output_dir.mkdir(parents=True, exist_ok=True)
+  +     content = f"# Planning Failure\n\n**Reason:** {reason}\n"
+  +     if assessment_path:
+  +         content += f"**Assessment path:** {assessment_path}\n"
+  +     (output_dir / "planning_failure.md").write_text(content, encoding="utf-8")
+  + 
+  + 
+  + def check_assessment_gap(assessment_path: Path) -> tuple[bool, str]:
+  +     """Check whether the assessment file is missing or has negligible content.
+  + 
+  +     Returns (is_gap, reason) where is_gap=True means the assessment produced
+  +     no usable output and planning_failure.md should be written.
+  +     """
+  +     if not assessment_path.exists():
+  +         return True, "assessment file missing"
+  +     if not assessment_path.is_file():
+  +         return True, "assessment path is not a regular file"
+  ... (7 more lines)
+ ✗ (18ms)
+    │ old_text not found in scripts/preseed_session_plan.py.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search for `_candidate_files_exist` didn't work. Let me search for the exact text to find the right anchor.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _candidate_files_exist' in scripts/preseed_session_plan.py ✓ (8ms)
+
+

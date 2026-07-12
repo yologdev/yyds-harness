@@ -1,0 +1,382 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task. The evaluator rejected the implementation because `_find_stale_evidence_paths` doesn't handle absolute paths in evidence references, producing a false-positive `stale_evidence_artifact` warning when the artifact actually exists.
+
+Let me look at the current state of the relevant files to understand what's already been implemented and what needs to be fixed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search '_find_stale_evidence_paths' (*.py)  ▶ read scripts/task_manifest.py (100 lines) ✓ (5ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_find_stale_evidence_paths` function and its usage more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:215..275 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `_find_stale_evidence_paths` function resolves paths relative to `base_dir` using `base_dir / p`. When the evidence reference is an absolute path (like `/tmp/something.md`), `Path` objects handle this correctly in Python - `base_dir / "/tmp/something.md"` gives `"/tmp/something.md"` (the absolute path overrides). But let me think about what's actually happening...
+
+Wait, actually in Python's `pathlib`, `base_dir / absolute_path` does return the absolute path correctly. Let me look at the test that's failing to understand the issue better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_evidence_references_existing_artifact_path_no_warning' ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test to understand the exact scenario.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py:1111..1171 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The test creates an absolute path reference: `{plan}/real_artifact.log` which is something like `/tmp/tmpxxx/session_plan/real_artifact.log`. 
+
+The `_find_stale_evidence_paths` function receives the task text and `base_dir` which is `plan_dir.parent` (as seen on line 363). So `base_dir` would be the parent of `session_plan`, which is the temp directory root.
+
+In the evidence text, there's a reference like `/tmp/tmpxxx/session_plan/real_artifact.log`.
+
+The `_EVIDENCE_PATH_RE` regex is:
+```
+(?<![:/])(([\w.-]+/)+[\w.-]+\.(?:md|log|json|txt|yaml|yml|toml|rs|py|sh|html|css|js|ts))\b
+```
+
+This regex has a negative lookbehind `(?<![:/])` to avoid matching after `:` or `/`. But it also requires the pattern `([\w.-]+/)+` which means it's looking for paths with multiple `word-chars-or-dots-or-hyphens/` segments. An absolute path like `/tmp/tmpxxx/session_plan/real_artifact.log` would start with `/`, which the lookbehind prevents from matching after `/`.
+
+Wait, actually the negative lookbehind says "not preceded by `:` or `/`". So the path `/tmp/tmpxxx/...` can't match because the path starts with `/` and the first char after `/` can't be preceded by `/`.
+
+Hmm, but the issue description says the problem is that `_find_stale_evidence_paths` doesn't handle absolute paths. Let me think again...
+
+Actually, let me re-examine. The regex `(?<![:/])(([\w.-]+/)+[\w.-]+\.(?:md|log|json|txt|yaml|yml|toml|rs|py|sh|html|css|js|ts))\b` with negative lookbehind `(?<![:/])` means the match cannot be preceded by `:` or `/`. 
+
+For `/tmp/tmpxxx/session_plan/real_artifact.log`:
+- The first `/` is preceded by... nothing (start of line or a space)? If it's preceded by a space, the lookbehind passes and then the regex tries `([\w.-]+/)+` starting with... well the `/` isn't matched by `[\w.-]+` so the first group would fail.
+
+Actually wait, the group is `([\w.-]+/)+` which requires one or more occurrences of `(wordchars-or-dots-or-hyphens, then /)`. The path `/tmp/...` starts with `/`, but there's no word characters before that first `/`. So the regex would match starting from `tmp/tmpxxx/session_plan/real_artifact.log` instead of the full absolute path.
+
+Hmm, let me trace through more carefully. The text: `Referenced artifact: /tmp/tmpxxx/session_plan/real_artifact.log`
+
+The regex would try to match starting at each position. When it gets to the space before `/tmp`, the lookbehind checks the previous char (space) - not `:` or `/`, so passes. Then `([\w.-]+/)+` tries to match... starting with `[\w.-]+` which needs at least one word char, dot, or hyphen. The first character is `/`, which doesn't match `[\w.-]`. So the match fails.
+
+Then it tries from position of `/`: lookbehind says "preceded by space" → not `:` or `/` → passes. Then `[\w.-]+` tries to match starting with `t` → matches `tmp`. Then `/` → matches. Then the `+` repeats. So it would match `tmp/tmpxxx/session_plan/real_artifact.log`.
+
+So the matched path would be `tmp/tmpxxx/session_plan/real_artifact.log` (relative), and when resolved against `base_dir` (which is the parent of `session_plan`), it becomes `base_dir/tmp/tmpxxx/session_plan/real_artifact.log` which DOESN'T exist.
+
+That's the bug! The regex extracts the path without the leading `/` for absolute paths, turning it into a relative path. Then when resolved against `base_dir`, it creates a wrong absolute path.
+
+So the fix should be in `_find_stale_evidence_paths`: after extracting the path, check if the original text had an absolute path (starts with `/`) and if so, resolve it as an absolute path instead of relative to `base_dir`.
+
+Or alternatively, modify the regex to also capture an optional leading `/`. But that might break the lookbehind.
+
+Let me think about the cleanest fix. I think the simplest approach is: in `_find_stale_evidence_paths`, after getting `p = match.group(1)`, look at the original match position in the evidence text. If the character immediately before the match is `/` (or if the match starts after a space and the first char is a path character but the original evidence had a `/` before), we need to figure out if this is an absolute path.
+
+Actually, a simpler approach: look at the matched text's position in evidence. If the character before the match start position is `/`, then it's an absolute path. We can reconstruct it by prepending `/`.
+
+Wait, but the negative lookbehind prevents matching if preceded by `/`. So the regex skips the leading `/`. The evidence text has e.g. `artifact: /tmp/...`. The match starts at `tmp/...`. The character before `tmp` is a space. But the actual full path in the evidence is `/tmp/...` with a leading `/`.
+
+So the fix should be: when the matched group doesn't start with `/` but the original evidence has `/` before the matched position, we should prepend that `/`.
+
+But actually, I think the simplest and most robust fix is: in `_find_stale_evidence_paths`, after extracting the path, also check if it exists as `Path(p)` (absolute) or `base_dir / p` (relative). We should try both. If `Path(p).is_absolute()` or `p.startswith('/')`... but wait, `p` won't start with `/` because the regex won't capture it.
+
+Let me re-examine. Actually, let me test this locally to verify.
+
+The cleanest fix: in `_find_stale_evidence_paths`, after resolving `full_path = base_dir / p`, also check: if the evidence text at the match position has a leading `/` before the match, then treat the path as absolute (use `Path(p)` directly, but actually `p` doesn't have the `/`). So instead, we should look at `evidence[match.start()-1]` to see if it's `/`.
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I see the issue. The `_EVIDENCE_PATH_RE` regex has a negative lookbehind `(?<![:/])` that prevents matching after `/`. When evidence references an absolute path like `/tmp/.../real_artifact.log`, the regex matches `tmp/.../real_artifact.log` (without the leading `/`), turning an absolute path into a relative one. When resolved against `base_dir`, this creates a wrong path that doesn't exist.
+
+Let me verify the regex behavior and then fix it.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (11 lines) ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - the regex is matching `mp/foo/bar/real_artifact.log` (missing the leading `t` from `tmp`). That's because `[\w.-]+` starts matching at the `t` of `tmp`, but wait... Let me trace through more carefully.
+
+Text: `Referenced artifact: /tmp/foo/bar/real_artifact.log`
+
+Position 0-21: `Referenced artifact: `
+Position 22: `/`
+Position 23: `t`
+...
+
+At position 22 (`/`): lookbehind checks char at 21 (space) → not `:` or `/` → passes. Then `[\w.-]+` tries to match starting at `/`. `/` does not match `[\w.-]` (which is `[a-zA-Z0-9_.-]`), so the match fails at position 22.
+
+At position 23 (`t`): lookbehind checks char at 22 (`/`) → `/` IS in the lookbehind set → FAIL. So position 23 is skipped.
+
+At position 24 (`m`): lookbehind checks char at 23 (`t`) → not `:` or `/` → passes. Then `[\w.-]+` matches `mp`, then `/`, then continues... 
+
+So the match is `mp/foo/bar/real_artifact.log`. The leading `/t` is lost.
+
+So the fix is: when we get a match, check if the original evidence string has a `/` immediately before the match start, and if so, the path is absolute. We need to reconstruct the full absolute path.
+
+Actually, we need to check: if `evidence[m.start()-1] == '/'`, then the full path has a `/` prefix before the match. But we also need to get the full segment before that, like the `t` before `mp`.
+
+Hmm, this is tricky. A simpler approach: look backwards from the match start to find where the absolute path begins. If the character before the match is `/`, walk backwards to find the start of the path component (`/tmp` → walk back past the `/` to find the start of the previous path component, if any).
+
+Actually, the simplest robust fix: just look at the original evidence text span that includes the leading `/` if present. Find the absolute path by scanning backwards from the match start.
+
+Let me think about this differently. The issue is only about absolute paths. An absolute path starts with `/`. In the evidence text, it looks like ` /absolute/path`. The regex matches `absolute/path` (starts at the `a` after `/`). The previous char is `/`. So:
+
+1. If `evidence[m.start()-1] == '/'`, the matched path is part of an absolute path.
+2. We need to reconstruct the full absolute path. Walk backwards from `m.start()-1` to find where the path starts (continue while char is word char, `.`, `-`, or `/`).
+
+Let me implement this in `_find_stale_evidence_paths`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (18 lines) ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, that didn't work because the regex matched `mp/foo/bar/real_artifact.log` (missing the leading `t`). And the char before `m` is `t`, which is a word char, not `/`. So my approach needs to be different.
+
+Let me think again. The regex matched `mp/foo/bar/real_artifact.log` starting at position 24. The character before position 24 is `t` (position 23), which is a word character. And before `t` is `/` (position 22). So the full absolute path is from position 22 (`/tmp/foo/...`).
+
+To reconstruct the absolute path, I need to walk backwards from the match start and capture all `/`-separated segments. Here's the algorithm:
+
+1. Check if the char before the match is `/` OR a word char that's preceded by `/`.
+2. Walk backwards to find the true start of the path.
+
+Actually, simpler: walk backwards from `m.start()` collecting characters that are valid path characters (`\w`, `.`, `-`, `/`). Stop when we hit a non-path character.
+
+Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (19 lines) ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the new regex `(?:(?<=^)|(?<=[^:\w./-]))([\w./+-]*[\w.+-]\.(?:md|log|json|txt|yaml|yml|toml|rs|py|sh|html|css|js|ts))\b` captures:
+
+1. For `/tmp/foo/bar/real_artifact.log` → matches the full absolute path including leading `/`
+2. For `session_plan/assessment.md` → matches the relative path
+
+Now, the concern is that the original regex had `(?<![:/])` which intentionally prevented matching after `:` or `/`. Let me think about why...
+
+The `(?<![:/])` prevents matching after:
+- `:` - probably to avoid matching inside URLs like `https://example.com/foo.md`
+- `/` - probably to avoid double-matching parts of paths
+
+The new regex `(?:(?<=^)|(?<=[^:\w./-]))` ensures the match is preceded by either:
+- start of string
+- a character that's NOT `:`, word char, `.`, `/`, or `-`
+
+This would correctly handle:
+- `artifact: /path/to/file.log` → space before `/` triggers match
+- `session_plan/file.md` → start of line or space before triggers match
+- `https://example.com/foo.md` → the `s` in `https` is preceded by... hmm, let me check
+
+Wait, `https://example.com/foo.md` - the lookbehind `(?<=[^:\w./-])` would need the character before the match to NOT be in `:\w./-`. Let me trace through:
+- `https://example.com/foo.md`
+- At position of `example.com/foo.md`... hmm, this is complex.
+
+Actually, let me just focus on a simpler approach. Instead of rewriting the regex (which could have unintended side effects), I'll fix `_find_stale_evidence_paths` to handle absolute paths by checking backwards from the match position.
+
+Here's my plan:
+1. Keep the existing regex as-is.
+2. In `_find_stale_evidence_paths`, after getting `p = match.group(1)`, check if the preceding character in the evidence text suggests this is part of an absolute path.
+3. If the character before the match start is `/`, or a word character preceded by `/`, reconstruct the full absolute path by walking backwards.
+
+Let me test this approach:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (32 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The walk-back approach didn't capture `/t` because the character before `m` is `t` (a word char), not `/`. The walk-back stops at the first char that's NOT a `/`. Since `t` is not a `/`, it doesn't walk back at all.
+
+I need a different approach. Let me walk back as long as the character is a valid path character (word, `.`, `-`, `/`), but stop when we hit a non-path char.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (30 lines) ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so:
+1. For absolute paths like `/tmp/foo/bar/real_artifact.log`, the walk-back correctly captures the full `/tmp/foo/bar/real_artifact.log`.
+2. For relative paths like `session_plan/assessment.md`, it still works correctly.
+3. For URLs like `https://example.com/docs.md`, the regex matched `xample.com/docs.md` (missing the leading `e`), and walking back captured `//example.com/docs.md`.
+
+Case 3 is interesting. The original regex `(?<![:/])` prevents matching after `:` (so `https://` prevents matching right after `:`). But it matches at `xample.com/docs.md` because `x` is preceded by `e` (a word char). Let me check: the match starts at `x` in `example`, because the lookbehind checks the char before `x`, which is `e` (not `:` or `/`), so it passes. Then `[\w.-]+` matches `xample`, then `/`, then the rest.
+
+Wait, why didn't it match `example.com/docs.md`? Let me trace:
+- Text: `See https://example.com/docs.md for details`
+- At position of `e` in `example`: preceded by `/` → lookbehind `(?<![:/])` FAILS.
+- At position of `x` in `example`: preceded by `e` → passes. `[\w.-]+` matches `xample`, then `/.com/docs.md`.
+
+So the URL case is problematic with the walk-back. But this is actually an edge case that existed before - the regex was already matching partial paths inside URLs. The walk-back makes it slightly worse by capturing `//example.com/docs.md`. 
+
+However, the key question is: does the existing regex / function handle URLs correctly? Let me check what happens before my fix:
+
+With the original code, `p` = `xample.com/docs.md`, and `full_path = base_dir / p`. This creates a relative path that likely doesn't exist, so it gets flagged as stale. With the walk-back, `fp` = `//example.com/docs.md`, and `Path('//example.com/docs.md')` = `/example.com/docs.md` (double slash collapses on some systems), which also doesn't exist.
+
+So the URL case was already producing a false positive (stale warning) before any fix. My fix doesn't make it worse.
+
+Now let me also check: what if the regex matches an actual relative path that starts with the same pattern? E.g., `See xample.com/docs.md` - the walk-back wouldn't change anything.
+
+Wait, but there's another edge case. What if evidence says `See the docs at /absolute/path/file.md`? With walk-back: `fp` = `/absolute/path/file.md`. `Path('/absolute/path/file.md').exists()` - this correctly checks the absolute path.
+
+What about `See the docs at path/file.md`? Walk-back: `fp` = `path/file.md`. `base_dir / 'path/file.md'` - correctly resolves as relative.
+
+Let me verify the walk-back doesn't break relative path handling when the path is at the start of a line or preceded by a space:
+
+```
+Text: 'path/file.md is there'
+Position of 'p': preceded by space ' ' → lookbehind checks for ':' or '/' → space is neither → passes.
+Match: 'path/file.md'
+Walk-back: char before 'p' is ' ' (space), not in PATH_CHAR → stops.
+fp = 'path/file.md'
+```
+
+Good, this works correctly.
+
+Now let me think about one more edge case: what if there are two consecutive paths?
+
+```
+Text: 'Check /tmp/a.md and /tmp/b.log'
+```
+
+Let me test...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (27 lines) ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The approach works correctly for all the test cases. Now let me implement the fix.
+
+The fix is in `_find_stale_evidence_paths`:
+1. After `p = match.group(1)`, walk backwards from match start to capture leading path characters.
+2. Use the resulting full path.
+3. If the full path starts with `/`, resolve it as an absolute path (`Path(full_path)`).
+4. If it's relative, resolve against `base_dir` as before.
+
+Let me also check the calling code on line 363 to make sure I understand the `base_dir` value.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:355..375 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `base_dir` is `plan_dir.parent` where `plan_dir` is the session_plan directory. So for a task in `/tmp/xxx/session_plan/task_01.md`, `base_dir` is `/tmp/xxx`.
+
+When the evidence references `/tmp/xxx/session_plan/real_artifact.log`, the regex captures `mp/xxx/session_plan/real_artifact.log`, then walk-back gives `/tmp/xxx/session_plan/real_artifact.log`. Since it starts with `/`, we resolve it as an absolute path, which is correct.
+
+When the evidence references `session_plan/assessment.md`, the regex captures `session_plan/assessment.md`, walk-back doesn't change it, `base_dir / 'session_plan/assessment.md'` = `/tmp/xxx/session_plan/assessment.md`, which is correct.
+
+Now let me implement the fix. Here's the plan:
+
+In `_find_stale_evidence_paths`:
+1. After `p = match.group(1)`, add a walk-back to capture leading path characters
+2. Use `Path(full_path)` if it starts with `/`, otherwise `base_dir / full_path`
+
+Let me write the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the bug fully. The regex `_EVIDENCE_PATH_RE` has `(?<![:/])` which skips the leading `/` on absolute paths. The matched `mp/foo/.../file.log` then gets resolved as relative against `base_dir`, producing a nonexistent path. I need to walk backwards from the match position to capture the full absolute path.
+            return []
+        stale: list[str] = []
+        seen: set[str] = set()
+  +     _path_char = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
+        for match in _EVIDENCE_PATH_RE.finditer(evidence):
+            p = match.group(1)
+  -         if p in seen:
+  +         # Walk backwards from match start to capture leading path segments
+  +         # that the regex skipped (absolute paths: the (?<![:/]) lookbehind
+  +         # causes the leading "/" to be dropped).
+  +         full_start = match.start()
+  +         while full_start > 0 and evidence[full_start - 1] in _path_char:
+  +             full_start -= 1
+  +         full_p = evidence[full_start : match.end()]
+  +         if full_p in seen:
+                continue
+  -         seen.add(p)
+  -         full_path = base_dir / p
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/task_manifest.py (20 → 28 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (20 → 28 lines)
+            return []
+        stale: list[str] = []
+        seen: set[str] = set()
+  +     _path_char = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
+        for match in _EVIDENCE_PATH_RE.finditer(evidence):
+            p = match.group(1)
+  -         if p in seen:
+  +         # Walk backwards from match start to capture leading path segments
+  +         # that the regex skipped (absolute paths: the (?<![:/]) lookbehind
+  +         # causes the leading "/" to be dropped).
+  +         full_start = match.start()
+  +         while full_start > 0 and evidence[full_start - 1] in _path_char:
+  +             full_start -= 1
+  +         full_p = evidence[full_start : match.end()]
+  +         if full_p in seen:
+                continue
+  -         seen.add(p)
+  -         full_path = base_dir / p
+  +         seen.add(full_p)
+  +         full_path = Path(full_p) if full_p.startswith("/") else (base_dir / full_p)
+  ... (4 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the fix by running the failing test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify by running the specific failing test:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 24 tests pass including the previously failing `test_evidence_references_existing_artifact_path_no_warning`.
+
+Let me also verify the preseed tests still pass:
+────────────────────────────────────────────────────────────────────────────────
+
+All 24 tests pass. Let me also verify the preseed tests and the overall quick check:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both test suites pass. Let me also run a quick manual simulation to verify the absolute-path handling works end-to-end.
+────────────────────────────────────────────────────────────────────────────────
+
+Both pass. Let me also do a quick end-to-end smoke test of the absolute-path fix:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (85 lines) ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Here's a summary of the fix:
+
+**Problem:** `_find_stale_evidence_paths` in `scripts/task_manifest.py` produced a false-positive `stale_evidence_artifact` warning when evidence referenced an absolute path (e.g., `/tmp/.../real_artifact.log`). The regex `_EVIDENCE_PATH_RE` has a negative lookbehind `(?<![:/])` that prevents matching after `/`, so it matched `mp/.../real_artifact.log` (dropping the leading `/t`). When resolved against `base_dir`, this created a wrong (nonexistent) path.
+
+**Fix:** After extracting the matched path, walk backwards from the match position through valid path characters (`a-zA-Z0-9_.-/`) to recover the complete path. If the recovered path starts with `/`, resolve it as absolute (`Path(full_p)`); otherwise resolve against `base_dir` as before.
+
+**File changed:** `scripts/task_manifest.py` — `_find_stale_evidence_paths` function (lines 219-246), 8 lines added, no other changes.
+
+**Verification:**
+• `python3 -m unittest scripts.test_task_manifest -q` — 24 tests pass (including the previously failing `test_evidence_references_existing_artifact_path_no_warning`)
+• `python3 scripts/preseed_session_plan.py --test` — passes
+• Manual smoke test confirms absolute paths, relative paths, and nonexistent paths all handled correctly
+
+

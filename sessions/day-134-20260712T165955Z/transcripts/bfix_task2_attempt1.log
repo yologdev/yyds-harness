@@ -1,0 +1,381 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The build errors are clear: `build_state_summary` now returns a tuple `(String, StateSummaryCounts)` instead of just a `String`, but there are two call sites that use `println!("{}", build_state_summary(&events))` which expects a `Display` implementation. I need to fix these call sites to destructure the tuple or only print the String part.
+
+Let me look at the two error locations in `src/commands_state.rs` to understand the context and fix them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_state.rs:1178..1193  ▶ read src/commands_state.rs:1297..1312 ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fix is straightforward. `build_state_summary` now returns `(String, StateSummaryCounts)` but the call sites use `println!("{}", build_state_summary(&events))` which tries to format the whole tuple. I need to destructure and only print the String part.
+
+Let me also check what `StateSummaryCounts` is, just to make sure I understand the return type.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+The fix is simple: `build_state_summary` now returns a tuple `(String, StateSummaryCounts)`, but the call sites only need the String. Let me destructure at both call sites.
+  -         println!("{}", build_state_summary(&events));
+  +         println!("{}", build_state_summary(&events).0);
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         println!("{}", build_state_summary(&events));
+  +         println!("{}", build_state_summary(&events).0);
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That replaced the first one at line 1183. Now I need to fix the second one at line 1302.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -     println!("{}", build_state_summary(&events));
+  -     if limit > 0 {
+  +     println!("{}", build_state_summary(&events).0);
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 1 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 1 lines)
+  -     println!("{}", build_state_summary(&events));
+  -     if limit > 0 {
+  +     println!("{}", build_state_summary(&events).0);
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, the second edit seems to have eaten the `if limit > 0 {` line. Let me check. Actually, looking at the edit more carefully:
+
+Old text: `    println!("{}", build_state_summary(&events));\n    if limit > 0 {`
+New text: `    println!("{}", build_state_summary(&events).0);`
+
+I lost the `if limit > 0 {` line! That's a bug. Let me fix that.
+────────────────────────────────────────────────────────────────────────────────
+
+I accidentally dropped the `if limit > 0 {` line. Let me restore it.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1298..1308 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Yes, the `if limit > 0 {` line is missing. I need to add it back.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        println!("{}", build_state_summary(&events).0);
+  +     if limit > 0 {
+            let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 3 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 3 lines)
+        println!("{}", build_state_summary(&events).0);
+  +     if limit > 0 {
+            let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check the closing brace situation - the `if limit > 0 {` block needs a closing `}`. Let me read a few more lines to make sure the structure is intact.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the surrounding structure is intact:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1295..1315 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The structure looks correct now. Let me also check the first call site:
+────────────────────────────────────────────────────────────────────────────────
+
+Good, the structure is intact. Let me also verify the first call site and then run the build:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1180..1188 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both call sites now correctly use `.0` to extract the String from the tuple. Let me build to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+Both call sites look correct. Now let's build:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -20 ✓ (15.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeds. There's a warning about unused fields in `StateSummaryCounts` - those fields (`event_types`, `first_ts`, `last_ts`) were collected in the consolidated pass but never read. This makes sense since the call sites only use `.0` (the String report). 
+
+I should either:
+1. Remove those unused fields from `StateSummaryCounts` (and stop collecting them in the single pass)
+2. Suppress the warning with `#[allow(dead_code)]`
+3. Use those fields somewhere
+
+Since the task was to consolidate passes for performance, those fields were collected as part of merging the passes. But if they're not used, they're just dead code. Let me check the `StateSummaryCounts` struct and `build_state_summary` function more carefully to understand if those fields were part of the original design or if they were added during the optimization.
+
+Actually, looking at the warning more carefully, these fields were presumably added as part of the optimization (the consolidated pass collects everything at once), but the output format wasn't changed - only the String is used. The fields are collected but never read. 
+
+The cleanest fix: remove the unused fields from `StateSummaryCounts` and stop collecting them in the loop. This keeps the struct minimal and eliminates the warning.
+
+But wait - the task says "No output format changes (same text, same sections, same ordering)." If I remove fields, that doesn't change output format. Let me check if `build_why_report` uses `StateSummaryCounts`.
+────────────────────────────────────────────────────────────────────────────────
+
+Build succeeds. Let me clean up the dead code warning — those fields in `StateSummaryCounts` are collected but never read. Let me check if `build_why_report` uses them:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'StateSummaryCounts' in src/commands_state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `build_state_summary` creates a `StateSummaryCounts`. Let me check what it looks like and remove the unused fields.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2898..2928 ✓ (4ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see the construction site around line 3019:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3015..3045 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation. The `StateSummaryCounts` has `event_types`, `first_ts`, `last_ts` fields that are collected in the single pass but never read anywhere (the warning confirms this). The `build_why_report` function seems to not use these fields either.
+
+Let me check if `build_why_report` uses `StateSummaryCounts`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_why_report' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`build_why_report` takes `&[Value]` and `id`, not `StateSummaryCounts`. So those fields really are dead code. Let me check if the fields `event_types`, `first_ts`, `last_ts` are used anywhere in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'first_ts' in src/commands_state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+They're only used at the definition and the construction site. They're truly dead code. Let me remove them and the corresponding collection code in the loop that populates them. This will clean up the warning and keep the code minimal.
+
+Let me look at the full `build_state_summary` function to find where `first_ts` and `last_ts` are collected, and where `event_types` is populated.
+────────────────────────────────────────────────────────────────────────────────
+
+These fields are only defined and constructed, never read. Let me remove them and their collection code. Let me see the full function first:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2913..3043 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. The `first_ts` and `last_ts` are collected and also used in the output string (lines 3004-3012). The `event_types` map is also used in the output string (lines 3014-3017). So those fields ARE used, but only locally within the function - they're computed, used for the string output, and then stored in `StateSummaryCounts` where nobody reads them.
+
+The warning says "fields `event_types`, `first_ts`, and `last_ts` are never read" - this is about the struct fields, not the local variables. The local variables are used in the output, but the fields stored in the struct are never read by any caller.
+
+Options:
+1. Remove the three dead fields from `StateSummaryCounts` and stop storing them.
+2. Add `#[allow(dead_code)]` to the struct.
+
+Option 1 is cleaner. Let me remove `event_types`, `first_ts`, and `last_ts` from `StateSummaryCounts` and from the two construction sites (empty events path and the main path).
+────────────────────────────────────────────────────────────────────────────────
+
+The local variables are used in the output string, but the struct fields are dead — no caller reads them. Let me remove them from the struct and its two construction sites:
+        failure_count: usize,
+        error_run_completed_count: usize,
+        error_run_ids: Vec<String>,
+  -     event_types: BTreeMap<String, usize>,
+  -     first_ts: Option<i64>,
+  -     last_ts: Option<i64>,
+        total: usize,
+    }
+  ✓ Auto-approved: edit: src/commands_state.rs (11 → 8 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (11 → 8 lines)
+        failure_count: usize,
+        error_run_completed_count: usize,
+        error_run_ids: Vec<String>,
+  -     event_types: BTreeMap<String, usize>,
+  -     first_ts: Option<i64>,
+  -     last_ts: Option<i64>,
+        total: usize,
+    }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix the empty-events construction site.
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the empty-events construction:
+                    failure_count: 0,
+                    error_run_completed_count: 0,
+                    error_run_ids: Vec::new(),
+  -                 event_types: BTreeMap::new(),
+  -                 first_ts: None,
+  -                 last_ts: None,
+                    total: 0,
+                },
+  ✓ Auto-approved: edit: src/commands_state.rs (11 → 8 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (11 → 8 lines)
+                    failure_count: 0,
+                    error_run_completed_count: 0,
+                    error_run_ids: Vec::new(),
+  -                 event_types: BTreeMap::new(),
+  -                 first_ts: None,
+  -                 last_ts: None,
+                    total: 0,
+                },
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now fix the main construction site at line ~3019.
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the main construction:
+            failure_count,
+            error_run_completed_count,
+            error_run_ids,
+  -         event_types,
+  -         first_ts,
+  -         last_ts,
+            total,
+        };
+  ✓ Auto-approved: edit: src/commands_state.rs (11 → 8 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (11 → 8 lines)
+            failure_count,
+            error_run_completed_count,
+            error_run_ids,
+  -         event_types,
+  -         first_ts,
+  -         last_ts,
+            total,
+        };
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if `BTreeMap` is still used elsewhere in the file - the unused import might need to be cleaned up. Let me check. Actually, I removed the `event_types: BTreeMap<String, usize>` field from the struct, but `BTreeMap` is likely used in many other places - let me verify the build first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's build and verify:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean build with no warnings. Now let me also run fmt check:
+────────────────────────────────────────────────────────────────────────────────
+
+Clean build, no warnings. Let me run the format check:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Just a formatting issue. Let me run `cargo fmt` to fix it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (16.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything passes. Let me also run the focused test for the commands_state module as a quick check:
+────────────────────────────────────────────────────────────────────────────────
+
+Format check and build both pass. Let me run the focused test for the module:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_stat… ✓ (15.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are test sites that also call `build_state_summary` and expect the old `String` return type. I need to fix those test call sites too. Let me find them all.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests also call `build_state_summary` and need updating. Let me find and fix all test references:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'build_state_summary' … ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 24625 is the test site. Let me fix it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24620..24635 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to fix this test. The `summary` is now a `(String, StateSummaryCounts)` tuple. I should destructure it or use `.0`.
+
+Let me also check if there are more test references further down.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24634..24659 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24658..24668 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fix is simple: destructure at line 24625. Change `let summary = build_state_summary(&events);` to `let (summary, _counts) = build_state_summary(&events);`
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let summary = build_state_summary(&events);
+  +         let (summary, _counts) = build_state_summary(&events);
+  ✓ Auto-approved: edit: src/commands_state.rs (1 → 1 lines)
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (1 → 1 lines)
+  -         let summary = build_state_summary(&events);
+  +         let (summary, _counts) = build_state_summary(&events);
+ ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if there are any other test call sites. Let me also check the error sites from the build output more carefully. It said 20 errors - let me grep for all `build_state_summary` in the test module specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for any other test references I might have missed:
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'build_state_summary' … ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All call sites are now properly handling the tuple return. Let me rebuild tests.
+────────────────────────────────────────────────────────────────────────────────
+
+All call sites handle the tuple. Let me rebuild:
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib commands_stat… ✓ (29.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 175 tests passed, no failures. Let me also do a quick fmt check.
+────────────────────────────────────────────────────────────────────────────────
+
+All 175 tests pass, 0 failed. Let me confirm fmt is clean too:
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (16.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Everything passes cleanly. Here's a summary of the fixes:
+
+**Build errors fixed:**
+1. **`println!("{}", build_state_summary(&events))`** at lines 1183 and 1302 — `build_state_summary` now returns `(String, StateSummaryCounts)`, so `.0` was added to extract just the String for display.
+
+2. **`let summary = build_state_summary(&events)`** at line 24625 (test) — destructured to `let (summary, _counts) = build_state_summary(&events)` since tests only need the String.
+
+3. **Dead code warning** — Removed unused fields `event_types`, `first_ts`, `last_ts` from `StateSummaryCounts` struct (they're collected as local variables for the output string but never read from the struct by any caller).
+
+**Verification:**
+• `cargo build` — clean, no warnings
+• `cargo fmt -- --check` — clean
+• `cargo test --lib commands_state -- --test-threads=1` — 175 passed, 0 failed
+
+

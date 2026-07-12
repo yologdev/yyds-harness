@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Only test_task_manifest.py was modified (91 lines of test code added), but the required implementation changes in scripts/preseed_session_plan.py (assessment gap guard) and scripts/task_manifest.py (stale artifact reference warning) are entirely missing. The new test `test_evidence_references_nonexistent_artifact_path` fails because the feature code it tests does not exist — task_manifest.py still produces only `missing_expected_evidence` and `thin_task_spec` warnings, not the required `stale_evidence_artifact` warning.

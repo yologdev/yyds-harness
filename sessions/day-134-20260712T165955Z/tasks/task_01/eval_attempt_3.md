@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All three files were changed per the task spec — preseed_session_plan.py adds an assessment-gap guard before task generation (handles missing, 0-byte, and whitespace-only assessments, writing planning_failure.md with specific reasons), task_manifest.py adds stale-evidence-path warnings, and test_task_manifest.py includes coverage for the new warning. Both verifiers pass: `python3 scripts/preseed_session_plan.py --test` (self-tests passed) and `python3 -m unittest scripts.test_task_manifest -q` (24 tests OK).
