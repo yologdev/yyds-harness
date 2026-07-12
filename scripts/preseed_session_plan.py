@@ -2051,13 +2051,31 @@ Guard result:
 
     if any(args.output_dir.glob("task_*.md")):
         return 0
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Assessment gap guard: detect missing or empty assessment before
+    # task generation, preventing dead-reference tasks that send
+    # implementation to read nonexistent files.
+    if args.assessment is None or not args.assessment.exists():
+        (args.output_dir / "planning_failure.md").write_text(
+            "# Planning Failure\n\n"
+            "Assessment file missing.\n\n"
+            "The assessment phase did not produce a usable output file.",
+            encoding="utf-8",
+        )
+        return 0
     try:
         assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
     except OSError:
         assessment = ""
     if not assessment.strip():
+        (args.output_dir / "planning_failure.md").write_text(
+            "# Planning Failure\n\n"
+            "Assessment file is empty.\n\n"
+            "The assessment phase produced an output file but it contains no usable content.",
+            encoding="utf-8",
+        )
         return 0
-    args.output_dir.mkdir(parents=True, exist_ok=True)
     task = choose_task(assessment, assessment_was_missing=(
         args.assessment is not None and args.assessment.name == "assessment_missing.md"
     ))

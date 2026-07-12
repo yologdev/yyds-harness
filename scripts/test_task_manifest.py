@@ -1062,5 +1062,96 @@ Expected Evidence:
             self.assertEqual(decision["title"], "Keep evidence")
 
 
+    def test_evidence_references_nonexistent_artifact_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Fix something
+Files: src/main.rs
+Issue: none
+Origin: planner
+
+Objective:
+Make something work.
+
+Evidence:
+- The assessment at session_plan/assessment.md shows the issue.
+- Referenced artifact: nonexistent/path/to/dead/artifact.log
+- Another reference: also/does/not/exist.json
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            # The task should still be selected (warning only, not an error)
+            self.assertEqual(manifest["planner"]["selected_task_count"], 1)
+            # Warning should mention the stale artifact reference
+            warnings = manifest.get("warnings") or []
+            stale_warnings = [w for w in warnings if "stale_evidence_artifact" in w]
+            self.assertTrue(len(stale_warnings) > 0,
+                            f"Expected stale_evidence_artifact warning, got warnings={warnings}")
+
+    def test_evidence_references_existing_artifact_path_no_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+            # Create an actual artifact file
+            (plan / "real_artifact.log").write_text("real content\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                f"""Title: Fix something
+Files: src/main.rs
+Issue: none
+Origin: planner
+
+Objective:
+Make something work.
+
+Evidence:
+- The assessment at session_plan/assessment.md shows the issue.
+- Referenced artifact: {plan}/real_artifact.log
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            warnings = manifest.get("warnings") or []
+            stale_warnings = [w for w in warnings if "stale_evidence_artifact" in w]
+            self.assertEqual(len(stale_warnings), 0,
+                             f"Should NOT have stale_evidence_artifact warning for existing paths, got warnings={warnings}")
+
+
 if __name__ == "__main__":
     unittest.main()

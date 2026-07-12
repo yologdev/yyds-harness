@@ -58,6 +58,9 @@ SECTION_STOP_RE = re.compile(
     r"success criteria|acceptance criteria|verification|test plan|expected evidence)\s*:?\s*",
     re.IGNORECASE,
 )
+_EVIDENCE_PATH_RE = re.compile(
+    r"(?<![:/])((?:[\w.-]+/)+[\w.-]+\.(?:md|log|json|txt|yaml|yml|toml|rs|py|sh|html|css|js|ts))\b"
+)
 
 
 def assessment_alignment(task_text: str, assessment_text: str) -> dict[str, Any]:
@@ -187,6 +190,62 @@ def section_summary(text: str, label: str, limit: int = 360) -> str:
     return " ".join(" ".join(lines).split())[:limit]
 
 
+def _section_text(text: str, label: str) -> str:
+    """Return the full text of a labeled section (no length limit)."""
+    label_re = re.compile(rf"^(?:#+\s*)?{re.escape(label)}\s*:?\s*(.*)$", re.IGNORECASE)
+    lines: list[str] = []
+    in_section = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = label_re.match(line)
+        if match:
+            in_section = True
+            first = match.group(1).strip()
+            if first:
+                lines.append(first)
+            continue
+        if not in_section:
+            continue
+        if line and SECTION_STOP_RE.match(line):
+            break
+        if line.startswith("#"):
+            break
+        if not line:
+            continue
+        lines.append(re.sub(r"^(?:[-*]|\d+[.)])\s*", "", line))
+    return " ".join(" ".join(lines).split())
+
+
+def _find_stale_evidence_paths(task_text: str, base_dir: Path) -> list[str]:
+    """Return evidence-section artifact paths that don't exist on disk.
+
+    Resolves each path-like token from the Evidence section relative to
+    *base_dir* and returns the subset that don't exist as files or directories.
+    """
+    evidence = _section_text(task_text, "Evidence")
+    if not evidence:
+        return []
+    stale: list[str] = []
+    seen: set[str] = set()
+    _path_char = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
+    for match in _EVIDENCE_PATH_RE.finditer(evidence):
+        p = match.group(1)
+        # Walk backwards from match start to capture leading path segments
+        # that the regex skipped (absolute paths: the (?<![:/]) lookbehind
+        # causes the leading "/" to be dropped).
+        full_start = match.start()
+        while full_start > 0 and evidence[full_start - 1] in _path_char:
+            full_start -= 1
+        full_p = evidence[full_start : match.end()]
+        if full_p in seen:
+            continue
+        seen.add(full_p)
+        full_path = Path(full_p) if full_p.startswith("/") else (base_dir / full_p)
+        if not full_path.exists():
+            stale.append(full_p)
+    return stale
+
+
 def has_analysis_only_escape(text: str) -> bool:
     """Return true when a task lets implementation finish by analysis alone.
 
@@ -306,6 +365,12 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         if protected:
             task["protected_files"] = protected
             warnings.append(f"{task['task_id']}:protected_files")
+        # Stale evidence artifact references
+        task_text = read_text(Path(task.get("session_plan_path", "")))
+        if task_text:
+            stale_paths = _find_stale_evidence_paths(task_text, plan_dir.parent)
+            for _stale_path in stale_paths:
+                warnings.append(f"{task['task_id']}:stale_evidence_artifact")
 
     selectable = [
         task
