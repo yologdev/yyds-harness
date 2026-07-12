@@ -5065,6 +5065,11 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
     observed_session_count = 0
     source_observed_session_counts = Counter()
 
+    label_counters: dict[str, Counter] = {
+        "state_only_failed_tool_labels": Counter(),
+        "transcript_only_failed_tool_labels": Counter(),
+    }
+
     for row in session_states:
         action_evidence = (
             row.get("action_evidence") if isinstance(row.get("action_evidence"), dict) else {}
@@ -5094,6 +5099,19 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
                         totals["state_only_failed_tool_session_count"] += 1
                     else:
                         totals["transcript_only_failed_tool_session_count"] += 1
+        for label_key, counter in label_counters.items():
+            labels = action_evidence.get(label_key)
+            if isinstance(labels, list):
+                for label in labels:
+                    if isinstance(label, str):
+                        counter[str(label)] += 1
+
+    aggregated_labels: dict[str, list[dict[str, Any]]] = {}
+    for label_key, counter in label_counters.items():
+        aggregated_labels[label_key] = [
+            {"label": label, "count": count}
+            for label, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))[:20]
+        ]
 
     return {
         "session_count": len(session_states),
@@ -5110,6 +5128,8 @@ def action_evidence_summary_for_sessions(session_states: list[dict[str, Any]]) -
         "state_only_failed_tool_session_count": totals["state_only_failed_tool_session_count"],
         "transcript_only_failed_tool_count": totals["transcript_only_failed_tool_count"],
         "transcript_only_failed_tool_session_count": totals["transcript_only_failed_tool_session_count"],
+        "state_only_failed_tool_labels": aggregated_labels["state_only_failed_tool_labels"],
+        "transcript_only_failed_tool_labels": aggregated_labels["transcript_only_failed_tool_labels"],
         "recent_state_only_failed_tool_count": _recent_failed_tool_total(
             session_states, "state_only_failed_tool_count"
         ),

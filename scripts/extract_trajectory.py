@@ -1620,6 +1620,8 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
             transcript_only_failed_tools = int(
                 recent_action_evidence_summary.get("transcript_only_failed_tool_count") or 0
             )
+            state_only_labels = recent_action_evidence_summary.get("state_only_failed_tool_labels")
+            transcript_only_labels = recent_action_evidence_summary.get("transcript_only_failed_tool_labels")
             if (
                 action_session_count
                 and merged_action_sessions
@@ -1634,9 +1636,27 @@ def render_structured_state_snapshot(audit_dir: Path) -> str:
                     f"transcripts {transcript_action_sessions}/{action_session_count}"
                 )
             if state_only_failed_tools:
-                action_parts.append(f"state_only_failed_tools={state_only_failed_tools}")
+                label_text = ""
+                if isinstance(state_only_labels, list) and state_only_labels:
+                    top_labels = state_only_labels[:5]
+                    if isinstance(top_labels[0], dict) and "label" in top_labels[0]:
+                        label_text = " (" + ", ".join(
+                            f"{item['label']}={item['count']}" for item in top_labels
+                        ) + ")"
+                    else:
+                        label_text = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
+                action_parts.append(f"state_only_failed_tools={state_only_failed_tools}{label_text}")
             if transcript_only_failed_tools:
-                action_parts.append(f"transcript_only_failed_tools={transcript_only_failed_tools}")
+                label_text = ""
+                if isinstance(transcript_only_labels, list) and transcript_only_labels:
+                    top_labels = transcript_only_labels[:5]
+                    if isinstance(top_labels[0], dict) and "label" in top_labels[0]:
+                        label_text = " (" + ", ".join(
+                            f"{item['label']}={item['count']}" for item in top_labels
+                        ) + ")"
+                    else:
+                        label_text = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
+                action_parts.append(f"transcript_only_failed_tools={transcript_only_failed_tools}{label_text}")
             if action_parts:
                 summary_parts.append("recent action evidence: " + ", ".join(action_parts))
         if gnome_audit_summary:
@@ -1857,22 +1877,42 @@ def action_evidence_graph_suggestions(audit_dir: Path) -> list[dict[str, Any]]:
     transcript_sessions = int(evidence.get("transcript_observed_session_count") or 0)
 
     if transcript_only:
+        transcript_labels = evidence.get("transcript_only_failed_tool_labels")
+        label_detail = ""
+        if isinstance(transcript_labels, list) and transcript_labels:
+            top_labels = transcript_labels[:5]
+            if isinstance(top_labels[0], dict):
+                label_detail = " (" + ", ".join(
+                    f"{item['label']}={item['count']}" for item in top_labels
+                ) + ")"
+            else:
+                label_detail = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
         suggestions.append(
             {
                 "kind": "tooling",
                 "title": "Reconcile transcript-only tool failures",
-                "reason": "Recent transcripts contained failed tool actions absent from state events; merge transcript evidence into gnomes before trusting task scores.",
+                "reason": f"Recent transcripts contained failed tool actions absent from state events{label_detail}; merge transcript evidence into gnomes before trusting task scores.",
                 "metric": "transcript_only_failed_tool_count",
                 "value": transcript_only,
                 "priority": 84,
             }
         )
     if state_only:
+        state_labels = evidence.get("state_only_failed_tool_labels")
+        label_detail = ""
+        if isinstance(state_labels, list) and state_labels:
+            top_labels = state_labels[:5]
+            if isinstance(top_labels[0], dict):
+                label_detail = " (" + ", ".join(
+                    f"{item['label']}={item['count']}" for item in top_labels
+                ) + ")"
+            else:
+                label_detail = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
         suggestions.append(
             {
                 "kind": "tooling",
                 "title": "Reconcile state-only tool failures",
-                "reason": "State events contained failed tool actions without matching transcript evidence; preserve action provenance before scoring.",
+                "reason": f"State events contained failed tool actions without matching transcript evidence{label_detail}; preserve action provenance before scoring.",
                 "metric": "state_only_failed_tool_count",
                 "value": state_only,
                 "priority": 83,
