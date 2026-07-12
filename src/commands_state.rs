@@ -1180,7 +1180,7 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
         return;
     };
     if show_summary {
-        println!("{}", build_state_summary(&events));
+        println!("{}", build_state_summary(&events).0);
         println!();
     }
     match build_why_report(&events, id) {
@@ -1299,7 +1299,7 @@ fn handle_state_summary(args: &[String], limit: usize) {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
-    println!("{}", build_state_summary(&events));
+    println!("{}", build_state_summary(&events).0);
     if limit > 0 {
         let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
         if events.len() >= limit {
@@ -2896,9 +2896,23 @@ fn context_included_block_names(payload: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn build_state_summary(events: &[Value]) -> String {
+/// Pre-computed counts from a single pass over events. Used to avoid
+/// redundant scanning in `build_state_summary` and `build_why_report`.
+struct StateSummaryCounts {
+    run_completed_count: usize,
+    run_started_count: usize,
+    failure_count: usize,
+    error_run_completed_count: usize,
+    error_run_ids: Vec<String>,
+    total: usize,
+}
+
+/// Returns (formatted_summary_string, pre-computed_counts).
+/// The counts are collected in a single pass so callers that need them
+/// (e.g. `build_why_report` error path) can reuse them without re-scanning.
+fn build_state_summary(events: &[Value]) -> (String, StateSummaryCounts) {
     if events.is_empty() {
-        return "\
+        let msg = "\
 State: empty (no events recorded yet)
 
   Diagnostic paths:
@@ -2907,37 +2921,70 @@ State: empty (no events recorded yet)
     yyds state init          — explicit initialization (auto-initialized on first run)
     yyds state tail --limit 5  — see most recent events"
             .to_string();
+        return (
+            msg,
+            StateSummaryCounts {
+                run_completed_count: 0,
+                run_started_count: 0,
+                failure_count: 0,
+                error_run_completed_count: 0,
+                error_run_ids: Vec::new(),
+                total: 0,
+            },
+        );
     }
 
     let total = events.len();
+    let mut run_completed_count: usize = 0;
+    let mut run_started_count: usize = 0;
+    let mut failure_count: usize = 0;
+    let mut error_run_completed_count: usize = 0;
+    let mut error_run_ids: Vec<String> = Vec::new();
+    let mut event_types: BTreeMap<String, usize> = BTreeMap::new();
+    let mut first_ts: Option<i64> = None;
+    let mut last_ts: Option<i64> = None;
 
-    let run_completed_count = events
-        .iter()
-        .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
-        .count();
-    let run_started_count = events
-        .iter()
-        .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
-        .count();
-
-    let mut event_types: BTreeMap<&str, usize> = BTreeMap::new();
     for e in events {
-        if let Some(et) = event_string(e, "event_type") {
-            *event_types.entry(et).or_insert(0) += 1;
+        let et = event_string(e, "event_type");
+
+        // event_types map
+        if let Some(et_str) = et {
+            *event_types.entry(et_str.to_string()).or_insert(0) += 1;
+        }
+
+        match et {
+            Some("RunCompleted") => {
+                run_completed_count += 1;
+                let is_error = e
+                    .get("payload")
+                    .and_then(|p| p.get("status"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s != "success" && s != "completed")
+                    .unwrap_or(false);
+                if is_error {
+                    error_run_completed_count += 1;
+                    if error_run_ids.len() < 5 {
+                        if let Some(rid) = event_string(e, "run_id") {
+                            error_run_ids.push(rid.to_string());
+                        }
+                    }
+                }
+            }
+            Some("RunStarted") => {
+                run_started_count += 1;
+            }
+            _ => {}
+        }
+
+        if et.map(is_failure_event_type).unwrap_or(false) {
+            failure_count += 1;
+        }
+
+        if let Some(ts) = event_timestamp_ms(e) {
+            first_ts = Some(first_ts.map_or(ts, |f| f.min(ts)));
+            last_ts = Some(last_ts.map_or(ts, |l| l.max(ts)));
         }
     }
-
-    let failure_count = events
-        .iter()
-        .filter(|e| {
-            event_string(e, "event_type")
-                .map(is_failure_event_type)
-                .unwrap_or(false)
-        })
-        .count();
-
-    let first_ts = events.iter().filter_map(event_timestamp_ms).min();
-    let last_ts = events.iter().filter_map(event_timestamp_ms).max();
 
     let mut out = String::new();
     out.push_str("State summary:\n");
@@ -2963,7 +3010,16 @@ State: empty (no events recorded yet)
         out.push_str(&format!("    {et}: {count}\n"));
     }
 
-    out.trim_end().to_string()
+    let counts = StateSummaryCounts {
+        run_completed_count,
+        run_started_count,
+        failure_count,
+        error_run_completed_count,
+        error_run_ids,
+        total,
+    };
+
+    (out.trim_end().to_string(), counts)
 }
 
 #[derive(Debug, Clone)]
@@ -3173,51 +3229,19 @@ fn build_why_report(events: &[Value], id: &str) -> Result<String, String> {
             err.push_str(&format!("no state event found for '{id}'\n"));
         }
         err.push('\n');
-        err.push_str(&build_state_summary(events));
+        let (summary_text, counts) = build_state_summary(events);
+        err.push_str(&summary_text);
         err.push('\n');
         err.push('\n');
-        // Add actionable guidance
-        let run_completed_count = events
-            .iter()
-            .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
-            .count();
-        let failure_count = events
-            .iter()
-            .filter(|e| {
-                event_string(e, "event_type")
-                    .map(is_failure_event_type)
-                    .unwrap_or(false)
-            })
-            .count();
-        let run_started = events
-            .iter()
-            .any(|e| event_string(e, "event_type") == Some("RunStarted"));
-        let error_run_completed_count = events
-            .iter()
-            .filter(|e| {
-                event_string(e, "event_type") == Some("RunCompleted")
-                    && e.get("payload")
-                        .and_then(|p| p.get("status"))
-                        .and_then(|s| s.as_str())
-                        .map(|s| s != "success" && s != "completed")
-                        .unwrap_or(false)
-            })
-            .count();
-        let error_run_ids: Vec<&str> = events
-            .iter()
-            .filter(|e| {
-                event_string(e, "event_type") == Some("RunCompleted")
-                    && e.get("payload")
-                        .and_then(|p| p.get("status"))
-                        .and_then(|s| s.as_str())
-                        .map(|s| s != "success" && s != "completed")
-                        .unwrap_or(false)
-            })
-            .filter_map(|e| event_string(e, "run_id"))
-            .take(5)
-            .collect();
+        // Add actionable guidance — reuse pre-computed counts from the
+        // single-pass build_state_summary instead of re-scanning events.
+        let run_completed_count = counts.run_completed_count;
+        let failure_count = counts.failure_count;
+        let run_started = counts.run_started_count > 0;
+        let error_run_completed_count = counts.error_run_completed_count;
+        let error_run_ids: Vec<&str> = counts.error_run_ids.iter().map(|s| s.as_str()).collect();
 
-        if events.is_empty() || (run_completed_count == 0 && !run_started) {
+        if counts.total == 0 || (run_completed_count == 0 && !run_started) {
             err.push_str("State recording is active but no sessions have completed yet.\n");
             err.push_str(
                 "Diagnostics become available after 2\u{2013}3 completed evolution sessions.",
@@ -24598,7 +24622,7 @@ mod tests {
     #[test]
     fn state_summary_empty_suggests_diagnostic_paths() {
         let events: Vec<Value> = vec![];
-        let summary = build_state_summary(&events);
+        let (summary, _counts) = build_state_summary(&events);
 
         assert!(
             summary.contains("State: empty"),
