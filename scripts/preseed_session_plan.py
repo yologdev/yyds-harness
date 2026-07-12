@@ -946,6 +946,15 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         timeout_str = fields.get("assessment_timeout_seconds", "")
         provider_error_str = fields.get("provider_error_detected", "")
         transcript = fields.get("transcript", "transcripts/assess.log")
+        transcript_exists = os.path.exists(transcript)
+        _transcript_info: str
+        if transcript_exists:
+            _transcript_info = f"Check {transcript}"
+        else:
+            _transcript_info = (
+                "No transcript was saved (the referenced transcript does not exist). "
+                "Analyze the harness dispatching logic in evolve.sh"
+            )
 
         try:
             exit_code = int(exit_code_str) if exit_code_str else None
@@ -1001,7 +1010,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             )
             fallback["objective"] = (
                 f"The assessment phase timed out after {timeout_secs} seconds. "
-                f"Check {transcript} to understand why the assessment prompt took so long. "
+                f"{_transcript_info} to understand why the assessment prompt took so long. "
                 f"Possible causes: prompt too broad, model slow, or too many files/sub-agents. "
                 f"Consider reducing assessment scope or increasing the timeout."
             )
@@ -1012,7 +1021,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             )
             fallback["objective"] = (
                 "The assessment phase hit a provider or API error. "
-                f"Check {transcript} for the specific error. "
+                f"{_transcript_info} for the specific error. "
                 "Verify API key validity, rate limits, and provider availability. "
                 "The planning phase was skipped; repair the assessment pipeline "
                 "so it can survive or retry provider errors."
@@ -1025,7 +1034,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             fallback["objective"] = (
                 f"The assessment phase exited with code {exit_code} "
                 f"without a provider error. "
-                f"Check {transcript} for the failure reason. "
+                f"{_transcript_info} for the failure reason. "
                 "The assessment agent ran but terminated abnormally — "
                 "this could be a tool error, a prompt parsing failure, "
                 "or an internal crash."
@@ -1037,7 +1046,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             )
             fallback["objective"] = (
                 "The assessment agent exited successfully (code 0) with no provider error "
-                f"but did not write assessment.md. Check {transcript} to understand "
+                f"but did not write assessment.md. {_transcript_info} to understand "
                 "why the output file wasn't produced. "
                 "Possible causes: the agent wrote to the wrong path, "
                 "the write_file tool was refused by permission policy, "
@@ -1048,7 +1057,7 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             # Don't change the title since we have no structured evidence
             fallback["objective"] = (
                 "The assessment phase failed to produce assessment.md. "
-                f"Check {transcript} for the assessment agent's output. "
+                f"{_transcript_info} for the assessment agent's output. "
                 "Improve harness planning reliability with a narrow, verifiable fix "
                 "scoped to a single file."
             )
@@ -1904,6 +1913,15 @@ Guard result:
         assert "code 0" in str(task_zero["objective"]).lower(), (
             f"Objective should mention exit 0, got: {task_zero['objective']}"
         )
+        # Transcript doesn't exist on disk → objective should NOT tell agent to check it
+        assert "Check transcripts/" not in str(task_zero["objective"]), (
+            f"Objective should NOT say 'Check transcripts/' when transcript doesn't exist, "
+            f"got: {task_zero['objective']}"
+        )
+        assert "No transcript was saved" in str(task_zero["objective"]) or \
+            "does not exist" in str(task_zero["objective"]), (
+            f"Objective should indicate transcript is absent, got: {task_zero['objective']}"
+        )
 
         # Timeout → timeout-specific task
         assessment_timeout = """# Assessment Missing - Day 131 (10:55)
@@ -1991,6 +2009,32 @@ Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1
             f"Title should say Fix not Diagnose when trajectory evidence is present, got: {task_traj['title']}"
         )
         # --- End trajectory evidence enrichment test ---
+
+        # --- Nonexistent transcript reference: must not leak into objective ---
+        # When the assessment_missing references a transcript that is deep-nonexistent,
+        # the objective must not include instructions to check that path.
+        assessment_nonexistent_transcript = """# Assessment Missing - Day 134 (09:54)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 600
+- provider_error_detected: false
+- transcript: /nonexistent/path/deep/nested/assess.log
+"""
+        task_nonexistent = choose_task(assessment_nonexistent_transcript, assessment_was_missing=True)
+        assert "/nonexistent/path" not in str(task_nonexistent["objective"]), (
+            f"Objective must NOT reference the nonexistent transcript path, "
+            f"got: {task_nonexistent['objective']}"
+        )
+        assert "does not exist" in str(task_nonexistent["objective"]).lower(), (
+            f"Objective should say transcript does not exist, got: {task_nonexistent['objective']}"
+        )
+        # Evidence should still contain trajectory data
+        assert "Trajectory" in str(task_nonexistent["evidence"]) or "trajectory" in str(task_nonexistent["evidence"]).lower(), (
+            f"Evidence should still mention trajectory, got: {task_nonexistent['evidence']}"
+        )
+        # --- End nonexistent transcript test ---
 
         # Unparseable → generic fallback still works
         task_parsefail = choose_task("garbage text", assessment_was_missing=True)
