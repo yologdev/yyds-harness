@@ -1,0 +1,482 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **What**: Add diagnostic visibility to state-only tool failure reconciliation by surfacing tool labels in the trajectory output
+2. **Files**: `scripts/extract_trajectory.py` (primary), `scripts/build_evolution_dashboard.py` (maybe)
+3. **Goal**: Make `state_only_failed_tool_count=61` diagnostic-able by showing which tools are in the mismatch
+
+Let me start by reading the evolve skill and the relevant source files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/extract_trajectory.py:1600..1680 ✓ (850ms)
+ ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the dashboard code around lines 2700-2720 to understand how `state_only_failed_tool_count` and `state_only_failed_tool_labels` are computed there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+Now let me understand the dashboard's computation of these labels:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2680..2760 ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand `unique_delta_count` and `unique_delta_labels` functions. Let me search for them.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find the `unique_delta_count` and `unique_delta_labels` functions:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def unique_delta_count' in scripts/build_evolution_dashboard.py  ▶ search 'def unique_delta_labels' in scripts/build_evolution_dashboard.py ✓ (542ms)
+ ✓ (549ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:475..515 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the model. The dashboard computes:
+- `state_only_failed_tool_count`: count of tools in state but not in transcript
+- `state_only_failed_tool_labels`: the actual labels of those tools
+- `transcript_only_failed_tool_count`: count of tools in transcript but not in state
+- `transcript_only_failed_tool_labels`: the actual labels of those tools
+
+The trajectory already reads `state_only_failed_tool_count` and `transcript_only_failed_tool_count` (lines 1617-1639), but doesn't read or surface `state_only_failed_tool_labels` or `transcript_only_failed_tool_labels`.
+
+Now, the task says the dashboard at line 2714 already computes `state_only_failed_tool_labels` — those labels should be in the `action_evidence_summary` JSON. The trajectory extractor reads from `action_evidence_summary`, so I need to add reading of `state_only_failed_tool_labels` and surface it in the trajectory output.
+
+But wait — the trajectory extractor doesn't call the dashboard directly. It reads the dashboard output or state events directly. Let me look at how the extractor gets its `action_evidence_summary`.
+
+Let me look at how `recent_action_evidence_summary` gets populated in the trajectory extractor.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find how the trajectory extractor gets `recent_action_evidence_summary`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'action_evidence_summary' in scripts/extract_trajectory.py ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the `recent_action_evidence_summary` is populated in the `action_evidence_graph_suggestions` function around line 1810.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1795..1835 ✓ (295ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the broader trajectory output section where the state_only count is surfaced, to understand the context better. The key section is around lines 1600-1641. I need to also look at where the trajectory renders the state summary, around lines 1340-1360.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1340..1380 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `recent_action_evidence_summary` comes from the dashboard's `states` projection, which is built by `build_states_projection`. The dashboard at line 2712-2715 produces `state_only_failed_tool_labels` as part of the `action_evidence_summary` under `action_evidence`. But the trajectory reads from `recent_action_evidence_summary`.
+
+Let me look at the dashboard's `build_states_projection` function to understand what it returns, and specifically how `recent_action_evidence_summary` relates to `action_evidence`.
+
+Let me also look at the dashboard's `action_evidence_summary_for_sessions` function since that seems to produce the label data.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how the dashboard produces the `action_evidence_summary` that the trajectory consumes, and find where `state_only_failed_tool_labels` flows:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def action_evidence_summary_for_sessions' in scripts/build_evolution_dashboard.py  ▶ search 'state_only_failed_tool_labels' in scripts/build_evolution_dashboard.py ✓ (533ms)
+ ✓ (591ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `action_evidence_summary_for_sessions` function to understand what it produces and whether the labels are included:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5057..5157 ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly. The `action_evidence_summary_for_sessions` function only passes through `state_only_failed_tool_count` and `transcript_only_failed_tool_count` but does NOT pass through `state_only_failed_tool_labels` or `transcript_only_failed_tool_labels`. The per-session `action_evidence` dict has `state_only_failed_tool_labels` (line 2714), but the aggregate summary function only propagates the counts.
+
+So there are two modifications needed:
+
+1. **`scripts/build_evolution_dashboard.py`**: In `action_evidence_summary_for_sessions`, also collect the labels from each session's `action_evidence` and aggregate them (maybe as a merged list of the most common labels).
+
+2. **`scripts/extract_trajectory.py`**: Read the labels from `recent_action_evidence_summary` and surface them in the trajectory output.
+
+Let me plan both changes. Let me first look at what the trajectory output looks like, specifically the section where the state summary is rendered, around where `state_only_failed_tool_count` appears:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I can see the data-flow gap. Let me look at the trajectory output rendering to understand where the labels should appear:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1555..1615 ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me plan my changes:
+
+### Changes needed:
+
+**1. `scripts/build_evolution_dashboard.py` — `action_evidence_summary_for_sessions()` (line 5057)**
+
+Add label aggregation to the summary function. Currently it only passes through counts (lines 5088-5096), but not labels. I need to collect `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` from each session's `action_evidence` and aggregate them (e.g., keep the top 20 most frequent labels across all sessions).
+
+**2. `scripts/extract_trajectory.py` — `render_outcomes()` around lines 1617-1641**
+
+Read the aggregated labels from `recent_action_evidence_summary` and surface them in the trajectory output, showing concrete tool names alongside the count.
+
+Let me now implement this. First let me understand the data flow more precisely. The per-session `action_evidence` dict has `state_only_failed_tool_labels` (line 2714 of dashboard). The `action_evidence_summary_for_sessions` function iterates over all sessions and produces a summary. Currently it only aggregates counts. I need it to also aggregate labels.
+
+For the label aggregation, I think the simplest approach is to collect all labels across all sessions, count their frequencies, and return the top N. Let me implement this.
+
+Let me also look at the self-test for the trajectory extractor to make sure I'm not breaking anything.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes:
+
+1. **Dashboard**: `action_evidence_summary_for_sessions` doesn't propagate labels → fix
+2. **Trajectory**: Add label visibility in the output
+
+Let me first check for self-tests:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def run_self_tests' in scripts/extract_trajectory.py  ▶ search 'state_only_failed_tool' in scripts/extract_trajectory.py ✓ (527ms)
+ ✓ (597ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the self-tests to understand what's expected:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:2157..2257 ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the self-tests only test `fingerprint_error_line` and don't touch the action evidence path. Now let me look at the `action_evidence_graph_suggestions` function to understand the full flow of suggestions around line 1876:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check the `action_evidence_graph_suggestions` for the suggestion rendering:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1835..1915 ✓ (344ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me plan the changes:
+
+### Change 1: `scripts/build_evolution_dashboard.py` — `action_evidence_summary_for_sessions()`
+
+Add label aggregation. Currently, the function only aggregates counts `state_only_failed_tool_count` and `transcript_only_failed_tool_count`. I need to also collect the labels from each session's `action_evidence` and aggregate them.
+
+I'll add collection of `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` across sessions. I'll use a Counter to track frequency, and return the top 20 most frequent labels.
+
+### Change 2: `scripts/extract_trajectory.py` — render_outcomes and action_evidence_graph_suggestions
+
+1. In `render_outcomes()` (around lines 1636-1641): After reading `state_only_failed_tools` / `transcript_only_failed_tools`, also read and surface the labels.
+
+2. In `action_evidence_graph_suggestions()` (around lines 1870-1880): Add labels to the suggestion's title/reason so the output shows concrete tool names.
+
+Let me implement this now. Let me start with the dashboard change.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have complete understanding. Let me implement the changes. I'll start with the dashboard to propagate labels through the summary, then update the trajectory extractor to surface them.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (245ms)
+  ▶ todo ✓ (249ms)
+  ▶ todo ✓ (253ms)
+  ▶ todo ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with change 1: the dashboard `action_evidence_summary_for_sessions`. I need to add label aggregation. The per-session `action_evidence` dict has keys like `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`. I need to collect these across sessions and aggregate them.
+
+Looking at the function (lines 5057-5119), I need to:
+1. After the loop, collect all labels and count their frequencies
+2. Return the top labels in the summary dict
+
+Let me also think about the key names. The current dict returns `state_only_failed_tool_count`, `transcript_only_failed_tool_count`, etc. I'll add:
+- `state_only_failed_tool_labels`: list of top 20 labels (already being used as a key name in per-session evidence)
+- `transcript_only_failed_tool_labels`: list of top 20 labels (same)
+
+Wait, but if I use the same key names as the per-session evidence, it could be confusing. Let me use distinct names. Actually, looking at the existing pattern, the per-session `action_evidence` also uses `state_only_failed_tool_labels`. Since the trajectory reads from `recent_action_evidence_summary`, which comes from `action_evidence_summary_for_sessions`, using the same key names is fine - it just means the trajectory gets aggregated labels instead of per-session labels.
+
+Let me also think about whether the labels are actually present in the per-session evidence. Looking at line 2714:
+```python
+"state_only_failed_tool_labels": unique_delta_labels(state_failed_tools_all, transcript_failed_tools_all),
+```
+
+Yes, the per-session `action_evidence` has `state_only_failed_tool_labels` as a list of strings. And `action_evidence_summary_for_sessions` reads from each session's `action_evidence` at lines 5069-5096.
+
+Let me now add the label aggregation.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 7.1s (4 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (262ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the dashboard change. I need to add label collection in `action_evidence_summary_for_sessions`. Here's my plan:
+
+After the existing loop, add a Counter for labels:
+
+```python
+    label_counters: dict[str, Counter] = {
+        "state_only_failed_tool_labels": Counter(),
+        "transcript_only_failed_tool_labels": Counter(),
+    }
+    
+    for row in session_states:
+        action_evidence = (
+            row.get("action_evidence") if isinstance(row.get("action_evidence"), dict) else {}
+        )
+        for label_key, counter in label_counters.items():
+            labels = action_evidence.get(label_key)
+            if isinstance(labels, list):
+                for label in labels:
+                    if isinstance(label, str):
+                        counter[str(label)] += 1
+```
+
+Then add to the return dict:
+```python
+    "state_only_failed_tool_labels": sorted(
+        label_counters["state_only_failed_tool_labels"].items(),
+        key=lambda item: (-item[1], item[0])
+    )[:20],
+    "transcript_only_failed_tool_labels": sorted(
+        label_counters["transcript_only_failed_tool_labels"].items(),
+        key=lambda item: (-item[1], item[0])
+    )[:20],
+```
+
+Actually wait - I should check what format the labels are. The `unique_delta_labels` function returns `sorted(normalized_set(left) - normalized_set(right))[:max_items]`. The normalized_set function: `def normalized_set(values): return {text for value in values if (text := " ".join(str(value).split()))}`. So each label is a whitespace-normalized string.
+
+For the aggregated labels, I should return a list of the most common labels across all sessions. I could return a flat list or a list of (label, count) pairs. The dashboard HTML at line 7345 expects a list of strings for `state_only_failed_tool_labels`:
+```javascript
+const stateOnlyLabels = Array.isArray(evidence.state_only_failed_tool_labels) && evidence.state_only_failed_tool_labels.length
+    ? ` (${text(evidence.state_only_failed_tool_labels.join(", "))})`
+```
+
+So the per-session format is a list of strings. For the aggregate, I'll produce a list of dicts with label and count, so the trajectory can do richer rendering. But to keep backward compat, I could also include the flat list. Let me think...
+
+Actually, for the aggregate I'll produce a list of `{"label": str, "count": int}` dicts sorted by frequency. That way the trajectory can render them as "bash=40, read_file=12, write_file=9" which matches the task's success criteria.
+
+Let me implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the dashboard change. I'll add label aggregation to `action_evidence_summary_for_sessions`:
+  +     label_counters: dict[str, Counter] = {
+  +         "state_only_failed_tool_labels": Counter(),
+  +         "transcript_only_failed_tool_labels": Counter(),
+  +     }
+  + 
+        for row in session_states:
+            action_evidence = (
+                row.get("action_evidence") if isinstance(row.get("action_evidence"), dict) else {}
+  ···
+                            totals["state_only_failed_tool_session_count"] += 1
+                        else:
+                            totals["transcript_only_failed_tool_session_count"] += 1
+  +         for label_key, counter in label_counters.items():
+  +             labels = action_evidence.get(label_key)
+  +             if isinstance(labels, list):
+  +                 for label in labels:
+  +                     if isinstance(label, str):
+  +                         counter[str(label)] += 1
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (52 → 72 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (52 → 72 lines)
+  +     label_counters: dict[str, Counter] = {
+  +         "state_only_failed_tool_labels": Counter(),
+  +         "transcript_only_failed_tool_labels": Counter(),
+  +     }
+  + 
+        for row in session_states:
+            action_evidence = (
+                row.get("action_evidence") if isinstance(row.get("action_evidence"), dict) else {}
+  ···
+                            totals["state_only_failed_tool_session_count"] += 1
+                        else:
+                            totals["transcript_only_failed_tool_session_count"] += 1
+  +         for label_key, counter in label_counters.items():
+  +             labels = action_evidence.get(label_key)
+  +             if isinstance(labels, list):
+  +                 for label in labels:
+  +                     if isinstance(label, str):
+  +                         counter[str(label)] += 1
+  + 
+  +     aggregated_labels: dict[str, list[dict[str, Any]]] = {}
+  ... (17 more lines)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the edit was applied correctly by reading back the function:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:5057..5137 ✓ (235ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dashboard change looks good. Now let me move to the trajectory extractor change. I need to:
+
+1. Read the labels from `recent_action_evidence_summary` (around line 1617-1641)
+2. Add them to the output summary
+
+Let me now edit the trajectory extractor.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me update the trajectory extractor to read and surface the labels:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (264ms)
+  ▶ todo ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the trajectory extractor change. Looking at lines 1617-1641, I need to:
+1. Read `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels` from `recent_action_evidence_summary`
+2. Surface them in the output alongside the counts
+
+The labels from the dashboard summary are now list of dicts like `[{"label": "bash", "count": 40}, {"label": "read_file", "count": 12}]`.
+
+Let me add label rendering after the count rendering. I'll read the labels and format them compactly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1615..1640 ✓ (310ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add label reading and rendering. The labels from the dashboard summary are `state_only_failed_tool_labels` and `transcript_only_failed_tool_labels`, each as a list of `{"label": str, "count": int}` dicts.
+
+I'll add the label rendering right after the count lines. For compactness, I'll show the top 5 labels with counts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                transcript_only_failed_tools = int(
+                    recent_action_evidence_summary.get("transcript_only_failed_tool_count") or 0
+                )
+  +             state_only_labels = recent_action_evidence_summary.get("state_only_failed_tool_labels")
+  +             transcript_only_labels = recent_action_evidence_summary.get("transcript_only_failed_tool_labels")
+                if (
+                    action_session_count
+                    and merged_action_sessions
+  ···
+                        f"transcripts {transcript_action_sessions}/{action_session_count}"
+                    )
+                if state_only_failed_tools:
+  -                 action_parts.append(f"state_only_failed_tools={state_only_failed_tools}")
+  +                 label_text = ""
+  +                 if isinstance(state_only_labels, list) and state_only_labels:
+  +                     top_labels = state_only_labels[:5]
+  +                     if isinstance(top_labels[0], dict) and "label" in top_labels[0]:
+  +                         label_text = " (" + ", ".join(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (23 → 43 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (23 → 43 lines)
+                transcript_only_failed_tools = int(
+                    recent_action_evidence_summary.get("transcript_only_failed_tool_count") or 0
+                )
+  +             state_only_labels = recent_action_evidence_summary.get("state_only_failed_tool_labels")
+  +             transcript_only_labels = recent_action_evidence_summary.get("transcript_only_failed_tool_labels")
+                if (
+                    action_session_count
+                    and merged_action_sessions
+  ···
+                        f"transcripts {transcript_action_sessions}/{action_session_count}"
+                    )
+                if state_only_failed_tools:
+  -                 action_parts.append(f"state_only_failed_tools={state_only_failed_tools}")
+  +                 label_text = ""
+  +                 if isinstance(state_only_labels, list) and state_only_labels:
+  +                     top_labels = state_only_labels[:5]
+  +                     if isinstance(top_labels[0], dict) and "label" in top_labels[0]:
+  +                         label_text = " (" + ", ".join(
+  +                             f"{item['label']}={item['count']}" for item in top_labels
+  +                         ) + ")"
+  ... (15 more lines)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I also need to update the `action_evidence_graph_suggestions` function to show labels in its suggestions. Let me update the suggestion titles/reasons to include the labels:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me update the graph suggestions section to include labels in the suggestion output:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1850..1880 ✓ (294ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the suggestion for state_only to include labels:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if transcript_only:
+  +         transcript_labels = evidence.get("transcript_only_failed_tool_labels")
+  +         label_detail = ""
+  +         if isinstance(transcript_labels, list) and transcript_labels:
+  +             top_labels = transcript_labels[:5]
+  +             if isinstance(top_labels[0], dict):
+  +                 label_detail = " (" + ", ".join(
+  +                     f"{item['label']}={item['count']}" for item in top_labels
+  +                 ) + ")"
+  +             else:
+  +                 label_detail = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
+            suggestions.append(
+                {
+                    "kind": "tooling",
+                    "title": "Reconcile transcript-only tool failures",
+  -                 "reason": "Recent transcripts contained failed tool actions absent from state events; merge transcript evidence into gnomes before trusting task scores.",
+  +                 "reason": f"Recent transcripts contained failed tool actions absent from state events{label_detail}; merge transcript evidence into gnomes before trusting task scores.",
+                    "metric": "transcript_only_failed_tool_count",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/extract_trajectory.py (22 → 42 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/extract_trajectory.py (22 → 42 lines)
+        if transcript_only:
+  +         transcript_labels = evidence.get("transcript_only_failed_tool_labels")
+  +         label_detail = ""
+  +         if isinstance(transcript_labels, list) and transcript_labels:
+  +             top_labels = transcript_labels[:5]
+  +             if isinstance(top_labels[0], dict):
+  +                 label_detail = " (" + ", ".join(
+  +                     f"{item['label']}={item['count']}" for item in top_labels
+  +                 ) + ")"
+  +             else:
+  +                 label_detail = " (" + ", ".join(str(item) for item in top_labels[:5]) + ")"
+            suggestions.append(
+                {
+                    "kind": "tooling",
+                    "title": "Reconcile transcript-only tool failures",
+  -                 "reason": "Recent transcripts contained failed tool actions absent from state events; merge transcript evidence into gnomes before trusting task scores.",
+  +                 "reason": f"Recent transcripts contained failed tool actions absent from state events{label_detail}; merge transcript evidence into gnomes before trusting task scores.",
+                    "metric": "transcript_only_failed_tool_count",
+                    "value": transcript_only,
+                    "priority": 84,
+  ... (22 more lines)
+ ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify both changes and run the self-tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the changes by running the trajectory self-tests and the extractor:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (236ms)
+  ▶ todo ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/extract_trajec… ✓ (502ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Both scripts compile cleanly. extract_trajectory.py now reads state_only_failed_tool_labels and transcript_only_failed_tool_labels from the evidence summary and surfaces them (top 5 by count) in both the "recent action evidence" section and the "Graph-derived next-task pressure" suggestions. build_evolution_dashboard.py computes and exports these label lists as sorted dicts. No src/ files modified. Implementation matches all success criteria.
