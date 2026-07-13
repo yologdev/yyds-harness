@@ -1,0 +1,749 @@
+warning: skipping corrupted event at line 5811 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 4982
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the current `scripts/task_manifest.py` to understand the existing code
+3. Read `scripts/test_task_manifest.py` to understand the test structure
+4. Add cross-reference mismatch detection to task manifest quality scoring
+5. Add test cases
+6. Verify, commit
+
+Let me start by reading the evolve skill and the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/task_manifest.py  ▶ read scripts/test_task_manifest.py ✓ (55ms)
+ ✓ (42ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state of `task_manifest.py`. I need to see the full `parse_task` function and the quality scoring section. Let me read the rest of the file that was truncated.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.5s (3 ✓)
+
+Let me read the full `parse_task` function and quality scoring area.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:96..296 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the remaining portion of parse_task and see the quality dict construction.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:295..495 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full understanding of the code. Let me analyze what needs to be done:
+
+1. **Current state**: `parse_task()` extracts `declared_files` from the Files line and `files` (combined declared + body mentions). The quality dict has `has_goal`, `has_success_criteria`, `has_verification`, `has_expected_evidence`, `generic_self_improvement`, `analysis_only_escape`, `assessment_alignment`, and `score`.
+
+2. **What's missing**: cross-reference mismatch detection — when FILE_MENTION_RE finds file paths in the task body that are NOT in the Files line (declared_files). This would be `undeclared_file_mentions` — files the body references that aren't in the Files header.
+
+3. **The task says**:
+   - Add a quality check that detects when task body mentions file paths not in the Files line
+   - The quality dict should include a new field like `cross_reference_mismatch` or `undeclared_file_mentions`
+   - Quality score should be lowered for tasks with cross-reference mismatches
+   - Add test cases
+
+Let me plan the implementation:
+
+1. In `parse_task()`:
+   - Extract file mentions from body text (using `extract_file_mentions()`)
+   - Compute `undeclared_file_mentions`: file mentions in the body that are NOT in `declared_files`
+   - Add `undeclared_file_mentions` to the quality dict
+   - Penalize the quality score based on the presence of undeclared mentions
+
+2. In `build_manifest()`:
+   - Add a warning for undeclared file mentions
+
+3. In `test_task_manifest.py`:
+   - Add a test fixture with a cross-reference mismatch
+   - Add a test that verifies the mismatch is detected
+
+Now, let me think about specifics:
+
+For `parse_task`, I need the body text. Looking at the code, `body_lines` is collected but the file mentions from it aren't separately computed. In fact, the `files` field currently includes ALL file mentions (declared + from body), which is a bit problematic. Let me look again...
+
+```python
+declared_files = normalize_file_list(split_list(fields.get("files", "")))
+files = normalize_file_list(declared_files + extract_file_mentions(text))
+```
+
+So `files` = declared + all mentions. And `declared_files` = just from Files: line.
+
+I need to compute: `undeclared = [m for m in body_mentions if m not in declared_files]`
+
+Let me implement this. I'll add the computation right after line 299.
+
+For the quality score penalty: the task says "moderate — don't zero out the score for one mismatch." I'll use a penalty like: if there are undeclared mentions, multiply by 0.8 or cap at 0.8.
+
+Actually, looking more carefully at the quality score computation:
+
+```python
+quality_score = sum(
+    [has_success, has_verification, has_expected_evidence, has_goal, not generic, not analysis_only_escape]
+) / 6.0
+```
+
+It's a simple boolean count divided by 6. I should add cross-reference mismatch as a negative factor. Let me think...
+
+The existing pattern uses `min(quality_score, 0.5)` for contradictions and analysis_only_escape. I'll follow a similar pattern but more moderate. Maybe:
+
+```python
+if undeclared_file_mentions:
+    quality_score = min(quality_score, 0.75)  # or lower the cap more severely
+```
+
+Actually, the task says "moderate — don't zero out the score for one mismatch, but make it visible." Let me cap at 0.7 if there are any undeclared mentions.
+
+Now for the body mentions - I need to extract file mentions from the body text only, not from the field headers. Currently `extract_file_mentions(text)` extracts from ALL text including the Files: line. Let me get just the body portion.
+
+Looking at the parse_task function, `body_lines` is collected. I can join it and extract mentions from just the body:
+
+```python
+body_text = "\n".join(body_lines)
+body_mentions = extract_file_mentions(body_text)
+undeclared = [m for m in body_mentions if m not in declared_files and m not in undeclared_seen]
+```
+
+Wait, `extract_file_mentions` already does `normalize_file_list`. But I need to use `normalize_file_entry` to compare, since normalized forms might differ. Actually, let me use the raw file mentions from the body and compare them against the declared files (both normalized).
+
+Actually, `extract_file_mentions` already calls `normalize_file_list`. And `declared_files` is also `normalize_file_list`. So they should be comparable.
+
+But wait - `extract_file_mentions(text)` extracts from ALL text including the Files: line. So I should extract from just the body. Let me create a `body_text` variable.
+
+Let me trace through the code:
+
+```python
+def parse_task(path, task_number, assessment_text=""):
+    text = read_text(path)
+    fields = {}
+    body_lines = []
+    in_fields = True
+    for line in text.splitlines():
+        match = FIELD_RE.match(line)
+        if in_fields and match:
+            fields[match.group(1).strip().lower().replace(" ", "_")] = match.group(2).strip()
+            continue
+        if in_fields and not line.strip():
+            continue
+        if in_fields and line.lstrip().startswith("#"):
+            body_lines.append(line)
+            continue
+        in_fields = False
+        body_lines.append(line)
+    
+    ...
+    declared_files = normalize_file_list(split_list(fields.get("files", "")))
+    files = normalize_file_list(declared_files + extract_file_mentions(text))
+```
+
+So `extract_file_mentions(text)` extracts from the ENTIRE text including the Files: header line. This means the Files line files would appear in the mentions too, but they'd also be in declared_files so they wouldn't count as undeclared. But that's fine — the comparison is: mentions_in_body NOT IN declared_files.
+
+Actually wait, I should extract mentions from just the body to avoid false positives from the Files line itself. The Files line contains file paths that get matched by FILE_MENTION_RE, but those are already in declared_files. So extracting from the full text would only be a problem if the FILE_MENTION_RE doesn't match something in the Files line but does match later.
+
+Let me be safe and extract from just the body text. I'll join body_lines.
+
+Now let me implement:
+
+```python
+# After declared_files computation (line 298-299)
+body_text = "\n".join(body_lines)
+body_mentions = extract_file_mentions(body_text)
+undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+```
+
+For the quality score penalty:
+```python
+quality_score = sum(...) / 6.0
+if alignment["contradicted_by_assessment"]:
+    quality_score = min(quality_score, 0.5)
+if analysis_only_escape:
+    quality_score = min(quality_score, 0.5)
+# NEW:
+if undeclared_file_mentions:
+    quality_score = min(quality_score, 0.7)
+```
+
+And add to quality dict:
+```python
+"quality": {
+    ...
+    "undeclared_file_mentions": undeclared_file_mentions,
+    ...
+}
+```
+
+And add a warning in build_manifest:
+```python
+undeclared = quality.get("undeclared_file_mentions") if isinstance(quality, dict) else []
+if undeclared:
+    warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+```
+
+Now for the test. Let me add a test in test_task_manifest.py with a task that has a Files line declaring one file but mentions another in the body.
+
+Let me also check: do I need to handle the case where the body mentions a file that's clearly read-only (like "Check X before editing")? The task says: "Exclude files that are mentioned but clearly read-only. Start simple: any file path in the body not in Files: is a mismatch."
+
+So start simple - don't worry about read-only exclusion for now.
+
+Let me write the test first, then the implementation.
+
+For the test, I'll model after `test_manifest_captures_rich_task_decisions`. Let me locate a good place for it.
+
+Now let me implement this step by step.
+
+First, the test. I'll add it after the existing tests. Let me look at the end of the test file.
+
+Actually, I have the test file already read. Let me add a new test method. I'll add it before `if __name__ == "__main__":`.
+
+Let me write the test:
+
+```python
+def test_manifest_detects_cross_reference_mismatch(self):
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        plan = root / "session_plan"
+        plan.mkdir()
+        (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+        (plan / "task_01.md").write_text(
+            """Title: Fix something in the harness
+Files: scripts/preseed_session_plan.py
+Issue: none
+Origin: planner
+
+Objective:
+Analyze the harness dispatching logic in scripts/evolve.sh and improve scripts/build_evolution_dashboard.py.
+
+Why this matters:
+Cross-reference mismatches cause verifier rejection.
+
+Success Criteria:
+- scripts/evolve.sh is analyzed
+
+Verification:
+- python3 -m unittest
+
+Expected Evidence:
+- task verification rate improves
+""",
+            encoding="utf-8",
+        )
+        args = type(
+            "Args",
+            (),
+            {
+                "session_plan_dir": plan,
+                "assessment_file": plan / "assessment.md",
+                "assessment_missing_file": plan / "assessment_missing.md",
+                "issue_responses_file": plan / "issue_responses.md",
+                "planning_failure_file": plan / "planning_failure.md",
+                "selected_limit": 3,
+                "planning_failed": False,
+            },
+        )()
+
+        manifest = task_manifest.build_manifest(args)
+        
+        task = manifest["tasks"][0]
+        quality = task["quality"]
+        undeclared = quality.get("undeclared_file_mentions", [])
+        self.assertIn("scripts/evolve.sh", undeclared)
+        self.assertIn("scripts/build_evolution_dashboard.py", undeclared)
+        self.assertLess(quality["score"], 1.0)
+        
+        # Check warning
+        warnings = manifest.get("warnings") or []
+        self.assertIn("task_01:cross_reference_mismatch", warnings)
+```
+
+Now for the implementation changes in task_manifest.py:
+
+1. Add body_mentions extraction and undeclared_file_mentions computation
+2. Add quality score penalty for undeclared mentions
+3. Add undeclared_file_mentions to quality dict
+4. Add warning in build_manifest
+
+Let me proceed with the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a thorough understanding of the code. Let me implement the changes.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (10ms)
+  ▶ todo ✓ (11ms)
+  ▶ todo ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the test (task 1). I'll add the test method before the `if __name__ == "__main__":` line.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.2s (4 ✓)
+
+Starting with the test. Let me add it before the `__main__` block:
+  +     def test_manifest_detects_cross_reference_mismatch(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix harness dispatching
+  + Files: scripts/preseed_session_plan.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Analyze the harness dispatching logic in scripts/evolve.sh and improve scripts/build_evolution_dashboard.py.
+  + 
+  + Why this matters:
+  + Cross-reference mismatches between Files line and body cause verifier rejection.
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (2 → 115 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (23ms)
+  ▶ edit scripts/test_task_manifest.py (2 → 115 lines)
+  +     def test_manifest_detects_cross_reference_mismatch(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix harness dispatching
+  + Files: scripts/preseed_session_plan.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Analyze the harness dispatching logic in scripts/evolve.sh and improve scripts/build_evolution_dashboard.py.
+  + 
+  + Why this matters:
+  + Cross-reference mismatches between Files line and body cause verifier rejection.
+  + 
+  + Success Criteria:
+  + - scripts/evolve.sh dispatching is analyzed
+  ... (95 more lines)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me implement the changes in task_manifest.py. I need to:
+
+1. After `declared_files` computation (line 298-299), add body mention extraction and undeclared computation
+2. After the quality score computation, add penalty for undeclared mentions
+3. Add `undeclared_file_mentions` to the quality dict
+4. In `build_manifest()`, add a warning for cross-reference mismatches
+
+Let me do this with surgical edits.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+Now implement the core changes in `task_manifest.py`:
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  +     body_text = "\n".join(body_lines)
+  +     body_mentions = extract_file_mentions(body_text)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+        files = normalize_file_list(declared_files + extract_file_mentions(text))
+  ✓ Auto-approved: edit: scripts/task_manifest.py (2 → 5 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (26ms)
+  ▶ edit scripts/task_manifest.py (2 → 5 lines)
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  +     body_text = "\n".join(body_lines)
+  +     body_mentions = extract_file_mentions(body_text)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+        files = normalize_file_list(declared_files + extract_file_mentions(text))
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the quality score penalty after the existing ones:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+Now add the quality score penalty for undeclared mentions:
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  +     if undeclared_file_mentions:
+  +         quality_score = min(quality_score, 0.7)
+        title = fields.get("title") or f"Task {task_number}"
+  ✓ Auto-approved: edit: scripts/task_manifest.py (3 → 5 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (3 → 5 lines)
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  +     if undeclared_file_mentions:
+  +         quality_score = min(quality_score, 0.7)
+        title = fields.get("title") or f"Task {task_number}"
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add `undeclared_file_mentions` to the quality dict:
+────────────────────────────────────────────────────────────────────────────────
+
+Add `undeclared_file_mentions` to the quality dict:
+                "generic_self_improvement": generic,
+                "analysis_only_escape": analysis_only_escape,
+                "assessment_alignment": alignment,
+  +             "undeclared_file_mentions": undeclared_file_mentions,
+                "score": round(quality_score, 4),
+            },
+  ✓ Auto-approved: edit: scripts/task_manifest.py (10 → 11 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (10 → 11 lines)
+                "generic_self_improvement": generic,
+                "analysis_only_escape": analysis_only_escape,
+                "assessment_alignment": alignment,
+  +             "undeclared_file_mentions": undeclared_file_mentions,
+                "score": round(quality_score, 4),
+            },
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the warning in build_manifest(). I need to add it after the protected_files check:
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the cross-reference mismatch warning in `build_manifest()`:
+            if protected:
+                task["protected_files"] = protected
+                warnings.append(f"{task['task_id']}:protected_files")
+  +         # Cross-reference mismatch: body mentions files not in Files header
+  +         if quality.get("undeclared_file_mentions"):
+  +             warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+  ✓ Auto-approved: edit: scripts/task_manifest.py (4 → 7 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (19ms)
+  ▶ edit scripts/task_manifest.py (4 → 7 lines)
+            if protected:
+                task["protected_files"] = protected
+                warnings.append(f"{task['task_id']}:protected_files")
+  +         # Cross-reference mismatch: body mentions files not in Files header
+  +         if quality.get("undeclared_file_mentions"):
+  +             warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the test by running it. Let me check the existing tests pass first too.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now let's verify. Run the tests:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (10ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that my `undeclared_file_mentions` check is on line 297 but the variable was defined after `declared_files` (line 299+). Let me check the code around the error. The problem is the `if undeclared_file_mentions:` check at line 297 - that's the quality score penalty I added. But `undeclared_file_mentions` is defined at line 300-301 (after `declared_files`). Let me look at the exact code I've written.
+
+Wait, let me re-read the file to understand the issue. The error says line 297 has `if undeclared_file_mentions:` but the variable is defined later. Let me check the code flow again.
+
+Actually, looking at my edits:
+1. `declared_files = normalize_file_list(...)` at line 298
+2. `body_text = "\n".join(body_lines)` at line 299
+3. `body_mentions = extract_file_mentions(body_text)` at line 300
+4. `undeclared_file_mentions = [...]` at line 301
+5. `files = normalize_file_list(...)` at line 302
+
+Then later the quality score check:
+`if undeclared_file_mentions:` at line 297 (wait - that's before the definition!)
+
+No wait - let me re-read the file. The issue is that `if undeclared_file_mentions:` appears on line 297 in the error, but the variable is defined later. Let me look at the actual file to see what happened.
+
+Actually, looking at my three edits more carefully:
+1. First edit: Replace `declared_files... files = ...` with the expanded version including `undeclared_file_mentions`
+2. Second edit: Add `if undeclared_file_mentions: quality_score = min(...)` after `if analysis_only_escape:`  
+3. Third edit: Add `undeclared_file_mentions` to the quality dict
+
+The error says line 297 `if undeclared_file_mentions:` - that would be the quality score penalty. But the variable should be defined in the first edit. Unless... the three edits overlapped incorrectly.
+
+Let me look at the current file around those lines:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.2s (2 ✓)
+
+There's a variable ordering issue. Let me check the current state of the file:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:288..328 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue. The `undeclared_file_mentions` check at line 297 is before the variable is defined at line 303. I need to move the `undeclared_file_mentions` computation above the quality score, or move the quality score check below the variable definition.
+
+The cleanest fix is to move the `declared_files` and `undeclared_file_mentions` computation above the quality score calculation. Let me restructure this section.
+
+Actually, looking at the original code, `declared_files` was computed AFTER the quality_score block. But now I need it BEFORE the quality_score block because I need `undeclared_file_mentions` for the quality score.
+
+Let me reorder: move `declared_files`, `body_text`, `body_mentions`, `undeclared_file_mentions`, and `files` above the quality_score computation.
+────────────────────────────────────────────────────────────────────────────────
+
+The `undeclared_file_mentions` check is before the variable is defined. I need to reorder: move the file extraction before the quality score computation.
+        analysis_only_escape = has_analysis_only_escape(text)
+        alignment = assessment_alignment(text, assessment_text)
+  +     title = fields.get("title") or f"Task {task_number}"
+  +     declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  +     body_text = "\n".join(body_lines)
+  +     body_mentions = extract_file_mentions(body_text)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  +     files = normalize_file_list(declared_files + extract_file_mentions(text))
+        quality_score = sum(
+            [has_success, has_verification, has_expected_evidence, has_goal, not generic, not analysis_only_escape]
+        ) / 6.0
+  ···
+            quality_score = min(quality_score, 0.5)
+        if undeclared_file_mentions:
+            quality_score = min(quality_score, 0.7)
+  -     title = fields.get("title") or f"Task {task_number}"
+  -     declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  -     body_text = "\n".join(body_lines)
+  -     body_mentions = extract_file_mentions(body_text)
+  -     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  ... (1 more lines)
+  ✓ Auto-approved: edit: scripts/task_manifest.py (17 → 17 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (17 → 17 lines)
+        analysis_only_escape = has_analysis_only_escape(text)
+        alignment = assessment_alignment(text, assessment_text)
+  +     title = fields.get("title") or f"Task {task_number}"
+  +     declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  +     body_text = "\n".join(body_lines)
+  +     body_mentions = extract_file_mentions(body_text)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  +     files = normalize_file_list(declared_files + extract_file_mentions(text))
+        quality_score = sum(
+            [has_success, has_verification, has_expected_evidence, has_goal, not generic, not analysis_only_escape]
+        ) / 6.0
+  ···
+            quality_score = min(quality_score, 0.5)
+        if undeclared_file_mentions:
+            quality_score = min(quality_score, 0.7)
+  -     title = fields.get("title") or f"Task {task_number}"
+  -     declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  -     body_text = "\n".join(body_lines)
+  -     body_mentions = extract_file_mentions(body_text)
+  -     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  ... (1 more lines)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Now re-run the tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (84ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 26 tests pass, including my 2 new ones. Now let me run the manual smoke test to confirm it works with the actual session_plan data:
+────────────────────────────────────────────────────────────────────────────────
+
+All 26 tests pass. Now run the manual smoke test:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (59ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The smoke test works. Let me see the full output, particularly the undeclared_file_mentions for task_02:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 sc… (9 lines) ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, task_02 and task_03 show cross-reference mismatches but let me think about this:
+
+Task_02 has `Files: src/tool_wrappers.rs src/prompt_retry.rs` and the body mentions `src/safety.rs` too. The undeclared shows `['src/tool_wrappers.rs', 'src/prompt_retry.rs', 'src/safety.rs']`. 
+
+Wait - `src/tool_wrappers.rs` and `src/prompt_retry.rs` ARE in the Files line. Why are they showing up as undeclared?
+
+The problem is with the FILE_MENTION_RE not matching or inconsistent normalization. Let me check: `declared_files` is `['src/tool_wrappers.rs src/prompt_retry.rs']` - that's ONE element! Because the `split_list` function splits on commas and semicolons, but the Files line uses spaces to separate files.
+
+Let me check. Looking at the code:
+
+```python
+def split_list(value: str) -> list[str]:
+    return normalize_file_list(value.replace(";", ",").split(","))
+```
+
+It only splits on commas and semicolons. But the task_02 Files: line is `Files: src/tool_wrappers.rs src/prompt_retry.rs` - space-separated. So `split_list` gives `['src/tool_wrappers.rs src/prompt_retry.rs']` - a single entry with both paths.
+
+This is a pre-existing issue with the Files: field parsing, not something I introduced. The existing code uses space-separated file lists in the Files: header. I should look at how the existing code handles this...
+
+Actually wait, looking at the smoke test output more carefully:
+```
+"declared_files": ["src/tool_wrappers.rs src/prompt_retry.rs"],
+```
+
+Yes - the declared_files list for task_02 has a single element with both paths concatenated. The split function doesn't split on spaces. But looking at the body mentions, `extract_file_mentions` uses FILE_MENTION_RE which matches individual file paths. So we get `['src/tool_wrappers.rs', 'src/prompt_retry.rs', 'src/safety.rs']` as body_mentions, and `['src/tool_wrappers.rs src/prompt_retry.rs']` as declared_files.
+
+This means `src/tool_wrappers.rs` and `src/prompt_retry.rs` are incorrectly flagged as undeclared. This is a pre-existing issue in how the Files line is parsed.
+
+However, looking at this more carefully - the `files` field in the output DOES separate them. Let me check how:
+
+```python
+files = normalize_file_list(declared_files + extract_file_mentions(text))
+```
+
+The `extract_file_mentions(text)` extracts individual file paths from the full text, including the Files: line. So `files` = normalize_file_list of `["src/tool_wrappers.rs src/prompt_retry.rs", "src/tool_wrappers.rs", "src/prompt_retry.rs", "src/safety.rs"]`. After normalize_file_list, each element is normalized and deduped... but `"src/tool_wrappers.rs"` and `"src/tool_wrappers.rs src/prompt_retry.rs"` are different strings, so they'd both remain.
+
+Hmm, but in the output I can see:
+```
+"files": ["src/tool_wrappers.rs src/prompt_retry.rs", ...]
+```
+
+So the files field also has the concatenated form. The issue is that `split_list` doesn't split on spaces. This is a known behavior - space-separated file lists in the Files: header work because the entire token gets treated as one entry.
+
+I should fix my code to handle this: when comparing body_mentions against declared_files, I should split space-separated entries in declared_files too. Or better, I should normalize the comparison by also splitting declared_files entries by spaces.
+
+Let me fix the `undeclared_file_mentions` computation to handle space-separated file entries:
+
+```python
+# Normalize declared_files: entries like "src/a.rs src/b.rs" need space-splitting
+flat_declared: set[str] = set()
+for df in declared_files:
+    for part in df.split():
+        part = part.strip()
+        if part:
+            flat_declared.add(part)
+undeclared_file_mentions = [m for m in body_mentions if m not in flat_declared]
+```
+
+Wait, but I should be careful. Let me check how the existing `normalize_file_entry` works - it strips and normalizes but doesn't split on spaces. Let me look at how the code actually uses declared_files.
+
+Looking at `protected_task_surfaces`:
+```python
+def protected_task_surfaces(task: dict[str, Any]) -> list[str]:
+    ...
+    surfaces = task.get("declared_files") or task.get("files") or []
+    for path in surfaces:
+        if not isinstance(path, str):
+            continue
+        if protected_surface_match(path) and path not in matches:
+            matches.append(path)
+```
+
+And `protected_surface_match`:
+```python
+def protected_surface_match(path: str) -> str | None:
+    normalized = normalize_file_entry(path).strip("/")
+    ...
+```
+
+So it passes the concatenated string like "src/tool_wrappers.rs src/prompt_retry.rs" to `protected_surface_match`, which wouldn't match any protected surface (which is correct for those files). So the existing code handles space-separated files in the Files: line by treating them as a single composite entry. Not ideal but it works for protected surface matching.
+
+For my cross-reference detection, I need to handle this better. I should map each declared_files entry to its individual path components by also splitting on whitespace. But instead of modifying `normalize_file_entry` or `split_list`, I'll just do an additional split in the `undeclared_file_mentions` computation.
+
+Actually, let me think about this differently. The proper fix would be to also split on whitespace in `split_list`. But that could affect existing behavior elsewhere. The safer fix for now is to handle it locally.
+
+Let me update the undeclared computation:
+────────────────────────────────────────────────────────────────────────────────
+
+Hmm, I see an issue. Task_02 has `Files: src/tool_wrappers.rs src/prompt_retry.rs` but my `declared_files` treats this as one string. The `split_list` function only splits on commas/semicolons, not spaces. Let me fix the comparison:
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+        body_text = "\n".join(body_lines)
+        body_mentions = extract_file_mentions(body_text)
+  -     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  +     # declared_files may have space-separated entries like "src/a.rs src/b.rs"
+  +     # (split_list splits on commas/semicolons but not spaces). Expand each
+  +     # entry by whitespace so comparison against individual body mentions works.
+  +     _flat_declared: set[str] = set()
+  +     for _df in declared_files:
+  +         for _part in _df.split():
+  +             _p = normalize_file_entry(_part)
+  +             if _p:
+  +                 _flat_declared.add(_p)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in _flat_declared]
+        files = normalize_file_list(declared_files + extract_file_mentions(text))
+  ✓ Auto-approved: edit: scripts/task_manifest.py (5 → 14 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (5 → 14 lines)
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+        body_text = "\n".join(body_lines)
+        body_mentions = extract_file_mentions(body_text)
+  -     undeclared_file_mentions = [m for m in body_mentions if m not in declared_files]
+  +     # declared_files may have space-separated entries like "src/a.rs src/b.rs"
+  +     # (split_list splits on commas/semicolons but not spaces). Expand each
+  +     # entry by whitespace so comparison against individual body mentions works.
+  +     _flat_declared: set[str] = set()
+  +     for _df in declared_files:
+  +         for _part in _df.split():
+  +             _p = normalize_file_entry(_part)
+  +             if _p:
+  +                 _flat_declared.add(_p)
+  +     undeclared_file_mentions = [m for m in body_mentions if m not in _flat_declared]
+        files = normalize_file_list(declared_files + extract_file_mentions(text))
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I also need to update the test fixture for the positive test case. Task_02 in the smoke test uses `Files: src/tool_wrappers.rs src/prompt_retry.rs` which is space-separated. My test `test_manifest_no_cross_reference_mismatch_when_files_match` uses `Files: scripts/preseed_session_plan.py` which is fine since it's a single file. But I need to add a test that handles space-separated files in the Files line.
+
+Actually, let me first check the test for cross-reference mismatch with space-separated files. Let me also look at what task_03's Files line looks like. Let me re-run the smoke test.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what task_03's Files line looks like and then re-run:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep "^Files:" session_plan/ta… ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task_02: `Files: src/tool_wrappers.rs src/prompt_retry.rs` - space-separated
+Task_03: `Files: scripts/task_manifest.py scripts/test_task_manifest.py` - space-separated
+
+So both use space-separated file lists. My fix should now handle this correctly. Let me re-run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now re-run tests:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 26 tests pass. Now let me re-run the smoke test to see if task_02 correctly identifies only the truly undeclared files:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me re-run the smoke test to verify the fix handles space-separated Files lines correctly:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 sc… (10 lines) ✓ (54ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now this is correct:
+
+- **task_01**: Files: `scripts/preseed_session_plan.py`, body mentions only that file → no mismatch, score=1.0
+- **task_02**: Files: `src/tool_wrappers.rs src/prompt_retry.rs`, body mentions `src/safety.rs` (undeclared) → mismatch detected, score=0.7
+- **task_03**: Files: `scripts/task_manifest.py scripts/test_task_manifest.py`, body mentions `scripts/preseed_session_plan.py` (undeclared) → mismatch detected, score=0.7
+
+This is exactly what we want. Now let me verify:
+
+1. `git diff --name-only` - to confirm edited files match the task's Edit Surface
+2. Run `cargo fmt -- --check` (per the evolve skill)
+3. Commit
+
+Actually, let me also check task_03's body to verify that `scripts/preseed_session_plan.py` truly is NOT in the Files line but IS mentioned in the body.
+────────────────────────────────────────────────────────────────────────────────
+
+The detection is now correct:
+• task_02: body mentions `src/safety.rs` which is absent from `Files: src/tool_wrappers.rs src/prompt_retry.rs` ✓
+• task_03: body mentions `scripts/preseed_session_plan.py` which is absent from `Files: scripts/task_manifest.py scripts/test_task_manifest.py` ✓
+
+Let me verify git diff and run the required checks:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edited files match the task's Edit Surface: `scripts/task_manifest.py` and `scripts/test_task_manifest.py`. 
+
+Now let me run the focused verification as required by the evolve skill. First `cargo fmt -- --check`, but wait - these are Python files, not Rust. The `cargo fmt` only checks Rust files. So the relevant check is `python3 -m unittest scripts.test_task_manifest`.
+
+Let me also check if there's a `cargo build` or `cargo test` requirement. The evolve skill says to run focused verification. Since this is a Python-only change, the Python test is sufficient. Let me also try `cargo fmt -- --check` since it's required in the gates but won't affect Python files.
+
+Actually, the evolve skill says:
+- "Run focused verification after changes: cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface."
+
+Since this task only touches Python scripts, `cargo fmt -- --check` will trivially pass, and `cargo build` / `cargo test` won't exercise these files. But they're still required as gates by the harness. Let me run them.
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the diff matches the Edit Surface exactly. Now run focused verification:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+
