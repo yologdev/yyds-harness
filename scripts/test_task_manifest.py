@@ -1153,5 +1153,121 @@ Evidence:
                              f"Should NOT have stale_evidence_artifact warning for existing paths, got warnings={warnings}")
 
 
+    def test_cross_reference_mismatch_detected_and_scores_lowered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Fix the thing
+Files: src/main.rs
+Issue: none
+Origin: planner
+
+Objective:
+Update the library in src/lib.rs and the config in scripts/config.py.
+
+Why this matters:
+It breaks things.
+
+Success Criteria:
+- Library updated
+
+Verification:
+- python3 -m unittest
+
+Expected Evidence:
+- Test passes
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            task = manifest["selected_tasks"][0]
+            quality = task["quality"]
+            self.assertEqual(
+                quality["cross_reference_mismatch"],
+                ["src/lib.rs", "scripts/config.py"],
+                "Should detect body file mentions not in Files: line",
+            )
+            # Score should be capped at 0.8 and reduced by 0.2 (2 mismatches) -> 0.6
+            self.assertLess(quality["score"], 0.9, "Score should be lowered for mismatch")
+            self.assertGreaterEqual(quality["score"], 0.3, "Score floor should be 0.3")
+
+            warnings = manifest.get("warnings") or []
+            mismatch_warnings = [w for w in warnings if "cross_reference_mismatch" in w]
+            self.assertEqual(len(mismatch_warnings), 1, f"Expected cross_reference_mismatch warning, got warnings={warnings}")
+
+    def test_no_cross_reference_mismatch_when_files_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "session_plan"
+            plan.mkdir()
+            (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+            (plan / "task_01.md").write_text(
+                """Title: Fix the thing
+Files: src/main.rs, src/lib.rs
+Issue: none
+Origin: planner
+
+Objective:
+Update src/main.rs and src/lib.rs.
+
+Why this matters:
+It breaks things.
+
+Success Criteria:
+- Both files updated
+
+Verification:
+- cargo test
+
+Expected Evidence:
+- Test passes
+""",
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "session_plan_dir": plan,
+                    "assessment_file": plan / "assessment.md",
+                    "assessment_missing_file": plan / "assessment_missing.md",
+                    "issue_responses_file": plan / "issue_responses.md",
+                    "planning_failure_file": plan / "planning_failure.md",
+                    "selected_limit": 3,
+                    "planning_failed": False,
+                },
+            )()
+
+            manifest = task_manifest.build_manifest(args)
+
+            task = manifest["selected_tasks"][0]
+            quality = task["quality"]
+            self.assertEqual(
+                quality["cross_reference_mismatch"],
+                [],
+                "No mismatch when all body mentions are in Files: line",
+            )
+            # Score should be full 1.0 (no mismatches, all fields present)
+            self.assertEqual(quality["score"], 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

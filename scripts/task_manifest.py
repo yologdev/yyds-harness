@@ -296,7 +296,12 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
         quality_score = min(quality_score, 0.5)
     title = fields.get("title") or f"Task {task_number}"
     declared_files = normalize_file_list(split_list(fields.get("files", "")))
-    files = normalize_file_list(declared_files + extract_file_mentions(text))
+    body_mentions = extract_file_mentions(text)
+    files = normalize_file_list(declared_files + body_mentions)
+    cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+    if cross_reference_mismatch:
+        quality_score = min(quality_score, 0.8)
+        quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
     return {
         "task_id": f"task_{task_number:02d}",
         "task_number": task_number,
@@ -316,6 +321,7 @@ def parse_task(path: Path, task_number: int, assessment_text: str = "") -> dict[
             "has_expected_evidence": has_expected_evidence,
             "generic_self_improvement": generic,
             "analysis_only_escape": analysis_only_escape,
+            "cross_reference_mismatch": cross_reference_mismatch,
             "assessment_alignment": alignment,
             "score": round(quality_score, 4),
         },
@@ -352,6 +358,8 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
             warnings.append(f"{task['task_id']}:generic_self_improvement")
         if quality.get("analysis_only_escape"):
             warnings.append(f"{task['task_id']}:analysis_only_escape")
+        if quality.get("cross_reference_mismatch"):
+            warnings.append(f"{task['task_id']}:cross_reference_mismatch")
         alignment = quality.get("assessment_alignment") if isinstance(quality, dict) else {}
         if isinstance(alignment, dict) and alignment.get("contradicted_by_assessment"):
             warnings.append(f"{task['task_id']}:assessment_contradiction")
