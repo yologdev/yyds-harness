@@ -2416,6 +2416,7 @@ def summarize_events_for_work(events: list[dict[str, Any]]) -> dict[str, Any]:
         run
         for run in run_unmatched_completed_all
         if str(run.get("run_id") or "") not in run_unstarted_input_validation_error_ids
+        and not run.get("session_started", False)
     ]
     run_incomplete = [
         {
