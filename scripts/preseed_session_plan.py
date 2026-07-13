@@ -967,7 +967,9 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         trajectory_lines: list[str] = []
         _TRAJECTORY_GNOME_KEYS = (
             "task_success_rate",
+            "task_verification_rate",
             "task_no_edit_revert_count",
+            "task_unlanded_source_count",
             "bash_tool_error",
             "bash_tool_errors",
             "task_obsolete_count",
@@ -1986,7 +1988,7 @@ Guard result:
 - transcript: transcripts/assess.log
 
 ## Structured State Snapshot
-Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1; task_success_rate = 0; task_failed_count = 2; bash_tool_error = 3
+Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1; task_success_rate = 0; task_verification_rate = 0; task_unlanded_source_count = 1; task_failed_count = 2; bash_tool_error = 3
 """
         task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
         # Files should include src/*.rs when task_no_edit_revert_count > 0
@@ -2003,6 +2005,12 @@ Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1
         )
         assert "task_obsolete_count" in evidence_str, (
             f"Evidence should include task_obsolete_count gnome, got: {evidence_str[:200]}"
+        )
+        assert "task_verification_rate" in evidence_str, (
+            f"Evidence should include task_verification_rate gnome, got: {evidence_str[:200]}"
+        )
+        assert "task_unlanded_source_count" in evidence_str, (
+            f"Evidence should include task_unlanded_source_count gnome, got: {evidence_str[:200]}"
         )
         # Title should describe fixing, not just diagnosing
         assert "Fix" in task_traj["title"] or "fix" in task_traj["title"].lower(), (
