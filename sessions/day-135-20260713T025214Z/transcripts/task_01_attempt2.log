@@ -1,0 +1,577 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the code before making any changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read scripts/build_evolution_dashboard.py:2385..2450 ✓ (912ms)
+ ✓ (597ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the structure. The function `summarize_events_for_work` processes events from a single session's events.jsonl. The `run_unmatched_completed_ids` on line 2395 computes runs whose RunCompleted event exists but RunStarted doesn't. This happens for active sessions where RunStarted hasn't been written yet.
+
+I need to filter out runs that likely belong to the active session. Let me look at how sessions are processed and how events are loaded to identify what data is available.
+
+Let me look at the function signature and where `run_started_ids` and `run_completed_ids` are built.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_started_ids' in scripts/build_evolution_dashboard.py  ▶ read scripts/build_evolution_dashboard.py:2241..2321 ✓ (302ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. The `summarize_events_for_work` function processes events from a single session. The events include `RunStarted`, `RunCompleted`, `SessionStarted`.
+
+For an active session (the one currently running), RunCompleted events might be written before RunStarted events. So `run_unmatched_completed_ids` would include runs from the active session.
+
+Now, each call to `summarize_events_for_work` processes events from one session directory. Let me look at how it's called to understand if I can identify the "current" session.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2606..2636 ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So each session's events are processed independently. The dashboard is built by iterating over all sessions. Let me see how sessions are iterated and how the results are aggregated into the final `state_lifecycle` that appears in the trajectory.
+
+Let me search for where the per-session `state_lifecycle` is aggregated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_non_validation_completed' in scripts/build_evolution_dashboard.py ✓ (272ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the aggregation for `unmatched_non_validation_completed` at the dashboard level. The key question is: how does the per-session `unmatched_non_validation_completed` count get aggregated into the trajectory-level count?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:6140..6170 ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the gnome aggregation that uses these counts. Let me look for how the state_lifecycle values from per-session events get summed up.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_non_validation_completed_count' in scripts/build_evolution_dashboard.py ✓ (276ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 2968 maps the metric key to the field name. Let me see the context around 2968 to understand the aggregation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2955..3015 ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the gnome `state_run_unmatched_non_validation_completed_count` gets its value from the per-session `work["state_lifecycle"]["runs"]["unmatched_non_validation_completed"]`. This is set on line 2435. The gnomes take the maximum across all sessions (the `if int(value) != int(current)` logic at line 2977-2979 only updates if different, and since it increments through sessions, it takes the max effectively).
+
+Now, the key insight: each session's `state_lifecycle` is computed only from that session's events. So if an active session has RunCompleted events without RunStarted events, those are counted as unmatched. 
+
+The fix should be: in `summarize_events_for_work`, identify whether this is the active/current session and if so, filter out runs without RunStarted events from the unmatched count.
+
+But how do I determine if a session is the "active" one? Let me think about what data is available. The function takes only `events` and the function doesn't know which session it's processing. The caller (`work_summary`) has the `session_dir`.
+
+One approach: Look at whether there are any `SessionStarted` events AND no `RunStarted` events for the run. But the problem is that in an active session, RunCompleted can fire before RunStarted. In older sessions, RunStarted and RunCompleted are both present (balanced).
+
+Another approach: Check if the session's events have a weird pattern where some runs have RunCompleted but not RunStarted AND those runs are concentrated in the most recent session. But `summarize_events_for_work` doesn't know if it's the most recent session.
+
+Actually, wait. The simplest approach: in `summarize_events_for_work`, look for runs that have a `RunCompleted` event but are missing `RunStarted` AND also have no `SessionStarted` event for the same run_id. If a run has both RunCompleted AND SessionStarted, it's clearly from an older completed session (since SessionStarted happens at session start, and RunCompleted happens at run end). 
+
+Actually wait, `run_session_started_ids` already tracks runs that have SessionStarted. The idea would be: unmatched runs that also don't have `SessionStarted` are likely from the active session (where SessionStarted hasn't been written yet either).
+
+But hold on — in the current code, `run_session_started_ids` is populated from `SessionStarted` events. These are also events that get written as part of the session lifecycle. In an active session, BOTH RunStarted and SessionStarted might not be written yet for some runs.
+
+Wait, actually looking at the state events more carefully — `RunStarted` fires at the start of a run, `RunCompleted` fires at the end. `SessionStarted` fires at session start. In a normal completed session, all three exist. In an active session, some runs may have completed (RunCompleted written) but not started (RunStarted not written yet) because the state recording might write RunCompleted as part of the run completion flush.
+
+The simplest heuristic: a run that has RunCompleted but no RunStarted AND no SessionStarted is suspect. But this is not 100% reliable.
+
+Let me think about a different approach. The task says:
+> The simplest safe approach: after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file). Subtract those from the count.
+
+But the function processes one session at a time and doesn't know which session is "current". 
+
+Wait, actually let me reconsider. Let me look at how `work_summary` is called and whether we can pass session metadata.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'work_summary\(' in scripts/build_evolution_dashboard.py ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search failed because it treated `(` as a regex char. Let me search without the paren.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'work_summary' in scripts/build_evolution_dashboard.py ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at where work_summary is called (not defined) and how the sessions list is built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'work_summary(' script… ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 3776 and the surrounding context to see how sessions are iterated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3740..3800 ✓ (257ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that sessions are processed in sorted order. The "current" session would be the last one in the sorted list. But `summarize_events_for_work` doesn't know about session ordering.
+
+Let me think about this differently. The task says:
+
+> The simplest safe approach: after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file). Subtract those from the count.
+
+This suggests looking at whether the SessionStarted events exist for the run. But `summarize_events_for_work` only has events from one session. 
+
+Actually, there's a much simpler heuristic available within `summarize_events_for_work`:
+
+In the events for a session, if there are NO `SessionStarted` events at all (i.e., `run_session_started_ids` is empty), then this session's events might be from an active session. But this is too broad.
+
+A better approach: the presence of a `RunCompleted` without a `RunStarted` for a run is suspicious. If a `SessionStarted` also doesn't exist for that run, it's even more suspicious. Let me check what `SessionStarted` events look like.
+
+Actually, let me re-read the evidence more carefully. The task says:
+
+> The unmatched computation is around lines 2395-2440 in `build_evolution_dashboard.py`. Look for `run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)`.
+
+> To identify active-session runs: find the newest `SessionStarted` or `RunStarted` event timestamp, then exclude run_ids whose start event timestamp (or the run_id itself, if it contains a timestamp) is within the last 2 hours. Or use a simpler heuristic: if `run_started_ids` is empty for a given run AND the run's events are all from the same session file (per-session events), skip it.
+
+> The simplest safe approach: after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file). Subtract those from the count.
+
+OK so the key insight: In the per-session events file for the CURRENT/ACTIVE session, runs might have RunCompleted but not RunStarted. But for PAST sessions (completed sessions), RunStarted and RunCompleted should both be present.
+
+But `summarize_events_for_work` doesn't know which session it's processing. The filtering needs to happen either:
+1. Inside `summarize_events_for_work` using some heuristic
+2. Or in the caller/aggregator after all sessions are processed
+
+Looking at the aggregation: the gnomes take the max from any session (lines 2971-2979). So if any session has a high unmatched count, the gnome reflects that.
+
+One approach: add a parameter to `summarize_events_for_work` to indicate whether this is likely the active session. We can determine this in `load_sessions` — the last session in the sorted list is the current one.
+
+Let me look at the code flow: in `load_sessions`, `session_dirs(audit_sessions)` returns sorted session dirs, and `work_summary` is called for each. The last session is the current one.
+
+But modifying `summarize_events_for_work`'s signature would be invasive. Let me think about a lighter approach.
+
+Actually, the simplest approach: Instead of modifying the function signature, add a heuristic inside `summarize_events_for_work`:
+
+For each unmatched run (RunCompleted without RunStarted), check if that run_id also doesn't have a SessionStarted event. If the session has no SessionStarted for that run AND no RunStarted for that run, it's likely from an active session where neither has been written yet.
+
+But wait — are SessionStarted and RunStarted both written at the same time? Let me check.
+
+Actually, let me take a step back and think about what the simplest, safest code change would be.
+
+Looking at the aggregation in gnomes (lines 2961-2979): the gnome `state_run_unmatched_non_validation_completed_count` takes the max from all sessions. If the current session has 35 unmatched and past sessions have 0, the gnome shows 35.
+
+The approach in the task is to identify the CURRENT session and exclude its unmatched runs from the count. But the aggregation takes the max, so even if we exclude the current session, the max would just pick up the next-highest value.
+
+Wait, actually: if we filter at the `summarize_events_for_work` level for the current session, the current session's `state_lifecycle` would have a lower (or zero) unmatched count. Then the gnome aggregation would take the max from all sessions including the current one — but now the current one's unmatched count is reduced.
+
+But what about non-current sessions? If past sessions also have unmatched runs (e.g., due to crashes), those are real problems and should be counted. The gnome aggregation takes the MAX across sessions, so the highest count from any session is shown.
+
+So the fix should be: in `summarize_events_for_work`, filter out unmatched runs that appear to be from the active session. The heuristic: if a run has RunCompleted but no RunStarted AND no SessionStarted, it's likely from the active session.
+
+Let me also check: in the event data for a session, are there SessionStarted events?
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how `SessionStarted` events work in the state events and whether they exist in actual event files.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (23 lines) ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So in our local state, we have 51 RunCompleted but only 38 RunStarted. That's 13 unmatched runs. And there are no `SessionStarted` events! Let me check if SessionStarted events exist in the audit-log data.
+
+Also, lots of `?` events - these are events that don't have an `event_type` field. Let me check what those are.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (16 lines) ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `event_type` field is nested under `payload._yoyo.event_type`. The `event_kind` function reads from the top-level. Let me check how `event_kind` works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:362..392 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `event_kind` first checks `event_type` at the top level, then falls back to `payload._yoyo.event_type`. This is where the `?` events come from - they have `event_type` at the top level but it's not a recognized value, or they don't have it at all and `kind` is something else.
+
+Let me check what the `?` events actually look like at the top level.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (23 lines) ✓ (599ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output is empty, which means none of the events with `kind=None` or `kind=''` have a `payload._yoyo` either. Let me check what these events actually look like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (26 lines) ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No events without a kind. The `?` in the count was from `event.get('event_type', '?')`. Let me re-check - the previous output showed `?: 1962` which is a lot. Let me look at more specific events.
+
+Actually, let me just focus on the task. I already understand enough:
+
+1. The `summarize_events_for_work` function computes unmatched runs (RunCompleted without RunStarted).
+2. The active session will have RunCompleted events without RunStarted events.
+3. The heuristic: within a session's events, if there are NO `SessionStarted` events at all for the session AND the run has RunCompleted without RunStarted, it's likely from the active session.
+
+But since `summarize_events_for_work` only processes one session's events, a simpler heuristic: if `run_session_started_ids` is empty (no SessionStarted events in this session), AND there are unmatched completed runs, those unmatched runs are likely from an active session.
+
+Wait, but what if an old session genuinely had unmatched runs AND also had no SessionStarted events? That would be a real problem that should be counted.
+
+Let me think about this differently. The task says "add active-session run exclusion to the unmatched count computation." The key is identifying the ACTIVE session.
+
+Looking at the dashboard build flow: `load_sessions` calls `work_summary` for each session, which calls `summarize_events_for_work`. The sessions are sorted. The active session is likely the last one in the sort order. 
+
+But the gnome aggregation takes the MAX of `unmatched_non_validation_completed` across sessions. So if we filter the current session and reduce its unmatched count from 35 to 0, the gnome would still show the highest count from other sessions. That might be fine if other sessions have 0 - but if other sessions also have some unmatched runs, the gnome would show those.
+
+Actually, wait. Let me re-read the gnome aggregation:
+
+```python
+if any(int(run_lifecycle.get(source_key) or 0) > 0 for source_key in run_lifecycle_keys.values()):
+    for gnome_key, source_key in run_lifecycle_keys.items():
+        value = run_lifecycle.get(source_key)
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        current = gnomes.get(gnome_key)
+        if not isinstance(current, (int, float)) or isinstance(current, bool) or int(value) != int(current):
+            gnomes[gnome_key] = int(value)
+            recalc_score = True
+```
+
+This iterates over sessions. For each session, if ANY run lifecycle metric is > 0, it updates ALL gnomes. The `!=` check means it updates when the value differs from the current gnome. Since sessions are iterated in order, the last session's values will overwrite previous ones... but only if they differ.
+
+Actually, if session A has `unmatched_non_validation_completed=35` and session B has `unmatched_non_validation_completed=0`, and session A is processed first: gnome gets set to 35. Then session B: value is 0, current is 35, 0 != 35, so gnome gets set to 0.
+
+So the gnome takes the value from the LAST session that has any lifecycle data! Not the max. That's interesting.
+
+OK, so the approach is: if we can identify the current (active) session and filter its unmatched runs, the gnome might show a lower count if the current session is processed last.
+
+But actually, I think the simplest and most robust approach is what the task suggests:
+
+In `summarize_events_for_work`, after computing `run_unmatched_completed_ids`, also compute which of those runs have NO SessionStarted event. If a run has RunCompleted but no RunStarted AND no SessionStarted, it's likely from the active session. Filter those out.
+
+Let me look at the current code flow:
+
+```python
+run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+```
+
+The filter would be: also exclude run_ids that don't have a SessionStarted event, because in an active session, neither RunStarted nor SessionStarted has been written yet.
+
+But wait, `run_session_started_ids` contains ALL run_ids from SessionStarted events. If a session has NO SessionStarted events at all (which is the case locally - none exist), then all unmatched runs would be filtered, even for past sessions.
+
+Actually, let me check: do SessionStarted events exist in completed session events? Let me look at the audit-log data if available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && find . -path '*/state/events.j… ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No audit-log data locally. Let me check the state directory to see if there are per-session event files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/ 2>/dev/nul… ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No per-session event files. The single events.jsonl has all events. Let me check the structure of events to understand if SessionStarted exists.
+
+Let me now look at the full picture:
+1. `summarize_events_for_work` is called with events from ONE session's events.jsonl
+2. The unmatched runs are those with RunCompleted but no RunStarted
+3. For an active session, RunStarted events may not have been written yet for runs that have completed
+
+The heuristic I'll use: A run that has RunCompleted but no RunStarted AND ALSO has no SessionStarted event is likely from the active session. But this might not work if SessionStarted events are also not present.
+
+Actually, let me look at whether run_ids contain timestamps. That could give us a simpler heuristic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (31 lines) ✓ (599ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, 0 unmatched when checking with a different approach. The earlier count showed 51 RunCompleted and 38 RunStarted, so 13 unmatched. But my script found 0. Let me debug the script - maybe the `kind` field check is different.
+
+Let me look at how `event_kind` works again. It first checks `event.get("event_type")`. But in the actual event data, the `event_type` might be nested under `payload._yoyo`. The `event_kind` function handles this. But my quick script doesn't.
+
+Let me use the same logic as `event_kind`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (55 lines) ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: locally, there are 33 unmatched runs, and 393 SessionStarted events. So SessionStarted events exist. The unmatched runs are those with RunCompleted but no RunStarted.
+
+Now, let me check: among the 33 unmatched runs, how many also have SessionStarted? If a run has SessionStarted but no RunStarted, it's from an older session where RunStarted somehow wasn't recorded. If a run has neither SessionStarted nor RunStarted, it's likely from the active session.
+
+But wait - what makes a run "active session"? In the state events model, each session writes its own events. The SessionStarted event is the first event of a session. So if a run from session N has RunCompleted but no RunStarted, AND SessionStarted for session N exists (maybe for OTHER runs), then the session did start, and the unmatched run is a genuine problem.
+
+Actually, let me re-think. The `run_session_started_ids` tracks runs that have `SessionStarted` events. But `SessionStarted` events are per-session, not per-run. Let me check if SessionStarted has a run_id.
+
+Looking at my output: `SessionStarted: 393` - these are SessionStarted events with a run_id. So SessionStarted events do have run_ids.
+
+But what does SessionStarted's run_id represent? It might be the run_id of the session itself. In that case, `run_session_started_ids` contains the session run_ids, not the individual task run_ids.
+
+Actually wait, `SessionStarted: 393` is a lot. Let me check what the run_ids look like for SessionStarted vs RunStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (64 lines) ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The `SessionStarted` events have no run_ids when accessed via `event_run_id`. And the RunStarted/Completed events have `github-actions-*` run_ids, not `run-*` run_ids.
+
+Let me re-check. The `event_run_id` function first checks `event.get("run_id")` and then falls back to `payload._yoyo.run_id`. The SessionStarted events might have their run_id in a different location, or the `_yoyo` format doesn't apply to them.
+
+Let me look at an actual SessionStarted event.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (17 lines) ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `SessionStarted` events have `kind: "SessionStarted"` at the top level (not `event_type`), and the `run_id` is nested under `payload._yoyo.run_id`. The `event_kind` function checks `event.get("event_type")` first — which is null — then `event.get("kind")` — which is "SessionStarted". And `event_run_id` checks `event.get("run_id")` first — which is null — then `payload._yoyo.run_id` — which is "run-1781093073873-64756".
+
+So the issue with my quick script was that the `run_id` is under `payload._yoyo.run_id`. The `event_run_id` function handles this correctly. But in my script, I was also looking at `event.get("kind")` for the kind, and `event.get("run_id")` or `payload._yoyo.run_id` for the run_id. Let me fix the script.
+
+Wait, actually my script DID use the same logic as `event_run_id` from the dashboard. Let me re-check. The function `event_run_id` checks:
+1. `event.get("run_id")` — for SessionStarted, this is null because it's under payload._yoyo
+2. Then `event.get("payload")` → `payload._yoyo` → `run_id`
+
+And my script did the same thing. So why did I get `SessionStarted: 393` with the first script but `0` with the second when using `event_run_id`?
+
+Let me check again. In my first script:
+```python
+if kind == 'SessionStarted' and run_id:
+```
+If `run_id` is `None`, the condition fails and it's not added. So actually, in my first script, `SessionStarted: 393` meant 393 SessionStarted events WITH a run_id found by `event_run_id`.
+
+In my second script, I also used the same logic but got 0. Let me re-run both.
+
+Actually, the difference might be in how I'm extracting `kind`. In the first script:
+```python
+kind = event.get('event_type') or event.get('kind')
+```
+This would give 'SessionStarted' since `event_type` is null and `kind` is 'SessionStarted'.
+
+In the second script, I used the full `event_kind` function which checks `payload._yoyo.event_type` as a fallback — but since `kind` at top level is already a string, it returns that.
+
+Wait, I'm confused. Let me just re-examine. The issue might be that the second script had a different file or something. Let me re-run the test more carefully.
+
+Actually, the key issue is: in my output from the second script, I see:
+```
+Sample RunStarted run_ids: ['github-actions-27135740115', 'github-actions-27137746789', 'github-actions-27145711408']
+```
+
+These are `github-actions-*` run_ids, NOT `run-*` run_ids. And SessionStarted events have `run-*` run_ids. This means there are two different kinds of events: some with `github-actions-*` run_ids (from GH Actions sessions) and some with `run-*` run_ids (from local sessions).
+
+The 33 unmatched runs I found earlier had `run-*` run_ids. These are from local sessions, not GH Actions sessions.
+
+OK, I think the real issue is understanding the data model better. Let me re-examine the unmatched count in the real data and focus on the actual fix.
+
+Let me go back to basics. The task says to filter active-session runs from the unmatched count. The simplest approach is:
+
+In `summarize_events_for_work`, after computing `run_unmatched_completed_ids`, also check if the unmatched run_ids appear in `run_session_started_ids`. If a run has RunCompleted but NOT RunStarted AND NOT SessionStarted, it's likely from an active/in-progress session where neither event has been written yet.
+
+But wait — `run_session_started_ids` tracks runs that HAVE a SessionStarted event. If a run has a SessionStarted event, it's from a session that properly started. If it doesn't have SessionStarted, the session itself might not have started recording yet — which is exactly the active-session case.
+
+So the heuristic is: filter out runs from `run_unmatched_completed_ids` that don't have a SessionStarted event.
+
+But this could also filter genuine orphaned runs from old sessions where SessionStarted wasn't recorded for that specific run. However, the task says this is acceptable — the fallback says "If the filter can't identify the active session... fall back to the existing behavior."
+
+Actually, let me re-read the task:
+> To identify active-session runs: find the newest SessionStarted or RunStarted event timestamp, then exclude run_ids whose start event timestamp (or the run_id itself, if it contains a timestamp) is within the last 2 hours.
+
+This is a timestamp-based approach. The run_id contains a timestamp: `run-1781093073873-64756`. `1781093073873` is a Unix timestamp in milliseconds.
+
+But I can't compare timestamps within `summarize_events_for_work` because it only sees events from one session.
+
+OK, let me take the simplest approach that will actually work:
+
+**In `summarize_events_for_work`, add a filter: runs that have RunCompleted but neither RunStarted nor SessionStarted are likely from the active session. Filter them from the unmatched count.**
+
+The key observation: SessionStarted events are written at the start of a session. RunStarted events are written at the start of a task run. If a session is active, some runs may have RunCompleted without corresponding RunStarted. But SessionStarted should also be missing for those runs because... wait, SessionStarted has the session's run_id, not the task's run_id. So a task run's run_id won't match any SessionStarted event's run_id.
+
+So `run_session_started_ids` won't help filter task runs.
+
+Let me think about this differently. What data is actually available to identify the "current session" within `summarize_events_for_work`?
+
+When called from `work_summary`, the `session_dir` is passed to `work_summary` but not to `summarize_events_for_work`. The events themselves contain timestamps.
+
+Actually, let me look at the run_id format. `run-1781093073873-64756` — the timestamp part is `1781093073873`. If I convert that to a date: it's July 2026 (recent). So if a run's timestamp is within the last 2 hours, it's likely from the active session.
+
+But `summarize_events_for_work` doesn't know the current time. I'd need to pass it or compute it internally.
+
+Actually, the simplest safe approach that the task suggests is:
+> after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file)
+
+But this function processes one session's events at a time. All events here are from the same session file.
+
+Wait, I think I'm overthinking this. Let me re-read the actual task objective:
+
+> Reduce noise in the `state_run_unmatched_non_validation_completed_count` by excluding runs from the currently-active session that legitimately haven't had their RunStarted events written yet.
+
+The simplest filter: if a run_id's timestamp (extracted from the run_id itself) is within the last 2 hours, it's likely from the active session. But I don't know the current time within `summarize_events_for_work`.
+
+Alternative: Look at whether the events file being processed has any SessionStarted events. If a session's events file has SessionStarted events but specific runs lack RunStarted, those are genuine unmatched. But if the session hasn't even had its SessionStarted written yet... well, that can't happen because RunCompleted wouldn't exist without the session being active.
+
+OK here's another approach: modify `summarize_events_for_work` to accept a parameter indicating whether this is the current session, and filter accordingly. Or add the filter in `work_summary` after calling `summarize_events_for_work`.
+
+Let me try the simplest approach: after `summarize_events_for_work` returns, in `work_summary` (which has access to `session_dir`), adjust the unmatched count. 
+
+Actually, wait. Let me look at this from a completely different angle. The task says:
+
+> The simplest safe approach: after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file). Subtract those from the count.
+
+The key insight: `summarize_events_for_work` processes events from ONE session file. All runs in that file are from the same session. For a completed session, all runs should have both RunStarted and RunCompleted. For an active session, some runs might have only RunCompleted.
+
+So within `summarize_events_for_work`, if we see unmatched runs (RunCompleted without RunStarted), we need to determine if this session is active. How?
+
+One signal: whether the session has ANY SessionStarted event. If it does, the session started. But the specific unmatched runs might still be from the active session if their RunStarted events haven't been written yet.
+
+A stronger signal: look at the run_ids. If no RunStarted event exists for a run, check if there's a SessionStarted event. If there is a SessionStarted with a DIFFERENT run_id, this is a completed session with orphaned runs. If there's no SessionStarted at all, this is the active session.
+
+But I showed that SessionStarted events in real data exist: `SessionStarted: 393`. These are for `run-*` run_ids. So completed sessions DO have SessionStarted events.
+
+Wait, but I also showed that RunStarted events in real data have `github-actions-*` run_ids. So these are different event sources. The sessions with `github-actions-*` run_ids might be GH Actions sessions, while `run-*` run_ids are local sessions.
+
+OK, I think the cleanest approach is: within `summarize_events_for_work`, check if the session has any SessionStarted events. If it does NOT, then it's likely the active session, and we should filter unmatched runs more aggressively. Specifically, runs with no RunStarted AND no SessionStarted from a session that has no SessionStarted events at all are almost certainly from the active session.
+
+But wait, I showed that locally, there ARE SessionStarted events and there ARE unmatched runs. So the local data doesn't have the active-session problem. The problem is in production data.
+
+Let me just implement the simplest filter and move on. Here's my plan:
+
+In `summarize_events_for_work`, after line 2395 (`run_unmatched_completed_ids = ...`), add a filter: if the session has no SessionStarted events (i.e., `run_session_started_ids` is empty), then also exclude runs from `run_unmatched_completed_ids` that have NO SessionStarted event.
+
+Actually, no. `run_session_started_ids` being empty means NO runs in the session have SessionStarted. But an active session might have SessionStarted (the session started, just individual run starts haven't been recorded).
+
+Let me think more simply. What if I just:
+
+1. In `summarize_events_for_work`, keep track of the latest SessionStarted timestamp (or run_id)
+2. After computing `run_unmatched_completed_ids`, exclude runs whose run_id timestamp is AFTER the latest SessionStarted
+
+This way, if a session has a SessionStarted event, and some runs have RunCompleted but no RunStarted with timestamps after SessionStarted, those are from the active session.
+
+But this is getting complex. Let me use the simplest possible approach from the task itself:
+
+> The simplest safe approach: after computing `run_unmatched_completed_ids`, also compute `run_unmatched_from_current_session` — runs that appear in the per-session events file for the current session (no cross-session file). Subtract those from the count.
+
+Since `summarize_events_for_work` processes one session's events at a time, ALL runs in the unmatched set are from the same session. The question is whether this session is the active/current one.
+
+Here's my simplest filter: if the session has ANY SessionStarted event (meaning the session started), AND specific unmatched runs don't appear in `run_session_started_ids`, those are genuinely orphaned (the session started but these runs' starts weren't recorded). If the session has NO SessionStarted events at all, the entire session might be active, and unmatched runs there are expected.
+
+Wait, but what if a COMPLETED session also has no SessionStarted events (maybe they weren't recorded in older versions)? That would cause false negatives.
+
+Let me just do the simplest thing that meets the task requirement:
+
+Add a defensive filter at line 2395 that checks if a `SessionStarted` event exists anywhere in the events. If not (the session hasn't fully initialized), filter unmatched runs:
+
+```python
+run_unmatched_completed_ids = sorted(
+    run_id for run_id in run_completed_ids 
+    if run_id not in run_started_ids 
+    and (not run_session_started_ids or run_id in run_session_started_ids)
+)
+```
+
+The logic:
+- If `run_session_started_ids` is empty → no SessionStarted events → likely active session → exclude all unmatched runs (they're from in-progress runs)
+- If `run_session_started_ids` is non-empty → there ARE SessionStarted events → only exclude unmatched runs that also have SessionStarted (which shouldn't happen often)
+
+Wait, this doesn't make sense either. `run_session_started_ids` contains SessionStarted run_ids. SessionStarted run_ids are session-level, not task-level. So they'll never match task run_ids.
+
+OK, I need to understand the data model better. Let me check: are RunStarted and RunCompleted run_ids the same format as SessionStarted run_ids?
+
+From my earlier output:
+- SessionStarted run_id: `run-1781093073873-64756` 
+- RunStarted run_ids: `github-actions-27135740115` (from a different set of events)
+
+These are clearly different. Let me check specifically: in the same session, do SessionStarted and RunStarted share run_ids?
+
+Let me look at the events more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (33 lines) ✓ (487ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So within a session, SessionStarted, RunStarted, and RunCompleted all have the SAME run_id. So `run_session_started_ids` and `run_started_ids` contain the same run_ids. 
+
+This simplifies things significantly. The `run_session_started_ids` set tracks the same run_ids as the main events. If a run has RunCompleted but not RunStarted, checking if it also has SessionStarted is meaningful: if the same run_id appears in SessionStarted but not RunStarted, the RunStarted event was lost.
+
+Now let me look at the 33 unmatched runs and check how many have SessionStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (66 lines) ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, very different results now! Only 25 RunStarted, 0 SessionStarted, 0 unmatched. Earlier I got 409 RunStarted, 406 RunCompleted, 393 SessionStarted. The difference must be in how I'm resolving run_ids.
+
+Wait, the first call used `event.get('event_type') or event.get('kind')` for kind - looking at top-level only. The second uses the full `event_kind` which checks `payload._yoyo.event_type` as fallback.
+
+In the first call, I had: `kind = event.get('event_type') or event.get('kind')` but ALSO checked `event.get('run_id')` as fallback in a slightly different way.
+
+Let me trace through: the `event_kind` function first checks `event.get("event_type")` — let me check if events have a top-level `event_type` field.
+
+From earlier, I showed that events have `kind: "SessionStarted"` at the top level, not `event_type`. So `event.get("event_type")` returns None, then `event.get("kind")` returns "SessionStarted".
+
+For `event_run_id`: first checks `event.get("run_id")` — which is likely None for harness events since run_id is under `payload._yoyo.run_id`. Then checks `payload._yoyo.run_id`.
+
+So in my first script where I got 393 SessionStarted, I must have used different extraction logic. Let me trace the exact difference.
+
+In my first run, I used:
+```python
+kind = event.get('event_type') or event.get('kind')
+```
+This should give the same as `event_kind` for these events.
+
+And for run_id:
+```python
+run_id = event.get('run_id') or ''
+```
+This only checks top-level, NOT payload._yoyo. So for harness events with run_id under payload._yoyo, this returns empty string. But I used `if run_id:` which would be False for empty string.
+
+So SessionStarted events should NOT have been counted in my first run. But they were: `SessionStarted: 393`.
+
+Something is inconsistent. Let me check if there are other event formats in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (25 lines) ✓ (492ms)
+
+

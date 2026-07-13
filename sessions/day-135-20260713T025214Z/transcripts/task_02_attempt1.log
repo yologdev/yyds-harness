@@ -1,0 +1,495 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the targeted source file to understand the current code structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tool_wrappers.rs (120 lines) ✓ (965ms)
+ ✓ (603ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the tool_wrappers.rs file to understand the full structure, particularly the recovery hints section and the `maybe_*` helper functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:120..240  ▶ search 'targeted_recovery_hint' in src/tool_wrappers.rs ✓ (600ms)
+ ✓ (599ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `targeted_recovery_hint` function and the RecoveryHintTool wrapper to understand the current recovery hint infrastructure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1010..1130 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see the rest of the recovery hint function and the RecoveryHintTool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1129..1209  ▶ read src/tool_wrappers.rs:900..980 ✓ (895ms)
+ ✓ (601ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how the RecoveryHintTool is wired in, and how tools are built. Let me also check how tools.rs wires things together.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'with_recovery_hints' in src/tool_wrappers.rs  ▶ search 'RecoveryHintTool' in src ✓ (600ms)
+ ✓ (595ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `with_recovery_hints` function and the area around it:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1208..1268  ▶ search 'with_recovery_hints\b' in src ✓ (597ms)
+ ✓ (598ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if `RecoveryHintTool` / `with_recovery_hints` is actually wired into the tool-building pipeline. The struct has `#[allow(dead_code)]` which is suspicious. Also, the fallback mentions: "fall back to improving the `targeted_recovery_hint` function (line 1018) to add a 'file not found' case with the same suggestions."
+
+Let me check how tools are built in `tools.rs` and `agent_builder.rs` to see if `with_recovery_hints` is wired in.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'recovery_hint' in src/tools.rs  ▶ search 'recovery_hint' in src/agent_builder.rs ✓ (604ms)
+ ✓ (598ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `with_recovery_hints` IS wired into the tool-building pipeline in `tools.rs`. So the `RecoveryHintTool` is already active. This means the fallback approach (improving `targeted_recovery_hint`) is actually the more robust option, because it doesn't require a new wrapper — it just adds better recovery hints within the existing wrapper.
+
+Let me understand the current flow:
+
+1. `RecoveryHintTool` intercepts `execute()` results.
+2. On `ToolError::Failed(msg)`, it calls `targeted_recovery_hint(&tool_name, &msg)` and appends any targeted hint to the error message.
+3. The current `targeted_recovery_hint` for `read_file`/`write_file`/`edit_file`/`list_files` already has a "no such file or directory" case at lines 1123-1129, but it gives a generic message: "Use `list_files` to discover the correct path, or check for typos in the path."
+
+The task asks me to improve this by:
+1. Pre-checking paths BEFORE calling the inner tool (a PathCheckTool wrapper), OR
+2. Improving the existing recovery hints in `targeted_recovery_hint`.
+
+Wait, actually re-reading the task more carefully:
+
+The task says: "If wrapping yoagent's built-in tools requires interface changes beyond what GuardedTool does, fall back to improving the `targeted_recovery_hint` function (line 1018) to add a 'file not found' case with the same suggestions."
+
+But the issue is that the task wants me to add a PRE-CHECK that catches non-existent paths BEFORE they reach yoagent. However, yoagent's read_file tool returns a ToolError::Failed (or perhaps it returns a successful result with an error in the content). Let me check what yoagent does when a file doesn't exist...
+
+Actually, looking at the RecoryHintTool's execute() method, it only intercepts `ToolError::Failed(msg)`. If yoagent returns a ToolError (not a ToolResult with error content), then the flow makes sense.
+
+But the task says to do a pre-check: intercept the path BEFORE calling inner.execute(), check if it exists, and return an early error with helpful hints. This is the PathCheckTool approach.
+
+Let me think about what approach to take:
+
+**Option A: New PathCheckTool wrapper**
+- Pro: Catches path errors before the round-trip to yoagent
+- Pro: Can provide more specific hints (including `rg --files` suggestion, symbol search suggestion)
+- Con: Need to add a new wrapper struct, helper function, wire into tools.rs
+- Con: May need to touch multiple files
+
+**Option B: Improve `targeted_recovery_hint`**
+- Pro: Already wired in, single-function change
+- Pro: Less risk, less diff
+- Con: Only fires AFTER yoagent returns an error, not before
+- Con: The recovery hints are already somewhat descriptive
+
+The task says the fallback is to improve `targeted_recovery_hint`. And it also says "Prefer extending the recovery hints over adding a new wrapper struct if the wrapper approach requires touching >3 files."
+
+Let me check: if I add a PathCheckTool, how many files would I need to touch?
+1. `src/tool_wrappers.rs` — add the struct and helper
+2. `src/tools.rs` — wire it into build_tools
+3. Maybe `src/agent_builder.rs` — if sub-agent tools also need it
+
+That's 2-3 files, which is borderline. The task says ≤40 lines and ≤3 files preferred.
+
+Actually wait, looking more carefully at the task requirements, it says to intercept the path param for read_file, list_files, and edit_file tools. Let me look at what yoagent does when a file path doesn't exist...
+
+Let me check the yoagent source:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 16.7s (2 ✓)
+
+Let me check what yoagent does when a file doesn't exist, and also look at how tools are wired in `tools.rs`:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1310..1360  ▶ $ grep -R -F -- 'fn execute' ~/.cargo/registry/src/*/yoagent-*/src/tools/ 2>/dev/n… ✓ (897ms)
+ ✓ (894ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what yoagent's read_file does when a file doesn't exist:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -F -- 'not found' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f… ✓ (598ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how yoagent handles non-existent file paths for read_file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/tools/file.rs:95..155 ✗ (602ms)
+    │ Cannot access ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/tools/file.rs: No such file or directory (os error 2)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file path doesn't seem right. Let me find the actual yoagent source:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src/ -maxdepth 4 -name 'file.rs' -path '*/yoagent*/tools/… ✓ (601ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No results. Let me check the cargo registry differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src/ -maxdepth 5 -type d -name 'yoagent*' 2>/dev/null | h… ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/tool… ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file exists at a different path than I guessed. Let me grep for "not found" in yoagent's file.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -F -- 'not found' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f… ✓ (586ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So yoagent returns `ToolError::Failed("Cannot access <path>: <error>")` or `ToolError::Failed("Cannot read <path>: <error>")` when a file doesn't exist. The error message includes the OS error text which includes "No such file or directory (os error 2)".
+
+Now, the `targeted_recovery_hint` function already handles "no such file or directory" for read_file/write_file/edit_file/list_files at line 1123-1129. But the hint is generic — it just says "Use list_files to discover the correct path."
+
+The task wants me to improve this significantly. Let me take the **fallback approach** and improve the `targeted_recovery_hint` function to add better hints:
+
+1. Include the exact path that was tried
+2. Suggest `rg --files | grep -i '<basename>'` to find the correct file
+3. Note to search for the symbol/module instead of guessing file paths
+
+Wait, the task also says to do a pre-check. But the RecoveryHintTool approach fires AFTER the error. A pre-check would fire BEFORE the error (before yoagent executes). Let me think about which is better...
+
+Actually, re-reading the task: "Prefer extending the recovery hints over adding a new wrapper struct if the wrapper approach requires touching >3 files."
+
+The wrapper approach would need:
+1. New struct in tool_wrappers.rs
+2. Helper function in tool_wrappers.rs  
+3. Wiring in tools.rs (adding the wrapper around read_file, edit_file, list_files)
+
+That's exactly 3 files, which is borderline but not >3.
+
+However, the RecoveryHintTool is already wired into ALL tools via `with_recovery_hints`. If I improve `targeted_recovery_hint`, the improvements automatically apply to all read_file/edit_file/list_files calls. The downside is it fires AFTER yoagent returns the error, not before.
+
+But wait — the task actually says this is fine! The fallback explicitly says "fall back to improving the `targeted_recovery_hint` function (line 1018) to add a 'file not found' case with the same suggestions." This is the preferred fallback!
+
+Let me also consider: does the existing "no such file or directory" match in targeted_recovery_hint for file tools actually fire? Let me check. The yoagent error is "Cannot access <path>: No such file or directory (os error 2)". The `msg_lower.contains("no such file or directory")` would match this.
+
+So the existing recovery hint IS firing, but the hint itself is weak. Let me improve it.
+
+Let me also rethink: should I also add a pre-check? Looking at the RecoveryHintTool, it only intercepts `ToolError::Failed(msg)`. But yoagent may also return a successful result with an error embedded in the content. However, the task says to add hints that include the basename, `rg --files` suggestion, etc. The recovery hint approach already has access to the tool_name but NOT to the `path` parameter. The `targeted_recovery_hint` function receives `tool_name` and `error_msg` — it doesn't receive the `params`.
+
+So I can't extract the basename from the path in `targeted_recovery_hint` because I don't have the path parameter there. I'd need to either:
+1. Add the path to `targeted_recovery_hint` signature, OR
+2. Use a pre-check wrapper that has access to params
+
+Hmm, but the error message from yoagent already includes the path: "Cannot access /some/path: No such file or directory". So I can extract the path from the error message and then extract the basename from it.
+
+OK, let me go with improving `targeted_recovery_hint`. The plan:
+
+1. In the `read_file | write_file | edit_file | list_files` arm of `targeted_recovery_hint`, when "no such file or directory" is detected:
+   - Extract the path from the error message
+   - Extract the basename from the path
+   - Include the exact path that was tried
+   - Suggest `rg --files | grep -i '<basename>'`
+   - Note to search for the symbol/module instead of guessing file paths
+
+2. Also improve the `search` arm to detect when a search returns no results (not just "no such file" for file tools).
+
+Actually, wait. Let me re-read the task requirements more carefully:
+
+"When the path doesn't exist and doesn't look like a glob pattern, return a clear error that includes:
+1. 'Path does not exist: <path>'
+2. A hint to run `rg --files | grep -i '<basename>'` to find the correct file
+3. A hint to search for the symbol/module instead of guessing the file path"
+
+This sounds like a PRE-CHECK. But the fallback says to improve targeted_recovery_hint.
+
+Let me go with improving targeted_recovery_hint since it's simpler and the task explicitly allows it. I'll make the hints much better.
+
+Let me now plan the actual edit. I need to modify the `targeted_recovery_hint` function around lines 1123-1140 where the "no such file or directory" case for file tools is handled.
+
+Current code:
+```rust
+"read_file" | "write_file" | "edit_file" | "list_files" => {
+    if msg_lower.contains("no such file or directory") {
+        Some(
+            "The file or directory path doesn't exist. Use `list_files` to \
+             discover the correct path, or check for typos in the path \
+             you provided. Verify parent directories exist."
+                .to_string(),
+        )
+    } else if msg_lower.contains("permission denied") {
+```
+
+I need to:
+1. Extract the path from the error message (the error format is "Cannot access <path>: No such file or directory" or "Cannot read <path>: ...")
+2. Extract the basename
+3. Return a much better hint
+
+Let me also add the pre-check approach since it's more useful. But I'll make it a function that can be called from targeted_recovery_hint, rather than a full wrapper. Actually wait, the pre-check requires access to the `params` which targeted_recovery_hint doesn't have.
+
+Let me think about this differently. The task says the primary approach is a PathCheckTool wrapper that does a pre-check. The fallback is improving targeted_recovery_hint. Let me try the wrapper approach first since it catches the error before yoagent.
+
+Actually, I just realized: I CAN extract the path from the error message in targeted_recovery_hint because yoagent's error includes it. Let me verify by looking at what yoagent actually produces...
+
+The error message from yoagent would be: `"Cannot access some/path: No such file or directory (os error 2)"` — this contains the path.
+
+OK, let me go with improving `targeted_recovery_hint`. Here's my plan:
+
+1. Parse the path from the error message for file tools
+2. Extract the basename
+3. Return a detailed hint with:
+   - The path that was tried
+   - `rg --files | grep -i '<basename>'` suggestion
+   - Symbol/module search suggestion
+   - `list_files` on parent directory suggestion
+
+Let me also write a test for this.
+
+Now let me implement it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the architecture. Let me check the current test structure for `targeted_recovery_hint`:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3160..3240 ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The test at line 3172 says `assert!(targeted_recovery_hint("read_file", "file not found").is_none());`. It says "file not found" doesn't trigger the targeted hint for read_file — only "no such file or directory" does.
+
+But wait, yoagent's error is "Cannot access <path>: No such file or directory (os error 2)" — "no such file or directory" IS in there. So it should match.
+
+However, the test at line 3224 uses `fail_msg: Some("file not found".to_string())` — which doesn't match the current "no such file or directory" check, so it correctly gets no targeted hint.
+
+Now, let me think about what the task wants. The task says the error should include:
+1. "Path does not exist: <path>" 
+2. A hint to run `rg --files | grep -i '<basename>'`
+3. A note to search for the symbol/module instead of guessing paths
+
+The best approach: improve `targeted_recovery_hint` to:
+1. Parse the path from the yoagent error message
+2. Extract the basename
+3. Return a detailed hint
+
+But wait — the test at line 3172 says `"read_file"` + `"file not found"` should return `None`. This is testing that `"file not found"` (without "no such file or directory") doesn't trigger a targeted hint. That's the current behavior.
+
+Let me think about whether I should try the wrapper approach (PathCheckTool) or the recovery hint approach:
+
+**PathCheckTool wrapper approach:**
+- Pro: Can check path existence BEFORE yoagent executes
+- Pro: Can use the basename from the params directly
+- Pro: Can skip checks for globs, URLs, etc.
+- Con: Need to add a new struct, helper function, wire into tools.rs (3 files)
+- Con: RecoveryHintTool already handles errors; adding another wrapper adds complexity
+
+**Recovery hint approach:**
+- Pro: Already wired in, single-function change
+- Pro: The error message includes the path
+- Con: Fires AFTER yoagent's error, not before
+- Con: Can't skip glob patterns since the path has already been tried
+
+The task explicitly says "Prefer extending the recovery hints over adding a new wrapper struct if the wrapper approach requires touching >3 files." The wrapper approach would touch 3 files: tool_wrappers.rs, tools.rs, and potentially agent_builder.rs. That's exactly at the threshold.
+
+Let me go with improving `targeted_recovery_hint`. It's simpler, safer, and the task explicitly allows it. Let me improve it to:
+
+1. Extract the path from the error message (format: "Cannot access <path>: ..." or "Cannot read <path>: ...")
+2. Extract the basename
+3. Return a detailed hint including:
+   - The path that was tried
+   - `rg --files | grep -i '<basename>'` suggestion  
+   - Symbol/module search suggestion
+   - list_files on parent directory
+
+Let me now write the code.
+
+Actually, I just realized I should also check what the test at line 3165 says: `targeted_recovery_hint("rename_symbol", "No such file or directory").is_none()` — "No such file or directory" for rename_symbol returns None because rename_symbol is not in the read_file|write_file|edit_file|list_files arm.
+
+And line 3172: `targeted_recovery_hint("read_file", "file not found").is_none()` — "file not found" (without "no such file or directory") returns None for read_file. This is correct because the match is for "no such file or directory".
+
+OK, let me now implement the improvement. The task wants me to change lines 1123-1129 in `targeted_recovery_hint`. But I also need to handle the error message format from yoagent to extract the path.
+
+Let me look at what yoagent produces. From the grep output:
+- Line 111: `.map_err(|e| ToolError::Failed(format!("Cannot access {}: {}", path, e)))?;` — for metadata checks
+- Line 139: `return Err(ToolError::Failed(format!(...)))?` — for non-existent files  
+- Line 148: `.map_err(|e| ToolError::Failed(format!("Cannot read {}: {}", path, e)))?;` — for read errors
+
+So the format is "Cannot access <path>: <io error>" or "Cannot read <path>: <io error>". The io error would contain "No such file or directory (os error 2)".
+
+To extract the path, I can look for a "Cannot access " or "Cannot read " prefix, then find the ": " that separates path from the error message.
+
+Actually, let me keep it simpler. I'll extract the path from the error message by finding the part between "Cannot access " and the first ": " or "No such file".
+
+Let me now write the code change.
+
+Actually, first let me also think about whether I should write a test first. The task says "Write a test first if possible". Yes, I can write a test for the improved targeted_recovery_hint.
+
+Let me plan:
+1. Write a test for the improved file-not-found hint
+2. Modify `targeted_recovery_hint` to extract path and provide better hints
+
+Let me now look at the test setup to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me take the **recovery hint improvement** approach (the task's fallback), since it's already wired in and only needs changes to one function. Let me write a test first, then improve the hint.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (300ms)
+  ▶ todo ✓ (300ms)
+  ▶ todo ✓ (302ms)
+  ▶ todo ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a bit more around the existing test to understand the context, then write a new test for the improved file-not-found recovery hint.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.1s (4 ✓)
+
+Let me first find the test section and understand the patterns:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3130..3180 ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me find a good insertion point for the new test — right after the existing file-not-found tests. Let me add a test that verifies the improved hint includes the path, basename, `rg --files` suggestion, and symbol search suggestion.
+
+Now let me write the test and then improve the function. I'll insert the test after line 3154.
+
+The test should verify that when a "no such file or directory" error is received for `read_file`, the hint includes:
+1. The path from the error message
+2. `rg --files` suggestion
+3. Symbol/module search suggestion
+
+Actually, the error message from yoagent would be like: `"Cannot access src/foo.rs: No such file or directory (os error 2)"`. The current check just looks for "no such file or directory" anywhere in the message. 
+
+Let me now implement the change. I'll modify `targeted_recovery_hint` to:
+1. Extract the path from error messages like "Cannot access <path>: ..." or "Cannot read <path>: ..."
+2. Extract the basename
+3. Return a detailed hint
+
+And I'll also add a test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (295ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test. I'll insert it after line 3154 (after `test_targeted_recovery_hint_list_files_no_such_file`).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test first:
+        #[test]
+        fn test_targeted_recovery_hint_list_files_no_such_file() {
+            let hint = targeted_recovery_hint("list_files", "No such file or directory");
+  +         assert!(hint.is_some());
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_file_not_found_includes_basename_and_rg_hint() {
+  +         // Simulates yoagent error: "Cannot access src/foobar.rs: No such file or directory (os error 2)"
+  +         let hint = targeted_recovery_hint(
+  +             "read_file",
+  +             "Cannot access src/foobar.rs: No such file or directory (os error 2)",
+  +         );
+  +         assert!(hint.is_some(), "should return hint for file-not-found");
+  +         let hint = hint.unwrap();
+  +         assert!(
+  +             hint.contains("foobar.rs"),
+  +             "hint should include the basename: {hint}"
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (5 → 61 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (5 → 61 lines)
+        #[test]
+        fn test_targeted_recovery_hint_list_files_no_such_file() {
+            let hint = targeted_recovery_hint("list_files", "No such file or directory");
+  +         assert!(hint.is_some());
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_file_not_found_includes_basename_and_rg_hint() {
+  +         // Simulates yoagent error: "Cannot access src/foobar.rs: No such file or directory (os error 2)"
+  +         let hint = targeted_recovery_hint(
+  +             "read_file",
+  +             "Cannot access src/foobar.rs: No such file or directory (os error 2)",
+  +         );
+  +         assert!(hint.is_some(), "should return hint for file-not-found");
+  +         let hint = hint.unwrap();
+  +         assert!(
+  +             hint.contains("foobar.rs"),
+  +             "hint should include the basename: {hint}"
+  +         );
+  +         assert!(
+  ... (41 more lines)
+ ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me build to verify this compiles and the tests fail (since the hint doesn't contain the new suggestions yet):
+────────────────────────────────────────────────────────────────────────────────
+
+Good, now let me verify this compiles (tests should fail since the hint doesn't contain the new patterns yet):
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- test_… ✓ (14.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test name pattern didn't match. Let me try with a broader pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- test_… ✓ (599ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test module name might be different. Let me find it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --lis… ✓ (599ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try listing all tests to find the module:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --lis… ✓ (598ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, exit code 1. The `--list` flag might not work. Let me just run the tests with a filter that matches the existing test names:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- recov… ✓ (598ms)
+
+
