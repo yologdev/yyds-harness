@@ -1,0 +1,460 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the current codebase, particularly `skills/evolve/SKILL.md`, `scripts/task_manifest.py`, and `scripts/test_task_manifest.py`. I need to follow the evolve skill rules carefully.
+
+Let me first read the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/task_manifest.py  ▶ read scripts/test_task_manifest.py ✓ (1.5s)
+ ✓ (1.2s)
+ ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see the `parse_task` function in detail, especially the part around lines 289-321 where the quality dict is built and the `declared_files` and `files` are computed.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+Let me read the critical section of `task_manifest.py` around the `parse_task` function and quality scoring.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:200..370 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the key areas:
+
+1. **Line 298**: `declared_files = normalize_file_list(split_list(fields.get("files", "")))` — extracts what's in the Files: header line
+2. **Line 299**: `files = normalize_file_list(declared_files + extract_file_mentions(text))` — merges declared_files with body mentions
+3. **Lines 289-294**: `quality_score` computation — sum of 6 booleans / 6.0, then capped by `assessment_alignment`
+4. **Lines 295-296**: `analysis_only_escape` cap
+5. **Lines 312-321**: quality dict
+6. **Lines 349-367**: warnings section
+
+The task requires:
+1. Detect when body file mentions (from `extract_file_mentions`) are NOT in `declared_files`
+2. Add `cross_reference_mismatch` to the quality dict
+3. Lower quality score for mismatches (cap 0.8 or subtract 0.1 per mismatch, min 0.3)
+4. Add warning `task_NN:cross_reference_mismatch`
+
+Now let me also look at `extract_file_mentions` and `normalize_file_list` to understand what they produce.
+
+Let me also read the `split_list` and `normalize_file_list` functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:133..203 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also read `split_list` and `normalize_file_list`/`normalize_file_entry`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:100..133 ✓ (343ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the changes:
+
+1. **In `parse_task()`** (lines 260-322):
+   - After line 299 (`files = normalize_file_list(declared_files + extract_file_mentions(text))`), add detection of cross-reference mismatches
+   - Body mentions = `extract_file_mentions(text)` — but I should compute this separately since it's already computed inline at line 299. Actually, I'll compute `body_mentions = extract_file_mentions(text)` and then `files = normalize_file_list(declared_files + body_mentions)`
+   - Then: `cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]`
+   - Add `cross_reference_mismatch` to quality dict
+   - Adjust quality_score for mismatches
+
+2. **In quality score adjustment** (around lines 290-296):
+   - Add: cap at 0.8 or subtract 0.1 per mismatch, minimum 0.3
+   - Task says: "cap at 0.8 or subtract 0.1 per mismatch, minimum 0.3"
+
+3. **In warnings** (around lines 349-367):
+   - Add warning for `cross_reference_mismatch` when mismatches found
+
+4. **In test_task_manifest.py**: Add a test fixture with Files-vs-body mismatch.
+
+Let me now plan the exact code changes.
+
+For `parse_task()`:
+- Change line 299 from:
+  ```python
+  files = normalize_file_list(declared_files + extract_file_mentions(text))
+  ```
+  to:
+  ```python
+  body_mentions = extract_file_mentions(text)
+  files = normalize_file_list(declared_files + body_mentions)
+  cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+  ```
+
+- Add before quality_score computation:
+  ```python
+  if cross_reference_mismatch:
+      quality_score = max(0.3, min(0.8, quality_score - 0.1 * len(cross_reference_mismatch)))
+  ```
+  Actually looking at the task spec: "cap at 0.8 or subtract 0.1 per mismatch, minimum 0.3"
+  
+  I'll apply: first cap at 0.8 if there are mismatches, then subtract 0.1 per mismatch with floor at 0.3.
+
+  Hmm, re-reading: "Cap at 0.8 or subtract 0.1 per mismatch (min 0.3)." I think this means:
+  - If there are mismatches, quality_score cannot exceed 0.8
+  - Additionally subtract 0.1 per mismatch
+  - Floor at 0.3
+  
+  Let me implement it as:
+  ```python
+  if cross_reference_mismatch:
+      quality_score = min(quality_score, 0.8)
+      quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+  ```
+
+- Add `cross_reference_mismatch` to quality dict:
+  Add a line: `"cross_reference_mismatch": cross_reference_mismatch,`
+
+- In warnings section (line 349-367 area):
+  Add:
+  ```python
+  if quality.get("cross_reference_mismatch"):
+      warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+  ```
+
+Now for the test. I need to add a test that creates a task with Files: "src/main.rs" but body mentioning "src/lib.rs" and verify:
+- cross_reference_mismatch is detected
+- quality score is lowered
+- warning is emitted
+
+Let me now write the edit.
+
+First, let me make the changes to `task_manifest.py`:
+
+Change 1: Line 299 — split out body_mentions, add cross_reference_mismatch detection
+Change 2: Add quality score adjustment for mismatches (after the analysis_only_escape cap at line 296)
+Change 3: Add cross_reference_mismatch to quality dict (around line 319)
+Change 4: Add warning emission (after line 364 - after the `thin_task_spec` check or near the other quality checks)
+
+Let me do these edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the changes. First, I'll write the test, then edit `task_manifest.py`.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (280ms)
+  ▶ todo ✓ (297ms)
+  ▶ todo ✓ (357ms)
+  ▶ todo ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first. I'll add it before the final `if __name__ == "__main__":` line at the end of test_task_manifest.py.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.3s (4 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the test. I'll place it right before the `if __name__ == "__main__":` block.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     def test_cross_reference_mismatch_detected_and_scores_lowered(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix the thing
+  + Files: src/main.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Update the library in src/lib.rs and the config in scripts/config.py.
+  + 
+  + Why this matters:
+  + It breaks things.
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_task_manifest.py (2 → 118 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_task_manifest.py (2 → 118 lines)
+  +     def test_cross_reference_mismatch_detected_and_scores_lowered(self):
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             root = Path(tmp)
+  +             plan = root / "session_plan"
+  +             plan.mkdir()
+  +             (plan / "assessment.md").write_text("# Assessment\nState feedback.\n", encoding="utf-8")
+  +             (plan / "task_01.md").write_text(
+  +                 """Title: Fix the thing
+  + Files: src/main.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Objective:
+  + Update the library in src/lib.rs and the config in scripts/config.py.
+  + 
+  + Why this matters:
+  + It breaks things.
+  + 
+  + Success Criteria:
+  + - Library updated
+  ... (98 more lines)
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test is written. Now let me make the changes to `task_manifest.py`. I need to:
+
+1. Split out body_mentions and add cross_reference_mismatch detection (line 299)
+2. Add quality score adjustment for mismatches
+3. Add cross_reference_mismatch to quality dict
+4. Add warning emission
+
+Let me do the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me edit `task_manifest.py`. First, split out body mentions and add mismatch detection:
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  -     files = normalize_file_list(declared_files + extract_file_mentions(text))
+  +     body_mentions = extract_file_mentions(text)
+  +     files = normalize_file_list(declared_files + body_mentions)
+  +     cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+  ✓ Auto-approved: edit: scripts/task_manifest.py (2 → 4 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (2 → 4 lines)
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+  -     files = normalize_file_list(declared_files + extract_file_mentions(text))
+  +     body_mentions = extract_file_mentions(text)
+  +     files = normalize_file_list(declared_files + body_mentions)
+  +     cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+ ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the quality score adjustment for cross-reference mismatches. I need to add it after the `analysis_only_escape` check (line 296 -> now line 298). Let me read the current state of those lines.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the quality score adjustment for cross-reference mismatches after the `analysis_only_escape` cap:
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  +     if cross_reference_mismatch:
+  +         quality_score = min(quality_score, 0.8)
+  +         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+  ✓ Auto-approved: edit: scripts/task_manifest.py (2 → 5 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (2 → 5 lines)
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  +     if cross_reference_mismatch:
+  +         quality_score = min(quality_score, 0.8)
+  +         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add `cross_reference_mismatch` to the quality dict. Let me find the current location of the quality dict in the returned dict.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add `cross_reference_mismatch` to the quality dict and to the return value:
+                "has_expected_evidence": has_expected_evidence,
+                "generic_self_improvement": generic,
+                "analysis_only_escape": analysis_only_escape,
+  +             "cross_reference_mismatch": cross_reference_mismatch,
+                "assessment_alignment": alignment,
+                "score": round(quality_score, 4),
+            },
+  ✓ Auto-approved: edit: scripts/task_manifest.py (10 → 11 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (10 → 11 lines)
+                "has_expected_evidence": has_expected_evidence,
+                "generic_self_improvement": generic,
+                "analysis_only_escape": analysis_only_escape,
+  +             "cross_reference_mismatch": cross_reference_mismatch,
+                "assessment_alignment": alignment,
+                "score": round(quality_score, 4),
+            },
+ ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the warning emission. I need to insert it in the warnings section of `build_manifest()`. Let me add it after the `analysis_only_escape` warning check.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the warning emission in `build_manifest()`:
+            if quality.get("analysis_only_escape"):
+                warnings.append(f"{task['task_id']}:analysis_only_escape")
+  +         if quality.get("cross_reference_mismatch"):
+  +             warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+  ✓ Auto-approved: edit: scripts/task_manifest.py (2 → 4 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (2 → 4 lines)
+            if quality.get("analysis_only_escape"):
+                warnings.append(f"{task['task_id']}:analysis_only_escape")
+  +         if quality.get("cross_reference_mismatch"):
+  +             warnings.append(f"{task['task_id']}:cross_reference_mismatch")
+ ✓ (313ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if the `decision_payload` function needs updating. Let me look at it to see if it extracts specific fields from quality.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the `decision_payload` function to see if it extracts quality fields:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:396.. ✓ (304ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `decision_payload` function at line 458: `"quality": task.get("quality")` — it passes through the entire quality dict, so `cross_reference_mismatch` will naturally be included. No changes needed there.
+
+Now let me also check the existing test at line 80-85 for the score assertion. The test `test_manifest_captures_rich_task_decisions` expects `self.assertEqual(manifest["selected_tasks"][0]["quality"]["score"], 1.0)` at line 85. Let me check if that task has body mentions that would create mismatches. Looking at it:
+
+- Files: `scripts/log_feedback.py, scripts/build_evolution_dashboard.py`
+- Body text: "Make evaluator timeout visible in gnome metrics and dashboard task evidence."
+
+No file mentions like `src/...` or `scripts/...` in the body — those are all just descriptive text. The `extract_file_mentions` function uses `FILE_MENTION_RE` which requires directory prefixes like `src/`, `scripts/`, etc. So the body mentions would be empty — no mismatches.
+
+Let me verify: the body says "Make evaluator timeout visible in gnome metrics and dashboard task evidence." — These are not file paths. So `extract_file_mentions` returns an empty list. No mismatch. Score stays at 1.0.
+
+Good, existing tests should pass.
+
+Now let me also check the existing tests to make sure none of them have `cross_reference_mismatch` in an assertion that explicitly checks specific quality fields. Let me check lines 350-360 area where the tests check quality.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also verify the existing test assertions won't break by checking how they access quality fields:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'quality\["score"\]' in scripts/test_task_manifest.py ✓ (274ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for score assertions in the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search '"score"' in scripts/test_task_manifest.py ✓ (311ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check lines around 85 to understand the first existing test and verify it won't break. The test creates a task with:
+- Files: `scripts/log_feedback.py, scripts/build_evolution_dashboard.py`
+- Body: no file-path mentions that match `FILE_MENTION_RE`
+
+Let me also check the second test at line 93 (`test_manifest_parses_blank_separated_task_header_fields`) and the one around line 1269 for score assertions, to make sure none of them have body mentions that would trigger cross-reference mismatches.
+
+Actually, the key thing is: `extract_file_mentions` uses `FILE_MENTION_RE` which matches patterns like `src/...`, `scripts/...`, `docs/...`, etc. If the body text doesn't contain such patterns, there won't be any body mentions, so no mismatches.
+
+Let me verify by running the tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the `decision_payload` function already passes through `task.get("quality")` in full, so `cross_reference_mismatch` will flow through naturally. Let me now run the tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (288ms)
+  ▶ todo ✓ (298ms)
+  ▶ todo ✓ (345ms)
+  ▶ todo ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.1s (4 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (644ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cross_reference_mismatch` variable is referenced at line 297 (the `if cross_reference_mismatch:` check) but it's only set inside the `if analysis_only_escape:` block. The issue is that I put the quality score adjustment at line 297-299 (after the `analysis_only_escape` check), but the variable `cross_reference_mismatch` is computed at line 300-301 (after the score adjustment). I need to move the `cross_reference_mismatch` computation BEFORE the score adjustment. Let me look at the current state of the file.
+────────────────────────────────────────────────────────────────────────────────
+
+The `cross_reference_mismatch` computation must come before the score adjustment that references it. Let me fix the ordering:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:288..318 ✓ (313ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is clear: `cross_reference_mismatch` is computed at line 304 but referenced at line 297. I need to move the computation of `cross_reference_mismatch` (lines 301-304) before the score adjustment (lines 297-299).
+
+Let me restructure: move lines 301-304 (the declared_files, body_mentions, files, and cross_reference_mismatch computation) before line 297.
+────────────────────────────────────────────────────────────────────────────────
+
+I see — `cross_reference_mismatch` is computed at line 304 but referenced at line 297. I need to move the computation before the score adjustment:
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  -     if cross_reference_mismatch:
+  -         quality_score = min(quality_score, 0.8)
+  -         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+        title = fields.get("title") or f"Task {task_number}"
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+        body_mentions = extract_file_mentions(text)
+        files = normalize_file_list(declared_files + body_mentions)
+        cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+  +     if cross_reference_mismatch:
+  +         quality_score = min(quality_score, 0.8)
+  +         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+        return {
+  ✓ Auto-approved: edit: scripts/task_manifest.py (11 → 11 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/task_manifest.py (11 → 11 lines)
+        if analysis_only_escape:
+            quality_score = min(quality_score, 0.5)
+  -     if cross_reference_mismatch:
+  -         quality_score = min(quality_score, 0.8)
+  -         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+        title = fields.get("title") or f"Task {task_number}"
+        declared_files = normalize_file_list(split_list(fields.get("files", "")))
+        body_mentions = extract_file_mentions(text)
+        files = normalize_file_list(declared_files + body_mentions)
+        cross_reference_mismatch = [f for f in body_mentions if f not in declared_files]
+  +     if cross_reference_mismatch:
+  +         quality_score = min(quality_score, 0.8)
+  +         quality_score = max(0.3, quality_score - 0.1 * len(cross_reference_mismatch))
+        return {
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the final state of the `parse_task` function to make sure everything is in order.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the final state of the function:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_manifest.py:260..320 ✓ (302ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code looks correct now. Let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, the ordering is correct now. Let me run the tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (593ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 26 tests pass, including the 2 new ones. Let me verify the existing tests still pass by checking the failing one (`test_manifest_captures_rich_task_decisions`) still passes. Yes, it does — all 26 passed.
+
+Now let me also verify by running `task_manifest.py` against any actual session plan data to see the output includes `cross_reference_mismatch`:
+
+Let me also run `cargo fmt -- --check` and `cargo build` as required by the evolve skill.
+────────────────────────────────────────────────────────────────────────────────
+
+All 26 tests pass. Let me also run the verification check mentioned in the task: `python3 scripts/task_manifest.py --session-plan-dir session_plan --assessment-file session_plan/assessment.md 2>&1 | head -40`:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/task_manifest.… ✓ (604ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The detection is working correctly. The current task_01.md mentions `scripts/preseed_session_plan.py`, `src/main.rs`, and `src/lib.rs` in its body — but the Files: line only declares `scripts/task_manifest.py` and `scripts/test_task_manifest.py`. So `cross_reference_mismatch` correctly flags `["scripts/preseed_session_plan.py", "src/main.rs", "src/lib.rs"]` and the score drops to 0.5.
+
+Now let me run the cargo checks:
+1. `cargo fmt -- --check`
+2. `cargo build`
+
+These are required before committing.
+────────────────────────────────────────────────────────────────────────────────
+
+Working correctly. It detects that the current task_01.md mentions `scripts/preseed_session_plan.py`, `src/main.rs`, and `src/lib.rs` in its body but only declares `scripts/task_manifest.py` and `scripts/test_task_manifest.py` in its Files: line. Score drops to 0.5.
+
+Now run the cargo checks:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo fmt -- --check` passed. Now `cargo build`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (598ms)
+
+
