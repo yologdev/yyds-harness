@@ -624,7 +624,13 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(len(rc_rows), 1)
             self.assertEqual(rc_rows[0]["payload"]["status"], "error")
             self.assertEqual(rc_rows[0]["payload"]["terminal_reason"], "orphaned_previous_session")
+            self.assertEqual(rc_rows[0]["payload"]["outcome"], "post_hoc_closed")
             self.assertIn("crashed-run", result["completed_runs"])
+
+            # Verify the diagnostics track the open_after_FailureObserved gap.
+            fo_diag = result["diagnostics"]["failure_observed_no_completion_diagnostics"]
+            self.assertEqual(fo_diag["failure_observed_runs"], 1)
+            self.assertEqual(fo_diag["runs_with_failure_observed_no_completion"], 1)
 
     def test_failure_observed_alone_without_run_started_gets_closed(self):
         """A run with FailureObserved but no RunStarted still gets RunCompleted."""
@@ -660,6 +666,52 @@ class AppendTerminalStateEvents(unittest.TestCase):
             ]
             self.assertEqual(len(rc_rows), 1)
             self.assertEqual(rc_rows[0]["payload"]["terminal_reason"], "orphaned_previous_session")
+
+    def test_run_with_both_failure_observed_and_run_completed_does_not_double_close(self):
+        """A run with both FailureObserved and RunCompleted gets no duplicate RunCompleted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "closed-run")
+            write_event(events, "ModelCallStarted", "closed-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FailureObserved", "closed-run", {"reason": "panic", "error": "panicked"})
+            write_event(events, "RunCompleted", "closed-run", {"status": "error"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # closed-run should NOT get a duplicate RunCompleted.
+            rc_rows = [
+                row for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "closed-run"
+            ]
+            self.assertEqual(len(rc_rows), 1, "should not double-close a run that already has RunCompleted")
+
+            # Diagnostics should report zero orphans.
+            fo_diag = result["diagnostics"]["failure_observed_no_completion_diagnostics"]
+            self.assertEqual(fo_diag["failure_observed_runs"], 1)
+            self.assertEqual(fo_diag["runs_with_failure_observed_no_completion"], 0)
+
+            # closed-run should NOT appear in completed_runs (it was already closed).
+            self.assertNotIn("closed-run", result["completed_runs"])
 
 
 if __name__ == "__main__":
