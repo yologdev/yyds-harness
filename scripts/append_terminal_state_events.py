@@ -271,6 +271,42 @@ def find_missing_failure_observed(
     return missing, diagnostics
 
 
+def find_runs_with_failure_observed_no_completion(
+    events: list[dict[str, Any]],
+) -> tuple[set[str], dict[str, Any]]:
+    """Find runs that have FailureObserved but no RunCompleted.
+
+    These runs recorded a failure but their lifecycle was never formally
+    closed.  They contribute to ``open_after_FailureObserved`` and inflate
+    ``state_run_incomplete_count`` in gnome summaries.
+
+    Returns (runs_missing_run_completed, diagnostics).
+    """
+    failure_observed_runs: set[str] = set()
+    run_completed_runs: set[str] = set()
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+        elif kind == "RunCompleted":
+            run_completed_runs.add(rid)
+
+    missing = failure_observed_runs - run_completed_runs
+
+    diagnostics = {
+        "failure_observed_runs": len(failure_observed_runs),
+        "run_completed_runs_in_fo_scan": len(run_completed_runs),
+        "runs_with_failure_observed_no_completion": len(missing),
+    }
+
+    return missing, diagnostics
+
+
 def _maybe_append_event(
     events_path: Path,
     event_type: str,
@@ -423,6 +459,31 @@ def append_terminal_events(
         if ts:
             payload_fo["original_run_completed_timestamp_ms"] = ts
         _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
+
+    # Full-scan for runs with FailureObserved but no RunCompleted.
+    # These runs recorded a failure but their lifecycle was never formally
+    # closed — they contribute to open_after_FailureObserved and inflate
+    # state_run_incomplete_count. Emit the missing RunCompleted to close
+    # the lifecycle book.
+    fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+    diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_rc_diag
+
+    # Recompute already_closed to include runs closed by the stale-orphan
+    # scan above (which appended to completed_runs after the original
+    # already_closed was computed).
+    already_closed_fo = set(completed_runs + completed_session_runs)
+
+    for rid in sorted(fo_no_rc_runs):
+        if rid in already_closed_fo:
+            continue
+        payload_fo_rc = {
+            "status": "error",
+            "terminal_reason": "orphaned_previous_session",
+            "stage": stage or None,
+            "outcome": "post_hoc_closed",
+        }
+        _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
+        completed_runs.append(rid)
 
     return {
         "completed_model_calls": completed_models,

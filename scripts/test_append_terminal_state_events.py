@@ -587,6 +587,80 @@ class AppendTerminalStateEvents(unittest.TestCase):
             ]
             self.assertEqual(len(fo_rows), 0)
 
+    def test_closes_run_with_failure_observed_but_no_run_completed(self):
+        """A run with FailureObserved but no RunCompleted gets RunCompleted appended."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "crashed-run")
+            write_event(events, "ModelCallStarted", "crashed-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FailureObserved", "crashed-run", {"reason": "panic", "error": "panicked at src/main.rs:42"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            # The crashed-run should get a RunCompleted appended
+            rc_rows = [
+                row for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "crashed-run"
+            ]
+            self.assertEqual(len(rc_rows), 1)
+            self.assertEqual(rc_rows[0]["payload"]["status"], "error")
+            self.assertEqual(rc_rows[0]["payload"]["terminal_reason"], "orphaned_previous_session")
+            self.assertIn("crashed-run", result["completed_runs"])
+
+    def test_failure_observed_alone_without_run_started_gets_closed(self):
+        """A run with FailureObserved but no RunStarted still gets RunCompleted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "ModelCallStarted", "orphan-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "FailureObserved", "orphan-run", {"reason": "signal", "error": "process killed by signal"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                0,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            rc_rows = [
+                row for row in rows
+                if row["event_type"] == "RunCompleted" and row["run_id"] == "orphan-run"
+            ]
+            self.assertEqual(len(rc_rows), 1)
+            self.assertEqual(rc_rows[0]["payload"]["terminal_reason"], "orphaned_previous_session")
+
 
 if __name__ == "__main__":
     unittest.main()
