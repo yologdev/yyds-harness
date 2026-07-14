@@ -1244,7 +1244,10 @@ fn handle_why(id: &str, show_summary: bool, limit: usize) {
         }
     }
     if limit > 0 {
-        let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+        let all_count = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw.lines().filter(|l| !l.trim().is_empty()).count(),
+            Err(_) => events.len(),
+        };
         if events.len() >= limit {
             println!();
             println!("{DIM}(searched last {limit} events of {all_count} total, use --limit 200000 for a deeper scan){RESET}");
