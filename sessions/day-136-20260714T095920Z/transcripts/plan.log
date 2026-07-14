@@ -1,0 +1,401 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The user is asking me to act as a planning agent (Phase A2) for yyds. I need to:
+
+1. Create session_plan/ directory
+2. Write task files based on the assessment evidence
+3. Write issue_responses.md
+
+Let me analyze the evidence:
+
+**Assessment Summary:**
+- Build is green, tests pass
+- Day 136 trajectory: 1/2 tasks strict verified, 1 reverted_unverified
+- Key issues found:
+  1. Corrupted event `TestEvent` at line 118205 in events.jsonl
+  2. evaluator_unverified_count=1
+  3. bash_tool_error=10
+  4. deepseek_model_call_unmatched_completed_count=3 (partially addressed)
+
+**Graph-derived next-task pressure (prioritized):**
+1. Raise verified task success rate (0.5) — evaluator_unverified_count=1
+2. Bound evaluator checks so verdicts are not skipped
+3. Break recurring log failure fingerprints (recurring_failure_count=2)
+4. Bound failing shell commands (bash_tool_error=10)
+5. Close lifecycle gaps (unmatched_completed_count=3)
+
+**Trusted owner issues:** Only #90 (yoagent Usage struct drops DeepSeek cache fields) — no replies, blocked upstream.
+
+**Task Selection:**
+- Priority 0 (CI): No CI failures — skip
+- Priority 1 (state feedback): evaluator gap (#1-2), lifecycle gaps (#5), bash errors (#4)
+- Priority 2 (eval/replay quality): evaluator gap fits here too
+- Priority 3 (self-discovered): corrupted event (TestEvent)
+- Priority 5 (trusted owner): #90 is blocked, defer
+
+Let me plan 3 tasks:
+
+**Task 1: Investigate and fix evaluator unverified gap** — This directly addresses the top graph pressure (#1-2). The evaluator skipped verification on a task. This could be a timeout, logic bug, or pipeline race.
+
+But wait — I need to think about what files this touches. The evaluator pathway goes through `scripts/task_verification_gate.py` and the evolve pipeline in `scripts/evolve.sh`. But `evolve.sh` is a protected file (can't modify). Let me check what controls the evaluator.
+
+Actually, looking more carefully: the evaluator is in `scripts/task_verification_gate.py`. The task states show `evaluator_unverified_count=1`.
+
+**Task 2: Investigate and fix the TestEvent corruption** — This is a self-discovered bug. The `TestEvent` variant at line 118205 is an unknown event type. Need to find what emits it and fix it.
+
+**Task 3: Close remaining lifecycle gaps** — `deepseek_model_call_unmatched_completed_count=3` — though this was partially addressed by Day 136's `append_terminal_state_events.py`, some gaps remain.
+
+Let me first check what files to assign and verify ownership.
+
+Actually, let me re-read the planning rules more carefully:
+
+- "If session_plan/task_01.md already exists" — I need to check
+- "ARTIFACT-FIRST REQUIREMENT" — I must create task_01.md within first 3 tool turns
+- "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists"
+- "You may still use cheap ownership checks before finalizing Files: entries: `git ls-files <path>`, `git grep -n -- <symbol> src/`, or a scoped `rg -n <simple_identifier> src/`"
+
+So first, let me create the directory, check if task_01.md exists, then write the first task file.
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me start by setting up and checking what already exists.
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null ✓ (662ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to understand what the seed task is and whether I should refine it or keep it.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — `task_01.md` already exists. Let me read it and the assessment to understand the seed task.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (50 lines) ✓ (947ms)
+ ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the seed task_01.md against the assessment evidence:
+
+The seed task is: "Close yyds state and model lifecycle gaps" targeting `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, `scripts/summarize_state_gnomes.py`.
+
+But wait — the assessment says Day 136 02:33 already landed a task on lifecycle gaps:
+> "Close yyds state and model lifecycle gaps (Task 1) — added retroactive FailureObserved detection to the terminal-state janitor script | `scripts/append_terminal_state_events.py` (+61), `scripts/test_append_terminal_state_events.py` (+74)"
+
+The trajectory still shows `deepseek_model_call_unmatched_completed_count=3` and `state_unmatched/open_after_FailureObserved=8`, so the lifecycle gaps are not fully closed. But the seed task is essentially asking to do more of what was already done — same files, same goal.
+
+The assessment also says the "state why" command found 5,969 FailureObserved events in the tail scan — that's the janitor retroactively closing books. This suggests the Day 136 fix IS working, finding historical gaps.
+
+Now, the assessment also shows:
+- `evaluator_unverified_count=1` — a task passed implementation but evaluator didn't verify
+- `TestEvent` corruption at line 118205
+- `bash_tool_error=10`
+
+Let me think about which tasks to plan:
+
+1. **Task 1 (seed)**: The lifecycle gap task. It's already partially addressed. The seed task targets the same files. Is it stale? The assessment says tasks still show `deepseek_model_call_unmatched_completed_count=3`, so the gap is real. But the Day 136 02:33 session already worked on this. This might be a case where the preseed thinks the task is still needed, but the assessment evidence shows it was partially addressed. 
+
+Actually, re-reading the seed: "treat it as a minimum viable task... refine it if the planner has stronger evidence." The question is: is there stronger evidence for a different task?
+
+The top graph pressures are:
+1. evaluator_unverified_count=1 — evaluator unverified gap
+2. recurring_failure_count=2 — log failure fingerprints
+3. bash_tool_error=10
+4. lifecycle gaps (partially addressed)
+
+The evaluator gap at #1-2 seems more actionable and directly blocks task success rate improvement. Let me check what files the evaluator involves.
+
+Let me also check: does the TestEvent corruption touch `src/state.rs`? That's where events are emitted. Let me search for TestEvent.
+
+Let me first refine task_01 by adding more specific evidence from the assessment, then create task_02 for the evaluator gap. The lifecycle task is still valid since the assessment confirms the gap persists, but I should narrow it and make it more concrete.
+
+Actually wait — the preseed rule says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation." The assessment evidence does NOT contradict the lifecycle gap — it confirms it (`deepseek_model_call_unmatched_completed_count=3`, `state_unmatched/open_after_FailureObserved=8`). So the seed task is still valid.
+
+But I should refine it to be more concrete. The assessment gives specific numbers now.
+
+Let me plan:
+
+**Task 1** (refine seed): Narrow the lifecycle gap task. The Day 136 02:33 session added retroactive FailureObserved detection. Now tackle the remaining `open_after_FailureObserved=8` and `unmatched_completed_count=3` gaps — specifically, ensure the janitor script handles the edge case where a run has FailureObserved but no RunCompleted.
+
+**Task 2**: Fix evaluator unverified gap. Investigate why the evaluator skipped verification on a task. The likely owner is `scripts/task_verification_gate.py`.
+
+**Task 3**: Fix TestEvent corruption. Find what emits `TestEvent` into events.jsonl and fix it. The likely owner is in `src/state.rs` (event emission) or wherever the TestEvent variant is defined.
+
+Let me do quick ownership checks before finalizing Files lines.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.9s (2 ✓)
+
+Let me do quick ownership checks before finalizing the plan.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'TestEvent' src/ scripts/ 2>/dev/null | head -20  ▶ $ git ls-files scripts/task_verification_gate.py scripts/log_feedback.py scripts/s… ✓ (1.3s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No match for TestEvent in src/ or scripts/. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TestEvent' ✓ (360ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+TestEvent only appears in the assessment, not in any source file. That means it's an event that was emitted to events.jsonl but doesn't correspond to any known variant in the codebase. Let me check what event types exist in the state system.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_type' in src (*.rs)  ▶ $ git grep -n 'enum.*Event' src/ | head -10 ✓ (943ms)
+ ✓ (941ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the EventType enum to understand all valid event types and see if "TestEvent" corresponds to any known variant.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:116..166 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no `TestEvent` variant in the EventType enum. The event at line 118205 was written with `"event_type": "TestEvent"` which doesn't correspond to any known variant. This could be from:
+
+1. A test that accidentally wrote to the real events.jsonl
+2. An external script or tool writing directly to events.jsonl
+3. A corrupted write
+
+Let me check if anything in the codebase emits "TestEvent" or uses the string "TestEvent".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n 'TestEvent' --max-depth 5 . 2>/dev/null | grep -v '.git/' | grep -v 'sessi… ✓ (641ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failed with no matches, meaning "TestEvent" doesn't appear anywhere in the codebase outside of the assessment. So it must have been written by an external tool, a test that was later removed, or by an external process. Let me check events.jsonl directly around line 118205 to understand the event structure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '118204,118208p' events.jsonl 2>/dev/null | head -5 ✓ (646ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file doesn't exist in the current directory. Let me check where state files are stored.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ find . -name 'events.jsonl' -not -path './.git/*' -not -path './target/*' 2>/dev… ✓ (646ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the events.jsonl is at `.yoyo/state/events.jsonl`. Let me check the TestEvent line. But wait — the events.jsonl is 129MB. Reading line 118205 might be slow but let me try.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '118204,118207p' .yoyo/state/events.jsonl ✓ (642ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty output? That's odd. Maybe the line numbers changed since the assessment was written, or there are fewer lines. Let me count lines and search for TestEvent.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l .yoyo/state/events.jsonl; grep -n 'TestEvent' .yoyo/state/events.jsonl | h… ✓ (646ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file has 145,820 lines. No "TestEvent" found by grep. This means the corrupted event might have already been removed or the assessment's line number was referencing a snapshot that's since been appended to. The assessment may have been written during the 02:33 session when the file had 118,205 lines. Now it has 145,820 lines.
+
+The grep exit code 1 means "no matches found" — the TestEvent is no longer present in the current events.jsonl. The state system has been appending events since the assessment snapshot.
+
+This means the TestEvent corruption task is either:
+- Already resolved (the event was from a source that's been fixed)
+- The event is still there but the grep variation is different
+
+Let me double-check with a different approach.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c 'TestEvent' .yoyo/state/events.jsonl; echo "exit: $?" ✓ (647ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+"TestEvent" is not present in the current events.jsonl. The assessment was written from a snapshot earlier in the session (the file grew from ~118K to ~145K lines during this session). The corrupted event may have been cleaned up or the line number referenced a different point in the file. Either way, the TestEvent corruption is not currently observable.
+
+Now let me finalize my task plan:
+
+**Task 1** (seed refinement): The lifecycle gap task. Still valid since the trajectory shows `deepseek_model_call_unmatched_completed_count=3`. But I should refine it to be more concrete — name the specific gap to close, not "close all gaps."
+
+**Task 2**: Fix evaluator unverified gap. This is the top graph pressure. `evaluator_unverified_count=1` — a task passed implementation but evaluator didn't verify. The evaluator lives in `scripts/task_verification_gate.py`.
+
+**Task 3**: Log feedback fingerprint recurrence. `recurring_failure_count=2` — recurring log failure fingerprints. This is about making the log feedback system more precise and preventing false-positive recurring failures. The owner is `scripts/log_feedback.py`.
+
+Let me finalize and write task files. I need to refine task_01.md and create task_02.md and task_03.md.
+
+For task_01, the assessment says the Day 136 02:33 session already landed a lifecycle fix. The seed task targets the same files. I should refine it to be more concrete and focused on the remaining gap: `open_after_FailureObserved=8` — runs that have FailureObserved but no RunCompleted, meaning the terminal-state janitor should close them.
+
+Actually wait, let me re-read the seed task more carefully. It says "Keep the change scoped to the listed files unless verification reveals a direct dependency." The listed files are `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, `scripts/summarize_state_gnomes.py`. That's 3 files — at the limit.
+
+The task is broad: "Close one concrete yyds lifecycle feedback gap." Let me refine it to focus on the `open_after_FailureObserved=8` gap specifically — runs where FailureObserved exists but RunCompleted doesn't. The `append_terminal_state_events.py` script should detect and close these.
+
+For task_02 (evaluator gap): The assessment says "The unverified task from Day 136 needs investigation — was it an evaluator timeout, a skipped verification, or a pipeline race condition?" But the assessment also says this might be a timeout. Let me plan a task to add a timeout guard or fix the verification skip.
+
+For task_03: I'll skip the TestEvent corruption since it's no longer observable in the current events.jsonl. Instead, I'll focus on the log feedback fingerprint recurrence (`recurring_failure_count=2`).
+
+Let me write the task files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — `TestEvent` is no longer present in the current events.jsonl (the assessment snapshot predated more events being appended). The corruption is not currently observable. Let me finalize the plan with the top 3 graph-priority tasks.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (293ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now refine task_01.md and create task_02.md and task_03.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (301ms)
+  ▶ todo ✓ (351ms)
+  ▶ todo ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me refine task_01.md to be more concrete, then create task_02.md and task_03.md.
+
+For task_01, the key evidence from the assessment:
+- `deepseek_model_call_unmatched_completed_count=3`
+- `state_unmatched/open_after_FailureObserved=8`
+- The Day 136 02:33 session already added retroactive FailureObserved detection to `append_terminal_state_events.py`
+- But some runs still have FailureObserved without RunCompleted
+
+The task should focus on: ensure `append_terminal_state_events.py` closes runs that have FailureObserved but no RunCompleted — the `open_after_FailureObserved` case.
+
+Let me refine the task file now.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 15.1s (3 ✓)
+
+
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  + Title: Close yyds state lifecycle gaps — open_after_FailureObserved runs
+  + Files: scripts/append_terminal_state_events.py, scripts/test_append_terminal_state_events.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner (refined from harness-seed)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Assessment Day 136: `state_unmatched/open_after_FailureObserved=8` — 8 runs have FailureObserved recorded but no RunCompleted event. These are runs where the harness crashed or was cancelled after recording the failure but before closing the run lifecycle.
+  + - Assessment Day 136: `deepseek_model_call_unmatched_completed_count=3` — 3 model calls completed without matching start events, indicating incomplete lifecycle tracking.
+  + - Day 136 02:33 session already added retroactive FailureObserved detection to the terminal-state janitor; the remaining gap is closing runs that HAVE FailureObserved but lack RunCompleted.
+  + - Trajectory graph pressure row 5: "Close yyds state and model lifecycle gaps" with `state_unmatched/open_after_FailureObserved=8`.
+    
+    Edit Surface:
+  - - scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (46 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (46 lines) ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create task_02.md for the evaluator unverified gap. Let me check what the evaluator code looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to create task_02.md for the evaluator gap. Let me quickly check the evaluator's structure by looking at `task_verification_gate.py` for key functions and timeout patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the evaluator structure for task_02.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def \|timeout\|unverified\|skip\|class ' scripts/task_verification_gate… ✓ (646ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the verify function more closely to understand where the unverified case could happen.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/task_verification_gate.py:113.. ✓ (317ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the evaluator. The `verify()` function doesn't have a timeout mechanism — it just runs the git commands (which have a 10-second timeout) and computes the result. The "unverified" state could come from:
+
+1. The evaluator script timing out at the shell level (evolve.sh pipeline)
+2. The evaluator being skipped entirely (pipeline race)
+3. The evaluator output not being parseable
+
+Let me check how the evolve pipeline calls the evaluator. I can't read evolve.sh (protected), but let me check if there's a timeout issue or if the "unverified" relates to a different part of the pipeline.
+
+Actually, the assessment says "evaluator_unverified_count=1" — this is tracked in the trajectory extractor. Let me check how the trajectory extractor classifies "unverified."
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unverified\|evaluator_unverified\|eval_timed_out\|eval_passed\|eval_sum… ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the eval_passed function and how evaluator_unverified_count is tracked.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:487.. ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `strict_task_verification` to understand how tasks get classified as unverified.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:584.. ✓ (304ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the evaluator flow. The `evaluator_unverified_count` tracks tasks where `no_passing_verifier` is in problems. This happens when:
+
+1. No `eval_attempt_*.json` files exist in the task directory (no evaluator was run at all)
+2. All eval attempts either timed out with exit code 124 (and no verdict) or failed
+
+The `eval_timed_out_after_verdict` function handles the case where a timeout happened AFTER producing a verdict — those are counted as passing. But if the timeout happened BEFORE a verdict, the eval is not passing.
+
+The likely causes:
+1. The evaluator script times out (`timeout` command in the pipeline)
+2. The evaluator isn't run at all (pipeline bug)
+3. The evaluator runs but produces no output or exit code 0 without a proper verdict
+
+This is a pipeline-level issue, not something I can fix by editing `task_verification_gate.py` directly. The evaluator timeout is likely set in `evolve.sh` which is a protected file.
+
+Actually wait — let me re-think. The task_02 doesn't need to fix the evaluator pipeline. Instead, I should focus on making the evaluator more robust when it IS run. The `task_verification_gate.py` currently has git commands with 10-second timeouts, but the overall evaluator might time out before these commands complete.
+
+Let me reconsider what's actionable here. The `evaluator_unverified_count=1` means one task had no passing verifier. Without access to the actual task artifact, I can't know if it was a timeout or an actual failure.
+
+Let me look at the trajectory render function to see if there's more detail about what "evaluator_unverified" means:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'evaluator_unverified\|evaluator_timeout\|unverified' scripts/extract_tr… ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No matches for those patterns in extract_trajectory.py. The `evaluator_unverified_count` metric must come from somewhere else — probably the dashboard or the task-state summary in the trajectory renderer. Let me search the preseed script or the dashboard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'evaluator_unverified_count\|unverified_count' scripts/ --include='*.py… ✓ (644ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the build_evolution_dashboard.py to see how evaluator_unverified_count is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'evaluator_unverified_count' scripts/build_evolution_dashboard.py | head… ✓ (649ms)
+
+
