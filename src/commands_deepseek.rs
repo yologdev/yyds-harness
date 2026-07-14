@@ -1932,6 +1932,7 @@ fn handle_cache_report(args: &[String]) {
                 "limitation": "no_cache_metrics_for_agent_chat",
                 "diagnostic_note": diag_note,
                 "reason": "yoagent Usage struct drops DeepSeek cache token fields (cache_read_input_tokens, cache_creation_input_tokens)",
+                "tracking_issue": "https://github.com/yologdev/yyds-harness/issues/90",
                 "available_diagnostic_paths": avail_paths,
                 "event_count": 0,
                 "hit_tokens": 0,
@@ -2071,7 +2072,8 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
                - yyds deepseek stream-check  (chat completion SSE parsing)\n  \
                - yyds deepseek fim-complete   (FIM completion parsing)\n  \
              Next step: Run `yyds deepseek stream-check` to populate cache metrics,\n  \
-             then re-run `yyds deepseek cache-report`."
+             then re-run `yyds deepseek cache-report`.\n  \
+             Track this: https://github.com/yologdev/yyds-harness/issues/90"
                 .to_string(),
         );
     }
@@ -2272,6 +2274,10 @@ mod tests {
         assert!(
             err.contains("Next step: Run"),
             "error should include a concrete next step, got: {err}"
+        );
+        assert!(
+            err.contains("issues/90"),
+            "error should reference tracking issue #90, got: {err}"
         );
     }
 
