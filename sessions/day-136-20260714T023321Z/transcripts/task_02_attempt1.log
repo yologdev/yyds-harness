@@ -1,0 +1,886 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to modify `src/commands_state.rs` to distinguish between three cases in the `state why last-failure` command:
+
+1. **Cold start**: No completed runs exist at all → message should indicate this
+2. **Healthy**: Completed runs exist but none failed → message should indicate health
+3. **Bounded scan**: Failures might exist outside the scan window
+
+Let me first read the relevant file and skill, then make the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/commands_state.rs:1140..1260 ✓ (21ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the code structure. I need to look at a wider range to understand the `handle_why` function and `find_incomplete_runs`. Let me read more context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1040..1140  ▶ search 'fn handle_why' in src/commands_state.rs ✓ (16ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the code flow. The `handle_why` function starts at line 1094. Let me understand the structure:
+
+1. Lines 1096-1181: The `read_tail_events` fails case (no events file or can't read it). At line 1162, if `id == "last-failure"`, it prints "No completed failed sessions exist."
+
+2. Lines 1186-1245: The `read_tail_events` succeeds case (events exist). `build_why_report` is called. If it fails, at line 1200, if `id == "last-failure"`, it scans for incomplete runs.
+
+The task is about modifying the message at line 1162-1163. But wait - that's in the branch where `read_tail_events` failed (no events file). In the assessment case, the CI state store had 288 events from the current in-progress run, so `read_tail_events` would succeed (the file exists and is readable), and we'd be in the second branch at line 1186.
+
+Actually wait, let me re-read the assessment. "Assessment self-test: `yyds state why last-failure` produced 'No completed failed sessions exist' in a fresh CI state store that had only the current (in-progress) run." So the file exists with 288 events. `read_tail_events` would succeed, then `build_why_report` would fail (no failures found), and we'd hit line 1200.
+
+Let me read the rest of the 1186-1245 section more carefully to understand what happens. And I need to understand `build_why_report` and `find_incomplete_runs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_why_report' in src/commands_state.rs  ▶ search 'fn find_incomplete_runs' in src/commands_state.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both functions to understand the current logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1264..1344  ▶ read src/commands_state.rs:3223..3343 ✓ (10ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me look at the flow more carefully:
+
+1. `handle_why` at line 1094 reads `read_tail_events`. If it fails (no file), it goes through lines 1096-1181 which includes the message at line 1162-1163.
+
+2. If `read_tail_events` succeeds, `build_why_report` is called at line 1186. If that fails (line 1188), we enter the fallback at lines 1197-1243.
+
+Now, looking at `build_why_report` (line 3223):
+- If `find_target_event` returns None (line 3224), it already has sophisticated logic!
+- Line 3244: `if counts.total == 0 || (run_completed_count == 0 && !run_started)` — this is the cold start case ("State recording is active but no sessions have completed yet.")
+- Line 3252: `else if run_completed_count == 0 && run_started` — session in progress
+- Line 3285: `else if failure_count == 0` — all healthy
+- Line 3308: else — failures exist but not enough to cluster
+
+So actually, `build_why_report` already handles the differentiation between cold start, in-progress, healthy, and failure cases! The assessment message "No completed failed sessions exist" comes from line 1162-1163, which is in the `read_tail_events` failure branch (the events file doesn't exist or can't be read).
+
+Wait, but the assessment said: "Assessment self-test: `yyds state why last-failure` produced 'No completed failed sessions exist' in a fresh CI state store that had only the current (in-progress) run."
+
+The CI state store had 288 events. `read_tail_events` would succeed (the file exists and has data). Then `build_why_report` would be called. `find_target_event` would return None for `last-failure` (no failure events). Then the code at line 3224 would enter the `if` block.
+
+At line 3244, it checks `counts.total == 0 || (run_completed_count == 0 && !run_started)`. With 288 events in CI, `counts.total` would be 288, not 0. And `run_started` would be true. So this wouldn't match.
+
+At line 3252, `run_completed_count == 0 && run_started` — this would match! A session is currently in progress. So the message would be "A session is currently in progress..." 
+
+But the assessment said it produced "No completed failed sessions exist." That's the message at line 3227: "No completed failure sessions found." But that's inside `build_why_report` at line 3227. So the code path would be:
+- Line 3224: `find_target_event` returns None
+- Line 3227: sets err to "No completed failure sessions found.\n"
+- Then line 3232: adds summary
+- Then line 3244-3248: adds the cold-start or in-progress message
+- Then line 3339: returns Err(err)
+
+Wait, but "No completed failed sessions exist" is from line 1162. Let me look at the exact error message from the assessment again. The assessment says: `yyds state why last-failure` produced "No completed failed sessions exist" in a fresh CI state store.
+
+Looking at line 3227: `err.push_str("No completed failure sessions found.\n");`
+
+And at line 1162-1163:
+```
+if id == "last-failure" {
+    eprintln!("{DIM}  No completed failed sessions exist.{RESET}");
+```
+
+These are slightly different: "No completed failure sessions found." vs "No completed failed sessions exist."
+
+So the assessment says it saw "No completed failed sessions exist" which matches line 1162, meaning the `read_tail_events` failed. But the CI state store had 288 events...
+
+Hmm, actually maybe `read_tail_events` failed for a different reason - maybe the file existed but was corrupted in some way? Or maybe the events file path was different?
+
+Let me reconsider. The assessment says "produced 'No completed failed sessions exist'". Looking at the code:
+
+Line 1162-1163 prints: `No completed failed sessions exist.`
+
+But line 3227 produces: `No completed failure sessions found.`
+
+These are different strings. The exact match is line 1162.
+
+But that's in the `read_tail_events` failure branch. If the CI environment had 288 events in the state store, `read_tail_events` should succeed.
+
+Wait, let me re-read the assessment more carefully:
+"Assessment self-test: `yyds state why last-failure` produced 'No completed failed sessions exist' in a fresh CI state store that had only the current (in-progress) run."
+
+Maybe the assessment is paraphrasing the message. The overall point is: the message doesn't differentiate between cold start and healthy.
+
+But looking at `build_why_report`, it already does differentiate! Lines 3244-3306 handle:
+1. Cold start: "State recording is active but no sessions have completed yet."
+2. Session in progress: "A session is currently in progress." 
+3. Healthy: "N successful session(s) recorded. No failure data to diagnose."
+4. Some failures but can't cluster: "N failure(s) recorded but not enough to cluster..."
+
+So `build_why_report` already does what the task asks for! The issue is that the fallback message at lines 1162-1163 (which is in the `read_tail_events` failure branch) doesn't differentiate.
+
+But wait, looking at the code flow more carefully:
+
+In `handle_why` at line 1096:
+```rust
+let Ok((events, note)) = read_tail_events(&path, limit) else {
+    ...
+    if id == "last-failure" {
+        eprintln!("{DIM}  No completed failed sessions exist.{RESET}");
+```
+
+This is the cold-start code path where `read_tail_events` returns an error. If the file doesn't exist or can't be read, we get here. The message "No completed failed sessions exist" is not very helpful here.
+
+But the task says the assessment hit this with "a fresh CI state store that had only the current (in-progress) run" and 288 events. If the file existed with 288 events, `read_tail_events` should succeed.
+
+Let me look at how `read_tail_events` works.
+
+Actually, let me reconsider: maybe the assessment was run with a `--limit` that was too small, or maybe the actual events file wasn't readable, or maybe the CI assessment was run in a context where the state directory was set up but the events file was at a non-standard path.
+
+Actually, re-reading the assessment: "Assessment self-test: `yyds state why last-failure` produced 'No completed failed sessions exist' in a fresh CI state store that had only the current (in-progress) run."
+
+The assessment is saying that the message was not helpful because it didn't distinguish between cold-start and healthy. But maybe `build_why_report` already does this correctly, and the problem is specifically the message at line 1162.
+
+Wait - actually, let me re-read the task more carefully. The task says:
+"The code at line 1162 (`src/commands_state.rs`) already has the `id == "last-failure"` branch for the cold-start message path. It should differentiate between: (a) no completed runs at all → cold start; (b) completed runs exist but none failed → healthy; (c) failures exist but weren't in the scanned window → bounded scan limit."
+
+But line 1162 is in the `read_tail_events` failure branch. In that branch, we have NO events at all. So we can't differentiate between these cases because we don't have any events to inspect.
+
+The real differentiation should happen in the `build_why_report` path (which already does) or in the fallback path at line 1197-1243 where we DO have events.
+
+Let me look at line 1197-1243 again:
+
+```rust
+// Fallback: when no failure found for last-failure, scan for
+// incomplete runs (RunStarted without RunCompleted) and offer
+// diagnostic next-steps so cold-start users get a breadcrumb trail.
+if id == "last-failure" {
+    let incomplete = find_incomplete_runs(&events);
+    ...
+}
+```
+
+This fallback currently only checks for incomplete runs. But it should also check whether any runs have completed at all, and differentiate:
+- No completed runs at all → cold start
+- Completed runs exist, no failures → healthy
+- Both cases where we couldn't find a target failure event
+
+Now I understand the task better. The change should be in the fallback path at lines 1197-1243, to add differentiation between:
+1. Cold start: no RunCompleted events exist in the scanned events
+2. Healthy: RunCompleted events exist but no FailureObserved events
+3. Bounded scan: the limit message at line 1190-1193 already handles this
+
+Let me now implement this change. I need to:
+
+1. After the `find_incomplete_runs` check (or before it), also detect whether any RunCompleted events exist
+2. If no RunCompleted events → cold start message
+3. If RunCompleted events exist but no failures → healthy message
+
+Let me also check: does `build_why_report` already have this logic and the issue is just that its error message is also not great? Let me re-read lines 3244-3306... Yes, it already handles all three cases. So the fix is specifically in the fallback at lines 1197-1243.
+
+Actually wait. Let me trace through the exact code path for the CI case:
+
+1. `read_tail_events` succeeds (file has 288 events)
+2. `build_why_report(&events, "last-failure")` is called
+3. `find_target_event(events, "last-failure")` returns None (no FailureObserved events)
+4. Line 3224-3339: constructs a detailed error message
+5. Line 3244: `counts.total == 0 || (run_completed_count == 0 && !run_started)` - `counts.total` is 288, `run_started` is true → doesn't match
+6. Line 3252: `run_completed_count == 0 && run_started` - if the in-progress run hasn't completed, `run_completed_count` is 0 and `run_started` is true → matches!
+7. Message: "A session is currently in progress..."
+
+So `build_why_report` already handles this correctly. The "No completed failed sessions exist" message from the assessment must be from line 1162, which means `read_tail_events` failed in the CI assessment case.
+
+Hmm, but the assessment says the CI state store had 288 events... Maybe `read_tail_events` failed at the time due to a different issue (permissions, wrong path)?
+
+Let me look at the start of `handle_why` more carefully:
+
+```rust
+fn handle_why(id: &str, show_summary: bool, limit: usize) {
+    let path = default_events_path();
+    let Ok((events, note)) = read_tail_events(&path, limit) else {
+```
+
+And `default_events_path()` might return a path that doesn't exist in certain environments. But the task says the store had 288 events...
+
+Anyway, I think the right thing to do is:
+1. The `build_why_report` function already has good differentiation. Good.
+2. The fallback in `handle_why` at lines 1197-1243 should also differentiate between cold start and healthy.
+3. The message at line 1162 (in the `read_tail_events` failure branch) should also differentiate, but since there are no events, we can only say "no events file" or "file couldn't be read" — which it already does above at lines 1097-1160.
+
+Actually, wait. I think there's a simpler and more correct reading: the task specifically says to modify lines around 1155-1180 and 1197-1243. Let me focus on:
+
+1. **The fallback path (lines 1197-1243)**: Here we have events but `build_why_report` failed. We should add differentiation between "no completed runs" vs "completed runs exist but no failures". This is the case where `build_why_report` already returned a good error message, but the fallback messages could be more targeted.
+
+Actually re-reading the task again: it says the assessment produced "No completed failed sessions exist" which is from line 1162. So in the assessment's case, `read_tail_events` failed. But looking at the assessment context, it says the CI had 288 events... I think there might be two separate issues:
+
+1. The message at line 1162 is unhelpful when events can't be read (cold start without initialized state)
+2. The fallback at 1197-1243 could also be improved
+
+For the case at line 1162, we truly have no events — the file doesn't exist or can't be read. The messages before it (1097-1160) already diagnose the directory/file issues. At line 1162 it says "No completed failed sessions exist" — this is technically true but could be more helpful.
+
+However, the task's Success Criteria specifically says:
+- When 0 completed runs exist: "no completed sessions exist yet — this may be a cold start"
+- When completed runs exist but 0 failures: "all N completed sessions passed"
+- When failures might exist outside the scan window: already exists (line 1191-1193)
+
+These criteria apply to the fallback path (lines 1197-1243) because that's where we have events to inspect.
+
+Let me now write the implementation. I'll add checks in the fallback at lines 1197-1243 to:
+1. Detect whether any RunCompleted events exist
+2. If none → cold start message
+3. If some exist but no failures found → healthy message
+
+And also improve the message at line 1162 to be clearer.
+
+Let me re-read the full fallback section one more time to plan the edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 43.0s (2 ✓)
+
+Now let me see the full fallback section more closely and also check `build_state_summary` for the counts struct:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateSummaryCounts' in src/commands_state.rs  ▶ read src/commands_state.rs:1185..1205 ✓ (20ms)
+ ✓ (74ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read `StateSummaryCounts` to see what fields are available:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2901..2931 ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear understanding. Let me plan the implementation.
+
+The key insight is that `build_why_report` already has good differentiation but returns an error (`Err`). The `handle_why` function, especially the fallback at lines 1197-1243, should provide clearer messages when:
+1. No completed runs exist at all (cold start)
+2. Completed runs exist but no failures (healthy)
+
+The change should be in the fallback section (lines 1197-1243). I'll add a check for:
+- How many RunCompleted events exist in the scanned events
+- Whether any RunStarted events exist (session in progress)
+
+Let me now implement. Here's my plan:
+
+After the incomplete runs check (line 1201-1226), I'll add:
+
+```rust
+// Also detect cold-start vs healthy-no-failures
+let run_completed_count = events
+    .iter()
+    .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+    .count();
+let run_started_count = events
+    .iter()
+    .filter(|e| event_string(e, "event_type") == Some("RunStarted"))
+    .count();
+
+if run_completed_count == 0 {
+    if run_started_count > 0 {
+        eprintln!(
+            "\n{YELLOW}  No completed sessions exist yet — a session is currently in progress.{RESET}"
+        );
+        eprintln!(
+            "{DIM}  Diagnostics become available after the session completes.{RESET}"
+        );
+    } else {
+        eprintln!(
+            "\n{YELLOW}  No completed sessions exist yet — this may be a cold start.{RESET}"
+        );
+        eprintln!("{DIM}  Run: yyds state init (to initialize), then wait for a session to complete.{RESET}");
+    }
+} else {
+    eprintln!(
+        "\n{GREEN}  All {} completed session{} recorded without failures.{RESET}",
+        run_completed_count,
+        if run_completed_count == 1 { "" } else { "s" }
+    );
+    eprintln!("{DIM}  No failure data to diagnose. Try 'yyds state crashes --limit 10' for crash analysis.{RESET}");
+}
+```
+
+Wait, but `build_why_report` already includes this info in its error message! If `build_why_report` already says "A session is currently in progress" or "X successful sessions recorded", then adding the same info in the fallback would be redundant.
+
+Let me look at `build_why_report` again more carefully. When `find_target_event` returns None for "last-failure", it constructs an error message. If the user calls `yyds state why last-failure` and `build_why_report` returns `Err(...)`, the error message is printed by lines 1188-1195. Then the fallback at 1197 adds additional info.
+
+So actually, the error message from `build_why_report` already contains the differentiation. The fallback at 1197 is supplementary — it adds info about incomplete runs and diagnostic errors.
+
+But wait, the task says the assessment produced "No completed failed sessions exist" which matches line 1162, not the output of `build_why_report`. Let me check: maybe the current code in `build_why_report` doesn't handle the "all healthy" case properly for "last-failure"? Actually line 3297 says:
+
+```rust
+err.push_str(&format!(
+    "{} successful session{} recorded. No failure data to diagnose.",
+    run_completed_count,
+    if run_completed_count == 1 { "" } else { "s" }
+));
+```
+
+This IS differentiated. So if `build_why_report` is called and the CI had completed runs, this message would appear.
+
+OK, I think the assessment hit a case where `read_tail_events` failed. The task is still valid because the message at line 1162 should be improved, AND the fallback should be more helpful.
+
+But actually, re-reading the task again: "The assessment itself hit this confusion: the CI state store had only 288 events from the current in-progress run. 'No completed failed sessions exist' was correct but hidden the fact that NO sessions had completed at all."
+
+So the CI state store HAD events (288 of them), `read_tail_events` succeeded, `build_why_report` was called, `find_target_event` returned None, and the error path constructed a message. But the assessment says it produced "No completed failed sessions exist" — which IS from line 1162.
+
+Hmm, unless the assessment is conflating two different runs. Or maybe the code has been updated since the assessment was run?
+
+Let me just check: is line 3227 the only place that says "No completed failure sessions found" (not "exist")? Yes.
+
+And line 1162 says "No completed failed sessions exist." These are different messages.
+
+So the assessment definitely saw the line 1162 message. This means `read_tail_events` returned `Err` in that CI environment. This could happen if:
+- The events file was at a different path
+- The file was locked
+- There was a JSON parse error
+
+Regardless, the task's ask is clear: improve the diagnostic messages. Let me implement the change.
+
+I'll focus on two areas:
+1. The message at line 1162-1163 (in the `read_tail_events` failure branch) - improve to say something more actionable
+2. The fallback at 1197-1243 - add cold-start vs healthy differentiation
+
+Actually wait, for area 1, we truly have no events to inspect. So we can't differentiate between cold start and healthy. The best we can do is say "no state events available, this may be a cold start."
+
+For area 2 (the fallback), we have events. `build_why_report` already returned a differentiated error. But the fallback messages don't restate the key differentiation. Let me add that.
+
+Actually, I think the cleanest approach is:
+1. In the fallback (lines 1197-1243), add a summary of the situation using event scanning (similar to what `build_why_report` does but simpler)
+2. Keep the incomplete-runs check and diagnostic error check as supplementary
+
+Let me write the edit now.
+
+Here's my plan for the edit:
+
+After line 1226 (end of incomplete runs block), add cold-start vs healthy differentiation. I'll scan the events for RunCompleted count.
+
+Actually, let me re-read the exact area I need to edit one more time.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the code. Let me trace the exact flow:
+
+1. Line 1096: `read_tail_events` succeeds (CI had 288 events) → enters `build_why_report`
+2. `build_why_report` at line 3223: already has sophisticated differentiation (cold start, in-progress, healthy, errors) in its `Err` return
+3. The fallback at lines 1197-1243 adds supplementary diagnostics (incomplete runs, diagnostic errors) but doesn't restate the cold-start vs healthy distinction
+
+The task's actual gap is that the fallback at lines 1197-1243 should clearly differentiate cold-start from healthy when `build_why_report`'s error was already printed. Let me also check the `event_string` and `event_timestamp` helpers:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string' in src/commands_state.rs ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write the test first (as required by the evolve skill), then implement the change.
+
+But first, let me check if there are existing tests for `handle_why` or `build_why_report`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*why' in src/commands_state.rs  ▶ search 'fn test.*build_why' in src/commands_state.rs ✓ (34ms)
+ ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests specifically for `build_why_report` or `handle_why`. Let me also check if there are tests for `find_incomplete_runs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*find_incomplete' in src/commands_state.rs ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test module at the end of the file to understand the test infrastructure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state.rs ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24750..24830 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the test infrastructure. Tests use `tempfile::tempdir()`, `json!()` macro, and `write_jsonl()`. Let me now write a test for the cold-start vs healthy differentiation in `build_why_report`. Let me also look at what the test module looks like at the start:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/commands_state.rs ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now, let me think about the implementation approach. 
+
+The task says:
+- "Edit Surface: src/commands_state.rs — the `handle_why` function, specifically the diagnostic messages around line 1155-1180 and the `find_incomplete_runs` fallback logic around line 1197-1243."
+
+The key insight is:
+1. `build_why_report` already has good differentiation (cold start, in-progress, healthy, error-runs)
+2. The fallback at lines 1197-1243 should add complementary differentiation
+
+But actually, let me reconsider. The task says the assessment saw "No completed failed sessions exist" from line 1162. Looking at the code flow:
+
+- Line 1096: `read_tail_events` fails → enters the `else` block at line 1097
+- Line 1162-1163: "No completed failed sessions exist."
+
+But in a CI state store with 288 events, `read_tail_events` should succeed. Unless:
+1. The events file is at a non-standard path (but `default_events_path()` is used)
+2. There's something else going on
+
+Actually, wait. Let me re-read the assessment more carefully: "Assessment self-test: `yyds state why last-failure` produced 'No completed failed sessions exist' in a fresh CI state store that had only the current (in-progress) run."
+
+Maybe the assessment was paraphrasing the message. The exact message from `build_why_report` at line 3227 is "No completed failure sessions found." and the message at line 1162 is "No completed failed sessions exist." The assessment says "No completed failed sessions exist" which is an exact match for line 1162.
+
+If the CI had 288 events and `read_tail_events` returned an error, there must be some issue. But regardless of the exact path, the task is asking to improve the messages.
+
+Let me focus on making the change that directly addresses the task:
+
+1. In the fallback at lines 1197-1243, after the incomplete runs check, add a summary of whether any completed runs exist, and differentiate cold-start from healthy.
+
+2. In the message at line 1162, improve it to note that this may be a cold start.
+
+Actually wait, I just realized something. Let me re-read lines 1155-1180 more carefully. Lines 1162-1179 are in the `read_tail_events` failure branch. The `id == "last-failure"` block at 1162-1175 gives generic next steps, and the `else` branch at 1176-1179 gives init instructions. These are already somewhat differentiated.
+
+But looking at the assessment's concrete experience: "in a fresh CI state store that had only the current (in-progress) run" — this means there IS an events file with events but `read_tail_events` returned an error. In this case, line 1162 says "No completed failed sessions exist" which is misleading because the user might think all is well, when actually there IS data but it couldn't be read.
+
+OK, I think I need to just make the changes. Let me focus on the fallback at lines 1197-1243 since that's where we have events and can actually differentiate.
+
+Here's my plan:
+1. Add a test for `build_why_report` with cold-start vs healthy scenarios
+2. Modify the fallback at lines 1197-1243 to add cold-start vs healthy differentiation
+
+Actually, I realize the simplest and most impactful change is in the fallback. The `build_why_report` already does a good job. The fallback adds extra info. Let me add cold-start vs healthy detection there.
+
+Let me now write the edit. I'll add the differentiation after the `find_incomplete_runs` block (after line 1226 as it currently stands).
+
+Wait, the task says the edit surface is "around line 1155-1180 and the `find_incomplete_runs` fallback logic around line 1197-1243." So two areas.
+
+For area 1 (lines 1155-1180): This is in the `read_tail_events` failure branch. Here we have NO events, so we can't differentiate cold-start vs healthy. The best we can do is improve the message at line 1162-1163.
+
+For area 2 (lines 1197-1243): Here we HAVE events. We can differentiate cold-start vs healthy.
+
+Let me implement both changes.
+
+Change 1 (line 1162-1163): Improve the "No completed failed sessions exist" message to note that state events couldn't be read.
+
+Change 2 (after line 1226): Add cold-start vs healthy differentiation.
+
+Actually, wait. Looking at the structure more carefully:
+
+Lines 1097-1180: `read_tail_events` failed → directory/file diagnostics + generic message
+Lines 1186-1260-ish: `read_tail_events` succeeded, `build_why_report` called
+
+In the assessment case (CI with 288 events), we should be in the second branch. `build_why_report` would return an `Err` (no failure found), and the error message already differentiates. So the improvement should also be in the fallback at 1197-1243.
+
+But the task says the assessment produced "No completed failed sessions exist" which is from line 1162. This means `read_tail_events` failed. BUT in the CI env with 288 events, this shouldn't happen...
+
+Maybe the task is based on an older version where `build_why_report` didn't yet exist? Or maybe I'm overthinking this. Let me just implement the changes as described in the task.
+
+Let me write the test first, then the implementation.
+
+For the test, I'll test `build_why_report` with:
+1. Events with no completed runs (cold start) → should mention "no sessions have completed"
+2. Events with completed runs but no failures (healthy) → should mention "successful session(s) recorded"
+3. Events with failures → should find them and return Ok
+
+These are already handled by `build_why_report`. Let me verify by reading the relevant code one more time.
+
+Actually, the task doesn't say to change `build_why_report`. It says to change `handle_why`. Let me focus on the fallback logic.
+
+Let me now write the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me implement the changes. The key insight: `build_why_report` already differentiates cold-start vs. healthy in its error message, but the fallback diagnostics at lines 1197-1243 don't restate this clearly. I'll add cold-start vs. healthy differentiation in the fallback.
+
+Let me also check if there's a test I can write first:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14499..14539 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I can write tests using the existing test infrastructure. Let me write a test for `build_why_report` covering cold-start vs healthy scenarios.
+
+Let me now implement the changes:
+
+1. First, write a test
+2. Then modify the fallback in `handle_why`
+
+For the test, I'll create events and call `build_why_report` to verify differentiation.
+
+For the implementation change, I'll add cold-start vs healthy detection in the fallback at lines 1197-1243. I need to:
+- After the incomplete runs check, scan for RunCompleted events
+- If no RunCompleted → cold start message
+- If RunCompleted exist → healthy message (since we already know no failures were found, because `build_why_report` failed)
+
+Let me write the test first. I'll add it near the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the test and implement the change. First, the test:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:24828..24833 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test. I'll add it before the closing `}` of the test module. I need tests that verify `build_why_report` returns different error messages for cold-start vs healthy scenarios.
+
+Let me write:
+
+```rust
+#[test]
+fn why_last_failure_cold_start_vs_healthy() {
+    // Cold start: RunStarted but no RunCompleted and no FailureObserved
+    let cold_events = vec![
+        event("evt-1", "RunStarted", "run-1", json!({})),
+    ];
+    let cold_result = build_why_report(&cold_events, "last-failure");
+    assert!(cold_result.is_err(), "cold start should produce error (no failure found)");
+    let cold_msg = cold_result.unwrap_err();
+    assert!(
+        cold_msg.contains("no sessions have completed"),
+        "cold-start message should mention no completed sessions, got: {cold_msg}"
+    );
+
+    // Healthy: RunCompleted exists but no FailureObserved
+    let healthy_events = vec![
+        event("evt-1", "RunStarted", "run-1", json!({})),
+        event("evt-2", "RunCompleted", "run-1", json!({"outcome": "success"})),
+    ];
+    let healthy_result = build_why_report(&healthy_events, "last-failure");
+    assert!(healthy_result.is_err(), "healthy should produce error (no failure found)");
+    let healthy_msg = healthy_result.unwrap_err();
+    assert!(
+        healthy_msg.contains("successful session") || healthy_msg.contains("No failure data"),
+        "healthy message should mention success, got: {healthy_msg}"
+    );
+
+    // With failure: should succeed
+    let failure_events = vec![
+        event("evt-1", "RunStarted", "run-1", json!({})),
+        event("evt-2", "FailureObserved", "run-1", json!({"reason": "test failure"})),
+    ];
+    let failure_result = build_why_report(&failure_events, "last-failure");
+    assert!(failure_result.is_ok(), "failure events should produce a report");
+
+    // Verify cold and healthy messages are different
+    assert_ne!(cold_msg, healthy_msg, "cold-start and healthy messages must differ");
+}
+```
+
+Wait, but this test is about `build_why_report`, not `find_incomplete_runs`. The task says to modify `handle_why`. But a test on `build_why_report` is still useful to verify the differentiation exists.
+
+Actually, let me think about what the actual change should be. The `build_why_report` already handles this. The `handle_why` fallback doesn't. Let me write a test that tests the fallback behavior too.
+
+Actually, let me focus. The task says:
+- Edit Surface: src/commands_state.rs — the `handle_why` function
+- Verifier: cargo test --bin yyds
+
+Let me write a test for `build_why_report` and then modify the fallback in `handle_why`.
+
+Let me now write the test and the code change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(tail[0]["event_id"], "evt-001");
+            assert_eq!(tail[49]["event_id"], "evt-050");
+  +     }
+  + 
+  +     #[test]
+  +     fn why_last_failure_cold_start_vs_healthy() {
+  +         // Cold start: RunStarted but no RunCompleted and no FailureObserved
+  +         let cold_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  +         let cold_result = build_why_report(&cold_events, "last-failure");
+  +         assert!(
+  +             cold_result.is_err(),
+  +             "cold start should produce error (no failure found)"
+  +         );
+  +         let cold_msg = cold_result.unwrap_err();
+  +         assert!(
+  +             cold_msg.contains("no sessions have completed"),
+  +             "cold-start message should mention no completed sessions, got: {cold_msg}"
+  +         );
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 59 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (4 → 59 lines)
+            assert_eq!(tail[0]["event_id"], "evt-001");
+            assert_eq!(tail[49]["event_id"], "evt-050");
+  +     }
+  + 
+  +     #[test]
+  +     fn why_last_failure_cold_start_vs_healthy() {
+  +         // Cold start: RunStarted but no RunCompleted and no FailureObserved
+  +         let cold_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  +         let cold_result = build_why_report(&cold_events, "last-failure");
+  +         assert!(
+  +             cold_result.is_err(),
+  +             "cold start should produce error (no failure found)"
+  +         );
+  +         let cold_msg = cold_result.unwrap_err();
+  +         assert!(
+  +             cold_msg.contains("no sessions have completed"),
+  +             "cold-start message should mention no completed sessions, got: {cold_msg}"
+  +         );
+  + 
+  +         // Healthy: RunCompleted exists but no FailureObserved
+  ... (39 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test is written. Now let me verify it compiles and passes first:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- why_l… ✓ (17.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, 0 tests ran and 1 filtered out. The test filter doesn't match. Let me check if the test was correctly included in the binary's test. Maybe the test module isn't included in the binary. Let me check how the binary is structured.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod commands_state' in src ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, it's in `lib.rs`. Let me check the binary's main.rs to see how tests are structured:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'commands_state' in src/bin ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test might not be runnable via `cargo test --bin yyds`. Let me try running it via `cargo test --lib`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib why_last_fail… ✓ (32.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failed. Let me see the full output to understand what assertion failed. The error message from `build_why_report` is visible: it says "A session is currently in progress" and "Incomplete run(s): run=run-1" and "No diagnostic error evidence is available."
+
+Wait, this is the cold-start case. The test expects "no sessions have completed" but the message says "A session is currently in progress." Let me look at the code path:
+
+For the cold-start test:
+- Events: one RunStarted event, no RunCompleted, no FailureObserved
+- `find_target_event` returns None
+- Line 3244: `counts.total == 0 || (run_completed_count == 0 && !run_started)` — `counts.total` is 1, `run_completed_count` is 0, `run_started` is false... wait, `run_started` is `counts.run_started_count > 0`. With 1 event, `run_started_count` should be 1. So `run_started` is true.
+- Line 3244: `run_completed_count == 0 && !run_started` → `0 == 0 && !true` → `true && false` → `false`. Doesn't match.
+- Line 3252: `run_completed_count == 0 && run_started` → `0 == 0 && true` → `true && true` → `true`. Matches!
+- Message: "A session is currently in progress."
+
+So my test expected "no sessions have completed" but the actual message is "A session is currently in progress." Both are valid differentiators. Let me fix the test.
+
+Actually, the test is valid — the cold-start case has ONE RunStarted event, no RunCompleted. The message correctly says "A session is currently in progress." My test assertion should match this.
+
+But wait, the task's cold-start criterion is: "When 0 completed runs exist: message says 'no completed sessions exist yet — this may be a cold start'"
+
+And the in-progress criterion is: a session is running but not completed. 
+
+The distinction between "cold start with no runs at all" and "cold start with an in-progress run" is valid. Let me adjust my test to cover both cases.
+
+Actually, let me simplify. For the test:
+- Cold start (no runs at all): 0 events 
+- Cold start (in-progress): RunStarted but no RunCompleted
+- Healthy: RunCompleted exists but no FailureObserved
+
+Let me update the test.
+
+But wait, for 0 events, `build_why_report` would look at `counts.total == 0`. That would match line 3244. Let me verify.
+
+For 0 events:
+- `counts.total`: 0
+- Line 3244: `counts.total == 0 || (run_completed_count == 0 && !run_started)` → `true || ...` → `true`. Matches!
+- Message: "State recording is active but no sessions have completed yet."
+
+So for 0 events and for an in-progress session, the messages are different. Good.
+
+Let me fix the test to match the actual behavior:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see the full error output to understand the test failure:
+warning: failed to update state sqlite projection '.yoyo/state/state.sqlite': record sqlite projection migration v1: database is locked
+warning: failed to update state sqlite projection '.yoyo/state/state.sqlite': record sqlite projection migration v1: database is locked
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib why_last_fail…        #[test]
+        fn why_last_failure_cold_start_vs_healthy() {
+  -         // Cold start: RunStarted but no RunCompleted and no FailureObserved
+  -         let cold_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  -         let cold_result = build_why_report(&cold_events, "last-failure");
+  +         // Cold start: RunStarted but no RunCompleted — session in progress
+  +         let in_progress_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  +         let in_progress_result = build_why_report(&in_progress_events, "last-failure");
+            assert!(
+  -             cold_result.is_err(),
+  -             "cold start should produce error (no failure found)"
+  +             in_progress_result.is_err(),
+  +             "in-progress should produce error (no failure found)"
+            );
+  -         let cold_msg = cold_result.unwrap_err();
+  +         let in_progress_msg = in_progress_result.unwrap_err();
+            assert!(
+  -             cold_msg.contains("no sessions have completed"),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (54 → 54 lines)
+warning: failed to update state sqlite projection '.yoyo/state/state.sqlite': record sqlite projection migration v1: database is locked
+warning: failed to update state sqlite projection '.yoyo/state/state.sqlite': record sqlite projection migration v1: database is locked
+ ✓ (10.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the test shows the message is "A session is currently in progress." for the RunStarted-only case. Let me fix the test to match the actual messages:
+
+1. Cold start with in-progress session: "A session is currently in progress."
+2. Healthy (completed, no failures): "N successful session(s) recorded. No failure data to diagnose."
+
+Let me fix the test. Also, the "cold start" with 0 events case should produce "State recording is active but no sessions have completed yet."
+
+Let me restructure the test to cover all three scenarios.
+────────────────────────────────────────────────────────────────────────────────
+
+The test assertions need to match the actual message text. Let me fix the test:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (54 → 54 lines)
+        #[test]
+        fn why_last_failure_cold_start_vs_healthy() {
+  -         // Cold start: RunStarted but no RunCompleted and no FailureObserved
+  -         let cold_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  -         let cold_result = build_why_report(&cold_events, "last-failure");
+  +         // Cold start: RunStarted but no RunCompleted — session in progress
+  +         let in_progress_events = vec![event("evt-1", "RunStarted", "run-1", json!({}))];
+  +         let in_progress_result = build_why_report(&in_progress_events, "last-failure");
+            assert!(
+  -             cold_result.is_err(),
+  -             "cold start should produce error (no failure found)"
+  +             in_progress_result.is_err(),
+  +             "in-progress should produce error (no failure found)"
+            );
+  -         let cold_msg = cold_result.unwrap_err();
+  +         let in_progress_msg = in_progress_result.unwrap_err();
+            assert!(
+  -             cold_msg.contains("no sessions have completed"),
+  -             "cold-start message should mention no completed sessions, got: {cold_msg}"
+  +             in_progress_msg.contains("currently in progress"),
+  ... (15 more lines)
+ ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test again to verify it passes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib why_last_fail… ✓ (32.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test passes. Now let me implement the actual change to the fallback logic in `handle_why`. The `build_why_report` already differentiates, but the fallback at lines 1197-1243 in `handle_why` should also add clear differentiation.
+
+Let me re-read the exact fallback section to plan the edit:
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Now let me implement the main change — adding cold-start vs. healthy differentiation in the `handle_why` fallback. Let me re-read the exact section:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1197..1252 ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the exact code. I need to add cold-start vs healthy differentiation after the incomplete runs check and before the diagnostic error check.
+
+My plan:
+1. After line 1226 (end of incomplete runs block), add a check for whether any RunCompleted events exist
+2. If no RunCompleted events: cold start message
+3. If RunCompleted events exist: healthy message (all completed sessions passed)
+
+Here's the code I'll add:
+
+```rust
+                // Distinguish cold-start (no completed runs) from healthy
+                // (completed runs exist but no failures found).
+                let run_completed_count = events
+                    .iter()
+                    .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+                    .count();
+                if run_completed_count == 0 {
+                    eprintln!();
+                    eprintln!(
+                        "{YELLOW}  No completed sessions exist yet — this may be a cold start.{RESET}"
+                    );
+                    eprintln!(
+                        "{DIM}  Run: yyds state init (to initialize), then wait for a session to complete.{RESET}"
+                    );
+                    eprintln!(
+                        "{DIM}  Diagnostics become available after 2–3 completed sessions.{RESET}"
+                    );
+                } else {
+                    eprintln!();
+                    eprintln!(
+                        "{GREEN}  All {} completed session{} recorded without failures.{RESET}",
+                        run_completed_count,
+                        if run_completed_count == 1 { "" } else { "s" }
+                    );
+                    eprintln!(
+                        "{DIM}  No failure data to diagnose. Try 'yyds state crashes --limit 10' for crash analysis.{RESET}"
+                    );
+                }
+```
+
+Let me insert this after line 1226 (after the incomplete runs block closes).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the cold-start vs. healthy differentiation in the fallback. I'll insert it after the incomplete runs block (line 1226):
+  +                 }
+  + 
+  +                 // Distinguish cold-start (no completed runs) from healthy
+  +                 // (completed runs exist but no failures found).
+  +                 let run_completed_count = events
+  +                     .iter()
+  +                     .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  +                     .count();
+  +                 if run_completed_count == 0 {
+  +                     eprintln!();
+  +                     eprintln!(
+  +                         "{YELLOW}  No completed sessions exist yet — this may be a cold start.{RESET}"
+  +                     );
+  +                     eprintln!(
+  +                         "{DIM}  Run: yyds state init (to initialize), then wait for a session to complete.{RESET}"
+  +                     );
+  +                     eprintln!(
+  +                         "{DIM}  Diagnostics become available after 2–3 completed sessions.{RESET}"
+  +                     );
+  +                 } else {
+  ... (12 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (3 → 32 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (3 → 32 lines)
+  +                 }
+  + 
+  +                 // Distinguish cold-start (no completed runs) from healthy
+  +                 // (completed runs exist but no failures found).
+  +                 let run_completed_count = events
+  +                     .iter()
+  +                     .filter(|e| event_string(e, "event_type") == Some("RunCompleted"))
+  +                     .count();
+  +                 if run_completed_count == 0 {
+  +                     eprintln!();
+  +                     eprintln!(
+  +                         "{YELLOW}  No completed sessions exist yet — this may be a cold start.{RESET}"
+  +                     );
+  +                     eprintln!(
+  +                         "{DIM}  Run: yyds state init (to initialize), then wait for a session to complete.{RESET}"
+  +                     );
+  +                     eprintln!(
+  +                         "{DIM}  Diagnostics become available after 2–3 completed sessions.{RESET}"
+  +                     );
+  +                 } else {
+  ... (12 more lines)
+ ✓ (301ms)
+
+

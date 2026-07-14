@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: `find_runs_with_failure_observed_no_completion` is defined but never wired into `append_terminal_events` — it's dead code. The new test `test_failure_observed_alone_without_run_started_gets_closed` FAILS (0 RunCompleted rows found when 1 expected), confirming the core gap (FailureObserved without RunStarted → no RunCompleted closure) remains unfixed. The function must be called from within `append_terminal_events` to actually emit the missing terminal events.

@@ -1,0 +1,533 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to read the evolve skill first, then examine the target scripts, understand the lifecycle gap problem, and implement a fix.
+
+Let me plan my approach:
+1. Read `skills/evolve/SKILL.md` for the implementation contract
+2. Read the three target scripts to understand current behavior
+3. Identify the lifecycle gap: runs that emit FailureObserved but never RunCompleted
+4. Implement the fix
+5. Write tests
+6. Verify
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I've read the evolve skill. Now let me read the three target scripts to understand the current state and the lifecycle gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (286ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the three target scripts and any existing tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/log_feedback.py  ▶ read scripts/summarize_state_gnomes.py ✓ (1.6s)
+ ✓ (1.3s)
+ ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the middle section of append_terminal_state_events.py that was truncated, and look at the key parts of summarize_state_gnomes.py for lifecycle tracking. I also need to look at the test files mentioned in the task.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99..299  ▶ read scripts/summarize_state_gnomes.py:99..299  ▶ search 'test_append_terminal_state_events' ✓ (1.2s)
+ ✓ (945ms)
+ ✓ (902ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading append_terminal_state_events.py from line 296 to see the full append_terminal_events function, and also check what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:296..476  ▶ search 'test_append_terminal_state_events.py' (*.py)  ▶ search 'test_log_feedback.py' (*.py)  ▶ search 'test_summarize_state_gnomes.py' (*.py) ✓ (1.3s)
+ ✓ (1.2s)
+ ✓ (1.3s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there are no existing test files. Let me check what test files do exist and look at the summarize_state_gnomes.py lifecycle computation more deeply to understand where `state_run_incomplete_count` is computed.
+
+Let me also look at test files that exist for the scripts:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.7s (4 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def test_' in scripts (*.py)  ▶ read scripts/summarize_state_gnomes.py:299..499 ✓ (299ms)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the current state. Let me analyze the lifecycle gap:
+
+1. **`append_terminal_state_events.py`** - already detects open runs (runs with RunStarted but no RunCompleted), including stale orphans from previous sessions. It emits RunCompleted for them. It also detects missing FailureObserved events for error-completed runs and emits them.
+
+2. **`summarize_state_gnomes.py`** - computes `state_run_incomplete_count` from `run_started_ids - run_completed_ids`. It also distinguishes input-validation exits via `is_input_validation_completion()`. The `run_incomplete_ids` computed at line 361 is simple: started but not completed. BUT there's a gap: it doesn't filter out runs that completed with FailureObserved (but no RunCompleted) — the FailureObserved case is not considered as a completion signal.
+
+Wait, let me re-read the task more carefully:
+
+The task says:
+- "The gap is that terminal event recording must always close the lifecycle, not just count the gap."
+- "Focus on the smallest change that closes the lifecycle: when detecting an open run (FailureObserved without RunCompleted), emit the missing terminal event rather than just reporting the gap."
+
+Looking at the `append_terminal_events` function:
+- Line 311: calls `open_lifecycle()` which scans for model calls and runs that are started but not completed
+- Lines 316-328: emits ModelCallCompleted for open model calls
+- Lines 331-342: emits RunCompleted for open runs
+- Lines 358-398: full-scan orphan detection for historical orphans
+- Lines 400-425: full-scan for missing FailureObserved events
+
+The key insight from the task: there are runs that have **FailureObserved** but no **RunCompleted**. The current code does emit RunCompleted for open runs (lines 331-342), BUT the `open_lifecycle` function only considers `RunStarted` events, not `FailureObserved`. So if a run has FailureObserved but was never "started" (no RunStarted event found at scan time), the code won't close it.
+
+Wait, actually let me re-read `open_lifecycle`. It computes `open_runs = active_runs - run_completed` where `active_runs = run_started | set(model_started) | model_completed`. So it requires either RunStarted, ModelCallStarted, or ModelCallCompleted to be considered an active run. If a run has FailureObserved but none of those, it won't be closed.
+
+But more importantly: the task talks about **FailureObserved without RunCompleted**. The `append_terminal_events` function already handles this for the current session's open runs, but the question is: does the stale orphan scan (`find_stale_orphaned_runs`) handle this correctly?
+
+Looking at `find_stale_orphaned_runs` (lines 172-224):
+- It finds runs with RunStarted but no RunCompleted
+- It filters to only include runs that have ModelCallStarted
+- It returns runs that need RunCompleted
+
+The gap is: what about runs that have FailureObserved but never got RunCompleted? These would be captured by `find_stale_orphaned_runs` IF they have RunStarted. But what if the failure happened so early that no RunStarted was emitted?
+
+Actually, let me look at this from a different angle. The task says the problem is `open_after_FailureObserved=3`. This means runs that emitted FailureObserved but never RunCompleted. Let me check: does `append_terminal_events` find these runs?
+
+In `lifecycle_for_scope`:
+- active_runs = RunStarted runs ∪ ModelCallStarted runs ∪ ModelCallCompleted runs — NOT FailureObserved runs
+- So a run that has FailureObserved but no RunStarted/ModelCallStarted would NOT be in open_runs
+
+But wait, `find_stale_orphaned_runs` also only looks at RunStarted runs. It doesn't consider FailureObserved.
+
+The task mentions: "when detecting an open run (FailureObserved without RunCompleted), emit the missing terminal event rather than just reporting the gap."
+
+So the fix should be: when scanning for open runs, also consider runs that have FailureObserved but no RunCompleted. These are runs that the harness knows failed but never formally closed.
+
+Let me now think about what the minimal change should be:
+
+1. In `append_terminal_state_events.py`: add a scan that finds runs with `FailureObserved` but no `RunCompleted`, and emits `RunCompleted` for them. This is essentially a third full-scan check (in addition to stale orphaned runs and missing FailureObserved).
+
+2. In `summarize_state_gnomes.py`: ensure `state_run_incomplete_count` doesn't count runs that have FailureObserved as "incomplete" — they should be considered closed. Or rather, the root fix in append_terminal_state_events should close them, so summarize_state_gnomes naturally sees them as completed.
+
+Wait, actually the root cause is: `FailureObserved` alone doesn't close a run lifecycle. Only `RunCompleted` does. So we need `append_terminal_state_events` to find runs that have `FailureObserved` but no `RunCompleted` and emit `RunCompleted` for them.
+
+Let me also think about the `summarize_state_gnomes.py` side. Currently `run_incomplete_ids` at line 361 = runs with RunStarted but no RunCompleted. It does NOT consider FailureObserved as a form of completion. So if a run has RunStarted + FailureObserved but no RunCompleted, it shows up as incomplete. The fix in append_terminal_state_events would close these, making the gnome computation correct.
+
+But wait - `summarize_state_gnomes.py` could run BEFORE `append_terminal_state_events`. In that case, the gnome would still show incomplete. However, the task is about ensuring terminal events are recorded. The gnome computation just reflects what's in the events file.
+
+Let me now look at the specific gap more carefully. Let me search for how `FailureObserved` is tracked in `append_terminal_state_events.py`:
+
+Looking at `lifecycle_for_scope` (lines 72-125): it doesn't track FailureObserved at all.
+
+The fix should be: add FailureObserved tracking to the lifecycle scan. Runs that have FailureObserved should be considered "completed" in terms of the lifecycle — they already have their failure recorded.
+
+Actually, wait. Let me reconsider. The current code structure is:
+1. `open_lifecycle` finds runs with RunStarted but no RunCompleted
+2. `find_stale_orphaned_runs` finds historical runs with RunStarted but no RunCompleted (that also have ModelCallStarted)
+3. `find_missing_failure_observed` finds runs with error-status RunCompleted but no FailureObserved
+
+The missing piece is: runs that have FailureObserved but no RunCompleted. These runs have their failure recorded (so they're not "missing failure observed"), but they still need RunCompleted to close the lifecycle.
+
+So I need to add a 4th scan: find runs that have FailureObserved but no RunCompleted, and emit RunCompleted for them.
+
+Let me also check: does `is_input_validation_completion` need changes? Currently it checks for RunCompleted with status=error and error_detail starting with "empty_input" or "invalid_input:". This looks correct.
+
+Now for tests: the task says no existing test files found. I need to create tests.
+
+Let me plan my changes:
+
+### 1. `scripts/append_terminal_state_events.py`
+- Add a function `find_runs_with_failure_observed_but_no_completion(events)` that:
+  - Scans all events for FailureObserved runs and RunCompleted runs
+  - Returns runs that have FailureObserved but no RunCompleted
+- Call this function in `append_terminal_events` and emit RunCompleted for those runs
+
+### 2. `scripts/log_feedback.py`
+- Look at how lifecycle lessons and feedback scoring account for unmatched/open runs
+- Need to parse the log_feedback.py more thoroughly
+
+### 3. `scripts/summarize_state_gnomes.py`
+- Ensure `state_run_incomplete_count` reflects only genuinely incomplete runs
+- Currently: runs with RunStarted but no RunCompleted = incomplete
+- After the append_terminal fix, these should be closed, but we should also check if FailureObserved should be treated as a completion signal
+
+Actually, let me re-read the task more carefully:
+
+> Edit Surface:
+> - scripts/append_terminal_state_events.py — ensures terminal RunCompleted/FailureObserved events are always emitted for interrupted agent invocations
+> - scripts/log_feedback.py — ensures lifecycle lessons and feedback scoring account for unmatched/open runs
+> - scripts/summarize_state_gnomes.py — ensures state_run_incomplete_count reflects only genuinely incomplete runs, not non-validation input-validation exits
+
+So for `summarize_state_gnomes.py`, the change is about input-validation exits. Looking at the current code:
+- Line 361: `run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)` 
+- This counts ALL runs without RunCompleted as incomplete
+- But some of these might be input-validation exits that should not be counted as "incomplete"
+
+Wait, actually input-validation exits are runs that have RunCompleted (with error status) but no RunStarted. They appear in `run_unmatched_completed_ids`, not `run_incomplete_ids`. So the `is_input_validation_completion` filter is only applied to unmatched_completed, not incomplete.
+
+Hmm, but the task says to ensure input-validation exits are classified separately. Let me think about whether a run could have RunStarted but no RunCompleted AND be an input-validation exit... That seems unlikely because input-validation exits would skip RunStarted.
+
+Let me search for how input-validation exits are recorded:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (287ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the log_feedback.py more carefully, particularly the parts about lifecycle lessons and feedback scoring. Let me also search for how FailureObserved is used in the lifecycle tracking.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' (*.py) ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see there's a `scripts/test_append_terminal_state_events.py` file! The earlier search didn't find it because the file was named differently or the search pattern didn't match. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py ✓ (286ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the middle part of the test file that was truncated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:99..299 ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the log_feedback.py for lifecycle-related concepts, and also look at what happens in specific areas related to open/unmatched runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'incomplete_count|open_run|unmatched|lifecycle_gnome' (*.py) ✓ (280ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool may not support regex by default. Let me try without regex.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'incomplete_count' (*.py)  ▶ search 'lifecycle_gnome' (*.py) ✓ (599ms)
+ ✓ (601ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the log_feedback.py more specifically for lifecycle-related sections, particularly around how it handles open/unmatched runs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete' ✓ (277ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture. The task identifies that there are runs with FailureObserved but no RunCompleted. The current `append_terminal_state_events.py` does:
+
+1. `open_lifecycle()` - finds open runs from RunStarted/MCStarted/MCCompleted view vs RunCompleted (incremental scan)
+2. `find_stale_orphaned_runs()` - full scan for runs with RunStarted+MCStarted but no RunCompleted
+3. `find_missing_failure_observed()` - full scan for runs with error RunCompleted but no FailureObserved
+
+What's missing: a scan for runs that have FailureObserved but no RunCompleted. These runs are recorded as failures but their lifecycle is never formally closed. They show up as open_after_FailureObserved.
+
+Let me now plan the implementation:
+
+### 1. `append_terminal_state_events.py`
+Add a function `find_runs_with_failure_observed_no_completion()` that finds runs with FailureObserved but no RunCompleted, and in `append_terminal_events()` emit RunCompleted for these runs.
+
+### 2. `summarize_state_gnomes.py`
+The current `summarize_state_lifecycle` computes `run_incomplete_ids = runs with RunStarted but no RunCompleted`. But there's a subtlety: input-validation exits might show as incomplete if they somehow have RunStarted but not RunCompleted. Looking at the code again:
+- `is_input_validation_completion` checks for RunCompleted events with specific error types
+- These are filtered from `run_unmatched_completed` but NOT from `run_incomplete_ids`
+
+If an input-validation exit has RunStarted but no RunCompleted, it would count as incomplete. But in practice, input-validation exits probably don't emit RunStarted.
+
+The task says: "ensures state_run_incomplete_count reflects only genuinely incomplete runs, not non-validation input-validation exits"
+
+Let me check: could there be runs that have RunStarted, then fail with input-validation, and get FailureObserved but no RunCompleted? Yes, this is exactly the scenario. The fix in append_terminal_state_events would close them (emit RunCompleted). But summarize_state_gnomes also needs to handle this: if a run has FailureObserved, it should be considered "completed" even without explicit RunCompleted.
+
+Actually, let me re-think. The approach should be:
+- In `append_terminal_state_events.py`: when a run has FailureObserved but no RunCompleted, emit RunCompleted. This is the primary fix — it closes the lifecycle.
+- In `summarize_state_gnomes.py`: the `state_run_incomplete_count` is derived from events that have RunStarted but no RunCompleted. If we close them in append_terminal_state_events, they'll naturally show as completed. But we should also handle the edge case where FailureObserved exists without RunCompleted (for robustness, in case append_terminal_state_events didn't run yet).
+
+Wait, the task says the gap is about runs that have FailureObserved but no RunCompleted. The fix should close these runs. Let me focus on the append_terminal_state_events.py change.
+
+### 3. `log_feedback.py`
+Let me look at the relevant sections more carefully.
+
+Let me read the log_feedback.py section that computes lifecycle gnomes and lessons.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete' in scripts (*.py) ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the log_feedback.py sections around line 2073 and around line 269 to understand how lifecycle lessons are generated, and also look at the part that handles unmatched/open runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2050..2150  ▶ read scripts/log_feedback.py:260..310 ✓ (348ms)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I now have a clear picture. Let me summarize what I need to do:
+
+1. **`append_terminal_state_events.py`**: Add a new scan that finds runs with `FailureObserved` but no `RunCompleted`, and emits `RunCompleted` for them. This is the core fix that closes the `open_after_FailureObserved` lifecycle gap.
+
+2. **`summarize_state_gnomes.py`**: In `summarize_state_lifecycle`, also treat `FailureObserved` as a lifecycle-completing event. Runs that have `FailureObserved` should be considered "completed" even without explicit `RunCompleted`. This prevents `run_incomplete_ids` from including runs that crashed but whose failure was recorded.
+
+3. **`log_feedback.py`**: The lifecycle lesson for `state_run_incomplete` at line 2070-2076 should also mention `FailureObserved` as a signal. But more importantly, the feedback scoring at line 305 already accounts for `state_run_incomplete_count` with weight 2.0. The change here is minimal — maybe update the action text.
+
+Wait, let me re-think. The task says:
+- `append_terminal_state_events.py`: ensures terminal RunCompleted/FailureObserved events are always emitted
+- `summarize_state_gnomes.py`: ensures state_run_incomplete_count reflects only genuinely incomplete runs
+- `log_feedback.py`: ensures lifecycle lessons and feedback scoring account for unmatched/open runs
+
+The primary fix is in `append_terminal_state_events.py`. Let me think about what the minimal change is.
+
+Current flow:
+1. `open_lifecycle()` scans from after_line for open runs (RunStarted but no RunCompleted)
+2. `find_stale_orphaned_runs()` full-scan for runs with RunStarted+MCStarted but no RunCompleted
+3. `find_missing_failure_observed()` full-scan for runs with error RunCompleted but no FailureObserved
+
+Missing:
+4. Runs with FailureObserved but no RunCompleted — these need RunCompleted emitted.
+
+The simplest approach: add a `find_runs_with_failure_observed_no_completion()` function and call it.
+
+Now for `summarize_state_gnomes.py`: 
+- Current: `run_incomplete_ids = run_started_ids - run_completed_ids` (line 361)
+- Should also subtract runs that have FailureObserved. But wait, if we close them in append_terminal_state_events first, they'll already have RunCompleted. However, for robustness, we should also handle the case where FailureObserved exists but RunCompleted doesn't.
+
+Actually, looking more carefully at `summarize_state_lifecycle`, the `run_incomplete_ids` at line 361 only subtracts `run_completed_ids`. But FailureObserved is a different event type. The fix should be: if a run has FailureObserved but no RunCompleted, it should still be considered "completed" for lifecycle purposes.
+
+Let me look at the `is_input_validation_completion` function again:
+```python
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+```
+
+This only matches RunCompleted events. It doesn't handle runs with FailureObserved. But for input-validation exits, the last event would be RunCompleted (with error status), not FailureObserved.
+
+OK, let me now plan the precise changes:
+
+### `append_terminal_state_events.py`
+Add a new function `find_runs_with_failure_observed_no_completion(events)`:
+- Collect all run_ids with FailureObserved
+- Collect all run_ids with RunCompleted
+- Return runs with FailureObserved but no RunCompleted
+
+Call this in `append_terminal_events()` and emit RunCompleted for those runs.
+
+### `summarize_state_gnomes.py`
+In `summarize_state_lifecycle`:
+- Track FailureObserved runs in a set `failure_observed_ids`
+- When computing `run_incomplete_ids`, also exclude runs that have FailureObserved
+- This way, even if append_terminal_state_events hasn't run yet, the gnome correctly shows a run as "completed" if FailureObserved was recorded
+
+### `log_feedback.py`
+In the `state_run_incomplete` lesson (around line 2070-2076), update the action to reflect the FailureObserved awareness.
+
+Let me now implement these changes. First, let me check if there are function signatures I need to know about.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.0s (2 ✓)
+
+Now I have a clear understanding of the three scripts and the lifecycle gap. Let me plan and implement the changes.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (295ms)
+  ▶ todo ✓ (299ms)
+  ▶ todo ✓ (300ms)
+  ▶ todo ✓ (301ms)
+  ▶ todo ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now implement the changes. I'll start with the test for append_terminal_state_events.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.8s (5 ✓)
+
+Let me start implementing. First, I'll add the test to `test_append_terminal_state_events.py`:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:585..615 ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test for FailureObserved without RunCompleted. I'll insert it before the `if __name__ == "__main__":` line.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                self.assertEqual(len(fo_rows), 0)
+  + 
+  +     def test_closes_run_with_failure_observed_but_no_run_completed(self):
+  +         """A run with FailureObserved but no RunCompleted gets RunCompleted appended."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "crashed-run")
+  +             write_event(events, "ModelCallStarted", "crashed-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "FailureObserved", "crashed-run", {"reason": "panic", "error": "panicked at src/main.rs:42"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (5 → 79 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (5 → 79 lines)
+                self.assertEqual(len(fo_rows), 0)
+  + 
+  +     def test_closes_run_with_failure_observed_but_no_run_completed(self):
+  +         """A run with FailureObserved but no RunCompleted gets RunCompleted appended."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "crashed-run")
+  +             write_event(events, "ModelCallStarted", "crashed-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "FailureObserved", "crashed-run", {"reason": "panic", "error": "panicked at src/main.rs:42"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  +                 None,
+  ... (58 more lines)
+ ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `find_runs_with_failure_observed_no_completion` function to `append_terminal_state_events.py` and integrate it into the `append_terminal_events` function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `find_runs_with_failure_observed_no_completion` function to `append_terminal_state_events.py`:
+  +     return missing, diagnostics
+  + 
+  + 
+  + def find_runs_with_failure_observed_no_completion(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[set[str], dict[str, Any]]:
+  +     """Find runs that have FailureObserved but no RunCompleted.
+  + 
+  +     These runs recorded a failure but their lifecycle was never formally
+  +     closed.  They contribute to ``open_after_FailureObserved`` and inflate
+  +     ``state_run_incomplete_count`` in gnome summaries.
+  + 
+  +     Returns (runs_missing_run_completed, diagnostics).
+  +     """
+  +     failure_observed_runs: set[str] = set()
+  +     run_completed_runs: set[str] = set()
+  + 
+  +     for event in events:
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (4 → 40 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (4 → 40 lines)
+  +     return missing, diagnostics
+  + 
+  + 
+  + def find_runs_with_failure_observed_no_completion(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[set[str], dict[str, Any]]:
+  +     """Find runs that have FailureObserved but no RunCompleted.
+  + 
+  +     These runs recorded a failure but their lifecycle was never formally
+  +     closed.  They contribute to ``open_after_FailureObserved`` and inflate
+  +     ``state_run_incomplete_count`` in gnome summaries.
+  + 
+  +     Returns (runs_missing_run_completed, diagnostics).
+  +     """
+  +     failure_observed_runs: set[str] = set()
+  +     run_completed_runs: set[str] = set()
+  + 
+  +     for event in events:
+  +         kind = event_type(event)
+  +         data = payload(event)
+  ... (19 more lines)
+ ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to integrate this into the `append_terminal_events` function. I'll add the call after the existing `find_missing_failure_observed` call and before the return statement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now integrate the new scan into `append_terminal_events`:
+  +     # Full-scan for runs with FailureObserved but no RunCompleted.
+  +     # These are runs that recorded a failure (crash, signal, panic) but
+  +     # their lifecycle was never formally closed.  Unlike the orphan scan
+  +     # (which requires RunStarted+ModelCallStarted), this catches any run
+  +     # that has a FailureObserved event regardless of whether RunStarted
+  +     # was emitted.
+  +     # This scan is NOT gated by the ambiguous-reset guard because
+  +     # FailureObserved is a strong signal that this run was real and
+  +     # should be closed; duplicates are avoided by checking existing
+  +     # RunCompleted events per run_id.
+  +     runs_fo_no_completion: set[str] = set()
+  +     runs_fo_no_completion, fo_no_comp_diag = find_runs_with_failure_observed_no_completion(events)
+  +     diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_comp_diag
+  + 
+  +     # Only close runs that weren't already closed by the incremental
+  +     # or full-scan orphan scans above.
+  +     already_closed = set(completed_runs + completed_session_runs)
+  +     new_fo_runs = runs_fo_no_completion - already_closed
+  + 
+  +     for rid in sorted(new_fo_runs):
+  ... (10 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 30 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (1 → 30 lines)
+  +     # Full-scan for runs with FailureObserved but no RunCompleted.
+  +     # These are runs that recorded a failure (crash, signal, panic) but
+  +     # their lifecycle was never formally closed.  Unlike the orphan scan
+  +     # (which requires RunStarted+ModelCallStarted), this catches any run
+  +     # that has a FailureObserved event regardless of whether RunStarted
+  +     # was emitted.
+  +     # This scan is NOT gated by the ambiguous-reset guard because
+  +     # FailureObserved is a strong signal that this run was real and
+  +     # should be closed; duplicates are avoided by checking existing
+  +     # RunCompleted events per run_id.
+  +     runs_fo_no_completion: set[str] = set()
+  +     runs_fo_no_completion, fo_no_comp_diag = find_runs_with_failure_observed_no_completion(events)
+  +     diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_comp_diag
+  + 
+  +     # Only close runs that weren't already closed by the incremental
+  +     # or full-scan orphan scans above.
+  +     already_closed = set(completed_runs + completed_session_runs)
+  +     new_fo_runs = runs_fo_no_completion - already_closed
+  + 
+  +     for rid in sorted(new_fo_runs):
+  ... (10 more lines)
+ ✗ (642ms)
+    │ old_text matches 3 locations in scripts/append_terminal_state_events.py. Include more surrounding context to make the match unique.
+
+

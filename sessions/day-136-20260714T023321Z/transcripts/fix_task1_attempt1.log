@@ -1,0 +1,319 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The evaluator rejected the implementation because `find_runs_with_failure_observed_no_completion` is defined but never wired into `append_terminal_events` — it's dead code.
+2. The test `test_failure_observed_alone_without_run_started_gets_closed` FAILS because the core gap remains unfixed.
+3. I need to wire the function into `append_terminal_events` to actually emit missing terminal events.
+
+Let me start by reading the relevant source files to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full `append_terminal_state_events.py` file since it was truncated. I need to see the `find_runs_with_failure_observed_no_completion` function and understand how `append_terminal_events` works to wire them together.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..510 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file was truncated. Let me read the middle section that was missed — I need to see `find_runs_with_failure_observed_no_completion` and `append_terminal_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:200.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The `find_runs_with_failure_observed_no_completion` function (lines 274-307) is defined but never called from `append_terminal_events`. 
+
+The evaluator says:
+1. `find_runs_with_failure_observed_no_completion` is dead code - it's not wired into `append_terminal_events`
+2. The test `test_failure_observed_alone_without_run_started_gets_closed` FAILS because the gap remains unfixed
+
+Let me look at the test to understand exactly what it expects:
+
+The test at line 629-662:
+- Creates an events file with:
+  - `ModelCallStarted` for "orphan-run"
+  - `FailureObserved` for "orphan-run" 
+  - Then sets after_line after those two events
+  - Then writes a "current-run" that starts and completes properly
+- Calls `append_terminal_events` with `after_line` set to after the first two events and `fallback_after_line=0`
+- Expects that "orphan-run" gets a `RunCompleted` event appended
+
+The issue: `append_terminal_events` calls `open_lifecycle` which scans from `after_line`. The orphan-run's events are BEFORE `after_line`, so `open_lifecycle` won't see them. The `find_stale_orphaned_runs` function scans for runs that have RunStarted but no RunCompleted, BUT orphan-run doesn't have RunStarted - it only has ModelCallStarted and FailureObserved. So `find_stale_orphaned_runs` won't find it either because it requires `RunStarted`.
+
+The `find_runs_with_failure_observed_no_completion` function was designed exactly for this case - it finds runs that have FailureObserved but no RunCompleted. But it's never called from `append_terminal_events`.
+
+I need to:
+1. Wire `find_runs_with_failure_observed_no_completion` into `append_terminal_events` to emit RunCompleted for runs found by it.
+
+Let me look at the test more carefully:
+
+The test sets `fallback_after_line=0`. So `open_lifecycle` will scan from `after_line` first. Since the orphan-run events are before `after_line`, and the events after `after_line` all have matching RunStarted/RunCompleted, `lifecycle_start_count` from scan_start will be 0. Actually wait, let me re-read.
+
+The events file contains:
+- Line 1: ModelCallStarted orphan-run
+- Line 2: FailureObserved orphan-run
+- Line 3+: RunStarted current-run, ModelCallStarted current-run, ModelCallCompleted current-run, RunCompleted current-run
+
+`after_line` = 2 (after the first 2 lines)
+
+So `open_lifecycle(events, 2, 0)`:
+- `after_line` (2) is not > len(events) so scan_start = 2
+- Scanning from index 2: RunStarted(current-run), ModelCallStarted(current-run), ModelCallCompleted(current-run), RunCompleted(current-run)
+- lifecycle_start_count would be > 0 (RunStarted and ModelCallStarted)
+- So the fallback path won't be triggered
+- open_runs would be empty (current-run is completed)
+
+Then `find_stale_orphaned_runs` scans all events. It looks for runs with RunStarted but no RunCompleted. orphan-run doesn't have RunStarted, so it won't be found.
+
+So the fix is: after the stale orphan check and before the return, call `find_runs_with_failure_observed_no_completion` and for each run found, emit a RunCompleted event.
+
+Let me implement this. I need to add a block in `append_terminal_events` that:
+1. Calls `find_runs_with_failure_observed_no_completion(events)` 
+2. For each run_id in the result, writes a RunCompleted event
+
+The placement should be after the stale orphan check (line 434) and before the return statement (line 463). I'll add it after the missing_failures block (line 461).
+
+Let me also consider: the test expects `rc_rows[0]["payload"]["terminal_reason"]` to be `"orphaned_previous_session"`. And the run_id should be "orphan-run".
+
+Here's my plan for the edit:
+
+After line 461 (`_maybe_append_event(events_path, "FailureObserved", ...)`), add a block that:
+1. Calls `find_runs_with_failure_observed_no_completion(events)`
+2. For each run found, checks if it's already in `completed_runs`
+3. Emits a RunCompleted event
+
+Let me write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the issue clearly. `find_runs_with_failure_observed_no_completion` (lines 274-307) is defined but never called from `append_terminal_events`. The test `test_failure_observed_alone_without_run_started_gets_closed` expects that runs with `FailureObserved` but no `RunCompleted` get retroactively closed. The existing `find_stale_orphaned_runs` only finds runs with `RunStarted` but no `RunCompleted` — it misses runs that have `FailureObserved` without `RunStarted`.
+
+I need to wire `find_runs_with_failure_observed_no_completion` into `append_terminal_events`.
+            _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
+  + 
+  +     # Full-scan for runs with FailureObserved but no RunCompleted.
+  +     # These runs recorded a failure but their lifecycle was never formally
+  +     # closed — they contribute to open_after_FailureObserved and inflate
+  +     # state_run_incomplete_count. Emit the missing RunCompleted to close
+  +     # the lifecycle book.
+  +     fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+  +     diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_rc_diag
+  + 
+  +     for rid in sorted(fo_no_rc_runs):
+  +         if rid in already_closed:
+  +             continue
+  +         payload_fo_rc = {
+  +             "status": "error",
+  +             "terminal_reason": "orphaned_previous_session",
+  +             "stage": stage or None,
+  +             "outcome": "post_hoc_closed",
+  +         }
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (3 → 23 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (3 → 23 lines)
+            _maybe_append_event(events_path, "FailureObserved", "harness", rid, session_id, trace_id, payload_fo, dry_run)
+  + 
+  +     # Full-scan for runs with FailureObserved but no RunCompleted.
+  +     # These runs recorded a failure but their lifecycle was never formally
+  +     # closed — they contribute to open_after_FailureObserved and inflate
+  +     # state_run_incomplete_count. Emit the missing RunCompleted to close
+  +     # the lifecycle book.
+  +     fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+  +     diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_rc_diag
+  + 
+  +     for rid in sorted(fo_no_rc_runs):
+  +         if rid in already_closed:
+  +             continue
+  +         payload_fo_rc = {
+  +             "status": "error",
+  +             "terminal_reason": "orphaned_previous_session",
+  +             "stage": stage or None,
+  +             "outcome": "post_hoc_closed",
+  +         }
+  +         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
+  ... (3 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify my edit looks correct and run the test to confirm the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the edit and run the failing test:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:458..  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try unittest directly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test `test_failure_observed_alone_without_run_started_gets_closed` now PASSES. But `test_closes_run_with_failure_observed_but_no_run_completed` now FAILS because it gets 2 RunCompleted rows instead of 1 — the incremental scan already closes it once, and then the new `find_runs_with_failure_observed_no_completion` scan also closes it.
+
+Let me look at that test to understand the scenario:
+────────────────────────────────────────────────────────────────────────────────
+
+Good — `test_failure_observed_alone_without_run_started_gets_closed` now passes! But `test_closes_run_with_failure_observed_but_no_run_completed` gets 2 RunCompleted entries instead of 1. Let me look at that test:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:584.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly:
+
+In `test_closes_run_with_failure_observed_but_no_run_completed`:
+- "crashed-run" has RunStarted, ModelCallStarted, FailureObserved — all BEFORE after_line
+- The incremental scan (`open_lifecycle`) scans from after_line and sees only the current-run events (all completed), so open_runs is empty.
+- `find_stale_orphaned_runs` scans ALL events — it sees RunStarted for "crashed-run" but no RunCompleted, and it has ModelCallStarted, so it finds it as orphaned.
+- This creates one RunCompleted.
+- Now my new code `find_runs_with_failure_observed_no_completion` also scans ALL events — it sees FailureObserved for "crashed-run" but also now finds the RunCompleted that was just appended by `find_stale_orphaned_runs`... wait, no. The `_maybe_append_event` appends to the file. But `events` was loaded at line 346 `events = load_jsonl(events_path)` BEFORE any appends. So the events list used by `find_runs_with_failure_observed_no_completion` is the original events (without the RunCompleted that `find_stale_orphaned_runs` just appended).
+
+So the flow is:
+1. `events = load_jsonl(events_path)` — loads 7 lines (3 for crashed-run, 4 for current-run)
+2. `open_lifecycle(events, after_line=3)` — scans from index 3, sees current-run events, all complete. Returns empty open_runs.
+3. For each open_model: none
+4. For each open_run: none
+5. `find_stale_orphaned_runs(events)` — finds "crashed-run" has RunStarted + ModelCallStarted but no RunCompleted → orphaned. Appends RunCompleted. `completed_runs` now contains "crashed-run".
+6. `find_missing_failure_observed(events)` — looks at original events, "crashed-run" has no RunCompleted (in the original events!) so it's not in error_completed. Nothing to do.
+7. NOW my new code: `find_runs_with_failure_observed_no_completion(events)` — scans original events, sees FailureObserved for "crashed-run" but no RunCompleted → finds "crashed-run". Then checks `if rid in already_closed` — `already_closed` was computed at line 407 as `set(completed_runs + completed_session_runs)`. At that point, `completed_runs` already contains "crashed-run" (from step 5). So `already_closed` should contain "crashed-run" and it should be skipped!
+
+Wait, let me re-read the code more carefully. `already_closed` is computed at line 407:
+```python
+already_closed = set(completed_runs + completed_session_runs)
+```
+
+But then lines 419 and 429 do:
+```python
+completed_runs.append(rid)
+completed_session_runs.append(rid)
+```
+
+So `already_closed` was computed BEFORE those appends. And then later at line 472:
+```python
+if rid in already_closed:
+    continue
+```
+
+So `already_closed` does NOT include "crashed-run" because it was computed before the orphan run was appended to `completed_runs`. That's the bug in my code. I should either:
+1. Recompute `already_closed` before my new check
+2. Or just use `set(completed_runs + completed_session_runs)` inline
+
+Let me fix this by recomputing the already_closed set before my block.
+
+Actually, the cleanest fix is to move my block to use `set(completed_runs + completed_session_runs)` directly instead of the stale `already_closed`.
+────────────────────────────────────────────────────────────────────────────────
+
+I see the issue. `already_closed` is computed at line 407 *before* the orphan runs are appended to `completed_runs` at line 419, so by the time my new code checks `rid in already_closed`, the orphan run that was just closed isn't in the set. I need to use a fresh `already_closed` computation.
+        # the lifecycle book.
+        fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+        diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_rc_diag
+  + 
+  +     # Recompute already_closed to include runs closed by the stale-orphan
+  +     # scan above (which appended to completed_runs after the original
+  +     # already_closed was computed).
+  +     already_closed_fo = set(completed_runs + completed_session_runs)
+    
+        for rid in sorted(fo_no_rc_runs):
+  -         if rid in already_closed:
+  +         if rid in already_closed_fo:
+                continue
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (11 → 16 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (11 → 16 lines)
+        # the lifecycle book.
+        fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+        diagnostics["failure_observed_no_completion_diagnostics"] = fo_no_rc_diag
+  + 
+  +     # Recompute already_closed to include runs closed by the stale-orphan
+  +     # scan above (which appended to completed_runs after the original
+  +     # already_closed was computed).
+  +     already_closed_fo = set(completed_runs + completed_session_runs)
+    
+        for rid in sorted(fo_no_rc_runs):
+  -         if rid in already_closed:
+  +         if rid in already_closed_fo:
+                continue
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 16 tests pass. Now let me verify the final state of the edit and run the other test files to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+All 16 tests pass. Now let me also check the other test files referenced in the task to make sure nothing is broken:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (37ms)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those test files don't exist (they're listed in the verification command as possible but not guaranteed). The task says: "If no existing tests, add focused unit test assertions for..." — but those test files simply don't exist yet. That's expected; they aren't part of the current fix.
+
+Let me verify the final state of the edit looks correct, then run cargo fmt check as the task requires.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+Those test files don't exist yet — expected, as the task noted they might not. Now let me run the format check:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes (no output means no issues). Let me verify the final state of the code once more.
+────────────────────────────────────────────────────────────────────────────────
+
+Format check passes. Let me do a final review of the changed file to confirm correctness:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:460.. ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything looks good. Let me summarize the change:
+
+**What was wrong:** `find_runs_with_failure_observed_no_completion` was defined but never called from `append_terminal_events`. The evaluator identified it as dead code, and the test `test_failure_observed_alone_without_run_started_gets_closed` confirmed the gap — a run with `FailureObserved` but no `RunStarted`/`RunCompleted` wasn't getting its lifecycle closed.
+
+**What I did:**
+1. Wired `find_runs_with_failure_observed_no_completion` into `append_terminal_events` by adding a scan block after the existing `find_stale_orphaned_runs` and `find_missing_failure_observed` blocks.
+2. For each run found with `FailureObserved` but no `RunCompleted`, emits a retroactive `RunCompleted` with `terminal_reason: "orphaned_previous_session"`.
+3. Uses a fresh `already_closed_fo` computation (instead of the stale `already_closed` from line 407) to avoid double-closing runs that the stale-orphan scan already handled.
+4. Records diagnostics under `failure_observed_no_completion_diagnostics`.
+
+**Verification:** All 16 tests pass (`python3 -m unittest scripts.test_append_terminal_state_events`), `cargo fmt -- --check` passes.
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary:** The fix is a single-file change to `scripts/append_terminal_state_events.py`:
+
+**Problem:** `find_runs_with_failure_observed_no_completion` (lines 274-307) was defined but never called from `append_terminal_events`. Runs with a `FailureObserved` event but no `RunCompleted` — including runs that lacked even a `RunStarted` — were left with an open lifecycle, inflating `open_after_FailureObserved` and `state_run_incomplete_count`.
+
+**Fix:** Added a new scan block in `append_terminal_events` (after the existing stale-orphan and missing-FailureObserved scans) that:
+1. Calls `find_runs_with_failure_observed_no_completion(events)` to find runs with `FailureObserved` but no `RunCompleted`
+2. For each such run not already closed, emits a retroactive `RunCompleted` with `terminal_reason: "orphaned_previous_session"` and `outcome: "post_hoc_closed"`
+3. Uses a fresh `already_closed_fo` set (recomputed from `completed_runs + completed_session_runs` after the stale-orphan scan has run) to avoid double-closing
+4. Records diagnostics under `failure_observed_no_completion_diagnostics`
+
+**Verification:**
+• `python3 -m unittest scripts.test_append_terminal_state_events` — all 16 tests pass, including the previously-failing `test_failure_observed_alone_without_run_started_gets_closed`
+• `cargo fmt -- --check` — clean
+
+

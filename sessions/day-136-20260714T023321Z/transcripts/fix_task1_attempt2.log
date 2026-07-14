@@ -1,0 +1,442 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and evaluator feedback:
+
+1. The task requires changes to three scripts:
+   - `scripts/append_terminal_state_events.py` — ensure terminal RunCompleted/FailureObserved events are always emitted for interrupted agent invocations
+   - `scripts/log_feedback.py` — ensure lifecycle lessons and feedback scoring account for unmatched/open runs
+   - `scripts/summarize_state_gnomes.py` — ensure state_run_incomplete_count reflects only genuinely incomplete runs
+
+2. The evaluator says the diff is empty — no changes were made.
+
+3. The Fallback path says if the gaps are already fixed, write task_01_obsolete.md.
+
+Let me first read the three target scripts to understand their current state, then check if there are actual lifecycle gaps that need fixing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/log_feedback.py  ▶ read scripts/summarize_state_gnomes.py ✓ (30ms)
+ ✓ (23ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the key parts of each script more closely to understand the gaps.
+
+1. `append_terminal_state_events.py` - I need to see the core `append_terminal_events` function and how it handles open runs
+2. `log_feedback.py` - I need to see the lifecycle-related functions
+3. `summarize_state_gnomes.py` - I need to see the `summarize` function and how it computes `state_run_incomplete_count`
+
+Let me read the key sections more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99..299  ▶ search 'state_run_incomplete_count' in scripts/summarize_state_gnomes.py  ▶ search 'input.validation|input_validation|no API key|pre.agent' in scripts/summarize_state_gnomes.py ✓ (13ms)
+ ✓ (26ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the key sections to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:274..424  ▶ read scripts/summarize_state_gnomes.py:220..340 ✓ (19ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the `summarize_state_lifecycle` function to understand how it computes the lifecycle stats.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:339..489  ▶ read scripts/append_terminal_state_events.py:423..523 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full picture of each script:
+
+### 1. `append_terminal_state_events.py`
+This script already has:
+- `find_runs_with_failure_observed_no_completion()` - finds runs with FailureObserved but no RunCompleted
+- In `append_terminal_events()`, lines 463-486, it handles this by emitting RunCompleted for those runs
+- Also handles stale orphaned runs (RunStarted without RunCompleted) and missing FailureObserved events
+
+It looks like `append_terminal_state_events.py` already does what the task asks for. Let me check what's actually missing...
+
+### 2. `summarize_state_gnomes.py`
+Looking at the `summarize_state_lifecycle` function (lines 306-469):
+- It computes `state_run_incomplete_count` from `run_incomplete_ids` which are runs with `RunStarted` but no `RunCompleted`
+- It already has `is_input_validation_completion()` (line 472-480) and uses it for `model_incomplete_ids` and `model_unmatched_completed_ids`
+- BUT it does NOT use `is_input_validation_completion()` to filter `run_incomplete_ids` — the incomplete count includes input-validation exits!
+
+This is a real gap. Looking at line 361:
+```python
+run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+```
+
+Input-validation exits (pre-agent, e.g., "no API key") may have RunStarted but no RunCompleted (they crash out). These should NOT count as "incomplete" if they're input-validation related.
+
+Wait, but the `is_input_validation_completion` function checks for `RunCompleted` events with `empty_input` or `invalid_input:` error_detail. If a run has no RunCompleted at all, it can't be classified as input-validation using this function. But... if a run never started an agent (just crashed with "no API key"), it might have a RunStarted but no RunCompleted. The question is: how do we detect this case?
+
+Perhaps the approach should be: if a run has `RunStarted` but no `ModelCallStarted` (i.e., never got to making an API call), AND it has no `RunCompleted`, it should be classified as input-validation rather than incomplete.
+
+Actually, let me re-read the task:
+> "Input-validation exits (pre-agent, e.g. 'no API key') are classified separately from genuine incomplete runs"
+
+So the task wants `state_run_incomplete_count` to only count genuinely incomplete runs (runs that had model calls but never completed), NOT input-validation exits.
+
+Looking at `summarize_state_lifecycle`, the model_incomplete_ids already filters out input-validation completions (line 390-393), but the `run_incomplete_ids` at line 361 does NOT. This is a gap.
+
+### 3. `log_feedback.py`
+Let me search for lifecycle-related code in log_feedback.py. It's 3027 lines - let me look for relevant sections.
+
+Let me check the specific areas the task mentions. Let me look at `log_feedback.py` more carefully to find where it deals with lifecycle operations.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'lifecycle|open_run|incomplete|unmatched' in scripts/log_feedback.py  ▶ search 'is_input_validation' in scripts/summarize_state_gnomes.py ✓ (16ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - `log_feedback.py` doesn't contain any references to "lifecycle", "open_run", "incomplete", or "unmatched". This means the task's claim that log_feedback.py "ensures lifecycle lessons and feedback scoring account for unmatched/open runs" might need entirely new functionality, not just a fix.
+
+But wait - let me re-read the task. It says:
+> "scripts/log_feedback.py — ensures lifecycle lessons and feedback scoring account for unmatched/open runs"
+
+Let me search for related patterns in log_feedback.py - maybe it scores runs or sessions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def.*score|def.*lesson|def.*feedback' in scripts/log_feedback.py  ▶ search 'coding_log_score|coding_log_confidence' in scripts/log_feedback.py ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, the search for `def.*score` returned no matches - but that's regex-based search and I should be using literal search. Let me try with literal search.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'coding_log_score' in scripts/log_feedback.py  ▶ search 'def coding' in scripts/log_feedback.py ✓ (13ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the main entry point and the key functions in log_feedback.py. Given the file is 3027 lines and the search results are sparse, it seems like the file may not have been properly searched. Let me look at it in more detail around the key areas.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def main' in scripts/log_feedback.py  ▶ search 'def compute' in scripts/log_feedback.py ✓ (13ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the main function to understand what log_feedback.py does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2288..2368 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `build_assessment` in log_feedback.py to understand where lifecycle lessons and feedback scoring happen.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def build_assessment' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the build_assessment function to understand the feedback scoring flow.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1802..1922 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the existing tests to understand what's being tested currently:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/test_append_terminal_state_events.py scripts/test_log_feedback.py… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So only `scripts/test_append_terminal_state_events.py` exists. The other two don't exist yet. Let me check the existing tests in `log_feedback.py` and `summarize_state_gnomes.py` (they seem to have self-tests via `run_self_tests`/`run_tests`).
+
+Now let me do a gap analysis:
+
+### Gap 1: `append_terminal_state_events.py`
+Looking at the code, it already handles:
+- Open models/runs (via `open_lifecycle` → `append_terminal_events`)
+- Stale orphaned runs (via `find_stale_orphaned_runs`)
+- Missing FailureObserved events (via `find_missing_failure_observed`)
+- Runs with FailureObserved but no RunCompleted (via `find_runs_with_failure_observed_no_completion`)
+
+So `append_terminal_state_events.py` actually already seems to handle the FailureObserved-no-RunCompleted case (lines 463-486). The function `find_runs_with_failure_observed_no_completion` and the corresponding emission code is already there.
+
+Let me verify by looking at the test file to see what's tested:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py (100 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if tests for `find_runs_with_failure_observed_no_completion` already exist in the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failure_observed_no_completion|FailureObserved.*RunCompleted…' in scripts/test_append_terminal_state_events.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also search for "FailureObserved" in the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in scripts/test_append_terminal_state_events.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 634 to see if the `find_runs_with_failure_observed_no_completion` case is already tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:615..695 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the test at line 629 `test_failure_observed_alone_without_run_started_gets_closed` tests a run with FailureObserved but no RunCompleted (also with a ModelCallStarted for the run). But wait, the test name says "without_run_started" — actually the orphan-run has `ModelCallStarted` and `FailureObserved` but no `RunStarted` and no `RunCompleted`. The code at `find_stale_orphaned_runs` will find it because it has ModelCallStarted.
+
+But wait — `find_runs_with_failure_observed_no_completion` at line 274 looks for runs with FailureObserved but no RunCompleted. It doesn't care about ModelCallStarted. But `find_stale_orphaned_runs` only finds runs with RunStarted + ModelCallStarted but no RunCompleted. The test at line 629 actually tests a case where the run has ModelCallStarted + FailureObserved but NEITHER RunStarted NOR RunCompleted. Let me check which function catches it...
+
+Actually, looking more carefully: the `find_runs_with_failure_observed_no_completion` function finds runs with FailureObserved but no RunCompleted. The orphaned run has FailureObserved but no RunCompleted, so it will be found by this function. The code at lines 463-486 of append_terminal_state_events.py handles this.
+
+But the test also has `after_line` set after the orphan run's events, so the incremental scan won't see it. Let me trace through the code flow:
+
+1. `open_lifecycle(events, after_line, 0)` - scans from `after_line` which is after the orphan-run events. It finds only the current-run (which is already completed), so `open_runs` = empty.
+
+2. `find_stale_orphaned_runs(events)` - scans ALL events. Looks for RunStarted + ModelCallStarted but no RunCompleted. The orphan-run has ModelCallStarted but no RunStarted, so it WON'T be found by this function.
+
+3. `find_runs_with_failure_observed_no_completion(events)` - scans ALL events. Finds runs with FailureObserved but no RunCompleted. The orphan-run has FailureObserved but no RunCompleted, so it WILL be found.
+
+So the test verifies that the FailureObserved-no-RunCompleted case is handled.
+
+Now let me think about what's actually missing:
+
+1. **`append_terminal_state_events.py`**: Already handles the FailureObserved-no-RunCompleted case. But the task says "open_after_FailureObserved=3" — meaning there are still open runs in production. Perhaps the fix needs to be in `summarize_state_gnomes.py` rather than in `append_terminal_state_events.py`.
+
+Actually wait, let me re-read: "The gap is that terminal event recording must always close the lifecycle, not just count the gap." So perhaps the issue is that in some edge cases, the FailureObserved-no-RunCompleted case is NOT being caught. Let me check if there's a case where a run has FailureObserved but no RunStarted AND no ModelCallStarted...
+
+Actually, looking at `find_runs_with_failure_observed_no_completion`, it only looks at FailureObserved and RunCompleted, not RunStarted. So it would catch any run with FailureObserved but no RunCompleted. But the emission code at line 476-486 only emits RunCompleted for those runs. If the run has no RunStarted either, the RunCompleted is still valid to close the lifecycle.
+
+But the real question is: are there cases in production where this isn't working? Let me think about what's actually causing `open_after_FailureObserved=3`:
+
+Looking at `summarize_state_gnomes.py`, the `state_run_incomplete_count` is computed from `run_incomplete_ids` (runs with RunStarted but no RunCompleted). The issue might be that the `summarize_state_lifecycle` function counts runs as incomplete even when they're input-validation failures — runs that started but never made any model calls.
+
+Let me trace the code flow for `summarize_state_gnomes.py`:
+
+1. `run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)` — line 361
+2. This counts ALL runs with RunStarted but no RunCompleted as "incomplete"
+3. However, `model_incomplete_ids` at line 387-393 already filters out input-validation completions
+
+But `run_incomplete_ids` does NOT filter out runs that:
+- Had RunStarted
+- Never had ModelCallStarted (i.e., crashed before any API call, like "no API key")
+- Never had RunCompleted
+
+This is a genuine gap: input-validation exits are counted as "incomplete runs" when they shouldn't be.
+
+Now for `log_feedback.py`, looking at the search results, there are NO references to lifecycle/open_run/incomplete. The task says:
+> "scripts/log_feedback.py — ensures lifecycle lessons and feedback scoring account for unmatched/open runs"
+
+This means log_feedback.py needs NEW functionality to account for lifecycle state when computing scores — it currently doesn't consider lifecycle gaps at all.
+
+Let me plan the changes:
+
+### 1. `summarize_state_gnomes.py` (Gap: `run_incomplete_ids` includes input-validation runs)
+- Filter `run_incomplete_ids` to exclude runs that never made a model call (no ModelCallStarted). These are input-validation exits, not genuinely incomplete agent runs.
+- BUT... that would also filter out runs that had ModelCallStarted but no RunCompleted — those are still genuinely incomplete.
+
+Actually wait, let me reconsider. The task says:
+> "Input-validation exits (pre-agent, e.g. 'no API key') are classified separately from genuine incomplete runs"
+
+The key insight is: runs that had RunStarted but NO ModelCallStarted are NOT genuinely incomplete agent runs — they never started. They should be classified differently.
+
+Let me look at what data is available. In `summarize_state_lifecycle`:
+- `run_started_ids` — all runs with RunStarted
+- `model_call_started_runs` — runs that had at least one ModelCallStarted
+- `run_completed_ids` — runs with RunCompleted
+
+So the fix is: `run_incomplete_ids` should only include runs that had ModelCallStarted but no RunCompleted. Runs with RunStarted but no ModelCallStarted are input-validation exits, not genuine incomplete runs.
+
+But wait, this might change behavior for runs that had RunStarted but no ModelCallStarted because the agent was killed before the first turn. Those could be "timeout" crashes, not input-validation. Hmm.
+
+Actually, let me re-read the task more carefully:
+> "Input-validation exits (pre-agent, e.g. 'no API key') are classified separately from genuinely incomplete runs"
+
+The task specifically wants input-validation exits to NOT be counted as incomplete. The way to detect this is: if a run has RunStarted but no ModelCallStarted, it's likely an input-validation exit. And if `is_input_validation_completion()` returns True for the last event, it's definitely input-validation.
+
+Looking at `is_input_validation_completion` at line 472:
+```python
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+```
+
+This only catches cases where RunCompleted exists and has specific error_detail values. But what about runs with RunStarted but no RunCompleted at all? That's the incomplete case.
+
+I think the right fix is:
+1. In `summarize_state_gnomes.py`: For `run_incomplete_ids`, also check if the run ever had a ModelCallStarted. If not, it should be classified differently (as input-validation / pre-agent exit).
+2. In `log_feedback.py`: Account for lifecycle open runs in feedback scoring.
+
+Let me think about what specifically to add to log_feedback.py. Looking at `build_assessment`, it computes `session_success` and `workflow_success_rate`. The task says it should "account for unmatched/open runs" — perhaps the session success should be penalized when lifecycle runs are open, or the coding_log_score should reflect lifecycle health.
+
+Actually, let me look at how `coding_log_score` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'coding_log_score' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `coding_log_score` appears in GNOME_KEYS (line 204) and in a test check (line 2737). Let me find where it's actually computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:190..230 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `coding_log_score` is actually computed/assigned.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'coding_log_score' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool seems to not be finding all occurrences. Let me use grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "coding_log_score" scripts/log_feedback.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `score_assessment` function to understand how the score is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1920..2020 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `score_assessment` to see how coding_log_score is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def score_assessment' in scripts/log_feedback.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1770..1805 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding of the code. Let me summarize the gaps:
+
+### 1. `append_terminal_state_events.py` 
+The code already handles the FailureObserved-no-RunCompleted case (via `find_runs_with_failure_observed_no_completion` + emission code at lines 463-486) AND stale orphaned runs (via `find_stale_orphaned_runs` + emission code at lines 402-429) AND missing FailureObserved (via `find_missing_failure_observed`).
+
+BUT there's still a gap: what if a run has FailureObserved but is NOT found by either `find_stale_orphaned_runs` (because it has no RunStarted) AND not found by `find_runs_with_failure_observed_no_completion`? I need to check if that's even possible...
+
+Actually, `find_runs_with_failure_observed_no_completion` just checks FailureObserved vs RunCompleted — it doesn't require RunStarted at all. So any run with FailureObserved but no RunCompleted should be found. 
+
+Wait, but there's a subtlety. `find_runs_with_failure_observed_no_completion` at line 307 returns `missing` which is `failure_observed_runs - run_completed_runs`. This correctly returns runs with FailureObserved but no RunCompleted. And the emission code at lines 476-486 emits RunCompleted for these runs.
+
+So `append_terminal_state_events.py` seems complete. Let me re-read the task more carefully:
+
+> "Edit Surface: scripts/append_terminal_state_events.py — ensures terminal RunCompleted/FailureObserved events are always emitted for interrupted agent invocations"
+
+Looking at the code again... There's actually already a comprehensive implementation. The task might be suggesting that the code already exists (from a previous session's work) but the evaluator says no changes were made — meaning this task is being re-assigned and I need to check if the code is actually complete or if there are still gaps.
+
+Given the evaluator feedback "Empty diff — no changes were made to any of the three target scripts", it seems like a previous implementation attempt produced no changes. Let me focus on the actual remaining gaps:
+
+### Gap 2: `summarize_state_gnomes.py`
+`run_incomplete_ids` at line 361 counts ALL runs with RunStarted but no RunCompleted as incomplete. But it should NOT count input-validation exits (runs that never made a model call). The `model_incomplete_ids` already filters by `is_input_validation_completion`, but `run_incomplete_ids` does not.
+
+Fix: In `summarize_state_lifecycle`, filter `run_incomplete_ids` to exclude runs that had no ModelCallStarted (like how `model_incomplete_ids` already filters for input-validation).
+
+Actually wait — I need to think about this more carefully. The `is_input_validation_completion` function only checks RunCompleted events. If there's no RunCompleted, we can't use it. Instead, we should check if the run had any ModelCallStarted events. If a run has RunStarted but no ModelCallStarted, it's an input-validation exit.
+
+But should we filter them out of `run_incomplete_ids` entirely, or classify them separately? The task says "classified separately from genuine incomplete runs." 
+
+Looking at the lifecycle gnomes, there's already `state_run_unstarted_input_validation_error_count` for runs with RunCompleted that were input-validation. For runs without RunCompleted but also without ModelCallStarted, we could track them separately.
+
+The simplest approach: filter runs that never had ModelCallStarted out of `run_incomplete_ids` (these are input-validation exits), and add a separate counter.
+
+### Gap 3: `log_feedback.py`
+The task says: "ensures lifecycle lessons and feedback scoring account for unmatched/open runs"
+
+Looking at `score_assessment`, it doesn't consider lifecycle health at all. The fix should:
+1. In `build_assessment`, compute lifecycle state from the session directory (maybe load gnome summary if available)
+2. In `score_assessment`, penalize sessions with open lifecycle runs
+3. In `top_lessons`, generate lessons when lifecycle gaps are detected
+
+But wait — how does `log_feedback.py` access lifecycle data? Let me check what state data it has access to...
+
+Looking at `build_assessment`:
+- `state_metrics` from `state_trace_metrics(session_dir)` — this provides state capture coverage
+- It doesn't seem to have access to the lifecycle gnomes directly
+
+Actually, let me check `state_pipeline_metrics`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def state_trace_metrics|def state_pipeline_metrics|def state…' in scripts/log_feedback.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search tool isn't finding those functions with regex. Let me try literal search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "^def state_trace_metrics\|^def state_pipeline_metrics\|^def state_cache… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if these functions already access lifecycle information.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:672..722  ▶ read scripts/log_feedback.py:688..738 ✓ (17ms)
+ ✓ (12ms)
+  2 tools completed in 24ms (2 ✓)
+
+
