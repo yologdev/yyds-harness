@@ -1,0 +1,524 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source file to understand the current state before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs (70 lines) ✓ (955ms)
+ ✓ (660ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to read the relevant sections: the thread-locals, `init_global`, `mark_run_completed_with_error`, and `RunCompletionGuard::drop`. Let me also read the test at line 6939-6999.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn init_global' in src/state.rs  ▶ search 'fn mark_run_completed_with_error' in src/state.rs  ▶ search 'RunCompletionGuard' in src/state.rs  ▶ search 'test_panic_hook_records' in src/state.rs ✓ (1.3s)
+ ✓ (1.3s)
+ ✓ (1.4s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test near line 6939-6999.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:405..525  ▶ read src/state.rs:6930..7010 ✓ (993ms)
+ ✓ (647ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me continue reading the test and look for the existing `test_close_orphaned_run` test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7009..7069  ▶ search 'test_close_orphaned_run' in src/state.rs ✓ (647ms)
+ ✓ (706ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me plan the implementation:
+
+1. Add `RUN_STARTED: Cell<bool>` thread-local at line ~20 alongside `RUN_HAD_ERROR`
+2. Set `RUN_STARTED` to `true` in `init_global` after successful RunStarted append (around line 421)
+3. In `mark_run_completed_with_error` (line 493), check `RUN_STARTED` and emit RunStarted retroactively if false
+4. In `RunCompletionGuard::drop` (line 467), check `RUN_STARTED` and emit RunStarted retroactively if false
+5. Add a unit test
+
+Now let me think about the details:
+
+For `mark_run_completed_with_error`: I need to emit a retroactive RunStarted event before the RunCompleted. But `mark_run_completed_with_error` currently calls `record()` which goes through `GLOBAL_RECORDER`. But if `RUN_STARTED` is false, it means no `init_global` was called, so `GLOBAL_RECORDER` might not be initialized. Looking at the panic hook (line 31-63), it calls `record()` which is fail-soft if the recorder is not initialized. And `mark_run_completed_with_error` also calls `record()` directly.
+
+Wait, looking more carefully at the panic hook:
+- It calls `record(EventType::FailureObserved, ...)` - this goes through GLOBAL_RECORDER and fails silently if not initialized
+- Then calls `mark_run_completed_with_error("rust_panic")` - which calls `record(EventType::RunCompleted, ...)` - also fail-soft
+
+So if `init_global` was never called, these records go nowhere. The `RUN_STARTED` thread-local check would add a retroactive RunStarted that also goes nowhere. But that's still correct - the intent is to always pair RunStarted with RunCompleted, even if neither gets recorded.
+
+Actually wait - there's a subtlety. The `record()` function (line 440) checks if the global recorder is Some, and if not, returns silently. So if init_global was never called, `record()` is a no-op. The `mark_run_completed_with_error` function doesn't know this - it just calls `record()`.
+
+The task says: "emit a retroactive RunStarted with a payload indicating it was emitted late before emitting RunCompleted". But if the recorder isn't initialized, emitting RunStarted would just be another no-op record call.
+
+But the implementation notes say to use a temp-dir StateRecorder for the test, calling `mark_run_completed_with_error` directly without calling `init_global`. That's interesting - how would `mark_run_completed_with_error` record if the global recorder isn't set?
+
+Wait, let me re-read: "Use a fresh temp-dir StateRecorder, call `mark_run_completed_with_error` directly without calling `init_global` first, then verify the event stream."
+
+But `mark_run_completed_with_error` calls `record()` which uses `GLOBAL_RECORDER`. If `init_global` wasn't called, `GLOBAL_RECORDER` is None. So the test as described wouldn't work with the current architecture.
+
+Hmm, let me think about this differently. The test could:
+1. Call `init_global` first (which sets RUN_STARTED to true)
+2. Then somehow reset RUN_STARTED to false
+3. Then call `mark_run_completed_with_error`
+4. Verify that RunStarted appears before RunCompleted
+
+Wait, actually we can't easily set thread-locals from outside. Let me re-read the task.
+
+"Add a unit test that verifies: when `mark_run_completed_with_error` is called without RunStarted having been emitted, the events file contains RunStarted followed by RunCompleted. Use a fresh temp-dir StateRecorder, call `mark_run_completed_with_error` directly without calling `init_global` first, then verify the event stream."
+
+I think the test needs to set up the global recorder manually (e.g., via `reset_global_recorder_for_test` and `init_global` with a different setup, or by directly setting the global recorder). Actually, looking at the test `run_completion_guard_reports_error_on_panic`, it calls `init_global` first, then simulates the panic path. So a test for the "no RunStarted" case would need to avoid calling `init_global` but still have a recorder.
+
+But `record()` returns silently if `GLOBAL_RECORDER` is not initialized. So the test as described won't work unless we modify the approach.
+
+Wait, let me reconsider. Maybe the approach should be:
+- In `mark_run_completed_with_error` and `RunCompletionGuard::drop`, if `RUN_STARTED` is false, emit a RunStarted record BEFORE RunCompleted. If `record()` is a no-op because the recorder isn't initialized, both RunStarted and RunCompleted will be no-ops, which is fine - it means nothing was recorded anyway.
+
+For the test, we need a way to have a recorder initialized but without RUN_STARTED being true. We could:
+1. Call `init_global` which sets RUN_STARTED=true and GLOBAL_RECORDER
+2. Reset RUN_STARTED to false via some mechanism
+3. Call `mark_run_completed_with_error`
+4. Verify events
+
+But thread-locals can't be easily modified from test code. We'd need to add a test-only function or modify the approach.
+
+Actually, looking more carefully, the simpler approach: We can create a test that directly manipulates the GLOBAL_RECORDER (via `reset_global_recorder_for_test` and manually setting it up). Let me look at what `reset_global_recorder_for_test` does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn reset_global_recorder_for_test' in src/state.rs  ▶ search 'fn state_global_test_lock' in src/state.rs ✓ (627ms)
+ ✓ (667ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3403..3433 ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. `reset_global_recorder_for_test` also resets `RUN_HAD_ERROR`, `LAST_RUN_ERROR`, and `LAST_DIAGNOSTIC_ERROR`. I'll need to add `RUN_STARTED` to that reset.
+
+Now for the test approach: I can initialize the global recorder via `init_global`, which will set RUN_STARTED=true, then I need a way to have RUN_STARTED=false but the recorder still initialized for testing the "no RunStarted" case.
+
+One approach: add a test-only helper that resets RUN_STARTED, or simply modify the code so the test can call init_global and then reset RUN_STARTED through the test helper.
+
+Actually, the simplest approach: modify `reset_global_recorder_for_test` to also reset `RUN_STARTED`, and then add a test that:
+1. Initializes state with `init_global` (which sets RUN_STARTED=true and sets up the recorder)
+2. Resets RUN_STARTED to false 
+3. Calls `mark_run_completed_with_error`
+4. Verifies that events contain RunStarted (retroactive) followed by RunCompleted
+
+But thread-locals... We'd need to add a public test-only function or just directly set it.
+
+Wait, let me look more carefully. Thread-local Cell values can be set from within the same thread. Since tests run on the same thread, we could add a test-only setter.
+
+Actually, a simpler approach: add `RUN_STARTED` reset to `reset_global_recorder_for_test`, then in the test, after calling `init_global`, manually reset `RUN_STARTED` to false. But `RUN_STARTED` is a thread-local, and we need to access it from test code.
+
+Let me think about this differently. The simplest path:
+
+1. Add `RUN_STARTED: Cell<bool>` to thread_locals
+2. Set it in `init_global` after successful RunStarted append  
+3. Reset it in `reset_global_recorder_for_test`
+4. In `mark_run_completed_with_error`: check RUN_STARTED, emit RunStarted if false
+5. In `RunCompletionGuard::drop`: same check before calling mark_run_completed
+
+For the test, I can create a helper that directly sets up the GLOBAL_RECORDER without going through `init_global` (so RUN_STARTED stays false):
+
+Actually wait - the `record()` function requires GLOBAL_RECORDER to be set. And `init_global` both sets GLOBAL_RECORDER AND sets RUN_STARTED. So to test the "no RunStarted" path, I need GLOBAL_RECORDER set but RUN_STARTED false.
+
+The cleanest approach: add a `#[cfg(test)]` function that resets RUN_STARTED, or just let the test directly call `RUN_STARTED.with(|c| c.set(false))` after `init_global`. Since tests can access thread_locals in the same module...
+
+Actually, the test module is inside `src/state.rs` (the `#[cfg(test)] mod tests` block), so it can access private items including thread-locals. Let me verify.
+
+Yes, looking at the test code, it directly accesses `RUN_HAD_ERROR` and `LAST_RUN_ERROR` - e.g., `RUN_HAD_ERROR.with(|c| c.set(true));` at line 6979. So tests can access thread-locals directly.
+
+So the test approach:
+1. Call `init_global` (sets GLOBAL_RECORDER + RUN_STARTED=true)
+2. `RUN_STARTED.with(|c| c.set(false))` to simulate the "no RunStarted" case
+3. Call `mark_run_completed_with_error("test error")`
+4. Read events and verify: RunStarted appears before RunCompleted
+
+Wait, but we also need RunStarted to appear with retroactive info. Actually, let me also think about what happens in the normal `mark_run_completed` path too - the `RunCompletionGuard::drop` calls `mark_run_completed(status)` which calls `record`. Same pattern.
+
+OK let me now also think about the `RunCompletionGuard::drop` case. It calls `mark_run_completed(status)` not `mark_run_completed_with_error`. Should we add the RUN_STARTED check there too? Yes, the task says both should check.
+
+For `mark_run_completed` (line 478), it just calls `record(EventType::RunCompleted, ...)`. We need to add the RUN_STARTED check before the record call.
+
+Let me now implement:
+
+1. Add `RUN_STARTED` thread-local
+2. Update `reset_global_recorder_for_test` to reset it
+3. Set RUN_STARTED in `init_global`
+4. Add check in `mark_run_completed` (which is called by `RunCompletionGuard::drop`)
+5. Add check in `mark_run_completed_with_error`
+6. Add a test
+
+For the retroactive RunStarted payload, I'll use: `{"retroactive": true, "reason": "run_completed_without_start"}`
+
+Let me now make the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me add `RUN_STARTED` thread-local, update the init/reset paths, and add the lifecycle guard in both `mark_run_completed_with_error` and `mark_run_completed`. Then add a test.
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
+  +     /// Tracks whether RunStarted has been emitted for the current process.
+  +     /// Set to true inside `init_global` after a successful RunStarted append.
+  +     /// Guarded in `mark_run_completed` / `mark_run_completed_with_error` and
+  +     /// `RunCompletionGuard::drop` so we never emit RunCompleted without a
+  +     /// matching RunStarted, preventing `run_error_without_start` lifecycle gaps.
+  +     static RUN_STARTED: Cell<bool> = const { Cell::new(false) };
+    }
+  ✓ Auto-approved: edit: src/state.rs (5 → 11 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 11 lines)
+        static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
+        static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
+  +     /// Tracks whether RunStarted has been emitted for the current process.
+  +     /// Set to true inside `init_global` after a successful RunStarted append.
+  +     /// Guarded in `mark_run_completed` / `mark_run_completed_with_error` and
+  +     /// `RunCompletionGuard::drop` so we never emit RunCompleted without a
+  +     /// matching RunStarted, preventing `run_error_without_start` lifecycle gaps.
+  +     static RUN_STARTED: Cell<bool> = const { Cell::new(false) };
+    }
+ ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now set RUN_STARTED in `init_global` after the RunStarted append succeeds.
+────────────────────────────────────────────────────────────────────────────────
+
+Now set `RUN_STARTED` to `true` in `init_global` after the RunStarted event is appended:
+        let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+        match init_result {
+            Ok(_) => {
+  +             RUN_STARTED.with(|c| c.set(true));
+                *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+                Ok(())
+            }
+  ✓ Auto-approved: edit: src/state.rs (7 → 8 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (7 → 8 lines)
+        let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
+        match init_result {
+            Ok(_) => {
+  +             RUN_STARTED.with(|c| c.set(true));
+                *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
+                Ok(())
+            }
+ ✓ (360ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `mark_run_completed` to emit retroactive RunStarted when RUN_STARTED is false:
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the RUN_STARTED guard in `mark_run_completed`:
+    pub fn mark_run_completed(status: &str) {
+  +     // If RunStarted was never emitted (e.g., early config error, subprocess
+  +     // crash before init_global), emit a retroactive RunStarted so the
+  +     // lifecycle remains complete and dashboard tools don't accumulate
+  +     // run_error_without_start gaps.
+  +     ensure_run_started();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+            run_completed_payload(status, None, None),
+        );
+  + }
+  + 
+  + /// Emit a retroactive RunStarted when one hasn't been recorded yet for the
+  + /// current process, so that a subsequent RunCompleted has a matching start.
+  + fn ensure_run_started() {
+  +     if !RUN_STARTED.with(|c| c.get()) {
+  +         record(
+  +             EventType::RunStarted,
+  +             Actor::Harness,
+  ... (5 more lines)
+  ✓ Auto-approved: edit: src/state.rs (7 → 25 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (7 → 25 lines)
+    pub fn mark_run_completed(status: &str) {
+  +     // If RunStarted was never emitted (e.g., early config error, subprocess
+  +     // crash before init_global), emit a retroactive RunStarted so the
+  +     // lifecycle remains complete and dashboard tools don't accumulate
+  +     // run_error_without_start gaps.
+  +     ensure_run_started();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+            run_completed_payload(status, None, None),
+        );
+  + }
+  + 
+  + /// Emit a retroactive RunStarted when one hasn't been recorded yet for the
+  + /// current process, so that a subsequent RunCompleted has a matching start.
+  + fn ensure_run_started() {
+  +     if !RUN_STARTED.with(|c| c.get()) {
+  +         record(
+  +             EventType::RunStarted,
+  +             Actor::Harness,
+  ... (5 more lines)
+ ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `mark_run_completed_with_error` to also call `ensure_run_started()` before recording RunCompleted:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `mark_run_completed_with_error` to also call `ensure_run_started()`:
+        RUN_HAD_ERROR.with(|c| c.set(true));
+        store_run_error(msg);
+        let error_detail = take_diagnostic_error();
+  +     ensure_run_started();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+  ✓ Auto-approved: edit: src/state.rs (10 → 11 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (10 → 11 lines)
+        RUN_HAD_ERROR.with(|c| c.set(true));
+        store_run_error(msg);
+        let error_detail = take_diagnostic_error();
+  +     ensure_run_started();
+        record(
+            EventType::RunCompleted,
+            Actor::Harness,
+ ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `reset_global_recorder_for_test` to reset `RUN_STARTED`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `reset_global_recorder_for_test` to reset `RUN_STARTED`:
+        fn reset_global_recorder_for_test() {
+            *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            RUN_HAD_ERROR.with(|c| c.set(false));
+  +         RUN_STARTED.with(|c| c.set(false));
+            LAST_RUN_ERROR.with(|c| {
+                let _ = c.take();
+            });
+  ✓ Auto-approved: edit: src/state.rs (10 → 11 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (10 → 11 lines)
+        fn reset_global_recorder_for_test() {
+            *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            RUN_HAD_ERROR.with(|c| c.set(false));
+  +         RUN_STARTED.with(|c| c.set(false));
+            LAST_RUN_ERROR.with(|c| {
+                let _ = c.take();
+            });
+ ✓ (342ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add a unit test. Let me find a good insertion point - after the `run_completion_guard_reports_completed_on_normal_exit` test (around line 7051).
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the unit test. Let me find the insertion point:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7048..7058 ✓ (304ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a bit more to find the exact end of the `run_completion_guard_reports_completed_on_normal_exit` test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7057..7072 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7071..7086 ✓ (304ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert the new test between line 7078 (end of `run_completion_guard_reports_completed_on_normal_exit`) and line 7080 (start of `init_global_closes_orphaned_run_from_previous_session`).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[test]
+  +     fn mark_run_completed_with_error_emits_retroactive_run_started_when_not_started() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         // Initialize the recorder (which sets RUN_STARTED=true) then
+  +         // manually reset RUN_STARTED to simulate a crash-path where
+  +         // init_global was never called (e.g., early config error).
+  +         init_global(config, json!({})).unwrap();
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 50 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 50 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn mark_run_completed_with_error_emits_retroactive_run_started_when_not_started() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         // Initialize the recorder (which sets RUN_STARTED=true) then
+  +         // manually reset RUN_STARTED to simulate a crash-path where
+  +         // init_global was never called (e.g., early config error).
+  +         init_global(config, json!({})).unwrap();
+  +         RUN_STARTED.with(|c| c.set(false));
+  + 
+  ... (29 more lines)
+ ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run `cargo fmt -- --check` and then `cargo test --lib state -- --test-threads=1`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now run verification:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Just formatting issues. Let me run `cargo fmt` to auto-fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (1m 20s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 316 tests pass. Now let me also run `cargo build` to make sure it compiles cleanly.
+────────────────────────────────────────────────────────────────────────────────
+
+All 316 tests pass. Let me also run `cargo build`:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (15.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run `cargo fmt -- --check` to confirm formatting is clean, then inspect the diff, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && e… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything passes. Let me inspect the diff now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (487ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only changed file is `src/state.rs`, which matches the task's Edit Surface. Let me now verify the diff looks correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs 2>&1 ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is clean and only touches `src/state.rs`, which matches the task's Edit Surface. Let me commit:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (596ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task complete. Let me now check if there are any docs to update. The task mentions updating CLAUDE.md and README.md. Let me check.
+
+Actually, looking at the evolve skill rules:
+"If you changed behavior, added features, or modified architecture, update the docs"
+
+The change is internal state machinery - it adds a thread-local and ensures lifecycle completeness. This doesn't change any user-facing behavior, commands, or features. It's a harness-level fix that prevents `run_error_without_start` lifecycle gaps. I don't think CLAUDE.md, README.md, or docs/src/ need updates for this change since:
+- No new commands or features were added
+- No user-facing behavior changed
+- No architecture change that affects how the system is understood
+
+The existing documentation in the code comment on `RUN_STARTED` is sufficient.
+
+Let me do a final summary.
+────────────────────────────────────────────────────────────────────────────────
+
+Committed. Let me verify once more:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -1 && echo "… ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** `src/state.rs` — 5 targeted edits closing the `run_error_without_start` lifecycle gap.
+
+**Specific changes:**
+
+1. **Added `RUN_STARTED: Cell<bool>` thread-local** (line ~21) — tracks whether `RunStarted` has been emitted for the current process, mirroring the existing `RUN_HAD_ERROR` pattern.
+
+2. **Set `RUN_STARTED = true` in `init_global`** (line ~428) — right after the `RunStarted` event is successfully appended, so the normal path correctly marks the lifecycle as started.
+
+3. **Added `ensure_run_started()` helper** (line ~498) — when `RUN_STARTED` is false, emits a retroactive `RunStarted` with `{"retroactive": true, "reason": "run_completed_without_start"}` before proceeding. Also sets `RUN_STARTED = true` to prevent double-emission.
+
+4. **Guarded `mark_run_completed`** (line ~486) — calls `ensure_run_started()` before recording `RunCompleted`, so the `RunCompletionGuard::drop` path (used for normal exits) always has a matching start.
+
+5. **Guarded `mark_run_completed_with_error`** (line ~522) — calls `ensure_run_started()` before recording `RunCompleted`, so the panic hook path (used for crashes before `init_global`) always has a matching start.
+
+6. **Reset `RUN_STARTED` in `reset_global_recorder_for_test`** (line ~3438) — keeps tests clean.
+
+7. **Added unit test** `mark_run_completed_with_error_emits_retroactive_run_started_when_not_started` — initializes the recorder, resets `RUN_STARTED` to simulate the crash-early path, calls `mark_run_completed_with_error`, and verifies:
+   • A retroactive `RunStarted` appears between the init `RunStarted` and the `RunCompleted`
+   • The retroactive event has `"retroactive":true`
+   • `RunCompleted` has `"status":"error"`
+   • `RUN_STARTED` is `true` after the late emit
+
+**Verification:**
+• ✅ `cargo fmt -- --check` — clean
+• ✅ `cargo build` — clean
+• ✅ `cargo test --lib state -- --test-threads=1` — all 316 tests pass (including the new one)
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

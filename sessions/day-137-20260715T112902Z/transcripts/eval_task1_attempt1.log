@@ -1,0 +1,87 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task. The task is to close model lifecycle gaps by preventing `RunCompleted` from being emitted without a preceding `RunStarted`. Let me check the diff against the task requirements.
+
+Key requirements:
+1. ✅ Add a thread-local `RUN_STARTED: Cell<bool>` — present at line 26
+2. ✅ Set `RUN_STARTED` to `true` in `init_global` — present at line 428
+3. ✅ In `mark_run_completed_with_error`, check `RUN_STARTED` and emit retroactive RunStarted — present via `ensure_run_started()` call at line 522
+4. ✅ In `RunCompletionGuard::drop`, same check — present at lines 483-488 via `ensure_run_started()` call
+5. ✅ Add unit test — present at lines 7080-7122
+6. ✅ Existing tests pass (build and tests are PASS)
+
+Let me also check the `ensure_run_started` function — it correctly records RunStarted and sets RUN_STARTED to true.
+
+Let me check `mark_run_completed` — yes, it calls `ensure_run_started()` at line 490.
+
+Let me check `RunCompletionGuard::drop` — need to verify the diff shows the ensure_run_started call there.
+
+Looking at the diff:
+```rust
+@@ -476,6 +483,11 @@ impl Drop for RunCompletionGuard {
+ }
+ 
+ pub fn mark_run_completed(status: &str) {
++    // If RunStarted was never emitted...
++    ensure_run_started();
+     record(
+         EventType::RunCompleted,
+```
+
+Wait, the diff shows the `ensure_run_started()` call is in `mark_run_completed`, not directly in `RunCompletionGuard::drop`. But `RunCompletionGuard::drop` calls `mark_run_completed(status)`, so it gets the guard transitively. Let me verify this.
+
+Looking at the original code around line 467-476 for `RunCompletionGuard::drop`:
+
+The diff context shows:
+```
+@@ -476,6 +483,11 @@ impl Drop for RunCompletionGuard {
+ }
+```
+
+This is after `RunCompletionGuard::drop`, so the `ensure_run_started()` call is in `mark_run_completed` which is what `RunCompletionGuard::drop` calls. That's correct — the guard is transitively protected.
+
+Now let me look at one potential issue: the test. The test calls `init_global` first (which sets RUN_STARTED=true), then manually resets it to false, then calls `mark_run_completed_with_error`. Let me verify the test is correct.
+
+But wait — `mark_run_completed_with_error` calls `ensure_run_started()` which records a RunStarted. But the test also has the RunStarted from `init_global`. So the events file should have:
+1. RunStarted from init_global
+2. Retroactive RunStarted from ensure_run_started (called by mark_run_completed_with_error)
+3. RunCompleted from mark_run_completed_with_error
+
+The test verifies this pattern. It checks that there are two RunStarted entries (first + retroactive) and the retroactive comes before RunCompleted.
+
+This looks correct.
+
+Build: PASS
+Tests: PASS
+
+The implementation matches the task requirements. Let me write the verdict.
+
+One thing to check: the `mark_run_completed_with_error` function — does it call `ensure_run_started` before recording RunCompleted? Yes, line 522:
+```rust
+pub fn mark_run_completed_with_error(msg: &str) {
+    ...
+    ensure_run_started();
+    record(EventType::RunCompleted, ...);
+}
+```
+
+And `mark_run_completed` also calls `ensure_run_started()`:
+```rust
+pub fn mark_run_completed(status: &str) {
+    ensure_run_started();
+    record(EventType::RunCompleted, ...);
+}
+```
+
+And `RunCompletionGuard::drop` calls `mark_run_completed(status)`, so it's covered.
+
+Everything checks out. The implementation is correct and complete.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff matches all task requirements, build and tests pass. Let me write the verdict.
+  + Verdict: PASS
+  + Reason: All implementation requirements met — RUN_STARTED thread-local added, set in init_global, checked in both mark_run_completed and mark_run_completed_with_error via ensure_run_started(), RunCompletionGuard::drop is transitively protected, comprehensive unit test verifies retroactive RunStarted emission, and both build + tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)
+  ▶ write session_plan/eval_task_1.md (2 lines) ✓ (6ms)
