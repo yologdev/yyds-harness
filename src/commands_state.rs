@@ -11578,7 +11578,19 @@ fn record_graph_impact_node(impact: &mut GraphImpact, id: &str, kind: &str) {
 fn graph_evidence_relation(relation: &str) -> bool {
     matches!(
         relation,
-        "addresses"
+        // Provenance: where did this come from? What run/trace is it connected to?
+        "observed_in"
+            | "derived_from"
+            | "traced_by"
+            // Impact: what did this touch?
+            | "references_file"
+            | "modified_file"
+            | "modified"
+            // Model call associations
+            | "records_model_call"
+            | "uses_model"
+            // Evaluation / promotion evidence types
+            | "addresses"
             | "evaluated_failure"
             | "explains"
             | "supports"
@@ -18639,16 +18651,20 @@ mod tests {
 
         let report = build_graph_evidence_report(&sqlite_path, "evt-failure", 4, 20).unwrap();
 
+        let report = build_graph_evidence_report(&sqlite_path, "evt-failure", 4, 20).unwrap();
+
         assert!(report.contains("State graph evidence: evt-failure depth=4 limit=20"));
         assert!(report.contains("by relation:"));
         assert!(report.contains("addresses=1"));
         assert!(report.contains("evaluated_failure=1"));
+        // Runtime relations now included via the expanded evidence filter
+        assert!(report.contains("observed_in="));
+        assert!(report.contains("traced_by="));
         assert!(report.contains("t=10 d1 PatchProposed patch-1 -[addresses]-> evt-failure"));
         assert!(
             report.contains("t=20 d1 PatchEvaluated evt-eval -[evaluated_failure]-> evt-failure")
         );
         assert!(!report.contains("uses_patch"));
-        assert!(!report.contains("DecisionRecorded"));
 
         let payload = build_graph_evidence_payload(&sqlite_path, "evt-failure", 4, 20).unwrap();
         assert_eq!(
@@ -18658,14 +18674,31 @@ mod tests {
         assert_eq!(payload["id"].as_str().unwrap(), "evt-failure");
         assert_eq!(payload["depth"].as_u64().unwrap(), 4);
         assert_eq!(payload["limit"].as_u64().unwrap(), 20);
-        assert_eq!(payload["evidence_count"].as_u64().unwrap(), 2);
+        // evidence_count now includes runtime relations (observed_in, traced_by)
+        assert!(
+            payload["evidence_count"].as_u64().unwrap() >= 3,
+            "expected >= 3 evidence entries with expanded filter"
+        );
         assert_eq!(payload["relations"]["addresses"].as_u64().unwrap(), 1);
         assert_eq!(
             payload["relations"]["evaluated_failure"].as_u64().unwrap(),
             1
         );
+        // Runtime relation types are present due to run_id/trace_id on events
+        assert!(
+            payload["relations"]["observed_in"].as_u64().unwrap_or(0) >= 1,
+            "expected observed_in relations in payload"
+        );
+        assert!(
+            payload["relations"]["traced_by"].as_u64().unwrap_or(0) >= 1,
+            "expected traced_by relations in payload"
+        );
         let evidence = payload["evidence"].as_array().unwrap();
-        assert_eq!(evidence.len(), 2);
+        assert!(
+            evidence.len() >= 3,
+            "expected >= 3 evidence entries with expanded filter, got {}",
+            evidence.len()
+        );
         assert_eq!(evidence[0]["timestamp_ms"].as_i64().unwrap(), 10);
         assert_eq!(evidence[0]["depth"].as_u64().unwrap(), 1);
         assert_eq!(evidence[0]["event_id"].as_str().unwrap(), "evt-patch");
@@ -18773,7 +18806,8 @@ mod tests {
         let report = build_graph_evidence_report(&sqlite_path, "evt-json-pass", 2, 20).unwrap();
 
         assert!(report.contains("State graph evidence: evt-json-pass depth=2 limit=20"));
-        assert!(report.contains("by relation: supports_json_output_check=1"));
+        // Expanded evidence filter includes runtime relations (observed_in, traced_by)
+        assert!(report.contains("supports_json_output_check=1"));
         assert!(report.contains(
             "t=10 d1 DecisionRecorded summary -[supports_json_output_check]-> evt-json-pass (event) via evt-json-pass"
         ));
@@ -18822,7 +18856,8 @@ mod tests {
         let report = build_graph_evidence_report(&sqlite_path, "evt-strict-pass", 2, 20).unwrap();
 
         assert!(report.contains("State graph evidence: evt-strict-pass depth=2 limit=20"));
-        assert!(report.contains("by relation: supports_strict_tool_call_check=3"));
+        // Expanded evidence filter includes runtime relations (observed_in, traced_by)
+        assert!(report.contains("supports_strict_tool_call_check=3"));
         assert!(report.contains(
             "t=10 d1 DecisionRecorded inspect_file -[supports_strict_tool_call_check]-> evt-strict-pass (event) via evt-strict-pass"
         ));
@@ -18871,7 +18906,8 @@ mod tests {
             build_graph_evidence_report(&sqlite_path, "evt-transport-pass", 2, 20).unwrap();
 
         assert!(report.contains("State graph evidence: evt-transport-pass depth=2 limit=20"));
-        assert!(report.contains("by relation: supports_transport_policy_check=1"));
+        // Expanded evidence filter includes runtime relations (observed_in, traced_by)
+        assert!(report.contains("supports_transport_policy_check=1"));
         assert!(report.contains(
             "t=10 d1 DecisionRecorded transport_class:rate_limited -[supports_transport_policy_check]-> evt-transport-pass (event) via evt-transport-pass"
         ));
@@ -18920,7 +18956,8 @@ mod tests {
         let report = build_graph_evidence_report(&sqlite_path, "evt-thinking-pass", 2, 20).unwrap();
 
         assert!(report.contains("State graph evidence: evt-thinking-pass depth=2 limit=20"));
-        assert!(report.contains("by relation: supports_thinking_protocol_check=1"));
+        // Expanded evidence filter includes runtime relations (observed_in, traced_by)
+        assert!(report.contains("supports_thinking_protocol_check=1"));
         assert!(report.contains(
             "t=10 d1 DecisionRecorded thinking_probe:builtin-probe -[supports_thinking_protocol_check]-> evt-thinking-pass (event) via evt-thinking-pass"
         ));
@@ -18968,7 +19005,8 @@ mod tests {
         let report = build_graph_evidence_report(&sqlite_path, "evt-stream-pass", 2, 20).unwrap();
 
         assert!(report.contains("State graph evidence: evt-stream-pass depth=2 limit=20"));
-        assert!(report.contains("by relation: supports_streaming_protocol_check=1"));
+        // Expanded evidence filter includes runtime relations (observed_in, traced_by)
+        assert!(report.contains("supports_streaming_protocol_check=1"));
         assert!(report.contains(
             "t=10 d1 DecisionRecorded streaming_probe:stream-check -[supports_streaming_protocol_check]-> evt-stream-pass (event) via evt-stream-pass"
         ));
@@ -19367,6 +19405,119 @@ mod tests {
         assert_eq!(
             infer_graph_node_kind("release_fixture_agent_mutation_scope"),
             "evidence"
+        );
+    }
+
+    #[test]
+    fn graph_evidence_report_surfaces_runtime_event_relations() {
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let sqlite_path = dir.path().join("state.sqlite");
+        let events = [
+            crate::state::StateEvent {
+                event_id: "evt-read".into(),
+                event_type: crate::state::EventType::FileRead,
+                schema_version: 1,
+                timestamp_ms: 1,
+                actor: crate::state::Actor::Harness,
+                run_id: Some("run-1".into()),
+                session_id: None,
+                trace_id: "trace-1".into(),
+                parent_event_ids: vec!["evt-parent".into()],
+                payload: json!({
+                    "files": ["src/main.rs"],
+                }),
+            },
+            crate::state::StateEvent {
+                event_id: "evt-edit".into(),
+                event_type: crate::state::EventType::FileEdited,
+                schema_version: 1,
+                timestamp_ms: 2,
+                actor: crate::state::Actor::Harness,
+                run_id: Some("run-1".into()),
+                session_id: None,
+                trace_id: "trace-1".into(),
+                parent_event_ids: Vec::new(),
+                payload: json!({
+                    "files": ["src/commands_state.rs"],
+                }),
+            },
+            crate::state::StateEvent {
+                event_id: "evt-model".into(),
+                event_type: crate::state::EventType::ModelCallCompleted,
+                schema_version: 1,
+                timestamp_ms: 3,
+                actor: crate::state::Actor::Harness,
+                run_id: Some("run-1".into()),
+                session_id: None,
+                trace_id: "trace-1".into(),
+                parent_event_ids: Vec::new(),
+                payload: json!({
+                    "model_call_id": "call-1",
+                    "model": "deepseek-v4-pro",
+                }),
+            },
+        ];
+        let raw = events
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        std::fs::write(&events_path, format!("{raw}\n")).unwrap();
+        crate::state::rebuild_sqlite_projection(&events_path, &sqlite_path).unwrap();
+
+        // FileRead event should surface observed_in, derived_from, references_file, traced_by
+        let report = build_graph_evidence_report(&sqlite_path, "evt-read", 2, 20).unwrap();
+        assert!(
+            report.contains("State graph evidence: evt-read depth=2 limit=20"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("references_file"),
+            "missing references_file in: {report}"
+        );
+        assert!(
+            report.contains("observed_in"),
+            "missing observed_in in: {report}"
+        );
+        assert!(
+            report.contains("derived_from"),
+            "missing derived_from in: {report}"
+        );
+        assert!(
+            report.contains("traced_by"),
+            "missing traced_by in: {report}"
+        );
+
+        // FileEdited event should surface modified_file and modified
+        let report = build_graph_evidence_report(&sqlite_path, "evt-edit", 2, 20).unwrap();
+        assert!(
+            report.contains("State graph evidence: evt-edit depth=2 limit=20"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("modified_file"),
+            "missing modified_file in: {report}"
+        );
+        assert!(
+            report.contains("modified="),
+            "missing modified in: {report}"
+        );
+
+        // ModelCallCompleted event should surface records_model_call and uses_model
+        let report = build_graph_evidence_report(&sqlite_path, "evt-model", 2, 20).unwrap();
+        assert!(
+            report.contains("State graph evidence: evt-model depth=2 limit=20"),
+            "report: {report}"
+        );
+        assert!(
+            report.contains("records_model_call"),
+            "missing records_model_call in: {report}"
+        );
+        assert!(
+            report.contains("uses_model"),
+            "missing uses_model in: {report}"
         );
     }
 
