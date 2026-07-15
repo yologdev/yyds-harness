@@ -18,6 +18,12 @@ thread_local! {
     static LAST_RUN_ERROR: Cell<Option<String>> = const { Cell::new(None) };
     static LAST_DIAGNOSTIC_ERROR: Cell<Option<String>> = const { Cell::new(None) };
     static RUN_HAD_ERROR: Cell<bool> = const { Cell::new(false) };
+    /// Tracks whether RunStarted has been emitted for the current process.
+    /// Set to true inside `init_global` after a successful RunStarted append.
+    /// Guarded in `mark_run_completed` / `mark_run_completed_with_error` and
+    /// `RunCompletionGuard::drop` so we never emit RunCompleted without a
+    /// matching RunStarted, preventing `run_error_without_start` lifecycle gaps.
+    static RUN_STARTED: Cell<bool> = const { Cell::new(false) };
 }
 
 static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -419,6 +425,7 @@ pub fn init_global(config: StateConfig, startup_payload: Value) -> Result<(), St
     let init_result = recorder.append(EventType::RunStarted, Actor::Harness, startup_payload);
     match init_result {
         Ok(_) => {
+            RUN_STARTED.with(|c| c.set(true));
             *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = Some(recorder);
             Ok(())
         }
@@ -476,11 +483,29 @@ impl Drop for RunCompletionGuard {
 }
 
 pub fn mark_run_completed(status: &str) {
+    // If RunStarted was never emitted (e.g., early config error, subprocess
+    // crash before init_global), emit a retroactive RunStarted so the
+    // lifecycle remains complete and dashboard tools don't accumulate
+    // run_error_without_start gaps.
+    ensure_run_started();
     record(
         EventType::RunCompleted,
         Actor::Harness,
         run_completed_payload(status, None, None),
     );
+}
+
+/// Emit a retroactive RunStarted when one hasn't been recorded yet for the
+/// current process, so that a subsequent RunCompleted has a matching start.
+fn ensure_run_started() {
+    if !RUN_STARTED.with(|c| c.get()) {
+        record(
+            EventType::RunStarted,
+            Actor::Harness,
+            json!({"retroactive": true, "reason": "run_completed_without_start"}),
+        );
+        RUN_STARTED.with(|c| c.set(true));
+    }
 }
 
 /// Like `mark_run_completed("error")` but includes an error message.
@@ -494,6 +519,7 @@ pub fn mark_run_completed_with_error(msg: &str) {
     RUN_HAD_ERROR.with(|c| c.set(true));
     store_run_error(msg);
     let error_detail = take_diagnostic_error();
+    ensure_run_started();
     record(
         EventType::RunCompleted,
         Actor::Harness,
@@ -3409,6 +3435,7 @@ mod tests {
     fn reset_global_recorder_for_test() {
         *GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner()) = None;
         RUN_HAD_ERROR.with(|c| c.set(false));
+        RUN_STARTED.with(|c| c.set(false));
         LAST_RUN_ERROR.with(|c| {
             let _ = c.take();
         });
@@ -7048,6 +7075,52 @@ mod tests {
             raw.contains("\"status\":\"completed\""),
             "RunCompleted should have completed status on normal exit: {raw}"
         );
+    }
+
+    #[test]
+    fn mark_run_completed_with_error_emits_retroactive_run_started_when_not_started() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        // Initialize the recorder (which sets RUN_STARTED=true) then
+        // manually reset RUN_STARTED to simulate a crash-path where
+        // init_global was never called (e.g., early config error).
+        init_global(config, json!({})).unwrap();
+        RUN_STARTED.with(|c| c.set(false));
+
+        mark_run_completed_with_error("test_late_run_started");
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        // We expect: init_global's RunStarted, then retroactive RunStarted,
+        // then RunCompleted with error status.
+        let first_run_started = raw
+            .find("RunStarted")
+            .expect("should have first RunStarted");
+        let retroactive_run_started = raw[first_run_started + "RunStarted".len()..]
+            .find("RunStarted")
+            .expect("should have retroactive RunStarted after first");
+        let run_completed_pos = raw.find("RunCompleted").expect("should have RunCompleted");
+        assert!(
+            retroactive_run_started < run_completed_pos,
+            "retroactive RunStarted ({retroactive_run_started}) must appear before RunCompleted ({run_completed_pos}): {raw}"
+        );
+        assert!(
+            raw.contains("\"retroactive\":true"),
+            "retroactive RunStarted payload should mark retroactive: true: {raw}"
+        );
+        assert!(
+            raw.contains("\"status\":\"error\""),
+            "RunCompleted should have error status: {raw}"
+        );
+        // RUN_STARTED should be true after ensure_run_started ran
+        RUN_STARTED.with(|c| assert!(c.get(), "RUN_STARTED should be true after late emit"));
     }
 
     #[test]
