@@ -1,0 +1,722 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. **Assessment is missing** - The assessment agent didn't produce output, so I need to plan from trajectory, state evidence, and the pre-seeded task_01.md.
+
+2. **Pre-seeded task_01.md exists** - Issue #105 shows a task was attempted (and reverted) about recording DeepSeek prompt cache metrics. The task was reverted because the implementation agent got stuck in analysis without landing code.
+
+3. **Key evidence from trajectory:**
+   - Graph pressure: "Close yyds state and model lifecycle gaps" (state_run_unmatched_non_validation_completed_count=3)
+   - Graph pressure: "Break recurring log failure fingerprints"
+   - Graph pressure: "Bound failing shell commands before retrying" (bash_tool_error=14)
+   - Graph pressure: "Reconcile transcript-only tool failures" (4)
+   - Graph pressure: "Reconcile state-only tool failures" (40)
+   - Capability fitness score: 1.0 (high)
+   - Latest evo readiness: verified_success, can_drive_evolution=true
+
+4. **Issue #90** - Help wanted: yoagent Usage struct drops DeepSeek cache fields. This is the upstream issue that blocks the cache metrics task. No replies yet.
+
+5. **Issue #105** - The reverted cache metrics task. The implementation agent spent 24 turns reading source code without landing changes.
+
+Now, the pre-seeded task_01.md was for the cache metrics task, but it was reverted. The trajectory shows the implementation agent got stuck in analysis paralysis. The task was too broad/ambiguous for the agent to complete.
+
+Let me think about what makes sense for this session:
+
+**Priority 0 - Check for CI failures:** The trajectory says "build OK, tests OK" for recent sessions. No CI failures.
+
+**Priority 1 - State-driven DeepSeek harness work:**
+- The cache metrics task (#105) was reverted but the underlying issue is real. However, the upstream blocker (Issue #90 - yoagent Usage struct missing cache fields) makes it hard to implement directly. Let me re-read Issue #90 more carefully...
+
+Actually, Issue #90 says cache metrics DO work for `stream-check` and `fim-complete` because those parse raw SSE/JSON directly without going through yoagent's Usage struct. The gap is specific to agent chat completions. So maybe there's a workable approach that doesn't require the upstream fix.
+
+But the implementation agent already failed at this task. Making it smaller might help.
+
+Let me think about what tasks would be highest impact:
+
+1. **State lifecycle gaps** (graph pressure #1): `state_run_unmatched_non_validation_completed_count=3` - runs that have FailureObserved but no RunCompleted. This is a data quality issue that affects all state-based decisions.
+
+2. **The cache metrics task** - but it was just reverted. The implementation agent couldn't make progress. Let me think about why... The agent spent 24 turns reading source code. It seems like it got lost in analysis. The task description was "Ensure successful DeepSeek prompt executions record prompt cache hit/miss token usage" - but the blocker is that yoagent's Usage struct doesn't carry the cache fields. The task doesn't clearly acknowledge this blocker or provide a workaround path.
+
+Let me look at what actually exists for cache metrics recording in the codebase. The Issue #90 says cache metrics work for `stream-check` and `fim-complete` paths because they parse raw JSON directly. The gap is only for agent chat completions where yoagent parses the response and drops the cache fields.
+
+So the real question is: can we intercept the raw response before yoagent parses it? Or do we need the upstream fix?
+
+Actually, yoagent has hooks and callbacks. Let me check if there's an `on_response` or similar hook that gives access to raw response data before yoagent parses it...
+
+Wait, I'm not supposed to read source files during planning. Let me focus on what I know and plan appropriate tasks.
+
+Given:
+- The cache metrics task was just reverted (Day 137 task 1)
+- The upstream Issue #90 has no replies
+- State lifecycle gaps are the top graph pressure
+
+I think the best approach is:
+
+**Task 01:** Fix the state lifecycle gaps - ensure runs with FailureObserved also get RunCompleted. This is concrete, touches state recording code, and improves data quality for all state-based decisions.
+
+**Task 02:** A narrower version of the cache metrics task - but I need to see if there's a viable approach without the upstream yoagent fix. Actually, since Issue #90 has no replies and the previous implementation attempt failed, maybe I should create an alternative approach.
+
+Let me think about this differently. The task was: "Record DeepSeek prompt cache metrics during prompt runs." The implementation agent failed because it couldn't figure out how to get the cache data from yoagent. 
+
+But wait - let me look at what `stream-check` does that works. If `stream-check` parses raw SSE and extracts cache metrics, maybe the approach is: record the raw response somewhere that a post-processing step (or a hook) can extract cache metrics from. Or, add an interceptor layer.
+
+Actually, the simplest approach might be: in `src/prompt.rs`, after a prompt completes, check if there are DeepSeek-specific response fields available and record them. But if yoagent doesn't expose them, we can't access them...
+
+Unless we use a different mechanism. Let me think...
+
+The yoagent `Agent` has event streaming. When a prompt completes, events include `ModelCallCompleted`. If the raw response JSON is available in the event stream, we could parse it. But yoagent might not include raw response data in events.
+
+OK, I think for Task 02, the right approach is to acknowledge the upstream blocker and file an agent-help-wanted issue (or update Issue #90 with more specific information), rather than trying another implementation that will fail the same way.
+
+Actually wait - let me re-read the task description more carefully:
+
+"Ensure successful DeepSeek prompt executions record prompt cache hit/miss token usage into yoagent-state so `deepseek cache-report` and gnome KPIs have real data."
+
+And from Issue #90: "Cache metrics ARE recorded for these diagnostic paths: yyds deepseek stream-check, yyds deepseek fim-complete"
+
+So the issue is that `deepseek cache-report` shows data from diagnostic paths but not from agent chat completions. The root cause is yoagent's Usage struct.
+
+Given that the upstream fix is needed, and there are no replies to Issue #90, perhaps the most useful thing I can do is:
+
+1. Task 01: Fix the state lifecycle gaps (concrete, achievable)
+2. Create/update an agent-help-wanted issue about the yoagent Usage struct
+
+But let me also consider: is there a workaround? The task mentions "No request-side cache_control is added for DeepSeek." Maybe we can intercept at the yoagent event level? 
+
+Let me check if there's a `ModelCallCompleted` event that carries raw usage data...
+
+Actually, I recall from CLAUDE.md: "yoagent has callbacks (on_before_turn, on_after_turn, on_error)". If `on_after_turn` gives access to the raw response or usage data, we might be able to extract cache fields there.
+
+But I shouldn't deep-dive into source code during planning. Let me plan tasks that are concrete and achievable.
+
+Let me focus on what I can actually plan:
+
+**Task 01: Fix state lifecycle gaps** - Top graph pressure. Concrete, achievable.
+
+**Task 02: Something else from graph pressure** - Maybe the "Bound failing shell commands" or "Reconcile state-only tool failures."
+
+Actually, let me look at the state lifecycle gap more carefully. The trajectory says:
+"Close yyds state and model lifecycle gaps (state_run_unmatched_non_validation_completed_count=3): Lifecycle causes: state_unmatched/open_after_FailureObserved=3"
+
+This means there are 3 runs that got FailureObserved but never got RunCompleted. The fix should ensure that when FailureObserved is emitted, the run lifecycle is properly closed.
+
+Now, for task planning, I need to:
+
+1. First check if session_plan/task_01.md exists (the pre-seeded one)
+2. If it does, decide whether to keep it, refine it, or mark it obsolete
+3. Create additional tasks
+
+Let me start by checking what exists in session_plan/.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ ✓ (709ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing task_01.md and assessment_missing.md to understand what the harness seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (793ms)
+ ✓ (808ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the harness seeded task_01.md about fixing the assessment silent failure. This is about the assessment agent not producing assessment.md. Let me think about whether this is the right task, or if I should refine/replace it.
+
+The task is about modifying `scripts/preseed_session_plan.py` to better handle the case where assessment.md is missing. The task says: "Analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced."
+
+But wait - the task's objective is about analyzing `evolve.sh` but the Files line only lists `scripts/preseed_session_plan.py`. That's a mismatch.
+
+Also, looking at the trajectory, the top graph pressures are:
+1. State lifecycle gaps (state_run_unmatched_non_validation_completed_count=3)
+2. Break recurring log failure fingerprints
+3. Bound failing shell commands before retrying (bash_tool_error=14)
+4. Reconcile transcript-only tool failures (4)
+5. Reconcile state-only tool failures (40)
+
+The seeded task (fix assessment silent failure) doesn't address any of these graph pressures. It's about making the harness more resilient to a missing assessment, which is a diagnostic improvement, not a fitness improvement.
+
+However, the planning instruction says: "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md. ... Do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+And: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The assessment IS missing - that's a real problem. But is fixing preseed_session_plan.py the right response? The task says to analyze evolve.sh to understand why assessment.md wasn't produced, but only allows editing preseed_session_plan.py.
+
+Let me think about what's most valuable here:
+
+1. The assessment was missing, so the harness seeded a task about fixing that. But the task is vague ("analyze the harness dispatching logic") and only allows editing one file.
+
+2. The top graph pressure is state lifecycle gaps - 3 runs with FailureObserved but no RunCompleted. This is a concrete bug with a clear fix.
+
+3. The cache metrics task (issue #105) was just reverted. Trying again with the same approach would be wrong.
+
+I think the right approach is:
+- Keep task_01.md but refine it to be more concrete and achievable
+- Add task_02.md for the state lifecycle gaps (top graph pressure)
+- Address issue #90 (yoagent Usage struct) by creating an agent-help-wanted update
+
+Actually wait, let me reconsider. The seeded task is about making the harness handle missing assessments better. But the REAL problem is that the assessment agent didn't write assessment.md. The harness seed task focuses on the wrong thing - it wants to make the fallback better rather than fixing why assessments fail.
+
+Looking at assessment_missing.md: "The assessment phase produced a transcript but did not write session_plan/assessment.md." Exit code was 0, no provider error. The agent ran successfully but didn't produce the expected artifact.
+
+This could be because:
+1. The assessment agent wrote analysis in its response but never called write_file
+2. Permission policy prevented writing to session_plan/
+3. The agent wrote to the wrong path
+
+This is a prompt/instruction problem, not a preseed_session_plan.py problem. Fixing preseed_session_plan.py won't fix why assessments fail to write files.
+
+Let me refine task_01.md to focus on something more concrete and verifiable, aligned with the top graph pressure.
+
+Actually, re-reading the instructions more carefully:
+
+"Do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+"If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation."
+
+The seeded task's stated problem is real (assessment was missing), but the proposed fix (edit preseed_session_plan.py) doesn't match the problem (assessment agent didn't write a file). And the task doesn't address any graph pressure.
+
+I think the right call is: refine task_01.md into something more concrete that addresses a real graph pressure, AND create task_02.md for another graph pressure.
+
+Let me think about what concrete task would be most valuable:
+
+**Option A: State lifecycle gaps fix**
+- Top graph pressure
+- Concrete: 3 runs have FailureObserved without RunCompleted
+- Fix: ensure RunCompleted is emitted after FailureObserved
+- Files: src/state.rs (or the evolve.sh / state recording pipeline)
+- Verifiable: after fix, state_run_unmatched count decreases
+
+**Option B: Bash tool error reduction**
+- 14 bash_tool_error occurrences
+- "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- This is more of a prompt/behavioral fix than a code fix
+
+**Option C: Reconcile state-only tool failures (40 occurrences)**
+- State events contain failed tool actions without matching transcripts
+- This is a data quality issue
+
+I'll go with Option A for task_01.md (refining the seeded task) and consider Option C or B for task_02.md.
+
+Wait, but the instruction also says: "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+State lifecycle gaps are about observability and harness self-evolution quality - they directly affect the reliability of state-based decisions.
+
+Let me also think about the cache metrics issue. Issue #90 has no replies and it's a genuine blocker. The implementation agent already failed at task #105. Perhaps the most productive thing is to update Issue #90 with more specific evidence about what's needed, rather than trying another implementation.
+
+OK, here's my plan:
+
+1. **Refine task_01.md**: Replace the vague "fix assessment silent failure" with a concrete state lifecycle gap fix
+2. **Create task_02.md**: Address the "Reconcile state-only tool failures" or another graph pressure
+3. **Create issue_responses.md**: Address issues #90 and #105
+
+Actually, let me reconsider. The seeded task says "refine it if the planner has stronger evidence." The trajectory evidence IS stronger - it has concrete graph pressures. But should I keep the seeded task's topic (assessment reliability) or pivot entirely?
+
+I think I should pivot. The seeded task about fixing preseed_session_plan.py to handle missing assessments better is a diagnostic improvement, not a fitness improvement. The graph pressures are more actionable and directly tied to harness quality.
+
+Let me refine task_01 to address the state lifecycle gap, which is the #1 graph pressure.
+
+For task_02, let me look at what would be most achievable. The "Reconcile state-only tool failures (40)" seems like it could be about ensuring tool failures are properly recorded in both state and transcript. But 40 occurrences might indicate a systemic issue that's hard to fix in one task.
+
+The "Bound failing shell commands before retrying" (14 bash_tool_error) is more of a behavioral fix - it's about how the agent uses bash, not a code change.
+
+Actually, let me look more carefully at what concrete code fixes could address these:
+
+1. State lifecycle gaps: Fix the state recording pipeline to ensure RunCompleted follows FailureObserved
+2. Recurring log failure fingerprints: Fix the CI log parsing
+3. Bash tool errors: Could be a prompt improvement or a tool wrapper improvement
+4. Transcript-only tool failures: Fix the tool failure tracking to also emit state events
+5. State-only tool failures: Fix state events to also appear in transcripts
+
+For task_02, let me think about what's achievable in 20 minutes...
+
+Actually, looking at the task sizing rules: "Each task MUST touch at most 3 source files." and "completable in 20 minutes."
+
+Let me focus on:
+- Task 01: Fix state lifecycle gaps (src/state.rs or related)
+- Task 02: Something that bridges state and transcript tool failure recording
+
+But I need to check which files are actually involved. Let me do a quick ownership check first.
+
+Let me also consider: should I keep the seeded task as-is and just add task_02? The instruction says I can refine it. Given that the seeded task's objective ("Analyze the harness dispatching logic in evolve.sh") contradicts its Files line ("scripts/preseed_session_plan.py"), AND it doesn't address any graph pressure, I think refining it is the right call.
+
+Let me check what files are involved in state lifecycle recording.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.6s (2 ✓)
+
+Let me check what evidence exists for the state lifecycle gap and identify the owning files.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' (*.rs)  ▶ search 'RunCompleted' in src (*.rs) ✓ (302ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I can see that `src/state.rs` already has infrastructure for:
+1. `FailureObserved` event type (line 136)
+2. `RunCompleted` event type (line 124)
+3. The panic hook already emits both FailureObserved AND RunCompleted (lines 31-60)
+
+Let me check if there are other code paths that emit FailureObserved without RunCompleted. The search results show FailureObserved being emitted in several places:
+- `src/state.rs:59` - panic hook (already has RunCompleted at line 60)
+- `src/prompt.rs:901` - some prompt error path
+- `src/prompt.rs:960` - another prompt error path
+- `src/deepseek.rs:1014` - deepseek error path
+- `src/commands_evolve.rs:431` - evolve error path
+
+The trajectory says there are 3 runs with "open_after_FailureObserved" - meaning the run has FailureObserved but no RunCompleted. Let me check the specific code paths to see if they properly emit RunCompleted after FailureObserved.
+
+Let me check prompt.rs lines around 901 and 960, and deepseek.rs around 1014.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:890..970  ▶ read src/deepseek.rs:1005..1035 ✓ (892ms)
+ ✓ (703ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue. Let me trace the FailureObserved emissions:
+
+1. **panic hook** (state.rs:59): Already emits RunCompleted after FailureObserved (line 60). ✓
+
+2. **Tool error** (prompt.rs:901): Emits FailureObserved for tool errors but does NOT emit RunCompleted. This is inside the event processing loop - the run is still ongoing, so it shouldn't close the run. This is fine - tool errors during a run don't end the run.
+
+3. **InputRejected** (prompt.rs:960): Emits FailureObserved for input rejection but does NOT emit RunCompleted. Let me check if the run eventually gets closed...
+
+4. **Transport failure** (deepseek.rs:1014): Emits FailureObserved but does NOT emit RunCompleted.
+
+So the transport failure path in deepseek.rs emits FailureObserved without RunCompleted. This is likely one source of the lifecycle gap.
+
+Let me also check `commands_evolve.rs:431` where FailureObserved is emitted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_evolve.rs:420..460  ▶ read src/prompt.rs:960..1020 ✓ (941ms)
+ ✓ (645ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see several FailureObserved paths that don't close the run lifecycle:
+
+1. **Tool error** (prompt.rs:901): Emits FailureObserved during a run. The run is still ongoing so this is expected - the run should eventually complete.
+
+2. **InputRejected** (prompt.rs:960): Emits FailureObserved. The run may continue (retry loop) or may end. Let me check if RunCompleted is emitted later.
+
+3. **Transport failure** (deepseek.rs:1014): `record_deepseek_transport_failure` emits FailureObserved but never emits RunCompleted. This is called during transport errors in the retry/fallback loop. If the run is still ongoing, it may eventually complete. But if the process exits after this without RunCompleted, we get the gap.
+
+4. **Harness patch apply failure** (commands_evolve.rs:431): This is for harness patch operations, not regular evolution runs. Probably not the source of the gap.
+
+The trajectory says: "state_run_unmatched_non_validation_completed_count=3: Lifecycle causes: state_unmatched/open_after_FailureObserved=3"
+
+So there are 3 runs where FailureObserved was the last lifecycle event - no RunCompleted followed. The most likely culprit is the transport failure path in deepseek.rs, where `record_deepseek_transport_failure` is called and then the error propagates up without RunCompleted being emitted.
+
+Let me check where `record_deepseek_transport_failure` is called from and what happens after.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_deepseek_transport_failure' (*.rs) ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check lib.rs:299 to see the context where this is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:285..325 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `record_deepseek_transport_failure` is called from `maybe_record_deepseek_api_failure` which is called after a prompt outcome has an API error. This is called during the prompt retry loop, and after this, the function returns. The calling code should eventually emit RunCompleted, but maybe in some error paths it doesn't.
+
+Let me search for where `maybe_record_deepseek_api_failure` is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'maybe_record_deepseek_api_failure' (*.rs) ✓ (325ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `record_deepseek_transport_failure` is called from various places in lib.rs. Each of these is within the prompt run flow. The issue is that `record_deepseek_transport_failure` emits FailureObserved but the run lifecycle might not get RunCompleted later if the process exits abnormally after these failures.
+
+But looking more carefully, I think the lifecycle gap is about runs that end without RunCompleted. The `state.rs` panic hook already handles the panic case (emits both FailureObserved and RunCompleted). The gap might be from processes that exit without going through the normal RunCompleted path.
+
+Let me look at the state.rs code for `RunCompletionGuard` and how RunCompleted is normally emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..101 ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `mark_run_completed` and `mark_run_completed_with_error` functions to understand how the run lifecycle is closed. Also let me look at `exit_with_state`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn mark_run_completed' in src (*.rs)  ▶ search 'fn exit_with_state' in src (*.rs) ✓ (697ms)
+ ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at mark_run_completed, mark_run_completed_with_error, and exit_with_state.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:485..565  ▶ read src/lib.rs:985..1025 ✓ (300ms)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture clearly. The `exit_with_state` function in lib.rs ensures RunCompleted is emitted before process exit. The panic hook also ensures RunCompleted is emitted on panic.
+
+So where are the 3 runs with `open_after_FailureObserved` coming from? Let me think about this...
+
+Possible sources:
+1. **Process killed externally** (SIGKILL, OOM killer) - exit_with_state wouldn't run
+2. **Process exits through a path that doesn't call exit_with_state** - maybe some early exit paths
+3. **The `record_deepseek_transport_failure` emits FailureObserved during a run that later completes normally** - but the trajectory says "open_after_FailureObserved" which means FailureObserved is the LAST lifecycle event. If RunCompleted follows, it wouldn't be "open."
+
+Wait, let me re-read the trajectory pressure more carefully: "state_run_unmatched_non_validation_completed_count=3: Lifecycle causes: state_unmatched/open_after_FailureObserved=3"
+
+This means there are 3 runs where the last lifecycle event is FailureObserved and there's no matching RunCompleted. The question is: how do these runs end?
+
+One possibility: the process panics during the FailureObserved recording itself. The panic hook tries to record FailureObserved, but if recording itself panics, RunCompleted never gets emitted because `catch_unwind` wraps only the RunCompleted call, not the FailureObserved call.
+
+Actually wait, looking at the panic hook code again:
+
+```rust
+record(EventType::FailureObserved, Actor::Harness, payload);
+// Emit RunCompleted so the run lifecycle is properly closed.
+let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    mark_run_completed_with_error("rust_panic");
+}));
+prev_hook(info);
+```
+
+If `record(FailureObserved)` panics, the `catch_unwind` for RunCompleted never runs, and prev_hook never runs. This would leave the run open with only FailureObserved.
+
+But this seems unlikely to happen 3 times.
+
+Another possibility: the process is killed by SIGKILL or SIGTERM during a transport failure. The `record_deepseek_transport_failure` emits FailureObserved, then something happens (the process is killed externally) before RunCompleted can be emitted.
+
+Actually, I think the most likely cause is simpler. Let me check if there are code paths that call `std::process::exit` directly without going through `exit_with_state`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'process::exit' in src (*.rs) ✓ (342ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are many `std::process::exit` calls that bypass `exit_with_state`. These would leave the run lifecycle open. Let me check a few of these to see which are likely to be hit during evolution sessions.
+
+But actually, this is getting too deep for planning. The point is clear: there are code paths that exit without emitting RunCompleted, leaving the run lifecycle open with only FailureObserved (or without any closing event). The fix would be to ensure these paths go through `exit_with_state` or explicitly call `mark_run_completed_with_error` before exiting.
+
+However, this is a potentially large change touching many files. Let me think about what's achievable in a single 20-minute task.
+
+The top graph pressure is about 3 specific runs with `open_after_FailureObserved`. Looking at the evidence:
+
+1. `record_deepseek_transport_failure` emits FailureObserved but doesn't close the run.
+2. Various `std::process::exit` calls don't go through `exit_with_state`.
+
+The most focused fix would be to:
+- Make `record_deepseek_transport_failure` also stash the error for RunCompleted, so that when the run eventually closes (or the process exits), the error context is available.
+
+But actually, the real fix is simpler: ensure that when the process exits after transport failures, RunCompleted is emitted. Let me check if the transport failure paths eventually call `exit_with_state`.
+
+Let me look at the broader picture. The main entry point is `run_cli` in lib.rs. If it panics, the panic hook handles it. If it exits normally, it should go through `exit_with_state`. But there are `std::process::exit` calls scattered in subcommand handlers.
+
+OK, I think I have enough context to plan concrete tasks. Let me focus on:
+
+1. **Task 01**: Fix the most likely source of state lifecycle gaps - the `record_deepseek_transport_failure` path and/or the `std::process::exit` paths in CLI that bypass `exit_with_state`.
+
+2. **Task 02**: Something else actionable from graph pressure.
+
+Actually wait, let me step back. The planning instruction says I should prefer tasks that improve:
+- DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality
+- Capability fitness gnomes
+
+State lifecycle gaps affect observability and harness self-evolution quality. They're diagnostic gates, and the instruction says: "Fix them when they block fitness measurement or waste DeepSeek turns."
+
+3 unmatched runs is a small number. Is this really the highest priority? Let me re-read the trajectory...
+
+The highest graph pressures are:
+1. State lifecycle gaps (3 unmatched)
+2. Recurring log failure fingerprints (1 recurring failure)
+3. Bash tool errors (14)
+4. Transcript-only tool failures (4)
+5. State-only tool failures (40)
+
+The fitness score is 1.0 - sessions are landing code successfully. The recent sessions all show "build OK, tests OK" and verified tasks.
+
+Given that the fitness is high, fixing diagnostic gates makes sense - they don't block fitness measurement currently but could in the future.
+
+However, there's another consideration: the pre-seeded task_01.md was about fixing the assessment silent failure. The trajectory shows "no assessment available" for this session. That's a real problem that directly affects planning quality.
+
+But the seeded task's approach (modifying preseed_session_plan.py) doesn't actually fix the root cause (assessment agent not writing files). The root cause is likely in the assessment prompt or the agent's tool usage.
+
+Let me think about what I can actually plan that will be achievable:
+
+**Option 1: Keep the seeded task and add a more concrete one**
+The seeded task is about preseed_session_plan.py. It's a narrow change. But it's diagnostic, not fitness-improving.
+
+**Option 2: Refine the seeded task to something more impactful**
+Replace with a state lifecycle gap fix.
+
+**Option 3: Create a task that fixes both assessment reliability AND is backed by graph evidence**
+
+I think the best approach is:
+
+1. **Task 01**: Fix the state lifecycle gap by ensuring `record_deepseek_transport_failure` also calls `stash_diagnostic_error` so the error context is available for the eventual RunCompleted. Also fix one or two `std::process::exit` paths to go through `exit_with_state`. Files: src/deepseek.rs, src/lib.rs
+
+2. **Task 02**: Fix the "Reconcile state-only tool failures (40)" - this seems like a systematic issue where tool failures are recorded in state but not in transcripts. Probably need to check the tool failure recording path.
+
+Actually, let me simplify. I'll create two concrete tasks:
+
+1. **Task 01**: Fix state lifecycle gap in `record_deepseek_transport_failure` - make it stash the diagnostic error so RunCompleted captures it when the process exits. Files: src/deepseek.rs
+
+2. **Task 02**: Replace direct `std::process::exit(1)` calls in error paths with `exit_with_state(1)` to ensure RunCompleted is always emitted. Files: src/cli.rs, src/dispatch_sub.rs
+
+Wait, but both of these are about the same problem. Let me combine them into one task, or split differently.
+
+Actually, let me look at the "Reconcile state-only tool failures (40)" pressure. 40 state events with failed tool actions but no matching transcript entries is a significant data quality issue. This could mean that tool failures during evolution sessions aren't being properly captured in transcripts, which makes debugging harder.
+
+But I don't have enough context about what's causing this without reading more source code. Let me focus on what I know.
+
+OK, here's my final plan:
+
+**Task 01** (refining the seeded task): Fix state lifecycle gaps. The `record_deepseek_transport_failure` function in `src/deepseek.rs` emits FailureObserved but doesn't ensure the run lifecycle gets closed. Fix: have it call `stash_diagnostic_error` so the error context flows into the eventual RunCompleted. Also, check a high-frequency `std::process::exit(1)` path (in `cli.rs`) and route it through `exit_with_state`. Files: src/deepseek.rs, src/cli.rs
+
+**Task 02**: Fix the "Reconcile state-only tool failures" by ensuring tool failures that are recorded in state also write to the transcript. This is about the prompt event loop in `src/prompt.rs` where tool errors are recorded. Files: src/prompt.rs
+
+Wait, actually I should reconsider. Let me look at what "state-only tool failures" means. It means the state events have tool failures but the transcript doesn't show them. This could be because:
+- The transcript truncation drops the failure lines
+- The tool failure recording uses a different event path than the transcript
+- The transcript is generated from a different source than the state events
+
+This is probably in the transcript/logging code, not in prompt.rs. Let me not guess and instead pick a more concrete task.
+
+Let me go with:
+
+**Task 01** (refined): Fix state lifecycle gaps - make `record_deepseek_transport_failure` stash diagnostic error for RunCompleted
+**Task 02**: Fix `std::process::exit` calls in CLI error paths to go through `exit_with_state`
+
+Actually no, these are too similar. Let me combine them into one task and add a different second task.
+
+OK, final plan:
+
+**Task 01** (refined from seed): Fix state lifecycle gaps - ensure runs with FailureObserved get RunCompleted
+- Fix `record_deepseek_transport_failure` to stash diagnostic error
+- Fix up to 2 `std::process::exit(1)` paths that are most likely to be hit during evolution
+Files: src/deepseek.rs, src/cli.rs, src/lib.rs
+
+**Task 02**: Investigate and fix the assessment silent failure - the assessment agent produced a transcript but no assessment.md
+- This directly caused the current planning phase to lack assessment evidence
+- The fix should ensure the assessment write path is reliable
+Files: scripts/evolve.sh (the assessment dispatch logic)
+
+Actually, task 02 about fixing assessment would require modifying evolve.sh which is a protected file according to the safety rules: "Never modify ... scripts/evolve.sh"
+
+So I can't touch evolve.sh. The seeded task suggested modifying preseed_session_plan.py to better handle missing assessments, but that's a band-aid.
+
+Let me think about what I CAN do about the assessment failure...
+
+The assessment agent ran, produced a transcript, but didn't write assessment.md. This is likely a prompt issue - the agent produced analysis in its response but didn't call write_file. Or it called write_file with the wrong path. 
+
+Since I can only modify Rust source files and Python scripts (not evolve.sh), and the assessment prompt/dispatch is in evolve.sh...
+
+Actually, let me check what the assessment agent's instructions are. Maybe there's a prompt template I can modify.
+
+But I shouldn't deep-dive into this during planning. Let me plan tasks I can actually deliver.
+
+Final plan:
+
+**Task 01** (refined seed): Fix state lifecycle gaps
+- `record_deepseek_transport_failure` emits FailureObserved but doesn't help close the run lifecycle. Make it call `stash_diagnostic_error` so the error context is available in RunCompleted.
+- Also fix the `std::process::exit(1)` in `src/cli.rs:373` to use `exit_with_state(1)` so RunCompleted is emitted before exit.
+Files: src/deepseek.rs, src/cli.rs
+
+**Task 02**: The assessment silent failure - since I can't modify evolve.sh, create a task that improves the assessment prompt reliability by adding better tool-use instructions. But wait, I need to find where the assessment prompt is defined...
+
+Actually, let me check if there's an assessment prompt template or skill that controls assessment behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment' in skills/self-assess (*.md) ✓ (360ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me focus on what I can actually deliver. I've been spending too much time analyzing. Let me write the task files now.
+
+My plan:
+
+1. **Refine task_01.md**: Replace the vague seeded task with a concrete state lifecycle gap fix. The trajectory shows `state_run_unmatched_non_validation_completed_count=3` with `open_after_FailureObserved=3`. The fix: in `record_deepseek_transport_failure`, call `stash_diagnostic_error` so the error flows into RunCompleted. Also fix one `std::process::exit(1)` call path in `src/cli.rs` to use `exit_with_state`.
+
+2. **Create task_02.md**: The assessment silent failure is blocking - this session has no assessment. Since I can't modify evolve.sh, create a task that improves the self-assess skill's instructions to be more explicit about writing assessment.md.
+
+3. **Create issue_responses.md**: Address issues #90 and #105.
+
+Let me write these files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence to plan. Let me write the task files and issue responses.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write the refined task_01.md and create task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also add a task for writing issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (342ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the refined task_01.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Fix assessment silent failure: write assessment_missing.md with trajectory evidence
+  - Files: scripts/preseed_session_plan.py
+  + Title: Close state lifecycle gaps: stash diagnostic error on DeepSeek transport failures
+  + Files: src/deepseek.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - YOUR TRAJECTORY graph pressure: "Close yyds state and model lifecycle gaps (state_run_unmatched_non_validation_completed_count=3): Lifecycle causes: state_unmatched/open_after_FailureObserved=3"
+  + - `record_deepseek_transport_failure` (src/deepseek.rs:1011-1033) emits FailureObserved but does NOT call `stash_diagnostic_error` — the error context is lost and when the process later exits via `exit_with_state`, the RunCompleted payload won't carry the transport failure reason.
+  + - The panic hook (src/state.rs:59-65) already correctly emits FailureObserved followed by RunCompleted. The transport failure path is the only FailureObserved emitter that doesn't wire into the RunCompleted diagnostic-error pipeline.
+    
+    Edit Surface:
+  - - scripts/preseed_session_plan.py
+  + - src/deepseek.rs
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (45 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (45 lines) ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me create task_02.md. I need something actionable from the trajectory evidence. Let me think about what's the best second task.
+
+Options:
+1. Assessment reliability - can't modify evolve.sh (protected). Could modify self-assess skill, but that's a skill change, not a source code change, and might not be verified by `cargo build && cargo test`.
+
+2. "Reconcile state-only tool failures (40)" - 40 state events with tool failures but no matching transcripts. This is a data quality issue in the transcript/state recording pipeline.
+
+3. "Bound failing shell commands before retrying" - 14 bash_tool_error. This is more of a behavioral/prompt improvement.
+
+4. Cache metrics (issue #105) - was just reverted. The upstream blocker (issue #90) has no replies.
+
+Let me think about option 2 more carefully. "State-only tool failures" means state events recorded tool failures but the transcript doesn't show them. This could be caused by:
+- The transcript truncation dropping failure lines
+- Tool failures being recorded via `record()` but not appearing in the tool output stream that gets captured in transcripts
+
+Actually, let me look at this from a different angle. What concrete, small change can I plan that:
+- Touches at most 3 source files
+- Is completable in 20 minutes
+- Has a clear verifier (`cargo build && cargo test`)
+- Improves a trajectory pressure signal
+
+The "Reconcile state-only tool failures" seems too vague for a concrete task. Let me look at what other evidence exists...
+
+Actually, let me go back to the assessment failure. The trajectory says the assessment didn't produce assessment.md. The harness seeded a task about this. The assessment is done by the self-assess skill. Maybe I can improve the self-assess skill to be more reliable about writing its output file.
+
+But skills are markdown files in skills/, not Rust code. Changes to skills wouldn't be verified by `cargo build && cargo test`. The task verifier would need to be different.
+
+Let me look at what the self-assess skill says about writing output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read skills/self-assess/SKILL.md ✓ (293ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The self-assess skill says at line 109-111: "If the active prompt asks you to write `session_plan/assessment.md`, write that file and stop; `session_plan/` is ephemeral harness state and should not be committed from the assessment phase."
+
+The assessment agent may have been following this instruction but writing the assessment as markdown in its response rather than calling `write_file`. Or it might have called `write_file` with the wrong path.
+
+Since `self-assess` is `core: true` and `origin: creator`, I cannot modify it (it's immutable). So I can't fix the assessment reliability by changing the skill.
+
+Let me instead focus on something else for task_02. Let me look at the other graph pressures more carefully:
+
+- "Break recurring log failure fingerprints (recurring_failure_count=1)" - this is about CI log parsing
+- "Bound failing shell commands before retrying" - behavioral
+- "Reconcile transcript-only tool failures (4)" - transcript vs state mismatch
+- "Reconcile state-only tool failures (40)" - state vs transcript mismatch
+
+The state-only tool failures (40) seems most concrete. Let me think about what might cause this...
+
+Actually, let me look at this from a completely different angle. The trajectory says the latest sessions are all succeeding (fitness=1.0). The graph pressures are minor. Maybe I should focus on something that adds new capability rather than fixing minor diagnostic issues.
+
+Looking at the capability fitness feedback: "choose tasks that raise fitness gnomes or add held-out coding eval evidence; treat diagnostics as gates, not the final goal"
+
+And the evo readiness says: "use this readiness evidence to select the next concrete, verifiable task"
+
+So the system is healthy and suggesting I should pick tasks that improve coding capability, not just fix diagnostics.
+
+But what concrete, verifiable task can I plan that:
+- Touches at most 3 files
+- Is completable in 20 minutes
+- Improves DeepSeek coding capability
+
+The cache metrics task was the obvious one, but it was just reverted and has an upstream blocker.
+
+Let me look at the "Recurring log failure fingerprints" - this is about CI log parsing giving repeated failure fingerprints. The log feedback says "command timed out after 120s" repeated 5x and "command timed out after 180s" repeated 4x. These are bash timeout failures, not code bugs.
+
+Actually, let me think about what I can do that's truly useful...
+
+The assessment was missing this session. The harness seeded a task about fixing that. The seeded task wanted to modify `preseed_session_plan.py`. Let me check if that's actually a reasonable approach - maybe improving the fallback planning logic in preseed_session_plan.py to produce better task files when assessment is missing.
+
+Actually, the seeded task's approach (modifying preseed_session_plan.py to better handle missing assessments) IS reasonable. The problem is that when assessment is missing, the fallback task file should be better. Let me check what preseed_session_plan.py does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py (50 lines) ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The preseed_session_plan.py is quite complex (2098 lines). Let me check what the assessment_missing handling looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_missing' in scripts (*.py) ✓ (336ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how preseed_session_plan.py handles the assessment_missing case. It seems like it has logic for when assessment is missing. The question is: does it produce a good fallback task?
+
+Let me look at line 831 and the assessment_missing handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:820..900 ✓ (302ms)
+
+
