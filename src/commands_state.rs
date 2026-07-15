@@ -6,6 +6,7 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn default_events_path() -> PathBuf {
@@ -1304,7 +1305,9 @@ fn handle_state_summary(args: &[String], limit: usize) {
     };
     println!("{}", build_state_summary(&events).0);
     if limit > 0 {
-        let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+        let all_count = std::fs::File::open(&path)
+            .map(|f| std::io::BufReader::new(f).lines().count())
+            .unwrap_or(events.len());
         if events.len() >= limit {
             println!();
             println!("{DIM}(summary from last {limit} events of {all_count} total, use --limit 0 for full scan){RESET}");
