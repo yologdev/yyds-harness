@@ -1,0 +1,56 @@
+warning: skipping corrupted event at line 58599 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 6460
+warning: skipping corrupted event at line 58600 of '.yoyo/state/events.jsonl': trailing characters at line 1 column 10
+warning: skipping corrupted event at line 118203 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+warning: skipping corrupted event at line 149987 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 264
+note: skipped 4 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff:
+
+1. **Task**: Fix `state summary` timeout by replacing the unbounded `read_events(&path)` call at line 1307 with a cheap line count.
+
+2. **Diff**: The change replaces:
+```rust
+let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+```
+with:
+```rust
+let all_count = std::fs::File::open(&path)
+    .map(|f| std::io::BufReader::new(f).lines().count())
+    .unwrap_or(events.len());
+```
+
+This is Option A from the task description - a cheap file line-count. Since yyds state events are single-line JSON, line count == event count.
+
+3. **Build**: PASS, **Tests**: PASS
+
+4. **The diff matches the task**: 
+   - It replaces the unbounded `read_events` call with a cheap line count
+   - It preserves the fallback `unwrap_or(events.len())`
+   - It preserves the progress note format
+   - It's at the correct location (line 1307)
+
+However, I should verify one thing: the task says to verify with `timeout 10 ./target/debug/yyds state summary`. Let me quickly run that to confirm the fix actually works in practice.
+
+Actually wait - the build already passed, and tests passed. The diff is clearly correct. Let me run one quick verification command to confirm the timeout doesn't trigger.
+
+But actually, I need to be careful about the state events file location. Let me check if the binary can find the events path. Let me run the command with a short timeout.
+
+Let me just check if the binary exists and run the verification command.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff cleanly implements Option A (cheap line count) at the exact location described. Build and tests pass. Let me verify the actual command completes within the timeout.
+  ▶ $ timeout 15 ./target/debug/yyds state summary 2>&1 | head -30 ✓ (643ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The command completed instantly and shows the summary with event counts. This is a test environment with only 199 events, but the fix is correct for any event log size - it uses a cheap line count instead of loading all JSON into memory.
+
+The diff matches the task, build passes, tests pass, and the command works. This is a clear PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+The command completes instantly with proper output. The diff is a precise, correct implementation.
+  + Verdict: PASS
+  + Reason: The diff correctly replaces the unbounded `read_events(&path)` call with a cheap `BufReader::lines().count()` line-count approach, exactly matching Option A from the task description. Build passes, tests pass, and `yyds state summary` completes under 1 second showing correct event counts and type distribution. No regression in behavior.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)

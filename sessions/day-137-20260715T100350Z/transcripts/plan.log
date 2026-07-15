@@ -1,0 +1,552 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+warning: skipping corrupted event at line 149989 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 264
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evidence and plan tasks for Day 137. 
+
+Key evidence:
+1. Build is passing, tests pass (integration suite times out but individual tests pass - known issue)
+2. Recent sessions are healthy - 6 of 6 completed sessions succeeded
+3. Trajectory shows graph-derived next-task pressure in priority order:
+   - Make planning failure actionable (planner_no_task_count=1)
+   - Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=2)
+   - Raise session success rate (session_success_rate=0.0)
+   - Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)
+   - Require strict verifier evidence for tasks (task_verification_rate=0.0)
+
+4. Assessment found a concrete bug: `state summary` timeout - scans all ~158K events unbounded, same class as Day 132 fix for `state why`
+
+5. Issue #105 is a reverted task from earlier today - cache metrics blocked by upstream yoagent. Not actionable.
+
+6. Issue #90 is a help-wanted about yoagent dropping DeepSeek cache fields - no replies yet. Not directly actionable without upstream.
+
+The most concrete, actionable task is:
+1. **Fix `state summary` timeout** - bounded window like Day 132's fix for `state why`. This is the HIGH bug from the assessment. Touches `src/commands_state.rs` or `src/state.rs`.
+
+The second task should address lifecycle gaps. The graph pressure says `deepseek_model_call_unmatched_completed_count=2` with 8 `open_after_FailureObserved`. But Day 136 already fixed append_terminal_state_events.py for double-closing. The remaining gaps might need a different approach - teach the state janitor to close stale runs.
+
+Let me check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ ls session_plan  ▶ $ mkdir -p session_plan ✓ (935ms)
+ ✓ (990ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to see what's already there, then I can decide whether to refine it or create task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (342ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md is about DeepSeek prompt cache metrics. But the assessment says this is BLOCKED by upstream yoagent not exposing cache token fields. Issue #105 shows this was already reverted in the 02:31 session because it's blocked. And issue #90 (help-wanted) confirms it's an upstream yoagent problem.
+
+The assessment clearly states: "Issue #90/105 — cache metrics — blocked by upstream yoagent. Not actionable in yyds until yoagent exposes the cache token fields."
+
+So this seed task is stale - the assessment contradicts it. I should mark it as obsolete and create evidence-backed tasks from the assessment/trajectory instead.
+
+The most actionable tasks from the evidence:
+
+1. **Fix `state summary` timeout** - HIGH bug from assessment. Same pattern as Day 132's `state why` fix. Touches `src/commands_state.rs` or `src/state.rs`. This is concrete, touches Rust source, passes through cargo build/test.
+
+2. **Lifecycle gaps** - The graph pressure says `deepseek_model_call_unmatched_completed_count=2` with 8 `open_after_FailureObserved`. The append_terminal_state_events fix from Day 136 may already address some of these. Let me think about what's left. The assessment says "the state janitor to handle additional lifecycle states."
+
+Actually wait, let me re-read the assessment more carefully. It says the trajectory shows 8 `open_after_FailureObserved` events. The Day 136 fix taught append_terminal_state_events.py not to double-close runs that already have both FailureObserved and RunCompleted. The remaining issue might be runs that have FailureObserved but no RunCompleted - they need to be closed.
+
+But the assessment also says `state why last-failure` shows a retroactive FailureObserved that was a "synthetic event generated by the state janitor when it finds a run that completed with error status but never recorded a failure." This suggests the janitor is already handling some of these.
+
+Let me think about what's most impactful:
+
+Task 1: Fix `state summary` timeout - concrete, actionable, touches Rust code, has hard verification gates (cargo build && cargo test). Directly improves DeepSeek harness observability.
+
+Task 2: Close lifecycle gaps - teach append_terminal_state_events.py to handle runs with FailureObserved but no RunCompleted. Or improve the state janitor. This is script-level work.
+
+Actually, I need to check - the planning instruction says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task is about cache metrics. The assessment clearly states it's blocked by upstream yoagent. So I should write task_01_obsolete.md and create new evidence-backed tasks.
+
+Let me create:
+- session_plan/task_01_obsolete.md - explaining why the cache metrics task is blocked
+- session_plan/task_01.md (replacement) - fix `state summary` timeout
+- session_plan/task_02.md - close lifecycle gaps (open_after_FailureObserved)
+
+Wait, I need to check the 3-file limit. Let me figure out which files `state summary` touches.
+
+For `state summary`, I need to find where the `state summary` handler is. The assessment says it's in `src/commands_state.rs` or `src/state.rs`. Let me do a cheap ownership check.
+
+For lifecycle gaps, it's in `scripts/append_terminal_state_events.py`.
+
+Let me first do the ownership checks, then write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the seed task against the assessment evidence. The assessment clearly states the cache metrics task is blocked by upstream yoagent — and Issue #105 shows it was already reverted in the 02:31 session. Let me do ownership checks for the actionable tasks, then write the plan.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn.*handle_state_subc…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn.*state_summary\|"s…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'open_after_FailureObs… ✓ (1.2s)
+ ✓ (2.5s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see `handle_state_summary` at line 1298 in `src/commands_state.rs`. And `build_state_summary` at line 2916. Let me look at the actual handler to understand the timeout issue.
+
+Also for append_terminal_state_events.py, line 277 shows `find_runs_with_failure_observed_no_completion` which is the function that finds the `open_after_FailureObserved` cases. Let me check if it generates RunCompleted events for those runs.
+
+Let me look at the handler and the append function quickly.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.0s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1298..1348  ▶ read scripts/append_terminal_state_events.py:277..407 ✓ (304ms)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the rest of `handle_state_summary` to understand the timeout issue. The handler at line 1298 looks like it handles `--limit` but may still scan all events when limit is 0 or default. Let me see how `read_tail_events` works vs `read_events`.
+
+And for append_terminal_state_events.py, let me see what happens with runs that have FailureObserved but no RunCompleted - does it close them?
+
+Let me also check what `read_tail_events` does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn read_tail_events\|…  ▶ read scripts/append_terminal_state_events.py:406..456 ✓ (306ms)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read `read_tail_events` to understand the timeout issue in `handle_state_summary`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1425..1475 ✓ (363ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `read_tail_events` with `limit == 0` calls `crate::state::read_events_bounded(path, BOUNDED_FULL_SCAN_CAP)`. Let me check what `BOUNDED_FULL_SCAN_CAP` is and what `read_events_bounded` does. Also the default `limit` in `handle_state_subcommand` — what is the default value passed?
+
+Let me also check how `handle_state_subcommand` dispatches to `handle_state_summary`.
+
+The timeout issue: `state summary` times out because `build_state_summary` scans all ~158K events. The handler is at line 1298 and calls `read_tail_events` followed by `build_state_summary(&events)`. If the default limit makes it scan all events, that would cause the timeout.
+
+Let me check the dispatch path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:34..124  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'BOUNDED_FULL_SCAN_CAP… ✓ (948ms)
+ ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue - let me look at the `"summary"` dispatch to understand the default limit:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:121..151 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the default limit for `state summary` is 200, and `handle_state_summary` calls `read_tail_events` with that limit. With limit 200, `read_tail_events` calls `read_tail(path, 200)` which reads the last 200 lines from the events file - that should be fast.
+
+But wait - the assessment says `state summary` times out at 10s. Let me look more carefully at `build_state_summary` to see what it does with the events. Maybe `build_state_summary` scans the events internally.
+
+Let me also look at the cycle. `handle_state_summary` at line 1298:
+1. Gets events via `read_tail_events(&path, limit)` - limit is 200
+2. Calls `build_state_summary(&events)` on those 200 events
+3. Also calls `read_events(&path)` to get total count
+
+`read_events` reads all events from the file! That's the unbounded scan. Line 1307:
+```
+let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());
+```
+
+That loads ALL 158K events just to count them. THAT's the timeout.
+
+Actually wait, let me re-read. The `if limit > 0` block only runs when limit > 0 (default is 200). At line 1306-1311, it reads ALL events just to print the total count in a progress message. That's the timeout.
+
+But also, `build_state_summary` at line 1305 might be expensive even on 200 events. Let me check what it does.
+
+Actually, let me check - maybe the issue is that `build_state_summary` internally reads events again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2916..2996 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+`build_state_summary` iterates over the provided events (which should be 200 with the default limit). That part is fine.
+
+The problem is in `handle_state_summary`:
+
+```rust
+fn handle_state_summary(args: &[String], limit: usize) {
+    let path = default_events_path();
+    let show_tail = args.iter().any(|a| a == "--tail");
+    let Ok((events, note)) = read_tail_events(&path, limit) else {
+        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+        return;
+    };
+    println!("{}", build_state_summary(&events).0);
+    if limit > 0 {
+        let all_count = read_events(&path).map(|e| e.len()).unwrap_or(events.len());  // <-- THIS IS THE PROBLEM
+        if events.len() >= limit {
+            // ...
+        }
+    }
+```
+
+Line 1307 calls `read_events(&path)` which reads ALL events! With ~158K events that's the timeout.
+
+The fix is simple: don't call `read_events` just to get the total count. Instead, we could count lines cheaply (like `wc -l`), or use the bounded reader, or just skip the total count display.
+
+This is a simple fix that follows the same pattern as the Day 132 fix for `state why` (which added bounded scanning).
+
+Now for the lifecycle gaps task: the `append_terminal_state_events.py` already has logic to close orphaned runs (lines 400-429) and runs missing FailureObserved (lines 436-455). But I see it doesn't explicitly close runs with FailureObserved but no RunCompleted beyond what the orphan scan catches. The `find_runs_with_failure_observed_no_completion` function at line 277 finds them, but they need to be used in `append_terminal_events`.
+
+Let me check if `find_stale_orphaned_runs` already covers this case.
+
+Actually, let me re-read the trajectory. The graph pressure says:
+- `deepseek_model_call_unmatched_completed_count=2`: 2 ModelCallStarted without ModelCallCompleted
+- `open_after_FailureObserved=8`: 8 runs with FailureObserved but no RunCompleted
+
+The assessment says the append_terminal_state_events fix from Day 136 "may already address some of these." Let me check what the Day 136 fix actually did - it taught the script not to double-close runs that already have both FailureObserved and RunCompleted. The remaining issue is runs that have FailureObserved but NO RunCompleted.
+
+Looking at the code: `find_stale_orphaned_runs` at line 403 finds runs with RunStarted but no RunCompleted and at least one ModelCallStarted. But it doesn't specifically look at FailureObserved. The `find_runs_with_failure_observed_no_completion` function at line 277 finds runs with FailureObserved but no RunCompleted, but IT'S NEVER CALLED in `append_terminal_events`! It's only defined. Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'find_runs_with_failur… ✓ (640ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - it IS called at line 468 in `append_terminal_events`. Let me see what happens with the result.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:465..525 ✓ (344ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `append_terminal_events.py` already closes runs with FailureObserved but no RunCompleted via the `find_runs_with_failure_observed_no_completion` call at line 468. This was added as part of the Day 136 fix! The code is already there.
+
+The remaining lifecycle gap with 8 `open_after_FailureObserved` may be because:
+- Those runs haven't been through a session where `append_terminal_state_events.py` ran since the fix was applied.
+- Or the fix isn't detecting them correctly.
+
+But since the code IS there (from Day 136), this isn't a new task - it's a "wait and see" situation where the next sessions will close those gaps as they run.
+
+So the lifecycle gap task is not actionable right now. The code is in place.
+
+Now let me focus on what IS actionable:
+
+1. **Fix `state summary` timeout** — The root cause is clear: `read_events(&path)` at line 1307 loads all ~158K events just to get a total count. Fix: replace with a cheap line count or remove the total count display.
+
+2. **What about the second task?** The trajectory shows `planner_no_task_count=1` and `task_seed_contradiction_count=1`. But these are one-off historical events, not recurring patterns. The assessment says the system is healthy with 6/6 completed sessions succeeding.
+
+Let me focus on task 1 (state summary timeout) and task 2 (maybe the lifecycle gap - but wait, the code is already in place).
+
+Actually, let me re-read the trajectory pressure more carefully:
+
+"Make planning failure actionable (planner_no_task_count=1)"
+"Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=2)"
+"Raise session success rate (session_success_rate=0.0)"
+"Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)"
+"Require strict verifier evidence for tasks (task_verification_rate=0.0)"
+
+The session_success_rate=0.0 is classified as "no_task_evidence" per the assessment - the latest readiness classification is stale. The assessment says "the 02:31 session landed a verified task."
+
+The remaining lifecycle gaps after the Day 136 fix: 8 `open_after_FailureObserved` - these should be closed by subsequent sessions running `append_terminal_state_events.py`. Not actionable as a code change.
+
+For the second task, let me think about what would be concrete and valuable:
+
+The integration test timeout is known but it's a scale issue, not a regression. Fixing it would be a large effort.
+
+What about the "Validate seeded tasks against fresh assessment" pressure? The seed task (task_01.md) IS contradicted by the assessment! The cache metrics task is blocked by upstream yoagent. So I'm experiencing this exact pressure right now. I need to write task_01_obsolete.md.
+
+OK so my plan:
+
+1. Write `session_plan/task_01_obsolete.md` explaining the cache metrics task is blocked by upstream yoagent
+2. Create new `session_plan/task_01.md` - Fix `state summary` timeout (bounded total-event count)
+3. Create `session_plan/task_02.md` - something actionable... 
+
+Actually, let me think about what else is actionable. Maybe I should look at the integration test timeout. But that's complex.
+
+Or maybe I should look at Issue #90 again - the help-wanted issue about yoagent. The assessment says to file an issue upstream. But YOAGENT_REPO isn't configured so I can't do a PR. The issue already exists as agent-help-wanted.
+
+What about the early-morning cancelled sessions? Not a code problem.
+
+What about `planner_no_task_count=1`? One session where the planner produced no task files. The fix would be to improve the planner's fallback, but the system is currently healthy.
+
+Let me check if there's a concrete code change I can make for the task_seed_contradiction_count. The assessment contradicts the seed task. The preseed script (`scripts/preseed_session_plan.py`) already has contradiction detection - let me check if it's working correctly.
+
+Actually, let me focus. The assessment found one clear HIGH bug: `state summary` timeout. Let me make that task 1 and find one more concrete task.
+
+Looking at the assessment again: "The main friction is the unbounded scan in `state summary`." 
+
+For task 2, what about fixing the `read_events` call in `handle_state_summary` to use a bounded reader instead? But that's part of task 1 already.
+
+What about the integration test timeout? Let me check what's causing it.
+
+Actually, let me look at the trajectory's "log feedback" section more carefully:
+- "shell tool commands failed during the session"
+- "file-read evidence contained path or access errors"  
+- "seeded tasks contradicted the fresh assessment"
+
+The third one is about seeded task contradiction - which is exactly what happened with task_01.md (cache metrics). The preseed script should have caught this. Let me check if there's a bug in the contradiction detection.
+
+Actually, no. The assessment says "the preseed script already has contradiction detection" and the assessment itself says the cache metrics task is blocked. So the preseed script should have known that. Let me check.
+
+Wait - the task_01.md says `validated_against_assessment: true` and "Current assessment matched this harness seed: The assessment found `deepseek cache-report` returning no metrics..." But the assessment DOES say cache-report returns no metrics - that's true. The assessment just also says the fix is blocked by upstream yoagent. So the seed task correctly identifies the problem but doesn't account for it being blocked.
+
+Hmm, but the seed task was generated BEFORE the assessment (the harness seeds it). And the assessment now clearly states the blockage. So my job as planner is to obsolete it.
+
+OK let me stop deliberating and write the plan:
+
+Task 1: Fix `state summary` timeout - replace unbounded `read_events` call with cheap line count
+Task 2: Add assessment contradiction signal to preseed script - teach it to detect when a seeded task is blocked (upstream dependency, not locally fixable)
+
+Actually wait, let me think about whether Task 2 is really worth a slot. The preseed script already has contradiction detection. The specific issue here (cache metrics blocked by yoagent) is an edge case. And the feedback mechanism already works - I'm obsoleting the task in this planning phase.
+
+Let me just go with Task 1 (state summary timeout) and maybe a small second task.
+
+Actually, you know what, let me just write one task and see if there's cleanly a second. The assessment says "The system is in a quiet, healthy state." One good task is better than two forced ones.
+
+Wait, the planning instructions say: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+Let me find a second evidence-backed task. Looking at the trajectory again:
+
+"Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=2): Lifecycle causes: state_unmatched/open_after_FailureObserved=8; gaps:..."
+
+The 8 `open_after_FailureObserved` runs have FailureObserved but no RunCompleted. The append_terminal_state_events.py already has code to close these (line 468-486). But maybe the issue is that these runs DON'T have RunStarted events in the events file (they might be old, truncated, etc.).
+
+Wait - `find_runs_with_failure_observed_no_completion` just checks for FailureObserved without RunCompleted. It doesn't check for RunStarted. The `find_stale_orphaned_runs` checks for RunStarted. So there might be a gap: runs with FailureObserved but no RunCompleted that ALSO don't have RunStarted (maybe the RunStarted was truncated or from a different session).
+
+But that's speculative. Let me check if the 8 open_after_FailureObserved runs actually need RunCompleted events and whether the current code handles them.
+
+Actually, the code DOES handle them - line 468-486. The question is whether it's being called in the right context.
+
+Let me step back. I have one clearly actionable task (state summary timeout). Let me find a second.
+
+What about the integration test timeout? The assessment says "the full suite times out at 180s. Individual tests pass." The issue might be that some integration tests spawn subprocesses and don't clean up properly, or there are too many tests.
+
+Let me try to find the slowest integration test.
+
+Actually, let me just focus on what's clearly actionable and evidence-backed:
+
+Task 1: Fix `state summary` timeout (HIGH bug, concrete fix, touches Rust code)
+Task 2: Close remaining lifecycle gaps - enhance `append_terminal_state_events.py` to handle edge case where FailureObserved exists but RunStarted doesn't
+
+Wait, but I'm speculating about Task 2 without evidence. Let me just do Task 1 and write a planning note about why I'm not filling the second slot.
+
+Actually, the planning instructions say: "If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP."
+
+But I CAN select work (Task 1). And I have one task.
+
+Let me re-read: "Task allocation: State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+"SHOULD" not "MUST". One task is acceptable if I can justify it. The assessment says the system is in a quiet, healthy state.
+
+OK let me just write the plan. I'll obsolete the seed task, create a new task_01.md for the state summary fix, and note in issue_responses.md that there's only one task because the system is healthy.
+
+Actually wait, let me also consider: the trajectory says "Make planning failure actionable (planner_no_task_count=1)". This is about one session where the planner produced no task files. I could add a planner fallback mechanism. But the current session is fine - I'm producing tasks.
+
+And "Require strict verifier evidence for tasks (task_verification_rate=0.0)" - but the assessment says this is stale classification, the 02:31 session landed a verified task.
+
+OK final plan:
+
+1. `task_01_obsolete.md` - cache metrics task blocked by upstream yoagent
+2. `task_01.md` - Fix `state summary` timeout 
+3. `task_02.md` - maybe... Let me check if there's a quick win.
+
+Actually, you know what would be a good second task? The assessment notes the integration test suite times out. Let me investigate the slowest test and see if I can optimize it or split it. But that's a big task for a 20-min window.
+
+Let me just go with one task and justify it. The harness says SHOULD, not MUST.
+
+Wait, actually, I should check something. The assessment says `state summary` times out. But I showed the default limit is 200, which should be fast with `read_tail_events`. The problem is the `read_events(&path)` call at line 1307 which loads ALL events just for the count.
+
+But wait - does `handle_state_summary` actually get called with limit=200? Let me trace through: the "summary" match arm at line 121-129 extracts the limit from --limit flag, defaulting to 200. Then it calls `handle_state_summary(args, limit)`. Inside `handle_state_summary`, line 1301 calls `read_tail_events(&path, limit)` where limit=200. `read_tail_events` with limit=200 calls `read_tail(path, 200)` which reads last 200 lines - that's fast. Then `build_state_summary(&events)` processes 200 events - fast. Then line 1307: `read_events(&path)` loads ALL 158K events - THAT's the timeout.
+
+The fix: replace the `read_events` call with a cheap file-line-count. Or remove the total count display. Or use `read_events_bounded`.
+
+OK, let me write the plan. I'll do one clean task plus obsoleting the stale seed.
+
+Let me also quickly check what the test situation is for state summary to know what verifier to use.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have clear evidence. Let me also check the test coverage for `handle_state_summary`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'state.summary\|handle…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'state.summary\|state… ✓ (1.3s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write the plan files. I'll create:
+
+1. `session_plan/task_01_obsolete.md` - explaining why the cache metrics seed task is blocked
+2. `session_plan/task_01.md` (new) - Fix `state summary` timeout
+3. `session_plan/issue_responses.md` - responses for issues #105 and #90
+
+I won't create task_02.md because:
+- The system is in a quiet, healthy state
+- The lifecycle gaps already have code from Day 136 that should close them over subsequent sessions
+- The other trajectory pressures are either stale classifications or one-off events
+- One focused, high-quality task is better than two forced ones
+
+Let me write the files now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+Now I have all the evidence I need. Let me write the plan files. First, obsoleting the stale seed task, then the evidence-backed replacement.
+  + Title: [OBSOLETE] Record DeepSeek prompt cache metrics during prompt runs
+  + Files: none
+  + Issue: #105
+  + Origin: planner (obsoleting harness-seed)
+  + 
+  + Evidence:
+  + - This task was seeded by the harness before the Phase A1 assessment ran.
+  + - The Phase A1 assessment (this session, Day 137 10:03) found that prompt cache
+  +   metrics for agent chat completions are BLOCKED by upstream yoagent:
+  +   "Issue #90/105 — cache metrics — blocked by upstream yoagent. Not actionable
+  +   in yyds until yoagent exposes the cache token fields."
+  + - Issue #90 (agent-help-wanted) confirms: yoagent's `Usage` struct drops
+  +   `cache_read_input_tokens` and `cache_creation_input_tokens` fields that
+  +   DeepSeek's API returns for chat completions.
+  + - This task was already attempted at Day 137 (02:31) and reverted because the
+  +   implementation agent could not find a way to record cache metrics without
+  +   those upstream fields. The revert evidence is in Issue #105.
+  + - The diagnostic paths (`stream-check`, `fim-complete`) DO record cache metrics
+  +   because they parse raw JSON directly, bypassing yoagent's `Usage` struct.
+  + - Until yoagent exposes the cache token fields or a yyds-side workaround is
+  ... (6 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (26 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (26 lines) ✓ (317ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now write the replacement task_01.md for the state summary timeout fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Record DeepSeek prompt cache metrics during prompt runs
+  - Files: src/prompt.rs, src/deepseek.rs, src/state.rs
+  + Title: Fix `state summary` timeout — replace unbounded event-scan with bounded reader
+  + Files: src/commands_state.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found `deepseek cache-report` returning no metrics even though the DeepSeek protocol layer and gnome keys exist. Cache observability is required to optimize stable-prefix prompt layout and cost/latency.
+  + - Running `./target/debug/yyds state summary` times out at 10s (confirmed by
+  +   Phase A1 self-test this session, Day 137 10:03).
+  + - Root cause: `handle_state_summary` at line 1307 calls `read_events(&path)`
+  +   which loads ALL ~158K JSON events into memory just to display the total count
+  +   in a progress note ("summary from last {limit} events of {all_count} total").
+  + - The actual summary computation (`build_state_summary`, line 1305) already runs
+  +   on the bounded tail from `read_tail_events(path, limit)` with default
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (83 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (83 lines) ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write issue_responses.md. I need to decide what to do with issues #105 and #90.
+
+#105 - agent-self, the reverted cache metrics task. It's blocked by upstream yoagent. I should note that it's deferred until yoagent exposes cache fields.
+
+#90 - help-wanted, same upstream yoagent issue. No replies yet. I should note that it's waiting for upstream or human intervention.
+
+The planning instructions say: "Skip issues where you have nothing new to say — silence is better than noise."
+
+For #105, I have something to say: the task was obsoleted in this planning session because the assessment confirmed the upstream blockage.
+
+For #90, no replies yet, so nothing new to say.
+
+Let me also check if there are any replies to #90 that I might have missed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && gh issue view 90 --repo yologd… ✓ (643ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+0 comments on #90 - no replies. Good, I won't say anything new.
+
+Now write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 137 (2026-07-15 10:03)
+  + 
+  + ## #105 — Task reverted: Record DeepSeek prompt cache metrics during prompt runs
+  + **Decision:** Defer (task obsoleted this session)
+  + **Reason:** This task was seeded by the harness before Phase A1 assessment. The
+  + assessment confirmed the root cause is an upstream yoagent blockage: yoagent's
+  + `Usage` struct drops DeepSeek's `cache_read_input_tokens` and
+  + `cache_creation_input_tokens` fields. Until yoagent exposes these (or a human
+  + approves a yyds-side workaround), any implementation attempt here will revert.
+  + The seed task was marked obsolete in `session_plan/task_01_obsolete.md` with the
+  + exact contradiction evidence.
+  + 
+  + ## #90 — Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + **Decision:** Defer (no replies, no new evidence)
+  + **Reason:** No replies since filing. The upstream blockage remains. Nothing new
+  + to add — repeating the same request without new evidence is noise.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (16 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (16 lines) ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the plan files are all in place and look correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify all plan files are in place:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "---" && for f in session_plan/*.md; do echo "=== $… ✓ (643ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The plan is complete. Let me summarize:
+
+1. **task_01_obsolete.md** — explains why the harness-seeded cache metrics task is blocked by upstream yoagent
+2. **task_01.md** — Fix `state summary` timeout by replacing unbounded `read_events()` with a cheap line count
+3. **issue_responses.md** — defers #105 (obsoleted) and #90 (no replies, no new evidence)
+
+I decided to produce only 1 implementation task because:
+- The system is in a quiet, healthy state (6/6 completed sessions succeeded)
+- The lifecycle gap code is already in place from Day 136 and will close gaps over subsequent runs
+- The other trajectory pressures are stale classifications or one-off events
+- The cache metrics task (#105/#90) is blocked by upstream yoagent
+
+This is a clean, evidence-backed plan. The one task is concrete, touches Rust source, has hard verification gates (cargo build/test), and directly addresses a HIGH bug found in the assessment.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's what I produced:
+
+## Plan Summary — Day 137
+
+### Task 01: Fix `state summary` timeout
+• **Files:** `src/commands_state.rs`
+• **Problem:** `handle_state_summary` calls `read_events(&path)` at line 1307, loading all ~158K events just to display a total count in a progress note. Same root cause as Day 132's `state why` fix.
+• **Fix:** Replace the unbounded `read_events` call with a cheap file line count (events are single-line JSON, so line count = event count).
+• **Verifier:** `timeout 10 ./target/debug/yyds state summary`
+
+### Task 01 (obsolete): Cache metrics
+• **Why obsoleted:** Blocked by upstream yoagent (`Usage` struct drops DeepSeek cache fields). Already reverted at 02:31 session (Issue #105). Assessment confirms the blockage.
+
+### Issue Responses
+• **#105:** Deferred — task obsoleted this session (upstream blockage confirmed)
+• **#90:** Deferred — no replies, no new evidence to add
+
+### Why only one task
+The system is in a quiet, healthy state: 6/6 completed sessions succeeded. The lifecycle gap code from Day 136 is already in place and will close remaining gaps as subsequent sessions run `append_terminal_state_events.py`. The other trajectory pressures are stale classifications or one-off events. One focused, high-quality task is better than two forced ones.
+
+
