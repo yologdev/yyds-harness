@@ -1,0 +1,408 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and the current state of the codebase. I need to read the evolve skill first, then examine the relevant source files.
+
+The task is about recording DeepSeek prompt cache metrics during prompt runs. Let me:
+1. Read the evolve skill
+2. Examine the relevant files (src/prompt.rs, src/deepseek.rs, src/state.rs)
+3. Understand the current state of cache metrics
+4. Implement the changes
+5. Verify
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ ls session_plan ✓ (1.6s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the task file and then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md ✓ (1.8s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment is very clear: the `deepseek cache-report` returns no metrics because yoagent's `Usage` struct drops DeepSeek cache fields. This is an upstream issue (#90). The assessment says:
+
+> **Issue #90** (agent-help-wanted): yoagent's `Usage` struct drops DeepSeek cache fields (`cache_read_input_tokens`, `cache_creation_input_tokens`). This prevents `yyds deepseek cache-report` from reporting cache metrics for agent chat completions.
+
+So the task is about recording DeepSeek prompt cache metrics during prompt runs. But the assessment says this is blocked on upstream yoagent. Let me look at the source files to understand what's already in place and what can be done at the harness level.
+
+Let me first check if there are any existing cache metrics recording, and what `deepseek cache-report` currently does.
+
+Let me think about this carefully. The task says:
+- "Prompt usage with cache hit/miss tokens emits CacheMetricsRecorded state events."
+- "No request-side `cache_control` is added for DeepSeek."
+
+The assessment says the blocker is yoagent's `Usage` struct dropping DeepSeek cache fields. So the cache metrics (cache_read_input_tokens, cache_creation_input_tokens) are returned by the DeepSeek API but yoagent doesn't surface them.
+
+However, the task says to record cache metrics DURING prompt runs. Maybe there's a way to intercept the raw response or usage data before yoagent strips it. Let me examine the code.
+
+Let me look at:
+1. src/prompt.rs - how prompts are run
+2. src/deepseek.rs - DeepSeek protocol
+3. src/state.rs - state recording
+
+And also:
+4. src/commands_deepseek.rs - cache-report command
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.4s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (537ms)
+  ▶ todo ✓ (625ms)
+  ▶ todo ✓ (623ms)
+  ▶ todo ✓ (982ms)
+  ▶ todo ✓ (525ms)
+  ▶ todo ✓ (521ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start reading the key source files in parallel.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 6.9s (6 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'CacheMetrics' (*.rs)  ▶ search 'cache_read_input_tokens' (*.rs)  ▶ search 'cache_creation_input_tokens' (*.rs) ✓ (1.1s)
+ ✓ (2.3s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Let me look at the key files. It seems like:
+1. `src/state.rs` has `CacheMetricsRecorded` as an event type and records it at lines 530 and 559
+2. `src/lib.rs` at lines 192-193 maps `cache_read` and `cache_write` from `usage` to `cache_read_input_tokens` and `cache_creation_input_tokens`
+3. `src/commands_deepseek.rs` at line 1934 mentions the upstream blocker
+
+Let me look at these in more detail to understand what already exists and what's missing.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:170..230  ▶ read src/state.rs:510..580  ▶ read src/commands_deepseek.rs:1920..2020 ✓ (637ms)
+ ✓ (3.8s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture more clearly. Let me understand the flow:
+
+1. `src/state.rs:526-531` has `record_cache_metrics(model, usage)` which takes a `yoagent::Usage` and records `CacheMetricsRecorded` events. It calls `cache_metrics_payload` which probably checks if model is deepseek and if cache_read/cache_write are non-zero.
+
+2. `src/state.rs:537-560` has `record_cache_metrics_direct` which bypasses `yoagent::Usage` and takes raw cache_hit/cache_miss values.
+
+3. `src/lib.rs:192-193` - the JSON output format maps `usage.cache_read` and `usage.cache_write` to cache_read_input_tokens and cache_creation_input_tokens.
+
+4. `src/commands_deepseek.rs:1934` says "yoagent Usage struct drops DeepSeek cache token fields".
+
+The key question is: where does `record_cache_metrics` get called? And is the issue that `yoagent::Usage` doesn't have the DeepSeek cache fields populated after a prompt run?
+
+Let me look at:
+1. Where `record_cache_metrics` is called
+2. What the `cache_metrics_payload` function does (to understand the check)
+3. What happens after a prompt run - where does the usage data come from
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.1s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics' (*.rs)  ▶ search 'cache_metrics_payload' (*.rs)  ▶ search 'record_cache_metrics_direct' (*.rs) ✓ (1.1s)
+ ✓ (2.8s)
+ ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key calls:
+
+1. `src/prompt.rs:956` - calls `record_cache_metrics(model, &state.usage)` during prompt runs - this is the normal path
+2. `src/deepseek.rs:1706` and `:1789` call `record_cache_metrics_direct` - these are for diagnostic paths like stream-check and FIM
+
+Let me look at the prompt.rs call to understand what `state.usage` looks like and whether cache fields are zero. Also let me look at `cache_metrics_payload` to understand the check.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:940..980  ▶ read src/state.rs:575..625 ✓ (621ms)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+
+1. `cache_metrics_payload` in `state.rs` maps `yoagent::Usage` fields to `DeepSeekUsage`:
+   - `cache_hit_tokens = usage.cache_read` (yoagent maps `prompt_cache_hit_tokens` to `cache_read`)
+   - `cache_miss_tokens = usage.input` (yoagent maps `prompt_cache_miss_tokens` to `input`... wait, that doesn't sound right)
+
+Wait, let me re-read the comment:
+```
+// yoagent's OpenAI-compatible provider maps DeepSeek
+// `usage.prompt_cache_hit_tokens` to `cache_read` and
+// `usage.prompt_cache_miss_tokens` to `input`.
+```
+
+So in yoagent:
+- `usage.cache_read` = DeepSeek's `prompt_cache_hit_tokens`
+- `usage.input` = DeepSeek's `prompt_cache_miss_tokens`
+
+This is confusing because `usage.input` is normally total input tokens. But the comment says for DeepSeek, yoagent maps the prompt_cache_miss_tokens to `input`.
+
+Then the check at line 596: if both `cache_hit_tokens` and `cache_miss_tokens` are Some(0), it returns None (no event recorded).
+
+Now the problem statement: "The assessment found `deepseek cache-report` returning no metrics even though the DeepSeek protocol layer and gnome keys exist."
+
+The issue is that during agent chat runs, `record_cache_metrics` is called at `prompt.rs:956` with `&state.usage`, but the `yoagent::Usage` has `cache_read = 0` and `input = 0` for the overall usage. This is because after the prompt runs, the usage is the total across all turns, and the cache fields might be zero.
+
+Wait, actually let me re-examine. Let me look at what happens after `agent.finish()` is called - the `state.usage` at that point should have the final usage values.
+
+But the key issue from the assessment is that yoagent drops DeepSeek cache fields. So even if DeepSeek returns cache metrics in the API response, yoagent's `Usage` struct doesn't have separate fields for `cache_read_input_tokens` and `cache_creation_input_tokens` that DeepSeek uses. Instead, it maps them to other fields like `cache_read` and `input`.
+
+Wait, actually the assessment and code suggest a different issue. Let me re-read more carefully:
+
+From `commands_deepseek.rs:1934`: "yoagent Usage struct drops DeepSeek cache token fields (cache_read_input_tokens, cache_creation_input_tokens)"
+
+And from `state.rs:586-594`:
+```
+// yoagent's OpenAI-compatible provider maps DeepSeek
+// `usage.prompt_cache_hit_tokens` to `cache_read` and
+// `usage.prompt_cache_miss_tokens` to `input`.
+```
+
+So actually, the code already has a workaround: it reads `usage.cache_read` (which yoagent maps from `prompt_cache_hit_tokens`) and `usage.input` (which yoagent maps from `prompt_cache_miss_tokens` or just uses total input).
+
+But wait - the comment says `usage.prompt_cache_miss_tokens` maps to `input`. That seems wrong. `input` should be total input tokens, not cache miss tokens.
+
+Hmm, I need to understand this better. Let me look at what the DeepSeek API actually returns vs what yoagent does with it. Let me look at the deepseek.rs file to understand the DeepSeek-specific usage handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.9s (2 ✓)
+
+Let me look at the deepseek.rs file to understand how cache metrics are handled for diagnostic paths vs. agent chat:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1680..1800 ✓ (724ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. **FIM completions** (`parse_fim_completion_response` at line 1706): Records cache metrics directly via `record_cache_metrics_direct` with the DeepSeek API's `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` fields.
+
+2. **Streaming chat** (`parse_chat_completion_sse` at line 1789): Records cache metrics directly via `record_cache_metrics_direct` using the parsed DeepSeekUsage from the streaming response.
+
+3. **Agent chat** (the normal prompt flow): At `prompt.rs:956`, it calls `record_cache_metrics` with `yoagent::Usage`. The `cache_metrics_payload` function maps `usage.cache_read` (which yoagent maps from `prompt_cache_hit_tokens`) and `usage.input` (which seems to be total input, not cache miss) to the DeepSeek fields.
+
+The problem is that for agent chat runs, the `yoagent::Usage` struct may not have the DeepSeek-specific cache fields populated correctly. The comment says yoagent maps `prompt_cache_miss_tokens` to `input`, which is likely wrong - `input` is total input tokens, not cache miss tokens.
+
+But wait - looking at the code more carefully, it seems like the existing `record_cache_metrics` call at `prompt.rs:956` should already record the cache metrics. If it's not working, it's because `yoagent::Usage.cache_read` and `yoagent::Usage.input` are zero for DeepSeek.
+
+Let me check what `state.usage` looks like and how it's populated. Let me search for how `handle_agent_end` works and what `state.usage` contains.
+
+Let me look at the `PromptState` struct and see what `usage` field looks like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct PromptState' (*.rs)  ▶ search 'fn handle_agent_end' (*.rs) ✓ (555ms)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the state struct used in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct.*State' (src/prompt.rs) ✓ (859ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `usage` in prompt.rs to find the struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'usage:' (src/prompt.rs) ✓ (725ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the prompt.rs around line 650-680 to see the handle_agent_end function and the state struct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:640..740 ✓ (715ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state struct definition and find where `usage` field is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:580..640 ✓ (665ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the struct definition that contains the `usage` field.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'usage: Usage' (src/prompt.rs) ✓ (712ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'self.usage' (src/prompt.rs) ✓ (674ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search returned nothing for `self.usage`, but I know from lines 688 and 947 that `self.usage` is used. Let me try searching just `usage`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'usage' src/prompt.rs | head -30 ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the state struct. Let me read more context around lines 330-380.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:330..390 ✓ (734ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow. The `PromptEventState` has a `Usage` field that accumulates usage across messages. At the end, `record_cache_metrics` is called with this accumulated usage.
+
+Now let me look at what `yoagent::Usage` looks like and what fields it has for cache. Let me also look at how DeepSeek API responses' usage is mapped in yoagent.
+
+The issue is that for agent chat, the `yoagent::Usage` struct may not have the deepseek-specific cache fields populated correctly through yoagent's provider layer. The diagnostic paths (FIM, stream-check) bypass yoagent and parse the DeepSeek API response directly, so they can extract `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens`.
+
+For agent chat, the stream goes through yoagent's provider, and yoagent maps the DeepSeek usage to its generic `Usage` struct. If yoagent's mapping drops the cache fields, then `usage.cache_read` will be 0 and `usage.input` (which contains the total input tokens, not just cache miss) will be non-zero but wrong.
+
+Wait, let me re-read the comment in `state.rs:586-594`:
+```
+// yoagent's OpenAI-compatible provider maps DeepSeek
+// `usage.prompt_cache_hit_tokens` to `cache_read` and
+// `usage.prompt_cache_miss_tokens` to `input`.
+```
+
+So the workaround is: `cache_read` = `prompt_cache_hit_tokens` and `input` = total input tokens (including cache miss). But that can't be right - `input` is total input tokens, not just cache miss.
+
+Actually, I think the issue might be different. Let me look at what `cache_metrics_payload` does:
+
+```rust
+let deepseek_usage = crate::deepseek::DeepSeekUsage {
+    input_tokens: usage.input,
+    output_tokens: usage.output,
+    cache_hit_tokens: Some(usage.cache_read),
+    cache_miss_tokens: Some(usage.input),
+};
+if deepseek_usage.cache_hit_tokens == Some(0) && deepseek_usage.cache_miss_tokens == Some(0) {
+    return None;
+}
+```
+
+So if `usage.cache_read` is 0 AND `usage.input` is 0, it returns None (no event recorded). But `usage.input` is typically non-zero for any API call, so this check would only catch the very first call where nothing's been sent yet.
+
+Wait, but the comment says `usage.prompt_cache_miss_tokens` maps to `input`. That's odd. Let me look at what happens in yoagent - maybe for DeepSeek, yoagent puts the total input tokens in `input` AND the cache miss tokens separately in some field.
+
+Actually, I think the core issue might be simpler. Let me look at the actual problem: the assessment says "deepseek cache-report returning no metrics." Let me look at the `cache-report` command to see how it aggregates data and why it returns no metrics.
+
+Let me look at `build_cache_report` in `commands_deepseek.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2030..2130 ✓ (682ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `cache-report` command reads `CacheMetricsRecorded` events and aggregates them. The error message at line 2067-2077 explicitly says "yoagent's Usage struct drops DeepSeek cache token fields."
+
+But wait - there are already two paths that record `CacheMetricsRecorded` events:
+1. `record_cache_metrics` (through `cache_metrics_payload`) - called during agent chat runs
+2. `record_cache_metrics_direct` - called during diagnostic paths (FIM, stream-check)
+
+The issue is that path #1 doesn't produce valid events because `yoagent::Usage` doesn't populate the cache fields. Let me verify this by looking at what `Usage` struct looks like and whether `cache_read` and `input` have the right values.
+
+Let me check what yoagent's `Usage` struct looks like. Since yoagent is an external crate, I'll check the source in the cargo registry.
+
+Actually, let me look at what the DeepSeek provider in yoagent does with the usage fields. Let me look at the yoagent source.
+
+But more importantly, let me look at what happens during a prompt run. The key question is: does `record_cache_metrics` at `prompt.rs:956` produce non-zero cache metrics?
+
+Let me look at the `cache_metrics_payload` function again more carefully:
+
+```rust
+fn cache_metrics_payload(model: &str, usage: &yoagent::Usage) -> Option<Value> {
+    if !model.starts_with("deepseek") {
+        return None;
+    }
+    let deepseek_usage = crate::deepseek::DeepSeekUsage {
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_hit_tokens: Some(usage.cache_read),
+        cache_miss_tokens: Some(usage.input),
+    };
+    if deepseek_usage.cache_hit_tokens == Some(0) && deepseek_usage.cache_miss_tokens == Some(0) {
+        return None;
+    }
+    ...
+}
+```
+
+Wait - `cache_miss_tokens: Some(usage.input)`. This sets cache_miss_tokens to total input tokens. That doesn't make sense.
+
+But the comment says "yoagent's OpenAI-compatible provider maps DeepSeek `usage.prompt_cache_miss_tokens` to `input`." So it seems like yoagent might be putting the cache miss tokens into the `input` field for DeepSeek specifically. Let me check.
+
+Actually, I think the comment might be wrong and the code might be wrong too. Let me check what yoagent actually does.
+
+Let me search for how yoagent handles DeepSeek API usage in the cargo registry.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check yoagent's `Usage` struct and how it handles DeepSeek cache fields:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ find ~/.cargo/registry/src -path '*/yoagent-0.*/src/*.rs' -name '*.rs' 2>/dev/nu…📦 RTK detected — using compressed output (disable with --no-rtk)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the yoagent Usage struct and how DeepSeek/openai provider maps usage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check types.rs for the Usage struct and provider for DeepSeek/openai handling.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub struct Usage' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557…  ▶ $ ls ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/prov… ✓ (3.3s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/types.rs:176..206  ▶ $ grep -n 'cache_read\|cache_write\|cache_creation\|cache_read_input\|prompt_cache… ✓ (2.3s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture! Let me read the relevant section of openai_compat.rs to understand the mapping:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/yoagent-0.8.4/src/provider/openai_compat.rs:80..110 ✓ (830ms)
+
+

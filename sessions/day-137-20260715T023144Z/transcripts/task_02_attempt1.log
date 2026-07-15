@@ -1,0 +1,471 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant source code to understand what needs to be changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:11570..11630 ✓ (2.1s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the `graph_evidence_relation` function starting at line 11578. It currently only matches evaluation/promotion relation types. I need to add runtime relation types like "observed_in", "derived_from", "references_file", "modified_file", "records_model_call", "uses_model", "traced_by", and "modified".
+
+Let me also look at:
+1. How `build_graph_evidence_report` uses this function
+2. Where runtime relations are stored in state.rs for reference
+3. Any existing tests
+
+Let me also check the `build_graph_evidence_report` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_graph_evidence_report' (*.rs)  ▶ search 'observed_in.*relation' (*.rs)  ▶ search 'graph_evidence_relation' (*.rs) ✓ (1.5s)
+ ✓ (2.9s)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `build_graph_evidence_report` function more closely, and also look at where the runtime relations are defined in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:6070..6120  ▶ search '"observed_in"' (*.rs) ✓ (2.0s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at state.rs to see where the runtime relations are defined, specifically the relation types that are added during projection.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1570..1670  ▶ read src/commands_state.rs:20575..20605 ✓ (674ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check the "uses_model" relation, since the projection code at line 1669 mentions it:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1668..1698 ✓ (675ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. The `graph_evidence_relation` function at line 11578 needs to be expanded to include runtime relation types. The relevant ones from the SQLite projection (`state.rs`) are:
+
+- "observed_in" — event belongs to a run
+- "derived_from" — event has parent events
+- "references_file" — event references a file (FileRead)
+- "modified_file" — event modified a file (FileEdited, CommitCreated, RevertPerformed)
+- "modified" — same as above (kept for backward compat)
+- "records_model_call" — event records a model call
+- "uses_model" — model call uses a specific model
+- "traced_by" — event belongs to a trace
+
+I should not add "records_tool_call" or "uses_tool" since those are more generic and would make the evidence view too broad.
+
+Now let me look at the existing test for `build_graph_evidence_report` to understand how it's set up:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:20510..20600 ✓ (724ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me also check what existing tests use `graph_evidence_relation` or test evidence with runtime events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_graph_evidence_report' (*.rs) ✓ (694ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 20583 is using an eval entity. I should also look at the test at the bottom of the file to see if there's another one. Let me also check the `graph_evidence_from_event_test` or similar.
+
+Let me now also look at the graph commands test that uses plain events to see what the test infrastructure looks like:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:22720..22820 ✓ (687ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to also look at the existing test for `graph_evidence_relation` - there might be one that tests it directly. Let me search for tests related to evidence. But first, let me check the test pattern more broadly. 
+
+Actually, let me now write the code change and add a test. The change is straightforward:
+
+1. Add runtime relation types to `graph_evidence_relation` 
+2. Add a test that verifies evidence relations work for runtime events
+
+Let me plan:
+
+For the `graph_evidence_relation` function, I'll add:
+- "observed_in"
+- "derived_from" 
+- "references_file"
+- "modified_file"
+- "modified"
+- "records_model_call"
+- "uses_model"
+- "traced_by"
+
+For a test, I'll create a test that:
+1. Creates events with runtime relations (e.g., a FileRead event with a run_id)
+2. Builds the SQLite projection
+3. Calls `build_graph_evidence_report` and verifies it returns non-empty output with the expected relation types
+
+Let me also check if there are tests for `graph_evidence_relation` directly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at nearby tests for evidence relations to find a good test insertion point:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn graph_evidence' (*.rs)  ▶ search 'graph_evidence_relation' (*.rs) ✓ (1.3s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test at line 19324 to understand the test patterns for graph evidence reports:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:19324..19444 ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I understand the test patterns. Let me also check what `EventType` variants are available:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::FileRead' (*.rs) ✓ (575ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `EventType::FileRead` is available. Now I have enough information. Let me implement the change:
+
+1. Expand `graph_evidence_relation` to include runtime relation types
+2. Add a test that verifies evidence relations work for runtime events (like FileRead, ModelCallCompleted, etc.)
+
+Let me now make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence I need. Let me implement the change. First, the edit to `graph_evidence_relation`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (563ms)
+  ▶ todo ✓ (578ms)
+  ▶ todo ✓ (529ms)
+  ▶ todo ✓ (530ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edit to the `graph_evidence_relation` function.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 7.9s (4 ✓)
+
+
+    fn graph_evidence_relation(relation: &str) -> bool {
+        matches!(
+            relation,
+  -         "addresses"
+  +         // Provenance: where did this come from? What run/trace is it connected to?
+  +         "observed_in"
+  +             | "derived_from"
+  +             | "traced_by"
+  +             // Impact: what did this touch?
+  +             | "references_file"
+  +             | "modified_file"
+  +             | "modified"
+  +             // Model call associations
+  +             | "records_model_call"
+  +             | "uses_model"
+  +             // Evaluation / promotion evidence types
+  +             | "addresses"
+                | "evaluated_failure"
+                | "explains"
+                | "supports"
+  ✓ Auto-approved: edit: src/commands_state.rs (28 → 40 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.1s)
+  ▶ edit src/commands_state.rs (28 → 40 lines)
+    fn graph_evidence_relation(relation: &str) -> bool {
+        matches!(
+            relation,
+  -         "addresses"
+  +         // Provenance: where did this come from? What run/trace is it connected to?
+  +         "observed_in"
+  +             | "derived_from"
+  +             | "traced_by"
+  +             // Impact: what did this touch?
+  +             | "references_file"
+  +             | "modified_file"
+  +             | "modified"
+  +             // Model call associations
+  +             | "records_model_call"
+  +             | "uses_model"
+  +             // Evaluation / promotion evidence types
+  +             | "addresses"
+                | "evaluated_failure"
+                | "explains"
+                | "supports"
+ ✓ (685ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me add a test for runtime event evidence relations. I'll add it near the existing evidence tests. Let me find a good insertion point.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Now let me add a test. I'll add it near the existing `graph_evidence_report_surfaces_release_gate_fixture_agent_mutation_scope` test:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:19368..19408 ✓ (639ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test right after line 19383 (after the closing `}` of `graph_evidence_report_surfaces_release_gate_fixture_agent_mutation_scope`). The test will create runtime events (FileRead with references_file, ModelCallCompleted with records_model_call and uses_model, a failure with observed_in/derived_from/traced_by) and verify that `build_graph_evidence_report` returns non-empty output with the expected relation types.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[test]
+  +     fn graph_evidence_report_surfaces_runtime_event_relations() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let sqlite_path = dir.path().join("state.sqlite");
+  +         let events = [
+  +             crate::state::StateEvent {
+  +                 event_id: "evt-read".into(),
+  +                 event_type: crate::state::EventType::FileRead,
+  +                 schema_version: 1,
+  +                 timestamp_ms: 1,
+  +                 actor: crate::state::Actor::Harness,
+  +                 run_id: Some("run-1".into()),
+  +                 session_id: None,
+  +                 trace_id: "trace-1".into(),
+  +                 parent_event_ids: vec!["evt-parent".into()],
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (4 → 117 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (4 → 117 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn graph_evidence_report_surfaces_runtime_event_relations() {
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let sqlite_path = dir.path().join("state.sqlite");
+  +         let events = [
+  +             crate::state::StateEvent {
+  +                 event_id: "evt-read".into(),
+  +                 event_type: crate::state::EventType::FileRead,
+  +                 schema_version: 1,
+  +                 timestamp_ms: 1,
+  +                 actor: crate::state::Actor::Harness,
+  +                 run_id: Some("run-1".into()),
+  +                 session_id: None,
+  +                 trace_id: "trace-1".into(),
+  +                 parent_event_ids: vec!["evt-parent".into()],
+  +                 payload: json!({
+  +                     "files": ["src/main.rs"],
+  ... (96 more lines)
+ ✓ (530ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the focused tests. First, let's run cargo fmt to check formatting, then build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (864ms)
+  ▶ todo ✓ (700ms)
+  ▶ todo ✓ (599ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let's build and run the focused test.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.6s (4 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (1m 9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+My new test passed, but 6 existing tests failed. The issue is that the events in the existing tests now also match the expanded `graph_evidence_relation` filter — specifically, `DecisionRecorded` events with `run_id` set now get `observed_in`, `traced_by` relations, and those are passing the evidence filter when previously they were excluded. This makes the tests fail because now they're seeing unexpected relation types in the evidence output.
+
+Let me look at the failing tests to understand the exact assertions that break:
+
+1. `graph_evidence_report_filters_evidence_relations_with_event_provenance` - probably asserts that certain relations are NOT present
+2. The protocol check tests (`supports_json_output_check`, `supports_streaming_protocol_check`, etc.) - probably have events with `run_id` that now also get `observed_in` relations in the evidence output
+
+Let me look at these tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Several existing tests fail because their events now also get runtime relations (`observed_in`, `traced_by`) from the expanded filter. Let me examine the failing tests:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18600..18680 ✓ (544ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue. The failing test `graph_evidence_report_filters_evidence_relations_with_event_provenance` at line 18663 asserts:
+- `assert!(!report.contains("DecisionRecorded"));` — but now DecisionRecorded with run_id "run-1" will have `observed_in` and `traced_by` relations, and since those are now in the evidence filter, the DecisionRecorded event will appear in the evidence report.
+
+Similarly, the protocol check tests likely have events with run_ids that now also appear due to `observed_in`/`traced_by`.
+
+Let me look at what the actual report contains to understand what's happening. But actually, I think the issue is that the `DecisionRecorded` event `evt-decision` has `run_id: Some("run-1")` and `trace_id: "trace-1"`, so it gets `observed_in` and `traced_by` relations. When the evidence report queries from `evt-failure`, it can reach `evt-decision` via the run "run-1" (evt-failure → observed_in → run-1 → observed_in ← evt-decision). The `query_graph_timeline` traverses the graph in both directions, so the evidence report now shows `evt-decision` as connected to `evt-failure`.
+
+The assert `!report.contains("DecisionRecorded")` was there to verify that only evidence relations pass the filter. Now that `observed_in` and `traced_by` are also evidence relations, the DecisionRecorded event is reachable through the run.
+
+I need to update these tests. The fix options are:
+1. Update the tests to accept the new behavior (the DecisionRecorded now legitimately appears as evidence)
+2. Make the test events NOT have run_ids/trace_ids so they don't get runtime relations
+
+I think option 1 is better — the expanded filter is intentional, and the tests should reflect the new behavior. The `DecisionRecorded` appearing in evidence is now correct behavior since it shares a run with `evt-failure`.
+
+Let me look at the test more carefully. The test name is `graph_evidence_report_filters_evidence_relations_with_event_provenance` and it checks that `uses_patch` and `DecisionRecorded` don't appear. The point was that the evidence filter should exclude non-evidence relations. Now `observed_in` is an evidence relation, so DecisionRecorded appearing through `observed_in` is correct.
+
+But wait — let me think about this more carefully. The expansion we're doing is about adding runtime relations to the evidence filter. This means events that were previously excluded (DecisionRecorded, etc.) will now appear in evidence reports if they're connected via runtime relations. This is the intended behavior! The task says we want to make runtime events discoverable.
+
+However, these tests were specifically testing that non-evidence relations get filtered out. The assertions that `!report.contains("DecisionRecorded")` and `!report.contains("uses_patch")` need updating — `uses_patch` is still not an evidence relation (and should still be filtered), but `DecisionRecorded` now CAN appear through runtime relation paths.
+
+Let me update the failing tests to reflect the new behavior.
+
+Let me look at each failing test:
+
+1. `graph_evidence_report_filters_evidence_relations_with_event_provenance` (line 18663): 
+   - `!report.contains("uses_patch")` — should still pass (uses_patch not added)
+   - `!report.contains("DecisionRecorded")` — will fail because DecisionRecorded events share the same run and trace, so they now appear via observed_in/traced_by
+   - `payload["evidence_count"].as_u64().unwrap(), 2` — will be higher now
+
+2. The protocol check tests - let me look at one to understand:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18730..18810 ✓ (565ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue with the protocol check tests. For example, `graph_evidence_report_surfaces_json_output_check_pass` creates a DecisionRecorded event with `run_id: Some("run-json")` and `trace_id: "trace-json"`. The `project_relations` function creates `observed_in` and `traced_by` relations for this event. Now that `observed_in` and `traced_by` are evidence relations, the evidence report for `evt-json-pass` will include both the `supports_json_output_check` relation AND the `observed_in`/`traced_by` relations. The test asserts `report.contains("by relation: supports_json_output_check=1")` but now the by-relation line would be something like `by relation: observed_in=1, supports_json_output_check=1, traced_by=1`.
+
+The `DecisionRecorded` event also creates a derived event through `project_decisions` (`decision_recorded` in state.rs), which creates self-referencing relations like `supports_json_output_check` and a derived node like "summary". These are already handled.
+
+But the `observed_in` and `traced_by` relations connect `evt-json-pass` to `run-json` and `trace-json`, which means the evidence report now includes these additional relations.
+
+This is the correct behavior! The protocol check events legitimately have run and trace membership, and those are now evidence relations. The tests need to be updated to account for the additional relation counts.
+
+Let me update all 6 failing tests. I need to:
+1. Update `graph_evidence_report_filters_evidence_relations_with_event_provenance` — remove `!report.contains("DecisionRecorded")` assertion and update evidence_count
+2. Update each protocol check test to account for additional relation counts
+
+For the protocol check tests, the "by relation" line would change from e.g. `supports_json_output_check=1` to something like `observed_in=1, supports_json_output_check=1, traced_by=1`.
+
+Actually wait — let me think about the `query_graph_timeline` function. It traverses the graph. The `supports_json_output_check` relation in the protocol tests is a self-referencing relation created by `project_decisions` — it creates a node like "summary" that has a relation `supports_json_output_check` pointing back to `evt-json-pass`. 
+
+But `observed_in` and `traced_by` connect `evt-json-pass` to `run-json` (a "run" node) and `trace-json` (a "trace" node). These are just two more relations from the same event.
+
+So the evidence report would include:
+- `evt-json-pass -[observed_in]-> run-json (run)`
+- `evt-json-pass -[traced_by]-> trace-json (trace)`
+- The existing `summary -[supports_json_output_check]-> evt-json-pass (event)` 
+
+And the "by relation" line would be: `by relation: observed_in=1, supports_json_output_check=1, traced_by=1`
+
+Let me update all 6 failing tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to update the 6 existing tests to account for the new runtime relations. Let me fix them one at a time. First, let me see each failing test's exact assertions:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18830..18840  ▶ read src/commands_state.rs:18880..18890  ▶ read src/commands_state.rs:18930..18940  ▶ read src/commands_state.rs:18978..18988 ✓ (3.0s)
+ ✓ (4.6s)
+ ✓ (2.9s)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the failures. Each protocol check test creates a DecisionRecorded event with `run_id` and `trace_id`, which now get `observed_in` and `traced_by` relations that pass the evidence filter. The tests need relaxed assertions.
+
+For the 5 protocol check tests, the "by relation" line will change from something like:
+`by relation: supports_json_output_check=1`
+to:
+`by relation: observed_in=1, supports_json_output_check=1, traced_by=1`
+
+And for the `graph_evidence_report_filters_evidence_relations_with_event_provenance` test (line 18663), the assertion `!report.contains("DecisionRecorded")` will fail because the DecisionRecorded event now passes through `observed_in`/`traced_by`. Also the evidence count will be higher.
+
+Let me also check the strict tool call check test more carefully since it has count 3:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.1s (4 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18794..18874 ✓ (654ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the strict test expects "by relation: supports_strict_tool_call_check=3" — the event generates 3 `supports_strict_tool_call_check` relations (one per schema name: inspect_file, propose_edit, record_failure). Now with `observed_in` and `traced_by` also passing the filter, the by-relation line will include those too. The `supports_strict_tool_call_check=3` assertion will fail because the by-relation line will now be something like `by relation: observed_in=1, supports_strict_tool_call_check=3, traced_by=1`.
+
+The simplest fix is to change these assertions to use `contains` instead of exact string matching for the by-relation line. Instead of:
+```rust
+assert!(report.contains("by relation: supports_json_output_check=1"));
+```
+I should use:
+```rust
+assert!(report.contains("supports_json_output_check=1"));
+```
+
+And then also assert that `observed_in` and `traced_by` appear.
+
+Let me do the same for all 6 failing tests.
+
+For `graph_evidence_report_filters_evidence_relations_with_event_provenance`:
+- Remove `assert!(!report.contains("DecisionRecorded"))` or change it to accept that DecisionRecorded may appear through runtime relations
+- Update the evidence count assertion
+
+Let me also check if there are payload assertions that need updating:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the full extent of the first failing test:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18652..18702 ✓ (567ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me fix all 6 tests. The approach:
+
+1. **`graph_evidence_report_filters_evidence_relations_with_event_provenance`** (line 18652-18689):
+   - Change `assert!(!report.contains("DecisionRecorded"))` to accept DecisionRecorded may appear
+   - Update evidence_count from 2 to a higher number (includes observed_in, traced_by for each event in the chain, plus DecisionRecorded's own observed_in/traced_by)
+   - Update the payload assertions accordingly
+   - Keep `assert!(!report.contains("uses_patch"))` as-is (uses_patch is NOT an evidence relation)
+
+2. **Protocol check tests** (5 tests): Change the "by relation:" assertion to check that the specific relation count appears somewhere in the report, not that the entire "by relation:" line matches exactly.
+
+Actually, let me first run the test with more output to see what the actual evidence_count and by-relation lines look like. Let me add a temporary debug print or just look at what the report contains.
+
+Actually the simplest approach: let me write a small test that runs just the first failing test and captures its output:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me first understand what the actual output looks like now by running the first failing test with a debug assertion:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state -- --te… ✓ (46.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the first test's output more carefully. The test assertions for the protocol check tests are failing because the "by relation:" line now includes `observed_in` and `traced_by` as well. I can't see the actual output since the test panics. Let me add a temporary debug to see what the actual report looks like.
+
+Actually, let me just fix the tests by changing the assertions. For protocol check tests, I'll change from:
+```rust
+assert!(report.contains("by relation: supports_json_output_check=1"));
+```
+to either:
+```rust
+assert!(report.contains("supports_json_output_check=1"));
+```
+or just check that `supports_json_output_check` appears somewhere.
+
+And for the `graph_evidence_report_filters_evidence_relations_with_event_provenance` test, I need to figure out how many additional evidence relations now appear. Let me look at the events in that test again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:18564..18604 ✓ (538ms)
+
+
