@@ -18651,8 +18651,6 @@ mod tests {
 
         let report = build_graph_evidence_report(&sqlite_path, "evt-failure", 4, 20).unwrap();
 
-        let report = build_graph_evidence_report(&sqlite_path, "evt-failure", 4, 20).unwrap();
-
         assert!(report.contains("State graph evidence: evt-failure depth=4 limit=20"));
         assert!(report.contains("by relation:"));
         assert!(report.contains("addresses=1"));
