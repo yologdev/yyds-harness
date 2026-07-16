@@ -445,6 +445,11 @@ pub fn is_initialized() -> bool {
 }
 
 pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    // Emit a retroactive RunStarted if one hasn't been recorded yet for this
+    // process, so that any event — especially FailureObserved — has a matching
+    // RunStarted. This closes the lifecycle gap where a process crashes between
+    // recording an error and reaching mark_run_completed_with_error.
+    ensure_run_started();
     let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
     let Some(recorder) = guard.as_ref() else {
         return;
@@ -499,12 +504,14 @@ pub fn mark_run_completed(status: &str) {
 /// current process, so that a subsequent RunCompleted has a matching start.
 fn ensure_run_started() {
     if !RUN_STARTED.with(|c| c.get()) {
+        // Set RUN_STARTED BEFORE calling record() to prevent infinite
+        // recursion when record() itself calls ensure_run_started().
+        RUN_STARTED.with(|c| c.set(true));
         record(
             EventType::RunStarted,
             Actor::Harness,
             json!({"retroactive": true, "reason": "run_completed_without_start"}),
         );
-        RUN_STARTED.with(|c| c.set(true));
     }
 }
 
@@ -7121,6 +7128,56 @@ mod tests {
         );
         // RUN_STARTED should be true after ensure_run_started ran
         RUN_STARTED.with(|c| assert!(c.get(), "RUN_STARTED should be true after late emit"));
+    }
+
+    #[test]
+    fn record_emits_retroactive_run_started_when_not_started() {
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        // Initialize the recorder (which sets RUN_STARTED=true) then
+        // manually reset RUN_STARTED to simulate a crash-path where
+        // init_global was never called (e.g., early config error).
+        init_global(config, json!({})).unwrap();
+        RUN_STARTED.with(|c| c.set(false));
+
+        // Simulate recording a FailureObserved event directly (as prompt.rs
+        // does) — this should trigger ensure_run_started() retroactively.
+        record(
+            EventType::FailureObserved,
+            Actor::Harness,
+            json!({"source": "crash_path", "message": "simulated SIGKILL"}),
+        );
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        // We expect: init_global's RunStarted, then retroactive RunStarted,
+        // then the FailureObserved.
+        let first_run_started = raw
+            .find("RunStarted")
+            .expect("should have first RunStarted");
+        let retroactive_run_started = raw[first_run_started + "RunStarted".len()..]
+            .find("RunStarted")
+            .expect("should have retroactive RunStarted after first");
+        let failure_observed_pos = raw
+            .find("FailureObserved")
+            .expect("should have FailureObserved");
+        assert!(
+            retroactive_run_started < failure_observed_pos,
+            "retroactive RunStarted must appear before FailureObserved: {raw}"
+        );
+        assert!(
+            raw.contains("\"retroactive\":true"),
+            "retroactive RunStarted payload should mark retroactive: true: {raw}"
+        );
+        // RUN_STARTED should be true after record() triggered ensure_run_started
+        RUN_STARTED.with(|c| assert!(c.get(), "RUN_STARTED should be true after retroactive emit"));
     }
 
     #[test]
