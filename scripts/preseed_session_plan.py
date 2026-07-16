@@ -686,6 +686,22 @@ def numeric_metrics(text: str) -> dict[str, int]:
     return metrics
 
 
+def _describe_actionable_gnomes(gnomes: dict[str, int]) -> str:
+    """Return a compact description of actionable gnome issues for task titles/objectives."""
+    parts: list[str] = []
+    for key in ("task_no_edit_revert_count", "task_obsolete_count", "task_failed_count",
+                "task_reverted_count", "bash_tool_error"):
+        val = gnomes.get(key, 0)
+        if val > 0:
+            label = key.replace("_count", "").replace("_", " ")
+            parts.append(f"{label}={val}")
+    for key in ("task_success_rate", "task_verification_rate"):
+        if gnomes.get(key) == 0:
+            label = key.replace("_", " ")
+            parts.append(f"{label}=0")
+    return ", ".join(parts) if parts else "code issues"
+
+
 def has_lifecycle_metrics(metrics: dict[str, int]) -> bool:
     return any(
         key.startswith("state_run_") or key.startswith("deepseek_model_call_")
@@ -992,9 +1008,24 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
                 "Trajectory evidence unavailable (no gnome metrics found in assessment text)."
             )
 
-        # Bias Files toward src/*.rs when trajectory shows no-edit reverts
-        _no_edit_revert = trajectory_gnomes.get("task_no_edit_revert_count", 0)
-        if _no_edit_revert > 0:
+        # Bias Files toward src/*.rs when trajectory shows actionable gnomes
+        # that indicate real code problems (not just assessment metadata issues)
+        _actionable_src_gnome_keys = (
+            "task_no_edit_revert_count",
+            "task_obsolete_count",
+            "task_failed_count",
+            "task_reverted_count",
+            "bash_tool_error",
+        )
+        _has_actionable_src_gnome = any(
+            trajectory_gnomes.get(k, 0) > 0 for k in _actionable_src_gnome_keys
+        )
+        _zero_rate_gnome = any(
+            k in trajectory_gnomes and trajectory_gnomes.get(k) == 0
+            for k in ("task_success_rate", "task_verification_rate")
+        )
+        _src_gnome_actionable = _has_actionable_src_gnome or _zero_rate_gnome
+        if _src_gnome_actionable:
             # Prefer src/state.rs if it exists; fall back to src/deepseek.rs; keep preseed as backup
             _src_candidates = ["src/state.rs", "src/deepseek.rs"]
             _existing_src = [
@@ -1043,26 +1074,51 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
             )
         elif exit_code == 0 and not provider_error:
             # Ran successfully but didn't write assessment.md
-            fallback["title"] = (
-                "Fix assessment silent failure: write assessment_missing.md with trajectory evidence"
-            )
-            fallback["objective"] = (
-                "The assessment agent exited successfully (code 0) with no provider error "
-                f"but did not write assessment.md. {_transcript_info} to understand "
-                "why the output file wasn't produced. "
-                "Possible causes: the agent wrote to the wrong path, "
-                "the write_file tool was refused by permission policy, "
-                "or the agent produced analysis in its response but never called write_file."
-            )
+            if _src_gnome_actionable:
+                _gnome_desc = _describe_actionable_gnomes(trajectory_gnomes)
+                fallback["title"] = (
+                    f"Fix trajectory-flagged code issues: {_gnome_desc}"
+                )
+                fallback["objective"] = (
+                    "The assessment agent exited successfully (code 0) with no provider error "
+                    f"but did not write assessment.md. Trajectory gnomes reveal actionable "
+                    f"code issues ({_gnome_desc}). "
+                    "Target the source files listed in Files to address these underlying "
+                    "problems rather than fixing the assessment pipeline itself."
+                )
+            else:
+                fallback["title"] = (
+                    "Fix assessment silent failure: write assessment_missing.md with trajectory evidence"
+                )
+                fallback["objective"] = (
+                    "The assessment agent exited successfully (code 0) with no provider error "
+                    f"but did not write assessment.md. {_transcript_info} to understand "
+                    "why the output file wasn't produced. "
+                    "Possible causes: the agent wrote to the wrong path, "
+                    "the write_file tool was refused by permission policy, "
+                    "or the agent produced analysis in its response but never called write_file."
+                )
         else:
-            # Couldn't parse specific fields — keep generic fallback title
-            # Don't change the title since we have no structured evidence
-            fallback["objective"] = (
-                "The assessment phase failed to produce assessment.md. "
-                f"{_transcript_info} for the assessment agent's output. "
-                "Improve harness planning reliability with a narrow, verifiable fix "
-                "scoped to a single file."
-            )
+            # Couldn't parse specific fields from assessment_missing.md
+            if _src_gnome_actionable:
+                _gnome_desc = _describe_actionable_gnomes(trajectory_gnomes)
+                fallback["title"] = (
+                    f"Fix trajectory-flagged code issues: {_gnome_desc}"
+                )
+                fallback["objective"] = (
+                    "The assessment phase failed to produce assessment.md with parseable "
+                    f"error fields. However, trajectory gnomes reveal actionable code issues "
+                    f"({_gnome_desc}). "
+                    "Target the source files listed in Files to address these underlying problems."
+                )
+            else:
+                # Don't change the title since we have no structured evidence
+                fallback["objective"] = (
+                    "The assessment phase failed to produce assessment.md. "
+                    f"{_transcript_info} for the assessment agent's output. "
+                    "Improve harness planning reliability with a narrow, verifiable fix "
+                    "scoped to a single file."
+                )
 
         # Enrich evidence with trajectory gnomes
         fallback["evidence"] = [
@@ -1923,6 +1979,53 @@ Guard result:
         assert "No transcript was saved" in str(task_zero["objective"]) or \
             "does not exist" in str(task_zero["objective"]), (
             f"Objective should indicate transcript is absent, got: {task_zero['objective']}"
+        )
+
+        # Exit 0 + no provider error + trajectory gnomes → src-biased Files
+        assessment_zero_gnomes = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+## Structured State Snapshot
+task_no_edit_revert_count=2
+task_obsolete_count=1
+task_success_rate=0
+"""
+        task_zero_gnomes = choose_task(assessment_zero_gnomes, assessment_was_missing=True)
+        assert "src/" in str(task_zero_gnomes.get("files", "")), (
+            f"Exit-0 with actionable gnomes should target src/*.rs, "
+            f"got: {task_zero_gnomes.get('files')}"
+        )
+        assert "no-edit" in task_zero_gnomes["title"].lower() or \
+            "trajectory" in task_zero_gnomes["title"].lower(), (
+            f"Exit-0 with gnomes should produce gnome-aware title, "
+            f"got: {task_zero_gnomes['title']}"
+        )
+
+        # Exit 0 + gnomes but none actionable → keep current (no src bias)
+        assessment_zero_benign = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+## Structured State Snapshot
+cache_hit_ratio=94
+prompt_budget_remaining=1200
+"""
+        task_zero_benign = choose_task(assessment_zero_benign, assessment_was_missing=True)
+        assert "scripts/preseed_session_plan.py" in str(task_zero_benign["files"]) and \
+            "src/" not in str(task_zero_benign["files"]), (
+            f"Exit-0 with non-actionable gnomes should keep preseed-only Files, "
+            f"got: {task_zero_benign.get('files')}"
         )
 
         # Timeout → timeout-specific task
