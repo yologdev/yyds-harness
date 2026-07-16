@@ -641,6 +641,60 @@ def _check_fixture_already_exists(task: dict[str, object]) -> tuple[bool, str]:
     return False, ""
 
 
+def _check_code_already_exists(task: dict[str, object]) -> tuple[bool, str]:
+    """Return (contradicted, reason) if the task proposes to add code that already exists.
+
+    For each key in ``task["keys"]`` and each file in ``task["files"]``, runs
+    ``git grep -n -F -- <key> -- <file>`` (literal match, not regex).  If any
+    match is found the task is contradicted — the proposed change already exists.
+
+    The check is a planning-time optimization: false negatives are acceptable
+    (an existing symbol that grep misses is still caught at implementation time),
+    but false positives must be avoided — only return contradicted on an actual
+    grep match.
+
+    Skipped when ``files`` is empty or the files do not exist on disk.
+    Uses a 3-second timeout to prevent hangs on large repos.
+    """
+    task_keys = task.get("keys", ())
+    task_files = str(task.get("files", ""))
+
+    if not task_keys or not task_files:
+        return False, ""
+
+    file_paths = [f.strip() for f in task_files.split(",") if f.strip()]
+    if not file_paths:
+        return False, ""
+
+    for key in task_keys:
+        key_str = str(key).strip()
+        if not key_str:
+            continue
+        for fp in file_paths:
+            # git grep -F for literal match (not regex) to avoid false positives
+            # from regex metacharacters in the key
+            try:
+                result = subprocess.run(
+                    ["git", "grep", "-n", "-F", "--", key_str, "--", fp],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+            except (subprocess.TimeoutExpired, OSError):
+                # Timeout or git unavailable — skip this pair (optimization, not gate)
+                continue
+            if result.returncode == 0 and result.stdout.strip():
+                first_match = result.stdout.strip().split("\n")[0]
+                return True, (
+                    f"code already exists: '{key_str}' "
+                    f"found in {fp} — "
+                    f"suppressing stale task '{task.get('title', '')}' "
+                    f"({first_match})"
+                )
+
+    return False, ""
+
+
 def check_task_contradiction(
     task: dict[str, object], assessment: str
 ) -> tuple[bool, str]:
@@ -648,12 +702,18 @@ def check_task_contradiction(
 
     Scans the assessment's Recent Changes and Self-Test Results sections for
     evidence that the task's problem domain has already been addressed.
-    Also checks whether fixture files referenced by the task already exist on disk.
+    Also checks whether fixture files referenced by the task already exist on disk
+    and whether code the task proposes to add already exists in tracked source files.
     """
     # Check fixture file existence before scanning assessment text
     fixture_contradicted, fixture_reason = _check_fixture_already_exists(task)
     if fixture_contradicted:
         return True, fixture_reason
+
+    # Check whether proposed code additions already exist in source files
+    code_contradicted, code_reason = _check_code_already_exists(task)
+    if code_contradicted:
+        return True, code_reason
 
     task_keys = tuple(task.get("keys", ()))
     if not task_keys:
@@ -1949,6 +2009,62 @@ no-edit revert pressure from prior session.
         assert not contradicted4, (
             f"Task without fixture references should NOT be contradicted, "
             f"got contradicted={contradicted4}, reason={reason4}"
+        )
+        # --- Code-existence check tests ---
+        # Task proposing to add a symbol that already exists in a tracked file
+        # should be contradicted by the git-grep check.
+        stale_code_task = {
+            "title": "Add stash_diagnostic_error to record_deepseek_transport_failure",
+            "keys": ("stash_diagnostic_error",),
+            "objective": "call stash_diagnostic_error in record_deepseek_transport_failure",
+            "files": "src/deepseek.rs",
+        }
+        contradicted5, reason5 = check_task_contradiction(stale_code_task, "dummy assessment")
+        assert contradicted5, (
+            f"Task proposing already-existing code 'stash_diagnostic_error' in src/deepseek.rs "
+            f"should be contradicted, got contradicted={contradicted5}, reason={reason5}"
+        )
+        assert "code already exists" in reason5.lower(), (
+            f"Contradiction reason should say 'code already exists', got: {reason5}"
+        )
+        assert "stash_diagnostic_error" in reason5, (
+            f"Contradiction reason should mention the matched key, got: {reason5}"
+        )
+        # Task with a key that does NOT exist in any tracked file should not be contradicted
+        nonexistent_code_task = {
+            "title": "Add frobnostication_widget to some module",
+            "keys": ("frobnostication_widget_zzz_nonexistent",),
+            "objective": "Add the frobnostication widget.",
+            "files": "src/main.rs",
+        }
+        contradicted6, reason6 = check_task_contradiction(nonexistent_code_task, "dummy assessment")
+        assert not contradicted6, (
+            f"Task with nonexistent key should NOT be contradicted, "
+            f"got contradicted={contradicted6}, reason={reason6}"
+        )
+        # Task with empty files list should skip the check (not contradicted)
+        no_files_task = {
+            "title": "Add some feature",
+            "keys": ("stash_diagnostic_error",),
+            "objective": "Add a feature.",
+            "files": "",
+        }
+        contradicted7, reason7 = check_task_contradiction(no_files_task, "dummy assessment")
+        assert not contradicted7, (
+            f"Task with empty files should NOT be contradicted (check skipped), "
+            f"got contradicted={contradicted7}, reason={reason7}"
+        )
+        # Task with empty keys should skip the check (not contradicted)
+        no_keys_task = {
+            "title": "Add some feature",
+            "keys": (),
+            "objective": "Add a feature.",
+            "files": "src/deepseek.rs",
+        }
+        contradicted8, reason8 = check_task_contradiction(no_keys_task, "dummy assessment")
+        assert not contradicted8, (
+            f"Task with empty keys should NOT be contradicted (check skipped), "
+            f"got contradicted={contradicted8}, reason={reason8}"
         )
         # --- Assessment-missing fallback specificity tests ---
         # Exit 0 + no provider error → silent failure
