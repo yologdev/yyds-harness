@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Both implementation parts are correctly applied — `ensure_run_started()` is called from `record()` (line 452), and the re-entrancy fix reorders `RUN_STARTED.set(true)` before the `record()` call inside `ensure_run_started()` (line 510). The new `record_emits_retroactive_run_started_when_not_started` test validates the crash-path scenario. Existing tests pass and neither `mark_run_completed` nor `mark_run_completed_with_error` were modified.

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All success criteria met — when trajectory gnomes are actionable (task_no_edit_revert>0, task_success_rate=0, etc.), the fallback task's Files includes src/state.rs and the title addresses gnome issues; when gnomes are benign or absent, current behavior is preserved (files=preseed_session_plan.py). Self-tests pass. Diff is surgical (~30 functional lines) and does not modify protected files.

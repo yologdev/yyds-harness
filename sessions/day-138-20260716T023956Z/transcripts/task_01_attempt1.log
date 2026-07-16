@@ -1,0 +1,661 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. The assessment agent exited 0 but didn't write `assessment.md`
+2. The harness guard wrote `assessment_missing.md` with basic fields only (no trajectory gnome data)
+3. The preseed script's `choose_task()` picks a fallback task that always targets `preseed_session_plan.py` itself - a self-referential loop
+4. The fix: when trajectory gnome data IS available from the assessment_missing.md, bias Files toward `src/*.rs` for actionable gnome issues
+
+Let me first read the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:930..1050 ✓ (1.2s)
+ ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the relevant section of the code to see the full `exit_code == 0` branch and understand how the fallback works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1049..1129  ▶ search 'numeric_metrics' in scripts/preseed_session_plan.py ✓ (82ms)
+ ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the situation:
+
+1. The task says `assessment_missing.md` doesn't include gnome data — the `numeric_metrics()` function parses assessment text for `key=value` patterns, and if the assessment_missing.md doesn't contain gnome data, the enrichment path never activates.
+
+2. The code at lines 966-1004 already tries to extract gnomes and bias Files toward `src/*.rs` when `task_no_edit_revert_count > 0`. But this only works if gnomes ARE present in the assessment text.
+
+3. The key issue: when exit_code == 0 and no provider error, the fallback title and objective are always "Fix assessment silent failure" regardless of whether trajectory gnome data is available or not. And the Files is always set to `preseed_session_plan.py` at line 942.
+
+4. The implementation notes say:
+- Keep the change under 30 lines
+- In the exit_code==0 branch, if trajectory_gnomes is empty, keep current behavior
+- If trajectory_gnomes has actionable metrics, use the existing `_src_candidates` logic and adjust title/objective
+
+Let me also check the `_parse_assessment_missing_fields` function and see what the assessment_missing.md looks like, and `numeric_metrics()`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:680..730  ▶ search '_parse_assessment_missing_fields' in scripts/preseed_session_plan.py ✓ (100ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `_parse_assessment_missing_fields` to see what fields it extracts from assessment_missing.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:835..895 ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full exit_code == 0 branch (lines 1044-1056) more carefully. The issue is:
+
+1. At line 942, the `assessment_was_missing` block always sets `fallback["files"] = "scripts/preseed_session_plan.py"` 
+2. Later at lines 996-1004, it tries to bias toward src/*.rs if `task_no_edit_revert_count > 0`
+3. But this only works if the `numeric_metrics()` function finds numeric metrics in the assessment text. If assessment_missing.md doesn't contain gnome-style `key=value` patterns (which the task states it doesn't), then `trajectory_gnomes` is empty and the enrichment never activates.
+4. So the exit_code == 0 branch always uses the preseed script as the target.
+
+The task says:
+- When trajectory gnome data IS available: bias Files toward src/*.rs AND adjust title/objective
+- When trajectory gnome data is NOT available: preserve current behavior
+
+But the root problem is that assessment_missing.md DOESN'T contain gnome data. So `numeric_metrics()` returns empty. 
+
+The implementation notes say:
+- "The assessment_missing.md needs to include trajectory gnome data for the enrichment to work. Check: does the harness guard (evolve.sh) write a 'Structured State Snapshot' section? If not, the preseed script can't extract gnomes from it."
+- "The workaround: when gnomes are absent, recognize the 'assessment silently failed with trajectory issues' pattern and seed a task that targets the most commonly broken area (src/state.rs lifecycle gaps or src/prompt.rs protocol issues) based on the exit_code/provider_error evidence alone."
+
+So the real work is:
+1. The exit_code == 0 branch already has its fallback hardcoded to preseed. 
+2. We need to check if gnome data is available in the assessment text. If yes, use it to bias Files and adjust title/objective. If not, the task says to keep current behavior.
+3. But wait — the task says "the assessment_missing.md does NOT include trajectory gnome data". So gnomes will ALWAYS be empty for this path. The enrichment at lines 966-1004 only triggers when gnomes ARE present.
+
+Let me re-read the task more carefully...
+
+The task says:
+- "The key gap: assessment_missing.md doesn't include gnome data. The preseed script's `numeric_metrics()` function parses assessment text for key=value patterns."
+- "The workaround: when gnomes are absent, recognize the 'assessment silently failed with trajectory issues' pattern and seed a task that targets the most commonly broken area (src/state.rs lifecycle gaps or src/prompt.rs protocol issues) based on the exit_code/provider_error evidence alone."
+
+So the task is saying: even when gnomes are absent (which is always the case for assessment_missing.md), the exit_code==0 fallback should target actual src/*.rs files rather than re-seeding the preseed script itself. But it also says to "keep current behavior" when gnomes are absent...
+
+Wait, let me re-read the Success Criteria:
+- "When assessment is missing AND trajectory gnome data IS available" → bias toward src/*.rs
+- "When trajectory gnome data is NOT available" → preserve current behavior
+
+So this is contradictory with the implementation notes which say gnomes are always absent. 
+
+Let me re-read the implementation notes more carefully:
+- "The key gap: assessment_missing.md doesn't include gnome data. The preseed script's `numeric_metrics()` function parses assessment text for key=value patterns. Either (a) teach the preseed script to extract gnomes from the planning prompt's YOUR TRAJECTORY block (if accessible), or (b) when gnomes are absent from assessment_missing.md, fall back to a hardcoded task that touches src/*.rs with a trajectory-based objective."
+
+The task explicitly says "Do NOT modify evolve.sh (protected). Do NOT spawn subprocesses to run extract_trajectory.py during planning (too expensive)."
+
+And "Keep the change under 30 lines. The simplest approach: in the exit_code==0 branch, if trajectory_gnomes is empty (no gnome data), keep current behavior. If trajectory_gnomes has actionable metrics, use the existing _src_candidates logic (lines 998-1004) to bias Files and adjust title/objective to match."
+
+So the current code already has the enrichment at lines 966-1004. The issue is that it only biases Files for `task_no_edit_revert_count > 0`, but the title/objective don't change based on gnomes. And more importantly, assessment_missing.md doesn't contain gnome data.
+
+Let me think about this differently. The Task says the preseed script needs fixing. But what exactly needs to change?
+
+Looking at the current code:
+- Line 942: always sets Files to preseed
+- Lines 966-1004: enrichment that biases Files based on trajectory gnomes
+- Lines 1044-1056: exit_code == 0 branch with hardcoded title/objective
+
+The issue is that the enrichment at 966-1004 CAN work if the assessment text contains gnome data. But currently assessment_missing.md doesn't. So the question is: should I add gnome data to the assessment_missing.md generator (which is in evolve.sh, protected), or should I make the preseed script smarter when gnomes are absent?
+
+The task says: don't modify evolve.sh. So option (a) is out.
+
+For option (b), the task says: "when gnomes are absent from assessment_missing.md, fall back to a hardcoded task that touches src/*.rs with a trajectory-based objective." But then the simple approach says "if trajectory_gnomes is empty (no gnome data), keep current behavior."
+
+I think the simplest interpretation is:
+1. The exit_code==0 branch already has the enrichment code (lines 966-1004) that can bias toward src/*.rs when gnomes ARE present
+2. The current code only checks `task_no_edit_revert_count > 0` — make it check other actionable gnome keys too
+3. When gnomes ARE present and actionable, also adjust the title/objective
+4. When gnomes are NOT present, keep current behavior
+
+But this doesn't fix the root issue: assessment_missing.md never has gnomes. So the enrichment will never activate.
+
+Wait, let me re-read the task's "Expected Evidence":
+- "Next session with missing assessment + trajectory gnomes produces a task_01.md whose Files includes src/*.rs and whose Evidence includes trajectory gnome data."
+
+This implies that in the future, assessment_missing.md MIGHT include gnome data (perhaps the harness guard will be updated to include it). The task just wants the preseed script to be ready for when that happens.
+
+But the implementation notes say "Do NOT modify evolve.sh (protected)." So who will add gnome data to assessment_missing.md? Maybe it's a separate concern.
+
+Actually, looking more carefully at the implementation notes: "The simplest approach: in the exit_code==0 branch, if trajectory_gnomes is empty (no gnome data), keep current behavior. If trajectory_gnomes has actionable metrics, use the existing _src_candidates logic (lines 998-1004) to bias Files and adjust title/objective to match."
+
+This is saying: just extend the existing enrichment path (lines 966-1004) to also:
+1. Check more gnome keys (not just `task_no_edit_revert_count`)
+2. Adjust title/objective based on gnomes
+
+When gnomes ARE present (future state), the enrichment activates. When they're not (current state), behavior is unchanged. This is a forward-compatible change.
+
+Let me now plan the change. The edit is in the `exit_code == 0 and not provider_error` branch (lines 1044-1056) and the enrichment section (lines 966-1004). Specifically:
+
+1. Move the src-bias logic (lines 996-1004) to also check for other actionable gnome keys beyond just `task_no_edit_revert_count`
+2. In the exit_code==0 branch, if trajectory_gnomes has actionable metrics, adjust title/objective
+3. The src-bias should also apply when any actionable gnome is > 0
+
+Let me define "actionable gnomes":
+- task_success_rate == 0
+- task_verification_rate == 0  
+- task_no_edit_revert_count > 0
+- task_obsolete_count > 0
+- bash_tool_error > 0
+- task_failed_count > 0
+
+Now let me also check whether `_src_candidates` files exist (src/state.rs and src/deepseek.rs).
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what `_src_candidates` files exist and understand the full picture before editing.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la src/state.rs src/deepseek.rs 2>&1 || true  ▶ read scripts/preseed_session_plan.py:890..920 ✓ (16ms)
+ ✓ (80ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check the test file for the preseed script to understand how tests work.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -30 ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, existing tests pass. Now let me plan the change:
+
+The task says: in the `exit_code == 0 and not provider_error` branch (line 1044), when trajectory gnomes have actionable metrics, bias Files toward src/*.rs and adjust title/objective.
+
+The current code already does the src-bias for `task_no_edit_revert_count > 0` at lines 996-1004. But:
+
+1. Only `task_no_edit_revert_count` is checked — other actionable gnomes should also trigger this
+2. The title/objective in the exit_code==0 branch never changes based on gnomes
+
+My plan:
+1. Expand the src-bias check from just `task_no_edit_revert_count > 0` to also include other actionable gnome keys
+2. In the `exit_code == 0 and not provider_error` branch, if trajectory_gnomes has actionable metrics, adjust the title and objective to address the gnome issue instead of just "Fix assessment silent failure"
+
+Let me define which gnome keys should trigger:
+- `task_no_edit_revert_count > 0` (already exists)
+- `task_success_rate == 0` (when sessions fail to produce success)
+- `task_obsolete_count > 0` (stale tasks being selected)  
+- `task_failed_count > 0` (failed tasks)
+- `task_verification_rate == 0` (verification failures)
+- `bash_tool_error > 0` (tool errors)
+
+For the title/objective when gnomes are actionable in the exit_code==0 case:
+- If `task_obsolete_count > 0`: "Fix assessment silent failure fallback: use trajectory gnomes to pick actual code targets"
+- If `task_no_edit_revert_count > 0`: "Fix assessment silent failure: target src code with trajectory evidence"
+- If `bash_tool_error > 0`: "Fix assessment silent failure: address bash tool errors from trajectory"
+- Generic: "Fix assessment silent failure with trajectory evidence"
+
+Actually, the task's "Implementation Notes" says "Keep the change under 30 lines." Let me be surgical.
+
+Looking at the current code more carefully:
+
+Lines 996-1004: The `_no_edit_revert` check and src-bias
+Lines 1044-1056: The exit_code==0 fallback
+
+The key change needed:
+1. Add more gnome keys to the src-bias check (not just `task_no_edit_revert_count`)
+2. When gnomes are actionable in the exit_code==0 branch, adjust title/objective
+
+Here's my specific plan:
+
+```python
+# After line 1004, expand the check
+# Replace lines 996-1004 with broader check
+_has_actionable_src_gnome = any(
+    trajectory_gnomes.get(k, 0) > 0
+    for k in ("task_no_edit_revert_count", "task_obsolete_count", "bash_tool_error", "task_failed_count")
+)
+_zero_rate_gnome = any(
+    trajectory_gnomes.get(k) == 0
+    for k in ("task_success_rate", "task_verification_rate")
+    if k in trajectory_gnomes
+)
+if _has_actionable_src_gnome or _zero_rate_gnome:
+    _src_candidates = ["src/state.rs", "src/deepseek.rs"]
+    _existing_src = [f for f in _src_candidates if os.path.exists(f)]
+    if _existing_src:
+        fallback["files"] = f"{_existing_src[0]}, scripts/preseed_session_plan.py"
+```
+
+And for the exit_code==0 branch, add a gnome-aware title/objective:
+```python
+elif exit_code == 0 and not provider_error:
+    if _has_actionable_src_gnome or _zero_rate_gnome:
+        # Title/objective that addresses the trajectory issue
+        ...
+    else:
+        # Current behavior
+        ...
+```
+
+Wait, but the gnome data isn't present in assessment_missing.md. So this won't change anything currently. 
+
+Hmm, let me re-read the task one more time...
+
+The task says: "The workaround: when gnomes are absent, recognize the 'assessment silently failed with trajectory issues' pattern and seed a task that targets the most commonly broken area (src/state.rs lifecycle gaps or src/prompt.rs protocol issues) based on the exit_code/provider_error evidence alone."
+
+But then: "The simplest approach: in the exit_code==0 branch, if trajectory_gnomes is empty (no gnome data), keep current behavior. If trajectory_gnomes has actionable metrics, use the existing _src_candidates logic..."
+
+OK so the task itself acknowledges the tension. The "simplest approach" is to make the code ready for when gnomes ARE available (future state), but keep current behavior when they're not (current state). This is forward-compatible preparation.
+
+But wait — the task says I should write a test, make an edit, or write an obsolete note. If gnomes are never present, then the change has zero effect. Is that an honest change?
+
+The task's Fallback says: "If current code already passes all preseed tests and the assessment_missing fallback already targets non-preseed files when gnomes are present, write an obsolete-task note."
+
+Let me check: does the current code already target non-preseed files when gnomes are present? Looking at lines 996-1004:
+- Only checks `task_no_edit_revert_count > 0` — not other gnome keys
+- And the title/objective always says "Fix assessment silent failure" even when gnomes are actionable
+
+So the code does NOT fully target non-preseed files when gnomes are present. It only does so for `task_no_edit_revert_count`. And it never adjusts title/objective.
+
+So there IS work to do: expand the gnome checks and add gnome-aware title/objective.
+
+But it's a forward-compatible change — it won't change behavior until gnomes ARE present. Is that honest?
+
+Actually, thinking about it more: the task's Expected Evidence says "Next session with missing assessment + trajectory gnomes produces a task_01.md whose Files includes src/*.rs". This means the expectation is that sometime in the future, assessment_missing.md will include gnome data. The preseed script change is preparing for that.
+
+But I should also check: is there a way to get gnome data into the assessment text TODAY? Let me check the `current_evidence_text` function used at line 853 — it reads from the assessment text. If the assessment_missing.md happens to include gnome data, it would work.
+
+Let me check what the assessment input looks like when it's assessment_missing.md... The function `choose_task` receives `assessment` as a string. It comes from wherever the preseed script is called.
+
+Let me look at how the preseed script is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'preseed_session_plan' in scripts/evolve.sh  ▶ search 'def main' in scripts/preseed_session_plan.py ✓ (33ms)
+ ✓ (34ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how preseed_session_plan is called and what `assessment` text it receives.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1243..1283  ▶ read scripts/evolve.sh:1380..1400 ✓ (50ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture:
+
+1. The preseed script is called with `--assessment session_plan/assessment_missing.md` when assessment.md doesn't exist
+2. assessment_missing.md contains fields like `assessment_exit_code`, `provider_error_detected`, etc.
+3. The `numeric_metrics()` function extracts `key=value` patterns from this text
+4. If assessment_missing.md doesn't contain gnome data like `task_no_edit_revert_count=2`, the enrichment never activates
+
+Now I need to make the change. Let me think about what the simplest effective change is:
+
+The task says:
+- In the exit_code==0 branch: if trajectory_gnomes has actionable metrics, bias Files toward src/*.rs and adjust title/objective
+- If gnomes are absent, keep current behavior
+
+The current code already does the src-bias for `task_no_edit_revert_count > 0` (lines 996-1004). But it only checks that one key. And the title/objective never changes based on gnomes.
+
+My plan:
+1. Expand the src-bias trigger to include more gnome keys (not just `task_no_edit_revert_count`)
+2. In the exit_code==0 branch, add a gnome-aware title/objective when gnomes are actionable
+
+Let me code this up. I'll keep it under 30 lines.
+
+Here's the specific change:
+
+```python
+# Replace lines 996-1004 with broader check that includes more gnome keys
+_has_actionable_src_gnome = any(
+    trajectory_gnomes.get(k, 0) > 0
+    for k in ("task_no_edit_revert_count", "task_obsolete_count", "bash_tool_error", 
+              "task_failed_count", "task_reverted_count", "task_unlanded_source_count")
+)
+_zero_rate_gnome = any(
+    k in trajectory_gnomes and trajectory_gnomes.get(k) == 0
+    for k in ("task_success_rate", "task_verification_rate")
+)
+_src_gnome_actionable = _has_actionable_src_gnome or _zero_rate_gnome
+
+if _src_gnome_actionable:
+    _src_candidates = ["src/state.rs", "src/deepseek.rs"]
+    _existing_src = [f for f in _src_candidates if os.path.exists(f)]
+    if _existing_src:
+        fallback["files"] = f"{_existing_src[0]}, scripts/preseed_session_plan.py"
+```
+
+And for the exit_code==0 branch:
+```python
+elif exit_code == 0 and not provider_error:
+    if _src_gnome_actionable:
+        # Use trajectory gnome data to inform the fallback
+        _gnome_desc_parts = []
+        if trajectory_gnomes.get("task_no_edit_revert_count", 0) > 0:
+            _gnome_desc_parts.append("no-edit reverts")
+        if trajectory_gnomes.get("task_obsolete_count", 0) > 0:
+            _gnome_desc_parts.append("stale tasks")
+        if trajectory_gnomes.get("bash_tool_error", 0) > 0:
+            _gnome_desc_parts.append("bash tool errors")
+        if trajectory_gnomes.get("task_failed_count", 0) > 0:
+            _gnome_desc_parts.append("task failures")
+        _gnome_desc = "; ".join(_gnome_desc_parts) if _gnome_desc_parts else "trajectory issues"
+        fallback["title"] = (
+            f"Fix assessment silent failure: address {_gnome_desc} from trajectory evidence"
+        )
+        fallback["objective"] = (
+            "The assessment agent exited successfully (code 0) but did not write assessment.md. "
+            f"Trajectory gnomes indicate: {_gnome_desc}. "
+            f"{_transcript_info}. "
+            "Address the trajectory-flagged issues in src/ code rather than the assessment pipeline itself."
+        )
+    else:
+        # Current behavior
+        fallback["title"] = (
+            "Fix assessment silent failure: write assessment_missing.md with trajectory evidence"
+        )
+        fallback["objective"] = (...)
+```
+
+Wait, but this raises a question: the variable `_src_gnome_actionable` is defined in the enrichment section (around line 996) but used in the exit_code==0 branch (around line 1044). These are in the same `if assessment_was_missing:` block, so the variable is accessible.
+
+Let me now write the test first, then make the edit.
+
+Actually wait - the task says "Write a test first if possible." Let me check what tests already exist for exit_code==0 and see if I can add one.
+
+Let me look at the test section more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.0s (2 ✓)
+
+Now let me see the existing tests for the `assessment_was_missing` path and understand the test structure:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1282..1362 ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full test section related to assessment_missing to see if there are existing tests for the exit_code==0 case.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_was_missing' in scripts/preseed_session_plan.py ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test at line 2087 that calls choose_task with assessment_was_missing=True.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2070..2130 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `--test` path. The test at line 1251 starts with `--test`. Let me see if there are existing tests for the assessment_missing fallback.
+
+Looking at the main test section (starting from line 1251), I see various test cases but none specific to `assessment_was_missing=True` with exit_code==0. Let me search for those tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_missing' in scripts/preseed_session_plan.py ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 831 and around to understand the assessment_missing field parsing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:828..848 ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me plan the edit:
+
+1. In the enrichment section (lines 996-1004), expand the src-bias check from just `task_no_edit_revert_count > 0` to include more actionable gnome keys
+2. In the exit_code==0 branch (lines 1044-1056), add gnome-aware title/objective when gnomes are actionable
+3. Add a test case for the exit_code==0 case with gnome data
+
+Let me also check if there are existing tests in the `--test` flag path that test the assessment_missing fallback with exit_code==0.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1450..1550 ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good picture. Let me now look for tests specifically for `assessment_was_missing=True`. Let me search more specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_was_missing=True' in scripts/preseed_session_plan.py ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1895..1975 ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the existing tests. The test at line 1911 tests `assessment_was_missing=True` with exit_code=0. The current test checks that:
+1. Title has "silent failure" or "exit 0"
+2. Objective mentions "code 0"
+3. Transcript doesn't exist checks
+
+Now I need to:
+1. Expand the gnome-check in the enrichment section to include more actionable keys
+2. Add gnome-aware title/objective in the exit_code==0 branch
+3. Add a new test case: exit_code==0 WITH gnome data → should target src/*.rs and have gnome-aware title
+
+Let me write the test first, then the implementation.
+
+Here's my plan:
+
+Test case (add after line 1926):
+```python
+# Exit 0 + no provider error + trajectory gnomes → src-biased task
+assessment_zero_gnomes = """# Assessment Missing - Day 131 (10:55)
+
+Guard result:
+- status: assessment_missing
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 3600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+## Structured State Snapshot
+task_no_edit_revert_count=2
+task_obsolete_count=1
+"""
+task_zero_gnomes = choose_task(assessment_zero_gnomes, assessment_was_missing=True)
+assert "src/" in str(task_zero_gnomes["files"]), (
+    f"Exit-0 with actionable gnomes should target src/*.rs, got: {task_zero_gnomes['files']}"
+)
+assert "silent failure" in task_zero_gnomes["title"].lower(), (
+    f"Title should still mention assessment issue, got: {task_zero_gnomes['title']}"
+)
+```
+
+And the implementation change:
+1. Replace the check at lines 996-1004 to check multiple gnome keys
+2. In the exit_code==0 branch, add gnome-aware title/objective
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a full understanding. Let me implement the change. First, I'll add the test, then make the implementation edits.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (20ms)
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first add the test case. I'll insert it after line 1926 (the last assertion of the exit_code==0 test).
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test. Looking at the code, line 1926 has the assertion about "does not exist". The next test case starts at line 1928. I'll insert my test between them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert "No transcript was saved" in str(task_zero["objective"]) or \
+                "does not exist" in str(task_zero["objective"]), (
+                f"Objective should indicate transcript is absent, got: {task_zero['objective']}"
+  +         )
+  + 
+  +         # Exit 0 + no provider error + trajectory gnomes → src-biased Files
+  +         assessment_zero_gnomes = """# Assessment Missing - Day 131 (10:55)
+  + 
+  + Guard result:
+  + - status: assessment_missing
+  + - assessment_exit_code: 0
+  + - assessment_timeout_seconds: 3600
+  + - provider_error_detected: false
+  + - transcript: transcripts/assess.log
+  + 
+  + ## Structured State Snapshot
+  + task_no_edit_revert_count=2
+  + task_obsolete_count=1
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (6 → 53 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (6 → 53 lines)
+            assert "No transcript was saved" in str(task_zero["objective"]) or \
+                "does not exist" in str(task_zero["objective"]), (
+                f"Objective should indicate transcript is absent, got: {task_zero['objective']}"
+  +         )
+  + 
+  +         # Exit 0 + no provider error + trajectory gnomes → src-biased Files
+  +         assessment_zero_gnomes = """# Assessment Missing - Day 131 (10:55)
+  + 
+  + Guard result:
+  + - status: assessment_missing
+  + - assessment_exit_code: 0
+  + - assessment_timeout_seconds: 3600
+  + - provider_error_detected: false
+  + - transcript: transcripts/assess.log
+  + 
+  + ## Structured State Snapshot
+  + task_no_edit_revert_count=2
+  + task_obsolete_count=1
+  + task_success_rate=0
+  + """
+  ... (33 more lines)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the implementation changes. I need to:
+
+1. Expand the src-bias check (lines 996-1004) to include more actionable gnome keys
+2. Add gnome-aware title/objective in the exit_code==0 branch
+
+Let me first update the src-bias check. Currently lines 996-1004 are:
+```python
+        # Bias Files toward src/*.rs when trajectory shows no-edit reverts
+        _no_edit_revert = trajectory_gnomes.get("task_no_edit_revert_count", 0)
+        if _no_edit_revert > 0:
+            # Prefer src/state.rs if it exists; fall back to src/deepseek.rs; keep preseed as backup
+            _src_candidates = ["src/state.rs", "src/deepseek.rs"]
+            _existing_src = [
+                f for f in _src_candidates if os.path.exists(f)
+            ]
+            if _existing_src:
+                fallback["files"] = f"{_existing_src[0]}, scripts/preseed_session_plan.py"
+```
+
+I'll replace this with a broader check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (17ms)
+  ▶ todo ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the expansion of the gnome check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.5s (2 ✓)
+
+
+  -         # Bias Files toward src/*.rs when trajectory shows no-edit reverts
+  -         _no_edit_revert = trajectory_gnomes.get("task_no_edit_revert_count", 0)
+  -         if _no_edit_revert > 0:
+  +         # Bias Files toward src/*.rs when trajectory shows actionable gnomes
+  +         # that indicate real code problems (not just assessment metadata issues)
+  +         _actionable_src_gnome_keys = (
+  +             "task_no_edit_revert_count",
+  +             "task_obsolete_count",
+  +             "task_failed_count",
+  +             "task_reverted_count",
+  +             "bash_tool_error",
+  +         )
+  +         _has_actionable_src_gnome = any(
+  +             trajectory_gnomes.get(k, 0) > 0 for k in _actionable_src_gnome_keys
+  +         )
+  +         _zero_rate_gnome = any(
+  +             k in trajectory_gnomes and trajectory_gnomes.get(k) == 0
+  +             for k in ("task_success_rate", "task_verification_rate")
+  +         )
+  +         _src_gnome_actionable = _has_actionable_src_gnome or _zero_rate_gnome
+  ... (4 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (11 → 26 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (11 → 26 lines)
+  -         # Bias Files toward src/*.rs when trajectory shows no-edit reverts
+  -         _no_edit_revert = trajectory_gnomes.get("task_no_edit_revert_count", 0)
+  -         if _no_edit_revert > 0:
+  +         # Bias Files toward src/*.rs when trajectory shows actionable gnomes
+  +         # that indicate real code problems (not just assessment metadata issues)
+  +         _actionable_src_gnome_keys = (
+  +             "task_no_edit_revert_count",
+  +             "task_obsolete_count",
+  +             "task_failed_count",
+  +             "task_reverted_count",
+  +             "bash_tool_error",
+  +         )
+  +         _has_actionable_src_gnome = any(
+  +             trajectory_gnomes.get(k, 0) > 0 for k in _actionable_src_gnome_keys
+  +         )
+  +         _zero_rate_gnome = any(
+  +             k in trajectory_gnomes and trajectory_gnomes.get(k) == 0
+  +             for k in ("task_success_rate", "task_verification_rate")
+  +         )
+  +         _src_gnome_actionable = _has_actionable_src_gnome or _zero_rate_gnome
+  ... (4 more lines)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the exit_code==0 branch to use gnome-aware title/objective.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (16ms)
+  ▶ todo ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the exit_code==0 branch to use `_src_gnome_actionable` for the title/objective. Let me re-read the current code to find the exact lines to edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1055..1085 ✓ (16ms)
+
+

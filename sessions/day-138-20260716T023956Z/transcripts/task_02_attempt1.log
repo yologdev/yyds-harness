@@ -1,0 +1,382 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task carefully:
+
+1. **Task**: Wire `ensure_run_started()` into `record()` so that the first `record()` call always emits a RunStarted event, preventing `run_error_without_start` lifecycle gaps.
+
+2. **Key insight**: The fix has two parts:
+   - Part 1: Reorder `ensure_run_started()` to set RUN_STARTED BEFORE calling `record()` (prevent infinite recursion)
+   - Part 2: Add `ensure_run_started()` call at the top of `record()`
+
+Let me start by reading the evolve skill, then the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/state.rs:440..540 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the current code. Let me also check the re-entrancy concern - `record()` calls `ensure_run_started()`, which calls `record()`. Currently `ensure_run_started()` sets `RUN_STARTED` AFTER calling `record()`, so if we add `ensure_run_started()` at the top of `record()`, we'd get infinite recursion.
+
+The fix per the task is:
+1. Move `RUN_STARTED.with(|c| c.set(true))` BEFORE the `record()` call in `ensure_run_started()`
+2. Add `ensure_run_started()` at the top of `record()`
+
+Let me also check the existing test mentioned.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Now let me find the existing test and verify the current state of `ensure_run_started` call sites:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ensure_run_started' in src/state.rs  ▶ search 'mark_run_completed_with_error_emits_retroactive_run_started' in src/state.rs ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing test to understand what it expects.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7075..7155 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me understand what I need to do:
+
+1. **Part 1**: In `ensure_run_started()`, move `RUN_STARTED.with(|c| c.set(true))` BEFORE the `record()` call.
+
+2. **Part 2**: Add `ensure_run_started()` at the top of `record()`.
+
+But there's a subtlety. Look at `record()` - it calls `GLOBAL_RECORDER.lock()` and checks if `guard.as_ref()` is `Some`. If it's `None`, it returns early. So if `ensure_run_started()` is called from `record()`, and the recorder IS initialized (since we're inside `record()` which already acquired the lock... wait, it's a `Mutex`. We can't call `record()` re-entrantly from within `record()` because `record()` acquires the lock. But `ensure_run_started()` needs to call `record()` to emit the RunStarted event.
+
+Wait, let me re-read the task notes more carefully:
+
+> When `ensure_run_started()` is called and RUN_STARTED is false:
+> 1. RUN_STARTED is set to true (Part 1)
+> 2. `ensure_run_started` calls `record()` for RunStarted
+> 3. Inside the re-entrant `record()` call, `ensure_run_started()` is called again
+> 4. RUN_STARTED is already true → no-op → no infinite recursion
+> 5. RunStarted is appended to the events file
+> 6. Control returns to the outer `record()` call, which appends the original event
+
+But this won't work in practice because `record()` acquires the mutex on `GLOBAL_RECORDER`. If we call `record()` from inside `ensure_run_started()` which is called from inside `record()`, we'll deadlock on the mutex since Rust's `std::sync::Mutex` is not re-entrant.
+
+Wait, let me look again at the code. `record()` uses `GLOBAL_RECORDER.lock()`. In the inner call, it would try to lock again and deadlock.
+
+The task says "the second call must not recurse infinitely" — but it doesn't mention the mutex deadlock issue. Hmm.
+
+Let me re-read the task more carefully:
+
+> `ensure_run_started()` handles re-entrancy: when called from `record()`, and `ensure_run_started` itself calls `record()`, the second call must not recurse infinitely.
+
+So the concern is about `ensure_run_started` → `record` → `ensure_run_started` infinite recursion. The fix (Part 1) is to set `RUN_STARTED` BEFORE calling `record()` in `ensure_run_started`, so that the re-entrant `record()` call's `ensure_run_started()` call sees RUN_STARTED=true and returns immediately.
+
+But what about the mutex? Let me think... `record()` locks the mutex. If `ensure_run_started()` is called at the top of `record()` BEFORE the lock acquisition, then the inner `record()` call from `ensure_run_started()` would succeed (it acquires the lock, writes the event, releases the lock). Then the outer `record()` acquires the lock.
+
+But currently `record()` is:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(recorder) = guard.as_ref() else {
+        return;
+    };
+    ...
+}
+```
+
+And the task says to add `ensure_run_started()` at line 447 (top of `record()`). If we add it BEFORE the lock acquisition, it would work re-entrantly. Let me verify — the `ensure_run_started()` call would:
+1. Check RUN_STARTED → false
+2. Set RUN_STARTED = true
+3. Call `record(EventType::RunStarted, ...)` — this is the inner call
+4. Inner `record()`: calls `ensure_run_started()` → RUN_STARTED is true → no-op
+5. Inner `record()`: acquires lock, writes RunStarted, releases lock
+6. Inner `record()` returns
+7. Outer `ensure_run_started()` returns
+8. Outer `record()` continues: acquires lock, writes the original event
+
+This would work! The key is adding `ensure_run_started()` BEFORE the lock acquisition.
+
+Now let me write the test first. The test should verify that recording an event when RUN_STARTED is false emits a retroactive RunStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me also check the `RUN_STARTED` definition to understand its type:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'thread_local.*RUN_STARTED' in src/state.rs  ▶ read src/state.rs:1..16 ✓ (7ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for RUN_STARTED definition.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RUN_STARTED' in src/state.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `RUN_STARTED` is `thread_local! { static RUN_STARTED: Cell<bool> = const { Cell::new(false) }; }` at line 26.
+
+Now let me read the init_global function to understand how RUN_STARTED gets set to true initially:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:380..420 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of init_global:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:419..439 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me plan the changes:
+
+**Part 1**: Reorder `ensure_run_started()` — set `RUN_STARTED` BEFORE calling `record()`:
+```rust
+fn ensure_run_started() {
+    if !RUN_STARTED.with(|c| c.get()) {
+        RUN_STARTED.with(|c| c.set(true));   // set BEFORE record()
+        record(
+            EventType::RunStarted,
+            Actor::Harness,
+            json!({"retroactive": true, "reason": "run_completed_without_start"}),
+        );
+    }
+}
+```
+
+**Part 2**: Add `ensure_run_started()` at the top of `record()`, BEFORE the lock acquisition:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    ensure_run_started();  // <-- add this
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    ...
+}
+```
+
+This avoids the mutex deadlock because `ensure_run_started()` is called outside the lock. When `ensure_run_started()` calls `record()` (inner), the inner `record()` acquires the lock, writes RunStarted, releases the lock. Then the outer `record()` acquires the lock and writes its event.
+
+Now for the test: I need a test that verifies recording an event when `RUN_STARTED` is false produces a retroactive RunStarted.
+
+Let me also think about how the existing test at line 7081 will behave after the change. Currently:
+1. `init_global` → sets RUN_STARTED=true, emits RunStarted
+2. `RUN_STARTED.with(|c| c.set(false))` — reset
+3. `mark_run_completed_with_error("test_late_run_started")` → calls `ensure_run_started()` → RUN_STARTED is false → calls `record()` for retroactive RunStarted → then calls `record()` for RunCompleted
+
+After my change:
+1. `init_global` → sets RUN_STARTED=true, emits RunStarted
+2. `RUN_STARTED.with(|c| c.set(false))` — reset
+3. `mark_run_completed_with_error("test_late_run_started")` → calls `ensure_run_started()` → RUN_STARTED is false → sets RUN_STARTED=true → calls `record()` for retroactive RunStarted → `record()` calls `ensure_run_started()` → RUN_STARTED is already true → no-op → writes RunStarted → then calls `record()` for RunCompleted → `ensure_run_started()` → no-op → writes RunCompleted
+
+So the behavior is the same: we get init RunStarted, retroactive RunStarted, then RunCompleted. The test should still pass.
+
+Now let me write a new test: recording an event when RUN_STARTED is false WITHOUT going through mark_run_completed. This simulates the crash path where FailureObserved events are recorded but the process never reaches mark_run_completed.
+
+Now let me implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+I have a clear picture. Now let me implement the two-part fix. First, write a test:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7124..7154 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add both the new test and the two-part code fix. I'll start with the code changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the new test right after the existing retroactive RunStarted test, then make the code changes. First, the new test:
+            // RUN_STARTED should be true after ensure_run_started ran
+            RUN_STARTED.with(|c| assert!(c.get(), "RUN_STARTED should be true after late emit"));
+  +     }
+  + 
+  +     #[test]
+  +     fn record_emits_retroactive_run_started_when_not_started() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         // Initialize the recorder (which sets RUN_STARTED=true) then
+  +         // manually reset RUN_STARTED to simulate a crash-path where
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (3 → 53 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (3 → 53 lines)
+            // RUN_STARTED should be true after ensure_run_started ran
+            RUN_STARTED.with(|c| assert!(c.get(), "RUN_STARTED should be true after late emit"));
+  +     }
+  + 
+  +     #[test]
+  +     fn record_emits_retroactive_run_started_when_not_started() {
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         // Initialize the recorder (which sets RUN_STARTED=true) then
+  +         // manually reset RUN_STARTED to simulate a crash-path where
+  +         // init_global was never called (e.g., early config error).
+  +         init_global(config, json!({})).unwrap();
+  ... (33 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Part 1: Reorder `ensure_run_started()` — set `RUN_STARTED` BEFORE calling `record()`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now Part 1: Reorder `ensure_run_started()` to set `RUN_STARTED` BEFORE `record()`:
+    fn ensure_run_started() {
+        if !RUN_STARTED.with(|c| c.get()) {
+  +         // Set RUN_STARTED BEFORE calling record() to prevent infinite
+  +         // recursion when record() itself calls ensure_run_started().
+  +         RUN_STARTED.with(|c| c.set(true));
+            record(
+                EventType::RunStarted,
+                Actor::Harness,
+                json!({"retroactive": true, "reason": "run_completed_without_start"}),
+            );
+  -         RUN_STARTED.with(|c| c.set(true));
+        }
+    }
+  ✓ Auto-approved: edit: src/state.rs (10 → 12 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (10 → 12 lines)
+    fn ensure_run_started() {
+        if !RUN_STARTED.with(|c| c.get()) {
+  +         // Set RUN_STARTED BEFORE calling record() to prevent infinite
+  +         // recursion when record() itself calls ensure_run_started().
+  +         RUN_STARTED.with(|c| c.set(true));
+            record(
+                EventType::RunStarted,
+                Actor::Harness,
+                json!({"retroactive": true, "reason": "run_completed_without_start"}),
+            );
+  -         RUN_STARTED.with(|c| c.set(true));
+        }
+    }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Part 2: Add `ensure_run_started()` at the top of `record()`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now Part 2: Add `ensure_run_started()` at the top of `record()`:
+    pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+  +     // Emit a retroactive RunStarted if one hasn't been recorded yet for this
+  +     // process, so that any event — especially FailureObserved — has a matching
+  +     // RunStarted. This closes the lifecycle gap where a process crashes between
+  +     // recording an error and reaching mark_run_completed_with_error.
+  +     ensure_run_started();
+        let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+  ✓ Auto-approved: edit: src/state.rs (2 → 7 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 7 lines)
+    pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+  +     // Emit a retroactive RunStarted if one hasn't been recorded yet for this
+  +     // process, so that any event — especially FailureObserved — has a matching
+  +     // RunStarted. This closes the lifecycle gap where a process crashes between
+  +     // recording an error and reaching mark_run_completed_with_error.
+  +     ensure_run_started();
+        let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the changes by running the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify: run the state tests first, then format check:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (42.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 317 state tests pass plus 2 integration tests. Let me also verify the new test specifically passed:
+────────────────────────────────────────────────────────────────────────────────
+
+All 317 state tests pass. Let me verify the new test specifically:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (11.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me run format check and deepseek tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Now format check:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (858ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes. Let me also run the deepseek tests as required by the verification section:
+────────────────────────────────────────────────────────────────────────────────
+
+Format clean. Now run the deepseek tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test deepseek -- --test-… ✓ (13.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 129 deepseek tests pass. Let me check the git diff to confirm my changes:
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me confirm the diff touches only the expected file:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/state.rs` is modified, which matches the Edit Surface. Let me view the actual diff to confirm the changes are correct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct:
+
+1. **`record()`**: Added `ensure_run_started()` call at the top before the lock acquisition.
+2. **`ensure_run_started()`**: Moved `RUN_STARTED.with(|c| c.set(true))` before the `record()` call to prevent infinite recursion.
+3. **New test**: `record_emits_retroactive_run_started_when_not_started` — simulates the crash path where `record()` is called directly with `RUN_STARTED=false`.
+
+Everything is verified. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All changes are correct and verified. Let me commit:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit is successful. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed**: `src/state.rs` — three edits:
+
+1. **`record()` (line 447)**: Added `ensure_run_started()` call at the top, before the mutex lock. This ensures ANY event emission triggers a retroactive RunStarted when one hasn't been recorded yet — closing the lifecycle gap where `FailureObserved` events from `prompt.rs` and `commands_deepseek.rs` could be written without a matching RunStarted.
+
+2. **`ensure_run_started()` (line ~504)**: Moved `RUN_STARTED.with(|c| c.set(true))` BEFORE the `record()` call. This prevents infinite recursion: when `record()` calls `ensure_run_started()`, which in turn calls `record()` for the retroactive RunStarted, the re-entrant `record()` call sees `RUN_STARTED=true` and skips `ensure_run_started()`.
+
+3. **New test `record_emits_retroactive_run_started_when_not_started`**: Simulates the crash path — `init_global` is called, `RUN_STARTED` is manually reset to simulate a skipped init, then `record()` is called directly for a `FailureObserved`. Verifies a retroactive RunStarted appears in the events file before the FailureObserved.
+
+**Verification**:
+• `cargo fmt -- --check` — clean
+• `cargo test state -- --test-threads=1` — 317 passed (including both the existing `mark_run_completed_with_error_emits_retroactive_run_started_when_not_started` and the new `record_emits_retroactive_run_started_when_not_started`)
+• `cargo test deepseek -- --test-threads=1` — 129 passed
+
+**Impact**: Runs that crash between recording `FailureObserved` and reaching `mark_run_completed_with_error` will now have a RunStarted, making them closable by `close_orphaned_run_if_needed` instead of appearing as `run_error_without_start` ghosts.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

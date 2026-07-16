@@ -1,0 +1,91 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task description and the diff to determine the verdict.
+
+The task is about closing lifecycle gaps by emitting retroactive RunStarted on first `record()` when `init_global` was skipped.
+
+Let me check the diff against the task requirements:
+
+**Part 1: Reorder `ensure_run_started()`** - The diff shows:
+```rust
+fn ensure_run_started() {
+    if !RUN_STARTED.with(|c| c.get()) {
+        // Set RUN_STARTED BEFORE calling record() to prevent infinite
+        // recursion when record() itself calls ensure_run_started().
+        RUN_STARTED.with(|c| c.set(true));
+        record(
+            EventType::RunStarted,
+            Actor::Harness,
+            json!({"retroactive": true, "reason": "run_completed_without_start"}),
+        );
+    }
+}
+```
+✅ RUN_STARTED.set(true) moved BEFORE record() call - matches Part 1.
+
+**Part 2: Add `ensure_run_started()` call at the top of `record()`** - The diff shows:
+```rust
+pub fn record(event_type: EventType, actor: Actor, payload: Value) {
+    // Emit a retroactive RunStarted if one hasn't been recorded yet for this
+    // process, so that any event — especially FailureObserved — has a matching
+    // RunStarted. This closes the lifecycle gap where a process crashes between
+    // recording an error and reaching mark_run_completed_with_error.
+    ensure_run_started();
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+```
+✅ `ensure_run_started()` added at the top of `record()` - matches Part 2.
+
+**New test**: `record_emits_retroactive_run_started_when_not_started` - verifies that recording an event when RUN_STARTED was manually reset produces a retroactive RunStarted before FailureObserved. ✅
+
+**Build: PASS, Tests: PASS** ✅
+
+The task description also mentions:
+- The existing test `mark_run_completed_with_error_emits_retroactive_run_started_when_not_started` (line ~7081) should continue to pass. The diff doesn't modify this test, and Tests are PASS, so this is verified.
+
+The implementation exactly matches what the task asked for. Let me also quickly verify that the `ensure_run_started` call from `mark_run_completed` and `mark_run_completed_with_error` wasn't removed (the task says "Do NOT modify mark_run_completed or mark_run_completed_with_error"). Let me check the diff - the diff only shows changes to `record()` and `ensure_run_started()`, not to `mark_run_completed` or `mark_run_completed_with_error`, so those remain intact.
+
+One concern: the task says the reason in the retroactive RunStarted payload is `"run_completed_without_start"` - this is the same reason that was used before. It might be slightly misleading now since the RunStarted could fire from any `record()` call, not just from run completed. But this is a minor issue and doesn't affect correctness - the `retroactive: true` flag is the key signal. This is a style preference, not a bug.
+
+Verdict: PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff exactly matches both parts of the implementation plan, the new test covers the required scenario, and Build/Tests are PASS. Let me verify nothing was broken by the reordering.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ grep -n 'ensure_run_started' src/state.rs ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check which functions have ensure_run_started() calls. Lines 452 (record), 495, 529. Let me verify these are the right locations:
+- 452: in `record()` - the new call
+- 495: likely in `mark_run_completed`
+- 529: likely in `mark_run_completed_with_error`
+
+The reordering moved RUN_STARTED.set(true) before record() inside ensure_run_started itself. The test passes. Everything checks out.
+
+Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n -A2 'fn mark_run_completed\b\|fn mark_run_completed_with_error\b' src/st… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `mark_run_completed` and `mark_run_completed_with_error` are unchanged. The verifycation is complete.
+
+Everything matches the task spec:
+1. `ensure_run_started()` called from `record()` at line 452
+2. `ensure_run_started()` reordered: RUN_STARTED.set(true) before record()
+3. `mark_run_completed` (490) and `mark_run_completed_with_error` (525) unchanged
+4. New test at line 7133
+5. Build: PASS, Tests: PASS
+
+Verdict: PASS
+────────────────────────────────────────────────────────────────────────────────
+
+Everything checks out. Writing verdict.
+  + Verdict: PASS
+  + Reason: Both implementation parts are correctly applied — `ensure_run_started()` is called from `record()` (line 452), and the re-entrancy fix reorders `RUN_STARTED.set(true)` before the `record()` call inside `ensure_run_started()` (line 510). The new `record_emits_retroactive_run_started_when_not_started` test validates the crash-path scenario. Existing tests pass and neither `mark_run_completed` nor `mark_run_completed_with_error` were modified.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_2.md (2 lines) ✓ (6ms)
