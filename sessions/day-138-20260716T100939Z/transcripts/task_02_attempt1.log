@@ -1,0 +1,189 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 58600 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 6460
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task requirements, then look at the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tool_wrappers.rs:1115..1145 ✓ (410ms)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the current hint at lines 1125-1129. Now let me find the test that verifies this hint to understand what I need to update.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_targeted_recovery_hint_read_file_no_such_file' in src/tool_wrappers.rs ✓ (96ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3128..3178 ✓ (97ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The test at line 3132 only checks that `hint.contains("list_files")`. I need to:
+
+1. Update the hint text in `targeted_recovery_hint` (lines 1125-1129)
+2. Update the test assertion to match the new text
+
+Let me now make the edits. I'll update the hint text first, then update the test.
+
+The current hint:
+```
+"The file or directory path doesn't exist. Use `list_files` to \
+ discover the correct path, or check for typos in the path \
+ you provided. Verify parent directories exist."
+```
+
+New hint should include:
+- `rg --files` suggestion as faster alternative
+- Fallback: search for owning module/symbol instead of retrying
+
+Let me write the new hint text. The task says to suggest `rg --files | grep <pattern>`. But that's actually a bit awkward - `rg --files` already takes a pattern directly. Let me make it more natural: `rg --files <pattern>`.
+
+Actually, let me be careful. `rg --files` lists all files; `rg --files <pattern>` searches for files matching a pattern. The task suggests `rg --files | grep <pattern>`, which pipes. Let me just follow what the task says for consistency while making it reasonable. Actually `rg --files <pattern>` is simpler and more direct, but the task specifically says `rg --files | grep <pattern>`. Let me follow the task's suggestion.
+
+Wait, let me re-read the task: "Verify the path with `rg --files | grep <pattern>` (faster than list_files for large repos)". The pattern refers to a grep pattern to narrow down the file list. This is reasonable — `rg --files` lists all tracked files, then `grep <pattern>` filters them.
+
+Let me write the updated hint and test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me make both edits — the hint text and the test assertion.
+                    Some(
+  -                     "The file or directory path doesn't exist. Use `list_files` to \
+  -                      discover the correct path, or check for typos in the path \
+  -                      you provided. Verify parent directories exist."
+  +                     "The file or directory path doesn't exist. Verify the path with \
+  +                      `rg --files | grep <pattern>` (faster than `list_files` for large repos), \
+  +                      or check for typos. If the file is missing entirely, search for the \
+  +                      owning module or symbol instead of retrying the absent path."
+                            .to_string(),
+                    )
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (6 → 7 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (6 → 7 lines)
+                    Some(
+  -                     "The file or directory path doesn't exist. Use `list_files` to \
+  -                      discover the correct path, or check for typos in the path \
+  -                      you provided. Verify parent directories exist."
+  +                     "The file or directory path doesn't exist. Verify the path with \
+  +                      `rg --files | grep <pattern>` (faster than `list_files` for large repos), \
+  +                      or check for typos. If the file is missing entirely, search for the \
+  +                      owning module or symbol instead of retrying the absent path."
+                            .to_string(),
+                    )
+ ✓ (157ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the test assertion. The current test at line 3132 checks `hint.contains("list_files")`. Since the new hint still mentions `list_files` (in the comparison "faster than `list_files` for large repos"), the test should still pass that assertion. But I should also add assertions for the new content: `rg --files` and "owning module".
+
+Let me update the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test to assert the new content:
+            assert!(hint.is_some());
+            let hint = hint.unwrap();
+            assert!(hint.contains("list_files"));
+  +         assert!(hint.contains("rg --files"));
+  +         assert!(hint.contains("owning module"));
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (6 → 8 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (6 → 8 lines)
+            assert!(hint.is_some());
+            let hint = hint.unwrap();
+            assert!(hint.contains("list_files"));
+  +         assert!(hint.contains("rg --files"));
+  +         assert!(hint.contains("owning module"));
+        }
+ ✓ (206ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests. First, let me check formatting, then run the specific test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now verify — run fmt check and the specific test:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt passed. Now run the specific test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test test_targeted_recov… ✓ (49.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me also run the broader tool_wrappers tests to make sure nothing else broke.
+────────────────────────────────────────────────────────────────────────────────
+
+Both tests pass. Let me also run the full tool_wrappers test suite to be safe:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (267ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 118 tool_wrappers tests pass. Now let me check the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 118 tests pass. Let me check the diff and commit:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (202ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows only `src/tool_wrappers.rs` which matches the task's Edit Surface. Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff is exactly the task's Edit Surface. Committing:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (192ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The quotes in the commit message are breaking the bash command. I need to use single quotes or escape differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m 'D… ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed successfully. Let me verify the final state of the change.
+────────────────────────────────────────────────────────────────────────────────
+
+Committed. Let me verify the final state of the change:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show --stat HEAD && echo "… ✓ (214ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything looks good. The change is clean and focused:
+
+1. Updated the `targeted_recovery_hint` for `read_file` "no such file or directory" to:
+   - Suggest `rg --files | grep <pattern>` as a faster alternative to `list_files`
+   - Add fallback instruction: "search for the owning module or symbol instead of retrying the absent path"
+
+2. Updated the test `test_targeted_recovery_hint_read_file_no_such_file` to assert the new content
+
+All 118 tool_wrappers tests pass. The change touches only `src/tool_wrappers.rs`, matching the task's Edit Surface.
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary:** Updated the `read_file` "no such file or directory" recovery hint in `src/tool_wrappers.rs` to:
+• Suggest `rg --files | grep <pattern>` as a faster alternative to `list_files` for large repos
+• Add fallback instruction to search for the owning module/symbol instead of retrying the absent path
+• Updated the test to assert both `rg --files` and `owning module` appear in the hint
+
+All 118 `tool_wrappers` tests pass. One file changed, committed.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

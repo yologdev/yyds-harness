@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The hint text now suggests `rg --files` for fast path verification and searching for the owning module/symbol as a fallback, exactly as specified. The test assertion was updated to match, and both build and tests pass.

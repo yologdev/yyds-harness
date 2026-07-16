@@ -1,0 +1,568 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for Day 138.
+
+## Key Evidence:
+
+1. **Build status**: Clean, `cargo build` and `cargo test` pass
+2. **Trajectory**: 2/2 tasks strict verified in most recent session, fitness score 1.0
+3. **Graph pressure signals** (in order):
+   - Close deepseek model lifecycle gaps (unmatched_completed_count=2)
+   - Bound failing shell commands before retrying (bash_tool_error=13)
+   - Reconcile transcript-only tool failures (3)
+   - Reconcile state-only tool failures (35)
+   - Recover failed tool actions (4)
+
+4. **Assessment candidate tasks**:
+   - MEDIUM: Session-level post-mortem for exit-code-1 runs
+   - MEDIUM: Cache metric recording workaround
+   - LOW: Differentiate cancelled-run vs genuine-failure lifecycle reasons
+   - LOW: Explain SQLite projection vs raw events count
+   - HIGH (graph): Close deepseek model lifecycle gaps
+
+5. **Open issues**: #105 (cache metrics, reverted), #90 (yoagent cache fields, help-wanted)
+
+## Task Selection:
+
+Looking at the graph pressure:
+- #1: "Close deepseek model lifecycle gaps" — `deepseek_model_call_unmatched_completed_count=2` — this is directly about state lifecycle hygiene which has been a recurring theme
+- #2: "Bound failing shell commands" — bash_tool_error=13 — this is about tool reliability
+- The others are smaller reconciliation tasks
+
+Looking at assessment candidate tasks:
+- Cache metrics (#105) was already attempted and reverted. The assessment says it's blocked by yoagent #90.
+- Exit-code-1 post-mortem is useful but it's purely diagnostic, not a fitness improvement
+- Cancelled-run differentiation is LOW priority
+- SQLite explanation is LOW priority
+
+The graph pressure #1 "Close deepseek model lifecycle gaps" is the highest-priority actionable task. But I need to understand what specifically needs to be done. Let me check the state.
+
+Actually, let me first check if `session_plan/task_01.md` already exists from the harness preseed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty or miss… ✓ (696ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a `task_01.md` from the harness preseed. Let me read it to see what it contains, then decide whether to refine it or add task_02/03.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md has a contradiction marker: "validated_against_assessment: false (contradiction: code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py". This is a stale seed task — the preseed script detected that the code already exists but planted it anyway with the contradiction flag.
+
+Let me check: the contradiction says the code `state_run_incomplete` already exists in append_terminal_state_events.py at line 281. So this task is likely already done or the gap is already handled. Let me verify this quickly.
+
+Then I need to decide: do I refine task_01 or replace it? The planning instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+Let me check if the lifecycle gaps are actually still present. The assessment says `deepseek_model_call_unmatched_completed_count=2` — so there ARE still lifecycle gaps. But the seed task's specific claim (that `state_run_incomplete` code already exists) might mean the fix is already in place for some cases.
+
+Let me look at what's in append_terminal_state_events.py to understand if the task is truly stale.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_run_incomplete' scripts/append_terminal_state_events.py | head -2…  ▶ $ grep -n 'deepseek_model_call_unmatched\|model_call_incomplete\|unmatched_complet… ✓ (1.3s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state_run_incomplete` is in gnome summaries (line 281) and line 466 is where missing RunCompleted is emitted. But `deepseek_model_call_unmatched_completed_count` isn't in this file at all — it might be in a different script. Let me check where model call lifecycle gaps are tracked.
+
+The seed task was flagged as stale because the `state_run_incomplete` code already exists in append_terminal_state_events.py. But the graph pressure says `deepseek_model_call_unmatched_completed_count=2` which is a different metric — about model calls, not runs.
+
+Let me check what's actually generating the `deepseek_model_call_unmatched_completed_count` metric and whether there's still a real gap to close.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'deepseek_model_call_unmatched\|model_call.*unmatched\|unmatched_comple…  ▶ $ grep -rn 'deepseek_model_call_unmatched\|unmatched_completed' src/ | head -20 ✓ (1.3s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the model call lifecycle gap better. The `deepseek_model_call_unmatched_completed_count=2` in the trajectory means there are 2 model calls with a `ModelCallCompleted` event but no matching `ModelCallStarted`. This is in `src/commands_state.rs` where the graph summary computes this.
+
+The seed task was about `state_run_incomplete` which is a different metric. The harness preseed script flagged it as stale because that specific code already exists. But the graph pressure signal is about `deepseek_model_call_unmatched_completed_count` — a model-call-level lifecycle gap, not a run-level one.
+
+Let me check how this metric is computed and whether the fix for it is already in place.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unmatched_completed\|unmatched_model\|ModelCallCompleted\|ModelCallStar… ✓ (691ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the logic around lines 3044-3128 to understand how unmatched model completions are detected and whether a retroactive fix already exists for them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3040..3140 ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the lifecycle detection. The graph shows `deepseek_model_call_unmatched_completed_count=2` — meaning there are 2 model calls where a `ModelCallCompleted` event exists but no matching `ModelCallStarted`. 
+
+This is a genuine lifecycle gap. Now let me check: does `append_terminal_state_events.py` handle retroactive `ModelCallStarted` for unmatched completions? The seed task was flagged as stale because `state_run_incomplete` code exists, but that's for *runs* — model calls might not have the same retroactive fix.
+
+Let me also check if there's a retroactive fix for model calls similar to what was done for runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive\|ModelCallStarted\|model_call.*start\|open_after' scripts/a… ✓ (712ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the retroactive handling for model calls more specifically. The file handles retroactive RunCompleted, but does it handle retroactive ModelCallStarted for unmatched ModelCallCompleted?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:390..470 ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `append_terminal_state_events.py` handles:
+   - Orphaned runs (RunStarted without RunCompleted) → emits RunCompleted
+   - Missing FailureObserved (error RunCompleted without FailureObserved) → emits FailureObserved
+   - FailureObserved without RunCompleted → emits RunCompleted
+
+2. But it does NOT handle:
+   - ModelCallCompleted without ModelCallStarted → no retroactive ModelCallStarted emission
+
+That's the gap: `deepseek_model_call_unmatched_completed_count=2`. The model call lifecycle is incomplete — there are ModelCallCompleted events without matching ModelCallStarted events, and nothing in the retroactive pipeline fixes them.
+
+The seed task_01.md was flagged as stale because the contradiction detector found `state_run_incomplete` code already exists. But the actual gap is about `deepseek_model_call_unmatched_completed_count` which is *model call* lifecycle, not *run* lifecycle. The task title says "Close yyds state and model lifecycle gaps" and the second part (model lifecycle) is still genuine.
+
+However, the seed task has `validated_against_assessment: false` so it's officially stale. I should write a fresh task. 
+
+Now let me plan:
+
+**Task 1**: Fix the model call lifecycle gap — add retroactive ModelCallStarted for unmatched ModelCallCompleted in append_terminal_state_events.py. This directly addresses the #1 graph pressure signal. But wait — the task description says "Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py" — 3 files. Let me think about whether that's too broad. The core fix is in append_terminal_state_events.py. The log_feedback.py and summarize_state_gnomes.py might need updates too but let me keep it focused.
+
+Actually, let me re-read the assessment more carefully. The graph pressure says:
+- Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=2): Lifecycle causes: state_unmatched/open_after_FailureObserved=8; state...
+
+So there are TWO things: unmatched model completions (2) and open after FailureObserved (8). The open_after_FailureObserved is about runs with FailureObserved but no RunCompleted — and that was already handled in the Day 137/138 fix: line 463-469 of append_terminal_state_events.py adds `find_runs_with_failure_observed_no_completion`. So that part might already be fixed.
+
+But `deepseek_model_call_unmatched_completed_count=2` is a model-call-level gap that's NOT yet handled by append_terminal_state_events.py. That's the real remaining work.
+
+Let me also consider what other tasks to write. The trajectory says:
+
+1. Graph pressure #1: Close deepseek model lifecycle gaps ← this is the remaining part of the seed task
+2. Graph pressure #2: Bound failing shell commands before retrying ← tool reliability improvement
+3. The assessment candidates: cache metrics (#105, reverted), exit-code-1 post-mortem
+
+For cache metrics (#105): this was already attempted and reverted. The assessment says it's blocked by yoagent #90. The issue #90 has no replies. I should NOT retry this without a different approach.
+
+For exit-code-1 post-mortem: this is a diagnostic improvement, not a fitness improvement. The graph pressure tasks are higher priority.
+
+Let me focus on:
+
+**Task 1**: Fix model call lifecycle — add retroactive ModelCallStarted for unmatched ModelCallCompleted
+**Task 2**: Improve shell command reliability (bash_tool_error=13) — add better exit code checking in bash tool recovery
+
+Wait, let me re-examine. The graph pressure #2 says "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=13)". This is about making the retry loop better at handling bash failures. But what file does this touch? It's in the tool execution/recovery path. Let me think about where in the source this would live.
+
+Actually, looking at the lesson: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks" — this is more of a prompting/behavioral lesson than a code fix. It's about how the agent uses bash, not about the bash tool itself. But the graph pressure says it's actionable.
+
+Let me think about what would actually reduce bash_tool_error count. It could be:
+- Adding better error recovery hints in the bash tool wrapper
+- Adding more specific retry instructions
+- Improving the tool failure tracker to categorize bash failures better
+
+Actually, let me step back. The assessment already ranked tasks:
+1. MEDIUM: Session-level post-mortem for exit-code-1 runs
+2. MEDIUM: Cache metric recording workaround
+3. LOW: Differentiate cancelled-run vs genuine-failure lifecycle reasons
+4. LOW: Explain SQLite projection vs raw events count
+5. HIGH (graph): Close deepseek model lifecycle gaps
+
+The HIGH graph pressure task is the lifecycle gap. Let me focus on that.
+
+But I need to think about what specifically to do. The seed task is stale because the contradiction detector found `state_run_incomplete` code exists. But the actual graph pressure says `deepseek_model_call_unmatched_completed_count=2` — model calls, not runs.
+
+So my refined Task 1 should be: Add retroactive ModelCallStarted emission in append_terminal_state_events.py for ModelCallCompleted events that have no matching ModelCallStarted.
+
+For Task 2: Let me look at what's most actionable from the graph pressure. The bash_tool_error=13 is the dominant historical category but it's been declining. Let me check the assessment's own ranking: it says "Bound failing shell commands before retrying" is the #2 graph pressure.
+
+But wait — all the graph pressure signals are *cumulative historical* issues. The assessment says "bash_tool_error=13 is the dominant historical category... These are declining, not accelerating." So maybe I shouldn't prioritize this over the lifecycle gap which is more directly fixable.
+
+Let me also consider: does the Day 138 morning session (02:39) already fix some of these? The assessment says Day 138 had two fixes: fallback task picker bias toward src/*.rs and recursion landmine fix in state.rs. Neither addresses model call lifecycle.
+
+OK, my plan:
+
+**Task 1**: Add retroactive ModelCallStarted for unmatched ModelCallCompleted in append_terminal_state_events.py. This directly addresses the #1 graph pressure signal (deepseek_model_call_unmatched_completed_count=2).
+
+**Task 2**: Maybe the exit-code-1 post-mortem? Let me check if that's genuinely useful. The assessment says: "When a session fails with exit code 1 and no commits, there's no post-mortem explaining what stage failed." This touches evolve.sh and possibly state.rs. But it's diagnostic only — it doesn't improve fitness gnomes directly.
+
+Actually, let me look at the log_feedback score: 0.7125. The top corrected lessons are:
+1. "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+2. "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them, then search owning symbols instead of retrying absent paths"
+
+These are logged as behavioral patterns, not code bugs. Lesson #2 is a prompting/behavioral improvement that the agent should apply, not a code change. Lesson #1 about shell commands might be addressable in code.
+
+Let me focus on what's concretely actionable and verifiable:
+
+**Task 1**: Model call lifecycle gap fix — add retroactive ModelCallStarted in append_terminal_state_events.py
+**Task 2**: Exit-code-1 post-mortem — write a diagnostic artifact when sessions fail without commits
+
+Actually wait, the task sizing rules say each task must touch at most 3 source files. Task 1 touches append_terminal_state_events.py (a script). Task 2 would touch evolve.sh and maybe state.rs. Both are script-level tasks.
+
+But the trajectory also says "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, protocol handling, cache behavior, or harness self-evolution quality." The lifecycle gap improve state observability. The exit-code-1 post-mortem improves harness self-evolution quality.
+
+Let me verify the model call lifecycle gap more precisely before writing the task. Let me check if there's already a `find_missing_model_call_started` function or similar.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'find.*model\|model.*find\|ModelCallStarted.*retro\|retro.*ModelCallStar… ✓ (623ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing retroactive ModelCallStarted handling. This is a genuine gap. Let me also check the `model_lifecycle_key` function in commands_state.rs to understand how matched pairs are tracked, so I can design the retroactive fix correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'model_lifecycle_key' src/commands_state.rs | head -10 ✓ (664ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the model_lifecycle_key function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3175..3195 ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `model_lifecycle_key` uses `run_id` (or falls back to `event_id`). The key for matching ModelCallStarted with ModelCallCompleted is the `run_id`. So unmatched model completions mean there's a ModelCallCompleted for a run that has no ModelCallStarted.
+
+Now let me look at how ModelCallStarted events are structured and what data they carry. Let me check the state.rs to see how ModelCallStarted is recorded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallStarted\|record_model_call_started\|model_call_start' src/stat… ✓ (698ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how ModelCallStarted is recorded - what payload it carries.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4105..4130 ✓ (380ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So ModelCallStarted events carry:
+- `model_call_id`: a unique identifier for the call
+- `model`: the model name
+
+And ModelCallCompleted probably carries the same `model_call_id` to match.
+
+Now let me check how ModelCallCompleted is structured:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4125..4155 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so both ModelCallStarted and ModelCallCompleted use `model_call_id` in their payload. But wait — looking at the `model_lifecycle_key` function in commands_state.rs, it uses `run_id` (not `model_call_id`) as the lifecycle key. So the matching is by run_id, not by model_call_id. This means within a single run, multiple model calls might have the same lifecycle key (same run_id), and the matching is just by count — each ModelCallStarted increments a counter and each ModelCallCompleted decrements it.
+
+Wait, let me re-read: `open_model_calls` is a `BTreeMap<String, OpenModelCall>`. The key is `model_lifecycle_key(event)` which returns `run_id`. If two model calls happen in the same run, the second ModelCallStarted would overwrite the first in the map. That seems like a bug... unless the intent is that model calls within a run are sequential and only one can be open at a time.
+
+Actually for the purpose of retroactive fix: if there's a ModelCallCompleted for a run_id that has no ModelCallStarted, we need to emit a synthetic ModelCallStarted. The key question is what `model_call_id` to use. We could use a generated one that includes "retroactive" in its ID.
+
+OK, I have enough understanding now. Let me write the task files.
+
+**Task 1**: Fix model call lifecycle — add retroactive ModelCallStarted for unmatched ModelCallCompleted in append_terminal_state_events.py
+
+**Task 2**: Exit-code-1 session post-mortem — write diagnostic artifact when sessions fail without commits
+
+Wait, let me reconsider. The planning instructions say:
+- "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+- Task 1 is state-driven (lifecycle gap from graph pressure)
+- Task 2 is more of a diagnostic improvement
+
+Let me check if there's another state-driven task. The graph pressure also lists:
+- Reconcile transcript-only tool failures (3)
+- Reconcile state-only tool failures (35)
+- Recover failed tool actions (4)
+
+But these are all small cumulative numbers and the assessment says they're declining. The lifecycle gap is the most actionable.
+
+Let me also consider: should I write a task for the exit-code-1 post-mortem or not? The assessment says it's MEDIUM priority. It touches `scripts/evolve.sh` and possibly `src/state.rs`. But evolve.sh is a protected file — the safety rules say "Never modify scripts/evolve.sh". So that task is actually blocked!
+
+Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'scripts/evolve.sh\|IDENTITY.md\|PERSONALITY.md\|ECONOMICS.md' CLAUDE.md… ✓ (720ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`scripts/evolve.sh` is a protected file — never modify. So the exit-code-1 post-mortem task would need to touch evolve.sh which is not allowed. Scratch that task.
+
+What about doing it via state events only (src/state.rs) without touching evolve.sh? The evolve.sh would need to call into the mechanism, so it's inherently dependent on evolve.sh changes.
+
+OK, let me focus on what I can do:
+
+**Task 1**: Add retroactive ModelCallStarted for unmatched ModelCallCompleted in append_terminal_state_events.py. This is a script file that's not in the "never modify" list.
+
+For Task 2, let me look at the other graph pressure signals:
+- "Bound failing shell commands before retrying" (bash_tool_error=13) — but what file would this touch?
+- Reconcile tool failures — these are in the dashboard/scripts area
+
+Actually, let me re-read the assessment's candidate tasks more carefully:
+
+1. MEDIUM: Session-level post-mortem for exit-code-1 runs — BLOCKED (evolve.sh is protected)
+2. MEDIUM: Cache metric recording workaround — previously reverted (#105), blocked by yoagent #90
+3. LOW: Differentiate cancelled-run vs genuine-failure lifecycle reasons — touches append_terminal_state_events.py
+4. LOW: Explain SQLite projection vs raw events count — touches commands_state.rs
+5. HIGH (graph): Close deepseek model lifecycle gaps — touches append_terminal_state_events.py
+
+So the practical options are:
+- Task 1: Model call lifecycle gap (HIGH graph pressure)
+- Task 2: Differentiate cancelled-run lifecycle reasons (LOW, but easy and related)
+
+Both touch append_terminal_state_events.py. They're related and could be combined into one task... but the task sizing rules say at most 3 source files and these both touch the same file. Let me write them as separate tasks OR combine them.
+
+Actually, let me re-read the task sizing rules: "Each task must be completable in 20 minutes by a focused agent." Both fixes are small — adding a retroactive ModelCallStarted handler and differentiating cancellation reasons. Combined they'd be a reasonable single task touching one file.
+
+Let me write them as one task since they're both in append_terminal_state_events.py and both are lifecycle fixes.
+
+For the second task, let me look more carefully. The graph pressure also has other signals. Let me check if there's a concrete, small fix for any of them.
+
+Actually, let me check the bash tool error situation more carefully. The graph says `bash_tool_error=13`. Let me see what kind of bash errors these are and whether there's a code-level fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'bash_tool_error\|BashToolError\|bash.*error\|shell.*error' src/tools.r… ✓ (695ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The bash_tool_error is a dashboard/metric category, not a Rust source code error. The graph pressure lesson says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks" — this is a behavioral pattern from the agent's own bash usage, not a code bug. It's not directly fixable in the source.
+
+OK, let me finalize my plan:
+
+**Task 1**: Fix model call lifecycle and differentiate cancellation reasons — both in append_terminal_state_events.py. This addresses:
+- Graph pressure #1: deepseek_model_call_unmatched_completed_count=2
+- Assessment candidate #3: Differentiate cancelled-run vs genuine-failure lifecycle reasons
+
+For Task 2, let me think about what else is actionable. The log_feedback top lessons are:
+1. "shell tool commands failed during the session -> prefer bounded commands with explicit paths..."
+2. "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them..."
+
+Both are behavioral lessons, not code bugs. But maybe I can encode them as recovery hints or tool wrapper improvements?
+
+Actually, let me look at what `tool_wrappers.rs` does for bash — there might be recovery hints I can improve.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'RecoveryHint\|recovery_hint\|bash.*hint\|hint.*bash' src/tool_wrappers.… ✓ (697ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a RecoveryHintTool in tool_wrappers.rs. Let me look at the targeted_recovery_hint function and the tool_recovery_hint function to see if I can improve the bash-specific hints.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1018..1078 ✓ (343ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The recovery hints are already comprehensive. Adding more wouldn't dramatically reduce bash_tool_error. The bash_tool_error is more about agent behavior than tool wrapper quality.
+
+OK, let me focus on what's really actionable and high-impact:
+
+**Task 1**: Model call lifecycle fix + cancelled-run differentiation (append_terminal_state_events.py)
+- Add `find_missing_model_call_started()` to detect ModelCallCompleted without ModelCallStarted
+- Emit retroactive ModelCallStarted for unmatched completions
+- Differentiate cancelled-run lifecycle reasons: use "run cancelled by next hourly session" instead of generic "run completed with error status" for cancelled runs
+- Add tests
+
+For Task 2, let me look at what else could move the needle. Let me check the log_feedback score of 0.7125 more carefully — what's dragging it down?
+
+Actually, looking at the trajectory info: "Corrected top lessons for next run: shell tool commands failed... agent read or searched paths that did not exist..."
+
+The "agent read or searched paths that did not exist" lesson is already addressed in the system prompt — the `Bounded Context Use` section says "Verify candidate paths with repo file listing before reading/searching guessed files; if a path is absent, search for the owning module or symbol instead of retrying the missing path." So this is a prompting improvement that's already encoded.
+
+For Task 2, let me think about what would improve the log_feedback score or task success rate. The most impactful thing would be addressing the cache metrics gap (#105/#90), but that's blocked.
+
+Let me consider a different approach: what if I write a task that makes the task manifest's `validated_against_assessment` contradiction check more granular? Currently, the preseed script flagged the lifecycle task as stale because it found `state_run_incomplete` code exists, but it missed that `deepseek_model_call_unmatched_completed_count` is a different gap. If I fix the contradiction detector to be more precise, future sessions won't incorrectly flag partially-addressed tasks as stale.
+
+Actually, that's meta — it's improving the planning pipeline. But it's also a script-only change that won't pass through `cargo build && cargo test`. The task sizing rules say to prefer tasks that touch `src/*.rs`.
+
+Hmm, but the model call lifecycle fix is also a script-only change. Let me check if there are any `src/*.rs` tasks that are actionable.
+
+Let me look again at the graph pressure signals. The assessment says:
+- Graph pressure #1: Close deepseek model lifecycle gaps → script fix
+- Graph pressure #2: Bound failing shell commands → behavioral, not code
+- Graph pressure #3-5: Reconcile tool failures → script/dashboard fixes, small numbers
+
+None of these directly point to `src/*.rs` changes. The most recent Day 138 session already did two `src/*.rs` changes (task picker bias and recursion fix).
+
+Let me write two tasks:
+1. Model call lifecycle fix (append_terminal_state_events.py)
+2. Maybe something in src/ that's small and verifiable
+
+Actually, let me check the verify_gate for the seed task — it says the contradiction is `state_run_incomplete` found. But the task title says "Close yyds state and model lifecycle gaps." The model lifecycle part (deepseek_model_call_unmatched_completed_count) is still genuine. I should write a task specifically for the model call lifecycle.
+
+Let me write Task 1 for the model call lifecycle and Task 2. For Task 2, let me look at what other concrete, small, verifiable improvements I can make.
+
+Actually, let me check: does the exit-code-1 post-mortem HAVE to touch evolve.sh? Could I instead add it to the state recording side? Like, when a RunCompleted event with error status is emitted, also emit a diagnostic event with stage information? That would only touch src/state.rs or the callers of record().
+
+But the "stage" information (whether it failed in assessment, planning, implementation, etc.) is only known in evolve.sh, which is protected.
+
+OK let me just go with one solid task for now and a smaller second task. Let me think about what small improvement in src/ could be impactful.
+
+Looking at the log_feedback corrected lessons: "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them, then search owning symbols instead of retrying absent paths"
+
+This lesson is about the agent's behavior in using tools. But what if I enhanced the tool wrappers or error messages to make this lesson more actionable? For example, the `read_file` tool could give a better error message when the file doesn't exist, suggesting `rg --files` to verify.
+
+Actually, that's already in the recovery hints. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'read_file\|read.*error\|file.*not.*found\|no such file' src/tool_wrappe… ✓ (699ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what happens for `read_file` when the file doesn't exist — specifically the targeted_recovery_hint.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1120..1170 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The recovery hint for read_file says "Use `list_files` to discover the correct path" — but the log_feedback lesson says "verify guessed paths with `rg --files` before reading them, then search owning symbols instead of retrying absent paths." The hint could be more specific, suggesting `rg --files` as a faster alternative to `list_files`.
+
+But this is a small improvement. Let me think about whether it's worth a task slot.
+
+Actually, let me step back. I have:
+- Task 1: Model call lifecycle fix (append_terminal_state_events.py) — addresses graph pressure #1
+- Need Task 2
+
+For Task 2, let me consider:
+- The read_file recovery hint improvement (src/tool_wrappers.rs) — small but touches src/*.rs and passes cargo test
+- The "differentiate cancelled-run lifecycle reasons" (same file as Task 1, could be combined)
+
+Let me combine the cancelled-run differentiation into Task 1 since they're both in the same file. Then Task 2 can be something else.
+
+For Task 2, the read_file recovery hint improvement is small and verifiable. But let me also look at whether there's a more impactful task.
+
+Actually, let me look at the `state graph evidence` issue from the assessment:
+> "LOW — `state graph evidence --run` returns 'no graph evidence relations found': The evidence subcommand doesn't accept `--run` as a valid filter, yet the error message doesn't suggest the correct flag (`--id` or similar)."
+
+This is a small UX fix in commands_state.rs. It touches a Rust source file and is verifiable with cargo test.
+
+Or the "Explain SQLite projection vs raw events count" — also in commands_state.rs.
+
+These are LOW priority but they're actionable and verifiable.
+
+Let me also check: is there a concrete improvement for the bash tool reliability that touches src/*.rs?
+
+Actually, let me look at the "Bound failing shell commands before retrying" signal more carefully. The lesson says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." Could I add a feature that auto-adds `timeout` or `head` limits to bash commands? That would be in src/tools.rs or src/tool_wrappers.rs.
+
+That would be a more impactful change. Let me check how the bash tool is currently implemented.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'struct StreamingBashTool\|fn call.*bash\|bash.*execute\|bash.*run' src/… ✓ (694ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The bash tool already has timeout support. The issue (bash_tool_error=13) is more about the agent's usage patterns — running commands without `--`, not checking exit codes, etc. The recovery hints already cover most of this.
+
+OK, I'm going to go with:
+
+**Task 1**: Fix model call lifecycle + differentiate cancellation reasons (append_terminal_state_events.py)
+**Task 2**: Improve file-not-found recovery hint for read_file (src/tool_wrappers.rs) — small, verifiable, touches src/*.rs
+
+Wait, Task 2 is very small. Let me think bigger. What if Task 2 is about improving the read_file error message itself in yoagent? No, that's upstream.
+
+Let me reconsider. What about the `state graph evidence --run` error message fix? That would be in commands_state.rs and it's a concrete UX fix.
+
+Actually, let me look at the task_fitness more carefully. The fitness score is 1.0 already — that's the maximum. The diagnostic gates are all green. So the system is healthy. The main remaining issues are:
+1. Model call lifecycle gap (observability)
+2. Cache metrics (blocked)
+3. Exit-code-1 opacity (blocked by evolve.sh protection)
+
+Given these constraints, let me write two tasks:
+- Task 1: Model call lifecycle fix in append_terminal_state_events.py
+- Task 2: Improve read_file recovery hint to suggest `rg --files` (src/tool_wrappers.rs) — this encodes the log_feedback lesson into the tool itself
+
+For Task 1, I should combine:
+- Add `find_missing_model_call_started()` 
+- Emit retroactive ModelCallStarted for unmatched ModelCallCompleted
+- While I'm there, differentiate cancelled-run lifecycle reasons
+
+Let me now write the task files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence to plan. Let me write two tasks:
+
+1. **Model call lifecycle fix** — the seed task was flagged stale for `state_run_incomplete` (already exists), but `deepseek_model_call_unmatched_completed_count=2` is a different gap: ModelCallCompleted events without matching ModelCallStarted. Nothing in `append_terminal_state_events.py` handles this retroactively.
+2. **Read_file recovery hint** — the log_feedback top lesson says the agent retries absent paths instead of verifying first. The existing hint says "use `list_files`" but `rg --files` is faster and more precise.
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  + Title: Add retroactive ModelCallStarted for unmatched ModelCallCompleted and differentiate cancellation reasons
+  + Files: scripts/append_terminal_state_events.py, scripts/test_append_terminal_state_events.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: false (contradiction: code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py — suppressing stale task 'Close yyds state and model lifecycle gaps' (scripts/append_terminal_state_events.py:281:    ``state_run_incomplete_count`` in gnome summaries.))
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Graph pressure: `deepseek_model_call_unmatched_completed_count=2` — two ModelCallCompleted events have no matching ModelCallStarted. The `append_terminal_state_events.py` retroactive pipeline handles RunCompleted, FailureObserved, and FailureObserved-without-RunCompleted gaps, but has zero handling for unmatched model call completions.
+  + - Assessment: "Cancelled-run lifecycle: When a run is cancelled (hourly collision), a retroactive FailureObserved is correctly written, but the reason code is generic ('run completed with error status'). A more specific reason ('run cancelled by next hourly session') would improve diagnostics."
+  + - The seed `task_01.md` was correctly flagged as stale for `state_run_incomplete` (that code already exists at line 466), but the model-call lifecycle gap (`deepseek_model_call_unmatched_completed_count`) is a separate, genuine, unaddressed problem.
+  + - `model_lifecycle_key()` in `src/commands_state.rs:3175` matches ModelCallStarted↔ModelCallCompleted by `run_id`. When a ModelCallCompleted arrives for a run_id with no ModelCallStarted, it's unmatched.
+    
+    Edit Surface:
+  - - scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (46 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (46 lines) ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md is written. Now let me write task_02.md for the read_file recovery hint improvement.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Suggest rg --files in read_file "no such file" recovery hint
+  + Files: src/tool_wrappers.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Log feedback top corrected lesson: "agent read or searched paths that did not exist -> verify guessed paths with rg --files before reading them, then search owning symbols instead of retrying absent paths." This lesson has appeared across multiple sessions and hasn't been encoded in the tool recovery path.
+  + - The current `targeted_recovery_hint` for `read_file` when the file doesn't exist (line 1123-1129) says: "Use `list_files` to discover the correct path, or check for typos in the path you provided." But `list_files` can be slow on large repos; `rg --files` (from ripgrep) is a faster, more precise alternative that's already installed and used throughout the codebase.
+  + - The system prompt's "Bounded Context Use" section already says: "Verify candidate paths with repo file listing before reading/searching guessed files; if a path is absent, search for the owning module or symbol instead of retrying the missing path." The tool hint should reinforce this by mentioning both `rg --files` (fast verification) and searching for the owning symbol (fallback to avoid retry loops).
+  + 
+  + Edit Surface:
+  + - src/tool_wrappers.rs — update the `"read_file"` branch of `targeted_recovery_hint` for the "no such file or directory" case
+  + 
+  + Verifier:
+  + - cargo test tool_wrappers -- --test-threads=1
+  + - Specifically: `test_targeted_recovery_hint_read_file_no_such_file` must pass
+  + 
+  + Fallback:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (54 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (54 lines) ✓ (373ms)
+
+

@@ -1,0 +1,522 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill rules. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the target files: `scripts/append_terminal_state_events.py` and `scripts/test_append_terminal_state_events.py`
+3. Check the current state of `unmatched_completed_count`
+4. Implement the changes
+
+Let me begin by reading the evolve skill and the target files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (1.7s)
+ ✓ (1.4s)
+ ✓ (981ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the rest of `append_terminal_state_events.py`, especially the `append_terminal_events` function and the `find_missing_failure_observed` function to understand the existing patterns.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+Let me read the rest of the append script to see the full `append_terminal_events` and `open_lifecycle` functions.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..300 ✓ (366ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the rest of the append script, especially the `append_terminal_events` function and the `_maybe_append_event` helper.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:299.. ✓ (355ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me understand the task:
+
+1. **Add `find_missing_model_call_started()`** — scans events for ModelCallCompleted entries whose `run_id` has no prior ModelCallStarted, returning a list of (run_id, model, timestamp_ms).
+
+2. **For each unmatched completion**, emit a retroactive ModelCallStarted with `"retroactive": true` and `model_call_id: "retroactive-<run_id>"`.
+
+3. **Differentiate cancelled-run reasons** — when a RunCompleted has status "cancelled", the FailureObserved reason should be more specific ("run cancelled by next hourly session") instead of generic "run completed with error status 'error'".
+
+Let me check the current state of `unmatched_completed_count` first, then implement.
+
+Let me also check `model_lifecycle_key()` in `src/commands_state.rs` to understand how model calls are matched.
+
+Now let me plan the implementation:
+
+1. Add `find_missing_model_call_started()` function
+2. Modify the `append_terminal_events()` function to call it and emit retroactive ModelCallStarted events
+3. Modify `find_missing_failure_observed()` to differentiate cancellation reasons
+4. Add tests
+
+Let me start by checking the current unmatched count.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the current unmatched completed count and look at the `model_lifecycle_key` function:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo run --bin yyds -- state …  ▶ search 'model_lifecycle_key' (*.rs) ✓ (309ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `model_lifecycle_key` function for how model calls are matched.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3170..3190 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So the `model_lifecycle_key` uses `run_id` to match ModelCallStarted ↔ ModelCallCompleted. That confirms the task's description.
+
+Now I have a complete understanding. Let me implement:
+
+1. `find_missing_model_call_started()` — scans events for ModelCallCompleted entries whose `run_id` has no prior ModelCallStarted
+2. Modify `append_terminal_events()` to call this and emit retroactive ModelCallStarted events
+3. Modify cancellation reason in `find_missing_failure_observed()` — differentiate "cancelled" status
+4. Add tests
+
+Let me start writing the test first, then the implementation.
+
+For the cancellation reason: Currently in `find_missing_failure_observed`, the reason is generic: `f"retroactive: run completed with error status '{entry['status']}' but no FailureObserved was recorded"`. For cancelled runs, we should use a more specific reason like `"retroactive: run cancelled by next hourly session"`.
+
+Wait, I need to be careful. The `find_missing_failure_observed` function returns entries with `status` field. The `append_terminal_events` function then uses `entry['status']` in the reason string. So:
+
+For `status == "cancelled"`: reason = "retroactive: run cancelled by next hourly session"
+For `status == "error"`: reason = "retroactive: run completed with error status 'error' but no FailureObserved was recorded"
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the context I need. Let me implement the changes. I'll write the test first, then the implementation.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (335ms)
+  ▶ todo ✓ (349ms)
+  ▶ todo ✓ (309ms)
+  ▶ todo ✓ (380ms)
+  ▶ todo ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the tests first. I'll add test methods to `test_append_terminal_state_events.py`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.1s (5 ✓)
+
+Starting with the tests. Let me add test methods for both the retroactive ModelCallStarted and cancelled-run reason differentiation:
+  +     def test_retroactive_model_call_started_for_unmatched_completed(self):
+  +         """Emit retroactive ModelCallStarted when ModelCallCompleted has no matching ModelCallStarted."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             after_line = 0
+  +             # Run with ModelCallCompleted but NO ModelCallStarted
+  +             write_event(events, "RunStarted", "orphan-model-run")
+  +             write_event(events, "ModelCallCompleted", "orphan-model-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "orphan-model-run", {"status": "error"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  +                 None,
+  +                 "session-1",
+  +                 "trace-1",
+  +                 "post_hoc",
+  +                 "error",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (2 → 192 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (2 → 192 lines)
+  +     def test_retroactive_model_call_started_for_unmatched_completed(self):
+  +         """Emit retroactive ModelCallStarted when ModelCallCompleted has no matching ModelCallStarted."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             after_line = 0
+  +             # Run with ModelCallCompleted but NO ModelCallStarted
+  +             write_event(events, "RunStarted", "orphan-model-run")
+  +             write_event(events, "ModelCallCompleted", "orphan-model-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "orphan-model-run", {"status": "error"})
+  + 
+  +             result = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  +                 None,
+  +                 "session-1",
+  +                 "trace-1",
+  +                 "post_hoc",
+  +                 "error",
+  +                 "error",
+  +                 "post_hoc_closure",
+  ... (172 more lines)
+ ✓ (339ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests are written. Now let me implement the actual functions. First, `find_missing_model_call_started()`, then the changes in `append_terminal_events()`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the `find_missing_model_call_started()` function. I'll place it right before `_maybe_append_event`:
+  +     return missing, diagnostics
+  + 
+  + 
+  + def find_missing_model_call_started(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find ModelCallCompleted entries whose run_id has no prior ModelCallStarted.
+  + 
+  +     Returns (missing_entries, diagnostics) where each missing entry is a dict
+  +     with keys run_id, model, timestamp_ms for orphaned ModelCallCompleted
+  +     events.
+  +     """
+  +     model_started_runs: set[str] = set()
+  +     model_completed_entries: dict[str, dict[str, Any]] = {}
+  + 
+  +     for event in events:
+  +         kind = event_type(event)
+  +         data = payload(event)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (4 → 48 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (4 → 48 lines)
+  +     return missing, diagnostics
+  + 
+  + 
+  + def find_missing_model_call_started(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find ModelCallCompleted entries whose run_id has no prior ModelCallStarted.
+  + 
+  +     Returns (missing_entries, diagnostics) where each missing entry is a dict
+  +     with keys run_id, model, timestamp_ms for orphaned ModelCallCompleted
+  +     events.
+  +     """
+  +     model_started_runs: set[str] = set()
+  +     model_completed_entries: dict[str, dict[str, Any]] = {}
+  + 
+  +     for event in events:
+  +         kind = event_type(event)
+  +         data = payload(event)
+  +         rid = run_id(event, data)
+  +         if not rid:
+  ... (27 more lines)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+1. Wire the retroactive ModelCallStarted into `append_terminal_events()`
+2. Differentiate cancellation reasons in the FailureObserved reason string
+
+Let me add the retroactive ModelCallStarted scan. I'll place it alongside the other full-scan blocks in `append_terminal_events()`. The right place is after the `FailureObserved no RunCompleted` scan. I also need to add `model_call_started_appended` to the return dict.
+
+Let me also handle the "cancelled" status differentiation for FailureObserved.
+
+Let me do the cancellation reason change first, then the retroactive ModelCallStarted.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me wire the retroactive ModelCallStarted into `append_terminal_events()`. I'll add the scan block and update the return dict:
+            _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
+            completed_runs.append(rid)
+  + 
+  +     # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+  +     # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+  +     # ModelCallStarted events to close the model-call lifecycle gap.
+  +     # Gated by the ambiguous-reset guard to avoid emitting retroactive
+  +     # events when the events file was reset/rebuilt (same as stale orphan scan).
+  +     model_call_started_appended = 0
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         missing_starts, mcs_diag = find_missing_model_call_started(events)
+  +         diagnostics["model_call_started_diagnostics"] = mcs_diag
+  + 
+  +         for entry in missing_starts:
+  +             rid = entry["run_id"]
+  +             payload_mcs: dict[str, Any] = {
+  +                 "model": entry.get("model"),
+  +                 "model_call_id": f"retroactive-{rid}",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (10 → 39 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (10 → 39 lines)
+            _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
+            completed_runs.append(rid)
+  + 
+  +     # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+  +     # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+  +     # ModelCallStarted events to close the model-call lifecycle gap.
+  +     # Gated by the ambiguous-reset guard to avoid emitting retroactive
+  +     # events when the events file was reset/rebuilt (same as stale orphan scan).
+  +     model_call_started_appended = 0
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         missing_starts, mcs_diag = find_missing_model_call_started(events)
+  +         diagnostics["model_call_started_diagnostics"] = mcs_diag
+  + 
+  +         for entry in missing_starts:
+  +             rid = entry["run_id"]
+  +             payload_mcs: dict[str, Any] = {
+  +                 "model": entry.get("model"),
+  +                 "model_call_id": f"retroactive-{rid}",
+  +                 "retroactive": True,
+  +             }
+  ... (19 more lines)
+ ✓ (322ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to differentiate the cancellation reason in the FailureObserved. The current code at line ~449-461 has:
+
+```python
+    for entry in missing_failures:
+        rid = entry["run_id"]
+        payload_fo: dict[str, Any] = {
+            "reason": (
+                f"retroactive: run completed with error status "
+                f"'{entry['status']}' but no FailureObserved was recorded"
+            ),
+            "retroactive": True,
+        }
+```
+
+I need to change this to handle "cancelled" status differently. Let me re-read the current state of that section since I've been editing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now differentiate the cancellation reason in the FailureObserved section. Let me read the current state first:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:489.. ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to update the FailureObserved reason to differentiate cancelled status. Let me edit the reason block:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the FailureObserved reason to differentiate cancelled status:
+        for entry in missing_failures:
+            rid = entry["run_id"]
+  -         payload_fo: dict[str, Any] = {
+  -             "reason": (
+  +         status = entry.get("status", "")
+  +         if status == "cancelled":
+  +             reason_text = "retroactive: run cancelled by next hourly session"
+  +         else:
+  +             reason_text = (
+                    f"retroactive: run completed with error status "
+  -                 f"'{entry['status']}' but no FailureObserved was recorded"
+  -             ),
+  +                 f"'{status}' but no FailureObserved was recorded"
+  +             )
+  +         payload_fo: dict[str, Any] = {
+  +             "reason": reason_text,
+                "retroactive": True,
+            }
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (9 → 14 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (9 → 14 lines)
+        for entry in missing_failures:
+            rid = entry["run_id"]
+  -         payload_fo: dict[str, Any] = {
+  -             "reason": (
+  +         status = entry.get("status", "")
+  +         if status == "cancelled":
+  +             reason_text = "retroactive: run cancelled by next hourly session"
+  +         else:
+  +             reason_text = (
+                    f"retroactive: run completed with error status "
+  -                 f"'{entry['status']}' but no FailureObserved was recorded"
+  -             ),
+  +                 f"'{status}' but no FailureObserved was recorded"
+  +             )
+  +         payload_fo: dict[str, Any] = {
+  +             "reason": reason_text,
+                "retroactive": True,
+            }
+ ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (698ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+21 out of 22 tests pass. The failing test `test_retroactive_model_call_started_skips_ambiguous_reset` is failing because when the scope is "ambiguous_reset_full_scan", the diagnostics are different. Let me look at the test again. The issue is that with 2 open runs, the scope becomes "ambiguous_reset_full_scan", but the diagnostics key is `model_call_started_diagnostics`, which gets the `{"skipped": True, "reason": "ambiguous_reset_full_scan"}` — but the test is checking `diag.get("skipped")`. The problem is that `diag` might be something else entirely.
+
+Let me check: In my implementation, `diagnostics["model_call_started_diagnostics"]` is set in the else branch of the ambiguous-reset guard. But wait — the test has 2 open runs, so the scope is "ambiguous_reset_full_scan". The else branch should set `diagnostics["model_call_started_diagnostics"] = {"skipped": True, "reason": "ambiguous_reset_full_scan"}`. Let me check if the diagnostics object passed to the function is different...
+
+Actually, looking more closely, when scope is "ambiguous_reset_full_scan", `diagnostics` is the `diag` dict returned from `open_lifecycle`. The condition is `diagnostics.get("scope") != "ambiguous_reset_full_scan"`. Since it's equal, we go to the else branch and set `diagnostics["model_call_started_diagnostics"] = {"skipped": True, ...}`.
+
+Let me re-read my test:
+
+```python
+diag = result["diagnostics"]["model_call_started_diagnostics"]
+self.assertTrue(diag.get("skipped"))
+```
+
+This should work. Wait, maybe the issue is that when after_line > len(events), the `open_lifecycle` function goes through a different path. Let me read that code again.
+
+```python
+def open_lifecycle(events, after_line, fallback_after_line=None):
+    if after_line > len(events):
+        scan_start = 0
+        scope = "full_after_line_exceeded_file"
+    ...
+    open_models, open_runs, open_session_runs, diagnostics = lifecycle_for_scope(events, scan_start)
+    diagnostics["event_count"] = len(events)
+    diagnostics["requested_after_line"] = after_line
+    diagnostics["scope"] = scope
+    if scope == "full_after_line_exceeded_file":
+        visible_open_runs = set(open_runs) | set(open_models)
+        if len(visible_open_runs) > 1:
+            diagnostics["scope"] = "ambiguous_reset_full_scan"
+            ...
+            return {}, set(), set(), diagnostics
+```
+
+With 2 runs (run-a and run-b), `open_runs` should have both, so `visible_open_runs` > 1, so scope becomes "ambiguous_reset_full_scan". Then in `append_terminal_events`, the condition `diagnostics.get("scope") != "ambiguous_reset_full_scan"` is False, so we go to else branch.
+
+But wait, the test sets `after_line = 999` and writes 8 events. Let me count: RunStarted, ModelCallStarted, ModelCallCompleted, RunCompleted, RunStarted, ModelCallCompleted, RunCompleted = 8 events. `len(events) = 8`. `after_line = 999 > 8`, so...
+
+Wait, actually, `lifecycle_for_scope(events, 0)` scans from 0. For run-a: RunStarted adds to run_started, ModelCallStarted adds to model_started, ModelCallCompleted adds to model_completed, RunCompleted adds to run_completed. So run-a is closed.
+
+For run-b: RunStarted adds to run_started, ModelCallCompleted adds to model_completed, RunCompleted adds to run_completed. But there's NO ModelCallStarted for run-b. So `open_models` = {rid: data for rid, data in model_started.items() if rid not in model_completed}. model_started has run-a, model_completed has run-a and run-b. So open_models = {}.
+
+`open_runs = run_started | set(model_started) | model_completed - run_completed`. run_started = {run-a, run-b}. model_started = {run-a}. model_completed = {run-a, run-b}. run_completed = {run-a, run-b}. So active = {run-a, run-b} - {run-a, run-b} = {}. open_runs = {}.
+
+`visible_open_runs = set(open_runs) | set(open_models)` = empty! So `len(visible_open_runs) > 1` is False!
+
+The condition `len(visible_open_runs) > 1` means we need MORE THAN 1 visible open run for it to be ambiguous. In this test case, both runs are fully closed (both have RunCompleted), so `visible_open_runs` is empty, not > 1. The scope stays "full_after_line_exceeded_file", not "ambiguous_reset_full_scan".
+
+So my test is wrong — I need to make it truly ambiguous. Let me fix the test to have at least 2 open runs. I need runs that have RunStarted but no RunCompleted for this to work.
+
+Actually wait, let me re-read the lifecycle_for_scope logic:
+
+```python
+open_models = {rid: data for rid, data in model_started.items() if rid not in model_completed}
+active_runs = run_started | set(model_started) | model_completed
+open_runs = active_runs - run_completed
+```
+
+For "open runs" to be non-empty, you need run_started but NOT run_completed. The runs in my test both have RunCompleted, so they're closed. To make it ambiguous, I need at least 2 runs that are open (started but not completed).
+
+Let me fix the test:
+────────────────────────────────────────────────────────────────────────────────
+
+The test `test_retroactive_model_call_started_skips_ambiguous_reset` failed because both runs were fully closed, so `visible_open_runs` was empty — not > 1, so the scope never became ambiguous. I need runs with only RunStarted (no RunCompleted) to trigger the ambiguous guard:
+                events = Path(tmp) / "events.jsonl"
+                # after_line exceeds file length -> triggers full scan
+                after_line = 999
+  +             # Two runs that are open (RunStarted but no RunCompleted) to
+  +             # trigger the ambiguous_reset_full_scan guard (>1 visible open run).
+                write_event(events, "RunStarted", "run-a")
+                write_event(events, "ModelCallStarted", "run-a", {"model": "deepseek-v4-pro"})
+                write_event(events, "ModelCallCompleted", "run-a", {"model": "deepseek-v4-pro"})
+  -             write_event(events, "RunCompleted", "run-a", {"status": "completed"})
+                write_event(events, "RunStarted", "run-b")
+                write_event(events, "ModelCallCompleted", "run-b", {"model": "deepseek-v4-pro"})
+  -             write_event(events, "RunCompleted", "run-b", {"status": "error"})
+  -             # With 2 open runs, this is ambiguous -> no retroactive actions
+    
+                result = append_terminal_state_events.append_terminal_events(
+                    events,
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (32 → 31 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (32 → 31 lines)
+                events = Path(tmp) / "events.jsonl"
+                # after_line exceeds file length -> triggers full scan
+                after_line = 999
+  +             # Two runs that are open (RunStarted but no RunCompleted) to
+  +             # trigger the ambiguous_reset_full_scan guard (>1 visible open run).
+                write_event(events, "RunStarted", "run-a")
+                write_event(events, "ModelCallStarted", "run-a", {"model": "deepseek-v4-pro"})
+                write_event(events, "ModelCallCompleted", "run-a", {"model": "deepseek-v4-pro"})
+  -             write_event(events, "RunCompleted", "run-a", {"status": "completed"})
+                write_event(events, "RunStarted", "run-b")
+                write_event(events, "ModelCallCompleted", "run-b", {"model": "deepseek-v4-pro"})
+  -             write_event(events, "RunCompleted", "run-b", {"status": "error"})
+  -             # With 2 open runs, this is ambiguous -> no retroactive actions
+    
+                result = append_terminal_state_events.append_terminal_events(
+                    events,
+ ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me re-run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (669ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 22 tests pass (17 existing + 5 new). Let me now run the Rust-side checks.
+────────────────────────────────────────────────────────────────────────────────
+
+All 22 tests pass. Now let me run the Rust checks:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (348ms)
+  ▶ todo ✓ (348ms)
+  ▶ todo ✓ (333ms)
+  ▶ todo ✓ (341ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run `cargo fmt -- --check` and `cargo build` to verify nothing is broken on the Rust side.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 2.5s (4 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, cargo fmt passes. Now let me check git diff to verify that only the task scope files were changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (717ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only the two task-scope files were changed. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only the task-scope files are changed. Let me commit:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (711ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me confirm the diff looks correct and the commit landed.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the commit landed and review the final diff:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -1 && echo "… ✓ (677ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All done. Here's a summary of what changed:
+
+## Changes Made
+
+### `scripts/append_terminal_state_events.py` (+86/-4)
+
+1. **Added `find_missing_model_call_started()`** — scans all events for `ModelCallCompleted` entries whose `run_id` has no prior `ModelCallStarted`, returning a list of `(run_id, model, timestamp_ms)` plus diagnostics with `unmatched_model_call_completed_count`.
+
+2. **Wired retroactive `ModelCallStarted` into `append_terminal_events()`** — after the existing full-scan blocks (stale orphans, missing FailureObserved, FailureObserved-no-RunCompleted), a new scan emits retroactive `ModelCallStarted` events with `"retroactive": true` and `model_call_id: "retroactive-<run_id>"`. Gated by the same ambiguous-reset guard as the stale-orphan scan. Result includes `model_call_started_appended` count.
+
+3. **Differentiated cancellation reason** — `FailureObserved` for runs with `status == "cancelled"` now gets `"retroactive: run cancelled by next hourly session"` instead of the generic `"run completed with error status 'cancelled'"`.
+
+### `scripts/test_append_terminal_state_events.py` (+189 lines, 5 new tests)
+
+• `test_retroactive_model_call_started_for_unmatched_completed` — verifies retroactive ModelCallStarted is emitted with correct payload
+• `test_no_retroactive_model_call_started_when_all_matched` — verifies no false positives
+• `test_retroactive_model_call_started_skips_ambiguous_reset` — verifies ambiguous-reset guard
+• `test_cancelled_run_gets_specific_failure_observed_reason` — verifies cancellation-specific reason
+• `test_error_run_keeps_generic_failure_observed_reason` — verifies non-cancelled runs unchanged
+
+**All 22 tests pass** (17 existing + 5 new).
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
