@@ -1123,9 +1123,10 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
         "read_file" | "write_file" | "edit_file" | "list_files" => {
             if msg_lower.contains("no such file or directory") {
                 Some(
-                    "The file or directory path doesn't exist. Use `list_files` to \
-                     discover the correct path, or check for typos in the path \
-                     you provided. Verify parent directories exist."
+                    "The file or directory path doesn't exist. Verify the path with \
+                     `rg --files | grep <pattern>` (faster than `list_files` for large repos), \
+                     or check for typos. If the file is missing entirely, search for the \
+                     owning module or symbol instead of retrying the absent path."
                         .to_string(),
                 )
             } else if msg_lower.contains("permission denied") {
@@ -3130,6 +3131,8 @@ mod tests {
         assert!(hint.is_some());
         let hint = hint.unwrap();
         assert!(hint.contains("list_files"));
+        assert!(hint.contains("rg --files"));
+        assert!(hint.contains("owning module"));
     }
 
     #[test]
