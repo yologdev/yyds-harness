@@ -714,5 +714,194 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertNotIn("closed-run", result["completed_runs"])
 
 
+    def test_retroactive_model_call_started_for_unmatched_completed(self):
+        """Emit retroactive ModelCallStarted when ModelCallCompleted has no matching ModelCallStarted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            # Run with ModelCallCompleted but NO ModelCallStarted
+            write_event(events, "RunStarted", "orphan-model-run")
+            write_event(events, "ModelCallCompleted", "orphan-model-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "orphan-model-run", {"status": "error"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # Should have emitted a retroactive ModelCallStarted
+            retro_started = [
+                row for row in rows
+                if row["event_type"] == "ModelCallStarted" and row["run_id"] == "orphan-model-run"
+            ]
+            self.assertEqual(len(retro_started), 1)
+            self.assertTrue(retro_started[0]["payload"].get("retroactive"))
+            self.assertEqual(
+                retro_started[0]["payload"].get("model_call_id"),
+                "retroactive-orphan-model-run",
+            )
+            self.assertEqual(retro_started[0]["payload"].get("model"), "deepseek-v4-pro")
+            self.assertEqual(retro_started[0]["actor"], "harness")
+
+            # Diagnostics should reflect the retroactive action
+            diag = result["diagnostics"]["model_call_started_diagnostics"]
+            self.assertEqual(diag["model_call_completed_count"], 1)
+            self.assertEqual(diag["model_call_started_count"], 0)
+            self.assertEqual(diag["unmatched_model_call_completed_count"], 1)
+
+            self.assertEqual(result["model_call_started_appended"], 1)
+
+    def test_no_retroactive_model_call_started_when_all_matched(self):
+        """Do not emit retroactive ModelCallStarted when all pairs are matched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "matched-run")
+            write_event(events, "ModelCallStarted", "matched-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "matched-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "matched-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # No new ModelCallStarted should have been added
+            retro_started = [
+                row for row in rows
+                if row["event_type"] == "ModelCallStarted" and row["run_id"] == "matched-run"
+            ]
+            self.assertEqual(len(retro_started), 1)  # the original one, not retroactive
+
+            diag = result["diagnostics"]["model_call_started_diagnostics"]
+            self.assertEqual(diag["unmatched_model_call_completed_count"], 0)
+            self.assertEqual(result["model_call_started_appended"], 0)
+
+    def test_retroactive_model_call_started_skips_ambiguous_reset(self):
+        """Skip retroactive ModelCallStarted when scope is ambiguous_reset_full_scan."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # after_line exceeds file length -> triggers full scan
+            after_line = 999
+            # Two runs that are open (RunStarted but no RunCompleted) to
+            # trigger the ambiguous_reset_full_scan guard (>1 visible open run).
+            write_event(events, "RunStarted", "run-a")
+            write_event(events, "ModelCallStarted", "run-a", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "run-a", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunStarted", "run-b")
+            write_event(events, "ModelCallCompleted", "run-b", {"model": "deepseek-v4-pro"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            diag = result["diagnostics"]["model_call_started_diagnostics"]
+            self.assertTrue(diag.get("skipped"))
+            self.assertEqual(diag["reason"], "ambiguous_reset_full_scan")
+
+    def test_cancelled_run_gets_specific_failure_observed_reason(self):
+        """Cancelled RunCompleted yields a specific cancellation reason in FailureObserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "cancelled-run")
+            write_event(events, "ModelCallStarted", "cancelled-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "cancelled-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "cancelled-run", {"status": "cancelled"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "cancelled-run"
+            ]
+            self.assertEqual(len(fo_rows), 1)
+            reason = fo_rows[0]["payload"].get("reason", "")
+            self.assertIn("cancelled by next hourly session", reason,
+                          f"Expected cancellation-specific reason, got: {reason}")
+            self.assertTrue(fo_rows[0]["payload"].get("retroactive"))
+
+    def test_error_run_keeps_generic_failure_observed_reason(self):
+        """Error RunCompleted keeps the generic reason in FailureObserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            after_line = 0
+            write_event(events, "RunStarted", "error-run")
+            write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "error-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "error-run", {"status": "error"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "error-run"
+            ]
+            self.assertEqual(len(fo_rows), 1)
+            reason = fo_rows[0]["payload"].get("reason", "")
+            self.assertIn("run completed with error status", reason)
+            self.assertNotIn("cancelled by next hourly session", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

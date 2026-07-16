@@ -307,6 +307,50 @@ def find_runs_with_failure_observed_no_completion(
     return missing, diagnostics
 
 
+def find_missing_model_call_started(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Find ModelCallCompleted entries whose run_id has no prior ModelCallStarted.
+
+    Returns (missing_entries, diagnostics) where each missing entry is a dict
+    with keys run_id, model, timestamp_ms for orphaned ModelCallCompleted
+    events.
+    """
+    model_started_runs: set[str] = set()
+    model_completed_entries: dict[str, dict[str, Any]] = {}
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "ModelCallStarted":
+            model_started_runs.add(rid)
+        elif kind == "ModelCallCompleted":
+            model_completed_entries[rid] = {
+                "model": data.get("model"),
+                "timestamp_ms": event.get("timestamp_ms", 0),
+            }
+
+    missing = sorted(
+        [
+            {"run_id": rid, **info}
+            for rid, info in model_completed_entries.items()
+            if rid not in model_started_runs
+        ],
+        key=lambda m: m["run_id"],
+    )
+
+    diagnostics = {
+        "model_call_started_count": len(model_started_runs),
+        "model_call_completed_count": len(model_completed_entries),
+        "unmatched_model_call_completed_count": len(missing),
+    }
+
+    return missing, diagnostics
+
+
 def _maybe_append_event(
     events_path: Path,
     event_type: str,
@@ -448,11 +492,16 @@ def append_terminal_events(
 
     for entry in missing_failures:
         rid = entry["run_id"]
-        payload_fo: dict[str, Any] = {
-            "reason": (
+        status = entry.get("status", "")
+        if status == "cancelled":
+            reason_text = "retroactive: run cancelled by next hourly session"
+        else:
+            reason_text = (
                 f"retroactive: run completed with error status "
-                f"'{entry['status']}' but no FailureObserved was recorded"
-            ),
+                f"'{status}' but no FailureObserved was recorded"
+            )
+        payload_fo: dict[str, Any] = {
+            "reason": reason_text,
             "retroactive": True,
         }
         ts = entry.get("timestamp_ms")
@@ -485,11 +534,40 @@ def append_terminal_events(
         _maybe_append_event(events_path, "RunCompleted", "harness", rid, session_id, trace_id, payload_fo_rc, dry_run)
         completed_runs.append(rid)
 
+    # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+    # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+    # ModelCallStarted events to close the model-call lifecycle gap.
+    # Gated by the ambiguous-reset guard to avoid emitting retroactive
+    # events when the events file was reset/rebuilt (same as stale orphan scan).
+    model_call_started_appended = 0
+    if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+        missing_starts, mcs_diag = find_missing_model_call_started(events)
+        diagnostics["model_call_started_diagnostics"] = mcs_diag
+
+        for entry in missing_starts:
+            rid = entry["run_id"]
+            payload_mcs: dict[str, Any] = {
+                "model": entry.get("model"),
+                "model_call_id": f"retroactive-{rid}",
+                "retroactive": True,
+            }
+            ts = entry.get("timestamp_ms")
+            if ts:
+                payload_mcs["original_model_call_completed_timestamp_ms"] = ts
+            _maybe_append_event(events_path, "ModelCallStarted", "harness", rid, session_id, trace_id, payload_mcs, dry_run)
+            model_call_started_appended += 1
+    else:
+        diagnostics["model_call_started_diagnostics"] = {
+            "skipped": True,
+            "reason": "ambiguous_reset_full_scan",
+        }
+
     return {
         "completed_model_calls": completed_models,
         "completed_runs": completed_runs,
         "completed_session_runs": completed_session_runs,
         "failure_observed_appended": [m["run_id"] for m in missing_failures],
+        "model_call_started_appended": model_call_started_appended,
         "diagnostics": diagnostics,
     }
 
