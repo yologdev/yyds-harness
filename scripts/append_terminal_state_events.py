@@ -522,9 +522,37 @@ def append_terminal_events(
     # already_closed was computed).
     already_closed_fo = set(completed_runs + completed_session_runs)
 
+    # Collect runs that already have RunStarted events so we can detect
+    # and prevent unmatched non-validation completions (RunCompleted without
+    # a matching RunStarted).  Historical runs recorded from before the
+    # ensure_run_started guard was added may have FailureObserved but no
+    # RunStarted — closing them with RunCompleted alone would create
+    # state_run_unmatched_non_validation_completed_count inflation.
+    run_started_runs: set[str] = set()
+    for event in events:
+        if event_type(event) == "RunStarted":
+            _data = event.get("payload")
+            if isinstance(_data, dict):
+                _wrapped = _data.get("value")
+                if set(_data.keys()).issubset({"_yoyo", "value"}) and isinstance(_wrapped, dict):
+                    _data = _wrapped
+            rid_rs = run_id(event, _data if isinstance(_data, dict) else {})
+            if rid_rs:
+                run_started_runs.add(rid_rs)
+
     for rid in sorted(fo_no_rc_runs):
         if rid in already_closed_fo:
             continue
+        # If the run has no RunStarted, emit a retroactive one first.
+        if rid not in run_started_runs:
+            _maybe_append_event(
+                events_path, "RunStarted", "harness", rid, session_id, trace_id,
+                {
+                    "reason": "retroactive: no RunStarted found for orphaned run",
+                    "retroactive": True,
+                },
+                dry_run,
+            )
         payload_fo_rc = {
             "status": "error",
             "terminal_reason": "orphaned_previous_session",

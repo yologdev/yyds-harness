@@ -693,8 +693,8 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertEqual(fo_diag["failure_observed_runs"], 1)
             self.assertEqual(fo_diag["runs_with_failure_observed_no_completion"], 1)
 
-    def test_failure_observed_alone_without_run_started_gets_closed(self):
-        """A run with FailureObserved but no RunStarted still gets RunCompleted."""
+    def test_failure_observed_alone_without_run_started_gets_closed_with_started(self):
+        """A run with FailureObserved but no RunStarted gets retroactive RunStarted + RunCompleted."""
         with tempfile.TemporaryDirectory() as tmp:
             events = Path(tmp) / "events.jsonl"
             write_event(events, "ModelCallStarted", "orphan-run", {"model": "deepseek-v4-pro"})
@@ -721,6 +721,14 @@ class AppendTerminalStateEvents(unittest.TestCase):
             )
 
             rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            # Verify retroactive RunStarted was emitted before RunCompleted
+            rs_rows = [
+                row for row in rows
+                if row["event_type"] == "RunStarted" and row["run_id"] == "orphan-run"
+            ]
+            self.assertEqual(len(rs_rows), 1)
+            self.assertTrue(rs_rows[0].get("payload", {}).get("retroactive"))
+            self.assertEqual(rs_rows[0]["payload"]["reason"], "retroactive: no RunStarted found for orphaned run")
             rc_rows = [
                 row for row in rows
                 if row["event_type"] == "RunCompleted" and row["run_id"] == "orphan-run"
