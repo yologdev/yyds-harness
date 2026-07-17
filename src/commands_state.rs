@@ -44,7 +44,12 @@ pub fn handle_state_subcommand(args: &[String]) {
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(50);
             let json = args.iter().any(|a| a == "--json");
-            handle_tail(limit, json);
+            let run_id = args
+                .iter()
+                .position(|a| a == "--run-id")
+                .and_then(|i| args.get(i + 1))
+                .map(|s| s.as_str());
+            handle_tail(limit, json, run_id);
         }
         "trace" => {
             let Some(id) = args.get(3) else {
@@ -494,22 +499,39 @@ fn stale_data_warnings(total_events: usize, events_size: u64, store_size: u64) -
     warnings
 }
 
-fn handle_tail(limit: usize, json: bool) {
+fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
     let path = default_events_path();
     let Ok(lines) = read_tail(&path, limit) else {
         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
         return;
     };
+    let filtered: Vec<String> = if let Some(rid) = run_id {
+        lines
+            .into_iter()
+            .filter(|line| {
+                let ev = event_line_value(line).ok();
+                match rid {
+                    "none" => ev.as_ref().and_then(|v| v.get("run_id")).is_none(),
+                    _ => ev
+                        .as_ref()
+                        .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+                        .map_or(false, |id| id == rid),
+                }
+            })
+            .collect()
+    } else {
+        lines
+    };
     if json {
-        for line in &lines {
+        for line in &filtered {
             println!("{line}");
         }
     } else {
-        for line in lines.iter() {
+        for line in filtered.iter() {
             print_event_line(line);
         }
     }
-    if limit > 0 && lines.len() >= limit {
+    if limit > 0 && filtered.len() >= limit {
         println!();
         println!("{DIM}(showing last {limit}, use --limit 0 for all){RESET}");
     }
