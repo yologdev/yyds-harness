@@ -1,0 +1,429 @@
+warning: skipping corrupted event at line 58599 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 6460
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the relevant source file to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs:500..600 ✓ (776ms)
+ ✓ (616ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `handle_tail` function to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.1s (2 ✓)
+
+Let me find the `handle_tail` function to understand the current implementation.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_tail' in src/commands_state.rs ✓ (286ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_tail function and also look at how run_id is accessed in events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:475..520  ▶ search 'handle_tail' in src/commands_state.rs ✓ (511ms)
+ ✓ (519ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find how handle_tail is called (line 47) and what the event parsing looks like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:30..60  ▶ search 'run_id' in src/commands_state.rs ✓ (516ms)
+ ✓ (643ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how `run_id` is extracted in the event display at line 221, and also look at the `read_tail` function to understand how events are read.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:210..250  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (562ms)
+ ✓ (512ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `read_tail` to see how it reads events, and then `print_event_line` to see how events are displayed. Also need to check `read_tail_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1346..1406 ✓ (283ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the `print_event_line` function to understand how events are displayed. I need to understand the `read_tail` function returns raw lines (strings), not parsed JSON. To filter by run_id, I need to either:
+
+1. Parse each line and filter by the run_id field
+2. Or use `read_tail_events` which returns `Vec<Value>`
+
+Looking at the task, it says:
+- "If the event reading function doesn't support run_id filtering at the read level, implement it as a post-read filter on the already-loaded events."
+
+So I should modify `handle_tail` to:
+1. Accept a `run_id` parameter (Option<String>)
+2. After reading lines, if run_id is specified, filter lines in-place
+
+Let me also look at how `print_event_line` works and how run_id appears in the JSON.
+
+Actually, wait - `read_tail` returns raw String lines, and `print_event_line` takes a `&str`. But run_id is inside the JSON. So I need to parse each line as JSON to check the run_id field.
+
+But the task says to keep it under 40 lines - simple flag parse + filter loop.
+
+Let me also look at `read_tail_events` since it might be more useful.
+
+Actually, the simplest approach: modify `handle_tail` to accept `Option<&str>` run_id. After reading lines, if run_id is Some, parse each line and check. For "none", I can use a special sentinel to mean "no run_id."
+
+Let me revise: the current `handle_tail` takes raw strings and passes them to `print_event_line`. For filtering, I need to parse each line as JSON. Let me check if there's already a JSON parse happening.
+
+Let me look at `print_event_line`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn print_event_line' in src/commands_state.rs ✓ (811ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see print_event_line to understand the format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1808..1848 ✓ (543ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `handle_tail` function receives raw lines, and `print_event_line` parses each line using `event_line_value` which returns a `Value`. The `format_event_value` function extracts the `run_id` for display.
+
+My approach:
+1. Modify `handle_tail` to accept an `Option<&str>` for `run_id`
+2. After reading lines, if `run_id` is `Some`, parse each line and filter based on run_id
+3. In the call site (line 39-48), parse the `--run-id` flag
+
+For parsing the `--run-id` flag: I need to handle 3 cases:
+- Not provided at all → no filtering
+- `--run-id run-xxx` → filter to matching run_id
+- `--run-id none` → filter to events with no run_id
+
+The simplest way: after reading lines in `handle_tail`, if `run_id` is Some, parse each line with `event_line_value` and check the run_id field. If it matches (or for "none", if run_id is absent), keep it.
+
+Let me also look at `read_tail_events` since it returns parsed Values - that might be cleaner.
+
+Actually, `read_tail` returns raw lines for efficiency (doesn't parse JSON). For filtering, I need to parse anyway. Let me just do it inline.
+
+Here's my plan:
+
+1. Add `run_id: Option<&str>` parameter to `handle_tail`
+2. In the call site, parse `--run-id` flag
+3. In `handle_tail`, after reading lines, if `run_id` is Some, parse each line and filter
+
+Let me write this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me implement the change. I need to:
+
+1. Parse `--run-id` in the `"tail"` match arm
+2. Pass it to `handle_tail`
+3. Add filtering logic in `handle_tail`
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (389ms)
+  ▶ todo ✓ (326ms)
+  ▶ todo ✓ (263ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the changes. First, the call site:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.1s (3 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (285ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit the call site to parse the --run-id flag.
+────────────────────────────────────────────────────────────────────────────────
+
+First, edit the call site to parse the `--run-id` flag:
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(50);
+                let json = args.iter().any(|a| a == "--json");
+  -             handle_tail(limit, json);
+  +             let run_id = args
+  +                 .iter()
+  +                 .position(|a| a == "--run-id")
+  +                 .and_then(|i| args.get(i + 1))
+  +                 .map(|s| s.as_str());
+  +             handle_tail(limit, json, run_id);
+            }
+  ✓ Auto-approved: edit: src/commands_state.rs (10 → 15 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (10 → 15 lines)
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(50);
+                let json = args.iter().any(|a| a == "--json");
+  -             handle_tail(limit, json);
+  +             let run_id = args
+  +                 .iter()
+  +                 .position(|a| a == "--run-id")
+  +                 .and_then(|i| args.get(i + 1))
+  +                 .map(|s| s.as_str());
+  +             handle_tail(limit, json, run_id);
+            }
+ ✓ (256ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `handle_tail` to accept the `run_id` parameter and add filtering.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `handle_tail` to accept and use the `run_id` parameter:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (260ms)
+  ▶ todo ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now edit the `handle_tail` function itself to add run_id filtering.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.2s (2 ✓)
+
+
+  - fn handle_tail(limit: usize, json: bool) {
+  + fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
+        let path = default_events_path();
+        let Ok(lines) = read_tail(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+  +     };
+  +     let filtered: Vec<String> = if let Some(rid) = run_id {
+  +         lines
+  +             .into_iter()
+  +             .filter(|line| {
+  +                 let ev = event_line_value(line).ok();
+  +                 match rid {
+  +                     "none" => ev.and_then(|v| v.get("run_id")).is_none(),
+  +                     _ => ev
+  +                         .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+  +                         .map_or(false, |id| id == rid),
+  +                 }
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (20 → 36 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (20 → 36 lines)
+  - fn handle_tail(limit: usize, json: bool) {
+  + fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
+        let path = default_events_path();
+        let Ok(lines) = read_tail(&path, limit) else {
+            eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+            return;
+  +     };
+  +     let filtered: Vec<String> = if let Some(rid) = run_id {
+  +         lines
+  +             .into_iter()
+  +             .filter(|line| {
+  +                 let ev = event_line_value(line).ok();
+  +                 match rid {
+  +                     "none" => ev.and_then(|v| v.get("run_id")).is_none(),
+  +                     _ => ev
+  +                         .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+  +                         .map_or(false, |id| id == rid),
+  +                 }
+  +             })
+  +             .collect()
+  ... (19 more lines)
+ ✓ (263ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify with cargo fmt, cargo check, and cargo test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (445ms)
+  ▶ todo ✓ (426ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Run verification: cargo fmt, cargo check, then the focused test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed (no output means clean). Now cargo check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (5.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that `v.get("run_id")` returns a reference that borrows `v`, but `v` is owned by the closure. The `map_or` on the outer result already consumed `ev`. I need to restructure this. Let me use a different approach where I handle the borrowing properly.
+
+The problem is:
+- `event_line_value(line).ok()` gives `Option<Value>`
+- `ev.and_then(|v| v.get("run_id"))` - `v` is moved into the closure, `v.get("run_id")` returns `Option<&Value>` referencing `v`, but we can't return that reference from the closure since `v` is consumed
+
+I need to either:
+1. Use `.as_ref()` to borrow the inner value
+2. Clone the value
+3. Restructure the logic differently
+
+Let me try using `.as_ref()` on the `Option<Value>` to borrow the inner `Value`, then use `.and_then()` on that.
+
+Actually, a simpler approach: pattern match.
+
+```rust
+let ev = event_line_value(line).ok();
+match rid {
+    "none" => ev.as_ref().and_then(|v| v.get("run_id")).is_none(),
+    _ => ev.as_ref()
+        .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+        .map_or(false, |id| id == rid),
+}
+```
+
+Wait, `Option::as_ref()` gives `Option<&Value>`. Then `.and_then(|v| v.get("run_id"))` gives `Option<&Value>`, and `.as_str()` can be called on that. Let me think again...
+
+`ev` is `Option<Value>`. `ev.as_ref()` is `Option<&Value>`. Then `.and_then(|v| v.get("run_id"))` where `v: &Value`, `v.get("run_id"): Option<&Value>`. Then `.and_then(|v| v.as_str())` where `v: &Value`, gives `Option<&str>`. Then `.map_or(false, |id| id == rid)`.
+
+For "none": `ev.as_ref().and_then(|v| v.get("run_id")).is_none()`.
+
+This should work.
+────────────────────────────────────────────────────────────────────────────────
+
+Need to fix the borrow issue. The `Value` is moved into the closure, but `get()` returns a reference to it.
+                .filter(|line| {
+                    let ev = event_line_value(line).ok();
+                    match rid {
+  -                     "none" => ev.and_then(|v| v.get("run_id")).is_none(),
+  +                     "none" => ev.as_ref().and_then(|v| v.get("run_id")).is_none(),
+                        _ => ev
+  +                         .as_ref()
+                            .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+                            .map_or(false, |id| id == rid),
+                    }
+  ✓ Auto-approved: edit: src/commands_state.rs (16 → 17 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (16 → 17 lines)
+                .filter(|line| {
+                    let ev = event_line_value(line).ok();
+                    match rid {
+  -                     "none" => ev.and_then(|v| v.get("run_id")).is_none(),
+  +                     "none" => ev.as_ref().and_then(|v| v.get("run_id")).is_none(),
+                        _ => ev
+  +                         .as_ref()
+                            .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+                            .map_or(false, |id| id == rid),
+                    }
+ ✓ (338ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (5.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeds. Now run the focused test.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the focused test:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test commands_state -- -… ✓ (33.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 176 tests passed. Now let me do a manual smoke test if possible.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me run a quick manual smoke test to confirm behavior:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (510ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `--help` flag is not handled by the tail command itself, it goes to the overall CLI help. The `state tail --help` was interpreted as `state tail` with `limit=50`. That's expected - it doesn't seem like state tail has its own --help handler, it just falls through.
+
+Anyway, the output shows events are being displayed correctly. Now let me test the --run-id filtering manually:
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the output shows events are still streaming correctly. Now let me test the actual `--run-id` filtering:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && CURRENT_RUN=$(./target/debug/y… ✓ (511ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That didn't work well. Let me try a simpler approach - just use the run id we saw in the output above.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (511ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `--run-id` filtering works. It shows only events with `run=run-1784310882546-23024`. Now let me also test:
+1. Without --run-id (should show events from all runs)
+2. With an invalid run ID (should show empty)
+────────────────────────────────────────────────────────────────────────────────
+
+Filtering works correctly. Let me also test without `--run-id` to confirm no regression, and with a non-existent run ID:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && echo "=== Without --run-id (sh… ✓ (672ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Non-existent run ID shows empty output (no events), which is correct behavior. The "without --run-id" shows events as before. However, I notice that without --run-id, all events shown happen to be from the same run. Let me check if there are multiple runs... actually that doesn't matter - the point is the --run-id filter works and the default behavior is preserved.
+
+Now let me check git diff to confirm the change touches the right file.
+────────────────────────────────────────────────────────────────────────────────
+
+All behaviors verified:
+• `--run-id run-xxx` filters to only matching events ✓
+• `--run-id nonexistent` shows empty output (no error) ✓
+• Without `--run-id` shows all events as before (no regression) ✓
+
+Let me confirm the git diff:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (548ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `src/commands_state.rs` which matches the task's Edit Surface. Now let me commit.
+
+Wait, the evolve skill says after all checks pass, I should commit. But first, let me also check if there are docs that need updating. The task says: "If you changed behavior, added features, or modified architecture, update the docs". This is a new feature (--run-id flag), so I should check if CLAUDE.md or README.md mentions `state tail`.
+
+Actually, let me check what CLAUDE.md says about state tail and whether there are docs that mention it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state tail' in CLAUDE.md  ▶ search 'state tail' in README.md  ▶ search 'state tail' in docs ✓ (1.0s)
+ ✓ (909ms)
+ ✓ (907ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only docs mentioning `state tail` is `docs/deepseek-native-baseline.md` which lists it as a task. That's a task list, not user-facing documentation. Since this is a minor --run-id addition, I don't think I need to update docs. It's a CLI flag that self-documents via usage. Let me proceed with the commit.
+
+Let me check the diff to confirm the change:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.9s (3 ✓)
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (522ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks clean. Only `src/commands_state.rs` is touched, matching the task's Edit Surface. Let me now commit.
+
+The evolve skill says to commit with: `git add -A && git commit -m "Day N (HH:MM): <short description>"`. Day 139, time 17:13.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff is clean and only touches `src/commands_state.rs`. Let me commit:
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (523ms)
+
+
