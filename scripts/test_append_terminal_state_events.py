@@ -547,6 +547,67 @@ class AppendTerminalStateEvents(unittest.TestCase):
             ]
             self.assertEqual(len(fo_rows), 1)
 
+    def test_skips_retroactive_failure_observed_on_second_invocation(self):
+        """A second invocation does not emit a duplicate retroactive FailureObserved."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "error-run")
+            write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "error-run", {"status": "error"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            # First invocation: should emit retroactive FailureObserved for error-run.
+            result1 = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            self.assertEqual(result1["failure_observed_appended"], ["error-run"])
+            self.assertTrue(result1["diagnostics"]["failure_observed_diagnostics"]["missing_failure_observed"] >= 1)
+
+            # Second invocation: should NOT emit another retroactive FailureObserved
+            # for the same run, because the first invocation's retroactive event
+            # is now in the events file.
+            second_after_line = len(events.read_text(encoding="utf-8").splitlines())
+            result2 = append_terminal_state_events.append_terminal_events(
+                events,
+                second_after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            failure_diag2 = result2["diagnostics"]["failure_observed_diagnostics"]
+            self.assertEqual(failure_diag2["missing_failure_observed"], 0)
+            self.assertEqual(result2["failure_observed_appended"], [])
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            fo_rows = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "error-run"
+            ]
+            self.assertEqual(len(fo_rows), 1, f"Expected 1 FailureObserved for error-run, got {len(fo_rows)}")
+            self.assertTrue(fo_rows[0]["payload"].get("retroactive"),
+                            "The FailureObserved should be marked retroactive")
+
     def test_skips_failure_observed_for_success_run(self):
         """A RunCompleted with status 'completed' does not trigger FailureObserved."""
         with tempfile.TemporaryDirectory() as tmp:
