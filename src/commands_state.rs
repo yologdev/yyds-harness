@@ -515,7 +515,7 @@ fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
                     _ => ev
                         .as_ref()
                         .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
-                        .map_or(false, |id| id == rid),
+                        == Some(rid),
                 }
             })
             .collect()
