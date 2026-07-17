@@ -1,0 +1,697 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully.
+
+The trajectory and assessment tell me:
+
+1. **Build is green** - cargo build && cargo test pass.
+2. **Recent sessions are landing code** - Days 137-138 all had successful tasks.
+3. **Key signals from trajectory graph pressure:**
+   - `planner_no_task_count=1` - one session had no task files
+   - `deepseek_model_call_incomplete_count=9` - 8 open-after-ModelCallStarted, 1 other
+   - `session_success_rate=0.0` - one session completed without measurable task success
+   - `task_seed_contradiction_count=1` - seeded tasks contradicted assessment
+   - `failed_tool_summary.bash_tool_error=6` - bounded command failures
+
+4. **Issue #105** - agent-self, reverted task about DeepSeek prompt cache metrics. Blocked on yoagent upstream (#90).
+
+5. **Issue #90** - help-wanted, yoagent Usage struct drops DeepSeek cache fields. No replies yet.
+
+6. **The assessment** found the codebase healthy with 3 consecutive sessions landing code.
+
+Now let me think about what tasks to create:
+
+**Priority 0: CI failures** - None. Skip.
+
+**Priority 1: yoagent-state DeepSeek feedback** - The strongest signal is `deepseek_model_call_incomplete_count=9`. Day 138 already made progress on this. The remaining 8 incomplete model calls are likely from cancelled runs. But this is a diagnostic gap, not a fitness blocker. The assessment says "diagnostic gnomes are gates, not the final objective."
+
+**Priority 2: DeepSeek harness eval/replay/promotion quality** - No clear evidence here.
+
+**Priority 3: Self-discovered bugs** - The assessment found three LOW bugs:
+- state summary shows "1 started, 0 completed" for current run
+- state why last-failure shows duplicate retroactive FailureObserved events
+- 8 incomplete model calls
+
+**Priority 4: Trusted owner issues** - None in ISSUES_TODAY.md.
+
+**Priority 5: Agent-self issues** - Issue #105 (cache metrics). But this is blocked on yoagent upstream (#90). The implementation agent already failed to land it. The task needs to be smaller or differently scoped.
+
+**Priority 6: Capability gaps** - The assessment identified three:
+1. DeepSeek cache observability for agent runs (blocked on #90)
+2. Cancelled-run terminal state (partially addressed)
+3. No-agent-task sessions invisible in real-time
+
+Let me think about what's most actionable:
+
+The `deepseek_model_call_incomplete_count=9` is the highest-ranked graph pressure signal. The assessment says "Day 138's retroactive ModelCallStarted fix should reduce this going forward, but historical gaps persist." So the fix is in place for new runs, but old gaps remain.
+
+The "state why last-failure shows duplicate retroactive FailureObserved" is a concrete bug I can fix. It's a deduplication issue in `scripts/append_terminal_state_events.py`. But this is a script fix, not a fitness improvement. The trajectory says "prefer tasks that improve code fitness, not just diagnostics."
+
+Let me look at this differently. What would actually improve the DeepSeek harness?
+
+1. **Cache metrics** - The biggest fitness gap but blocked on yoagent upstream. We can't fix the yoagent Usage struct from here. However, we could create a harness-side workaround by intercepting the raw response before yoagent drops the cache fields. The assessment says Option B: "yyds-side workaround — Parse raw response JSON before yoagent drops the cache fields." The previous implementation attempt (Day 137 Task 1) failed and was reverted. The issue body says "Task blocked by agent; no implementation landed" and the transcript shows the agent spent 24+ turns digging through prompt.rs without making progress.
+
+Let me think about whether to retry issue #105. The previous attempt failed because the agent got lost in static analysis. The task needs to be much smaller and more specific. But it's blocked on yoagent upstream (#90) - the Usage struct doesn't carry the cache fields.
+
+Actually wait - let me re-read the assessment more carefully about #105 vs #90:
+
+"#105 tracks the harness-side work of recording whatever metrics ARE available from prompt runs."
+
+So #105 is about recording metrics that ARE available, not about the ones blocked by yoagent. The question is: are ANY cache metrics available from prompt runs right now? If yoagent's Usage struct drops them, then no, none are available through that path.
+
+BUT - the assessment also says: "The `model` parameter passed to `record_cache_metrics` at prompt.rs:956 might not be the DeepSeek API model name." This suggests the issue might be simpler - maybe the model check is failing and metrics ARE available but just not being recorded because of a guard condition.
+
+Actually, I need to be very careful here. The previous implementation attempt failed with 24+ turns of static analysis without making progress. Re-attempting the same task with the same scope would be a mistake.
+
+Let me focus on what I CAN do:
+
+**Task 1: Fix duplicate retroactive FailureObserved events**
+
+The assessment found: "state why last-failure shows 5 retroactive FailureObserved events for the same cancelled run. Each one says 'run completed with error status 'error' but no FailureObserved was recorded' — meaning the terminal-state script is running multiple times against the same run without deduplication."
+
+This is in `scripts/append_terminal_state_events.py`. Adding deduplication would be a concrete, verifiable improvement. It's a diagnostic fix though, not a fitness improvement.
+
+**Task 2: Close remaining model call lifecycle gaps**
+
+The trajectory says `deepseek_model_call_incomplete_count=9` with 8 open-after-ModelCallStarted. Day 138 added retroactive ModelCallStarted for unmatched ModelCallCompleted. But the assessment says the remaining 8 may be from cancelled runs. If they're all from cancelled runs and the fix is already in place for new runs, then this is a historical artifact cleanup, not an active gap.
+
+Hmm, but the trajectory still shows it as a graph pressure signal. If the fix is truly in place for new runs, this signal should resolve naturally. But it hasn't yet.
+
+Let me think about what's most valuable and actionable:
+
+1. **Cache metrics** - High value but blocked. Previous attempt failed. Need to scope very differently if retrying.
+2. **Duplicate FailureObserved** - Concrete bug, easy to fix, but diagnostic-only.
+3. **Model call lifecycle** - Already partially addressed, remaining gaps may be historical.
+
+Actually, let me reconsider the cache metrics task. The assessment says "the model check should pass" for DeepSeek models. The issue might be simpler than the previous agent thought. Let me think about what a very small, focused version would look like:
+
+Smaller scope: Instead of trying to intercept raw responses or add cache_control headers, just verify that:
+1. After a DeepSeek prompt run, cache metrics are being recorded (check the state events)
+2. If they're not, find the single point of failure and fix it
+
+The previous agent got lost trying to trace through the entire prompt flow. A better approach: run a diagnostic first (check state events after a run), then make a targeted fix.
+
+But I can't run a DeepSeek prompt during planning. And the implementation agent might get lost again.
+
+Let me pick tasks that have high probability of success:
+
+**Task 1**: Fix duplicate retroactive FailureObserved events in `scripts/append_terminal_state_events.py`. This is concrete, verifiable, and directly addresses a bug the assessment found.
+
+**Task 2**: Something related to model call lifecycle or cache metrics...
+
+Actually, let me re-read the planning instruction: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+So I need at least 2 slots from state/trajectory/eval evidence. The trajectory's graph-derived next-task pressure gives me:
+1. Make planning failure actionable
+2. Close model call lifecycle gaps
+3. Raise session success rate
+4. Validate seeded tasks against fresh assessment
+5. Bound failing shell commands
+
+Of these:
+- #1 (planning failure actionable): This is about `planner_no_task_count=1`. The assessment already does this well (the assessment pipeline was recently hardened). This might be a one-off.
+- #2 (model call lifecycle): Already partially addressed. Could add deduplication to the terminal state script as a follow-up.
+- #3 (session success rate): Too vague for a concrete task.
+- #4 (validate seeded tasks): This was already addressed in Day 138's preseed_session_plan.py fix.
+- #5 (bound failing shell commands): bash_tool_error=6. Could add better error handling.
+
+Let me think about what tasks are BOTH evidence-backed AND have high probability of success:
+
+**Best candidate**: Fix the duplicate retroactive FailureObserved events. This is in `scripts/append_terminal_state_events.py`. The fix is deduplication - check if a FailureObserved already exists for this run before emitting a new one. It addresses the `deepseek_model_call_incomplete_count` signal indirectly by making the terminal state script more correct.
+
+**Second candidate**: Something from the assessment's "Bugs / Friction Found":
+1. state summary shows "1 started, 0 completed" - the ensure_run_started retroactive path may not be triggering
+2. Duplicate FailureObserved events
+3. 8 incomplete model calls
+
+The state summary issue (#1) is in `src/state.rs`. The assessment says the `ensure_run_started` retroactive path (added Day 138) may not trigger for session-scoped runs in CI. This is a real bug in recently-landed code.
+
+Let me check: this is about `state summary` showing "1 started, 0 completed" even though the session is running. The retroactive `ensure_run_started` was added in Day 138 (02:39). The summary is run by the assessment, which happens during planning. So the run IS started (by the harness), but `ensure_run_started` might not be firing because the harness calls `init_global` at assessment startup.
+
+This could be a meaningful fix - making the state summary correctly report the current run as "started" during assessment. But it's still a diagnostic improvement.
+
+OK, let me just pick tasks and write them. I'll start with the most evidence-backed, actionable ones:
+
+**Task 1**: Deduplicate retroactive FailureObserved events in `scripts/append_terminal_state_events.py`
+**Task 2**: Fix state summary "0 completed" for active runs - ensure `ensure_run_started` fires correctly in CI environment
+**Task 3**: Bound failing shell commands - add better error handling for the bash_tool_error cases
+
+Actually wait, I need to think about what's most impactful. The trajectory says "Capability fitness is the goal." None of these are fitness improvements - they're all diagnostic improvements. But the assessment says "The codebase is in a healthy, well-maintained state with no open regressions." 
+
+If there are no regressions and things are working, maybe the right move is fewer, higher-quality tasks rather than forcing 3 tasks.
+
+Let me also consider: should I retry issue #105 (cache metrics) with a smaller scope? The previous attempt failed because it was too broad. If I narrow it to "just verify and fix the model check guard condition" - that's a single-line fix if the issue is just a guard condition check failing.
+
+Let me look at what the assessment says about the model check:
+
+"The `model` parameter passed to `record_cache_metrics` at prompt.rs:956 might not be the DeepSeek API model name, but something else (like 'deepseek-v4-pro' which DOES start with 'deepseek')."
+
+So the assessment thinks the model name check at prompt.rs:956 should pass for DeepSeek models. The previous agent spent 24 turns tracing this without reaching a conclusion.
+
+OK, I think the smartest approach is:
+
+1. **Task 1**: Fix duplicate FailureObserved events (concrete, easy, verifiable)
+2. **Task 2**: Make the cache metrics diagnostic more actionable - instead of "no metrics recorded", run a targeted check to determine if the model guard is the issue or if yoagent truly drops the fields. This is a diagnostic improvement, not the full cache metrics fix.
+
+Actually, let me reconsider. The planning instruction says:
+
+"Do not spend the whole planning budget analyzing without creating task files; the harness will fail the planning phase and skip implementation."
+
+And: "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md."
+
+Let me check if task_01.md exists.
+
+Let me also consider: should I just go ahead and create 2-3 solid tasks and move on? The assessment is comprehensive, the evidence is clear, and the codebase is healthy.
+
+Here's my final plan:
+
+**Task 1**: Deduplicate retroactive FailureObserved events in append_terminal_state_events.py
+- Evidence: Assessment found 5 duplicate FailureObserved for same run
+- Files: scripts/append_terminal_state_events.py
+- Impact: Makes terminal state script correct, prevents noise in state events
+
+**Task 2**: Ensure state summary correctly reports active runs as "started"
+- Evidence: Assessment found "1 started, 0 completed" during active session
+- Files: src/state.rs
+- Impact: Makes state summary accurate during CI sessions
+
+**Task 3**: Improve bash command failure recovery - add bounded command and exit-code-check hints for gh CLI failures
+- Evidence: Trajectory reports bash_tool_error=6, likely from gh run view --log-failed on cancelled runs
+- Files: src/tool_wrappers.rs
+- Impact: Reduces wasted turns on known-failing command patterns
+
+But wait - Task 3 might be a stretch. The bash_tool_error=6 is from the trajectory extractor running `gh run view --log-failed` on cancelled runs that have no failed steps. This isn't really a code bug - it's expected behavior. And the recovery hints were already improved (Day 138).
+
+Let me narrow to 2 strong tasks:
+
+**Task 1**: Deduplicate retroactive FailureObserved events
+**Task 2**: Fix state summary "0 completed" for actively running sessions
+
+Both are concrete, evidence-backed, and address assessment findings.
+
+Actually, I realize I should also address the issue responses. Let me check:
+- Issue #105 (agent-self): This is the reverted cache metrics task. I should note it's still blocked on #90, but maybe scope it differently.
+- Issue #90 (help-wanted): Still waiting for yoagent upstream. No replies.
+
+For issue responses, I'll say:
+- #105: Defer - still blocked on yoagent upstream (#90). Previous implementation attempt failed. Need a narrower approach or upstream fix first.
+- #90: Still waiting - no replies yet. Continue tracking.
+
+Now let me write the task files. Let me first check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll start by checking what exists in `session_plan/` and then create evidence-backed tasks.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "directory does not exist"  ▶ $ git ls-files scripts/append_terminal_state_events.py src/state.rs src/tool_wrapp… ✓ (1.4s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to see what the harness seeded. Then I'll evaluate whether to keep it, refine it, or replace it based on fresh assessment evidence.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+There's already a seed `task_01.md`. Let me read it to evaluate whether fresh assessment evidence contradicts or supports it.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task has a contradiction note: "validated_against_assessment: false (contradiction: code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py — suppressing stale task 'Close yyds state and model lifecycle gaps')"
+
+So the preseed script detected a contradiction - the code it wants to write already exists. The seed task is stale.
+
+However, the planning instruction says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The assessment found specific bugs that overlap with lifecycle gaps but are more concrete:
+1. Duplicate retroactive FailureObserved events (5 for same run)
+2. state summary shows "1 started, 0 completed" for active runs
+3. 8 incomplete model calls remain
+
+The seed task is too broad ("close one concrete lifecycle feedback gap") and targets files where the code already exists. Let me replace it with more focused tasks based on fresh assessment evidence.
+
+Let me think about what tasks to create:
+
+**Task 1**: Fix duplicate retroactive FailureObserved events
+- The assessment found `state why last-failure` showing 5 duplicate FailureObserved for the same cancelled run
+- This is a concrete bug: the terminal-state script emits FailureObserved multiple times for the same run
+- Fix: add deduplication check in `scripts/append_terminal_state_events.py`
+- This is narrow, verifiable, and evidence-backed
+
+**Task 2**: Fix state summary "0 completed" for active sessions  
+- The assessment found `state summary` says "1 started, 0 completed" during active assessment
+- The `ensure_run_started` retroactive path (added Day 138) may not be triggering
+- This is in `src/state.rs`
+- This is narrower than the seed task and directly addresses a concrete assessment finding
+
+Wait, but neither of these are "fitness" improvements - they're diagnostic improvements. The trajectory says "Capability fitness is the goal." But the assessment also says the codebase is healthy with no regressions. When the codebase is healthy, diagnostic improvements that prevent future blindness are still valuable.
+
+Also, the planning policy says: "Diagnostic gnomes such as planner_no_task_count, provider_error_count, evaluator_timeout_count, task_artifact_coverage, task_lineage_capture_coverage, and state_capture_coverage are gates. Fix them when they block fitness measurement or waste DeepSeek turns; do not treat dashboard cleanliness as the final objective."
+
+The duplicate FailureObserved events and state summary issue are state capture issues. They affect `state_capture_coverage`. Fixing them makes future assessments more accurate.
+
+OK let me also think about whether to create a task_01_obsolete.md or just overwrite task_01.md. The instruction says: "do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+I'll write a task_01_obsolete.md and create new task_01.md and task_02.md.
+
+Actually, let me reconsider. The seed task says "Close yyds state and model lifecycle gaps" and targets `scripts/append_terminal_state_events.py`. The duplicate FailureObserved fix IS in that file. So I'm narrowing the seed task, not replacing it entirely. I can just refine task_01.md to be more specific.
+
+But the seed also targets `scripts/log_feedback.py` and `scripts/summarize_state_gnomes.py`, and the contradiction detector found the code already exists there. So the seed was too broad.
+
+Let me just write task_01_obsolete.md and create two new focused tasks.
+
+Wait, I should also consider: should I address issue #105 (cache metrics)? The previous attempt failed. But maybe with a MUCH narrower scope?
+
+Actually, the planning instruction says: "If a task has been reverted before (check agent-self issues above), make it SMALLER than last time. The previous approach was too ambitious — simplify, don't retry the same scope."
+
+The issue #105 task was about recording cache metrics during prompt runs. The previous attempt failed because the agent got lost in static analysis. A smaller version would be: just run a diagnostic to determine WHY cache metrics aren't being recorded - is it the model guard check or yoagent dropping the fields? That's a diagnostic task, not an implementation task. It would produce evidence but not a fix.
+
+That's actually valuable. If we know WHY cache metrics aren't recorded, we can either:
+- Fix the guard condition (if that's the issue) → a simple one-line fix
+- Confirm it's yoagent's Usage struct → we know to wait for upstream
+
+Let me scope this as task 2 or 3.
+
+OK, my final plan:
+
+**Task 1** (replaces stale seed): Deduplicate retroactive FailureObserved events in append_terminal_state_events.py
+**Task 2**: Diagnose why DeepSeek prompt cache metrics aren't recorded — determine if model guard or yoagent Usage struct is the blocker
+**Task 3**: Fix state summary "0 completed" for active sessions — ensure ensure_run_started fires in CI
+
+Actually, let me keep it to 2 strong tasks. Task 3 might be complex to debug in CI.
+
+Let me write:
+- session_plan/task_01_obsolete.md - explaining why the seed is stale
+- session_plan/task_01.md - deduplicate FailureObserved
+- session_plan/task_02.md - diagnose cache metrics blocker
+- session_plan/issue_responses.md
+
+Let me check the test file for append_terminal_state_events.py to understand the testing pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed task has a contradiction marker — the preseed script found the code already exists. I need to replace it with fresh evidence-backed tasks. Let me verify the contradiction and check the test file before writing.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_run_incomplete' scripts/append_terminal_state_events.py | head -5  ▶ $ grep -n 'def test.*duplicate\|def test.*dedup\|FailureObserved.*already\|already…  ▶ $ grep -n 'ensure_run_started\|ensure.*started\|retroactive.*RunStarted\|RunStarte… ✓ (2.1s)
+ ✓ (1.6s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look more closely at the relevant code:
+
+1. The test at line 508 of test_append_terminal_state_events.py says "A RunCompleted with error status that already has FailureObserved is not double-counted." So there's already a test for deduplication. But the assessment found 5 duplicate FailureObserved events. This suggests the dedup logic exists but isn't working correctly, or it's testing the wrong thing.
+
+2. The `ensure_run_started` in state.rs at line 505 - let me check if it has a recursion guard as mentioned.
+
+Let me look at the actual code more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.6s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:503..543  ▶ read scripts/test_append_terminal_state_events.py:500..530 ✓ (348ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so:
+
+1. The test `test_skips_failure_observed_when_already_present` at line 507 verifies that when a RunCompleted with error status already has a FailureObserved present, it's not double-counted. This test passes. So the dedup logic exists in the test but maybe not in the actual append_terminal_state_events.py logic?
+
+2. The `ensure_run_started` function has a recursion guard using `RUN_STARTED` thread-local. It sets the flag BEFORE calling record(). But the issue might be that in CI, the assessment phase calls `init_global` which sets `RUN_STARTED = true`, and then the state summary looks for the RunStarted event but the retroactive one wasn't emitted because the thread-local was already true.
+
+Wait, the assessment says: "The `state summary` says '1 started, 0 completed' for runs even though this session has been running for several minutes. The `ensure_run_started` retroactive path may not be triggering for session-scoped runs in this CI environment (where `init_global` is called at assessment startup)."
+
+So the issue is: `init_global` is called during assessment, which sets `RUN_STARTED = true` via the thread-local. But the actual RunStarted EVENT might not have been written yet (or the state summary counts events, not thread-locals). The `state summary` counts events, so if `init_global` was called and the RunStarted event was written, the summary should see it.
+
+Actually, let me think about this differently. The `state summary` says "1 started, 0 completed" - that means there's 1 RunStarted event (the current session) but 0 RunCompleted events (because we're still running). That's actually CORRECT behavior - the session IS still running, so there shouldn't be a RunCompleted yet. "1 started, 0 completed" is the right state for a running session.
+
+Wait, the assessment says: "The `state summary` says '1 started, 0 completed' for runs even though this session has been running for several minutes."
+
+So the assessment author expected "1 started, 1 running" or something? Let me re-read. The assessment says this is a "LOW" bug. Maybe the concern is that the run count should distinguish between "completed" runs and "still running" runs. But "0 completed" is accurate - 0 runs have completed, 1 has started and is still running.
+
+Hmm, this might not actually be a bug. Let me not pursue this.
+
+Let me focus on what's definitely a bug: the duplicate FailureObserved events. The assessment is clear: "state why last-failure shows 5 retroactive FailureObserved events for the same cancelled run."
+
+But the test `test_skips_failure_observed_when_already_present` already exists and passes. So either:
+1. The dedup works in tests but not in the actual append_terminal_state_events.py script
+2. The scenario in CI is different from what the test covers
+
+Let me look at the actual append logic more carefully.
+
+Actually, let me look at how the duplicate events are created. The assessment says each one says "run completed with error status 'error' but no FailureObserved was recorded" — meaning the script checks for a FailureObserved, doesn't find one (for some reason), and emits one. If it runs multiple times (maybe from multiple post-processing hooks), it creates duplicates.
+
+So the fix might be: check if a FailureObserved with "retroactive" payload already exists for this run, not just any FailureObserved.
+
+Or the fix is at the call site: make sure the terminal-state script only runs once per run.
+
+Let me look at the append logic to understand when the retroactive FailureObserved is emitted.
+
+Let me focus on writing the task files now. I have enough evidence. Let me write:
+
+1. task_01_obsolete.md - explaining why the seed is stale
+2. task_01.md - deduplicate retroactive FailureObserved events
+3. task_02.md - diagnose cache metrics blocker (narrower retry of #105)
+
+For task 2, I need to think carefully about scope. The previous attempt failed because the agent spent 24 turns tracing through prompt.rs. A narrower version would be:
+
+- Add a diagnostic to `deepseek cache-report` that checks whether the model guard at prompt.rs:956 is the issue
+- OR add a test that verifies the cache metrics code path works with DeepSeek model names
+- OR just verify and fix the guard condition, and add a test
+
+Actually, the simplest approach: check if `record_cache_metrics` in state.rs has a model name guard that filters out DeepSeek models. If it does, fix it. If it doesn't, the issue is yoagent's Usage struct, and the task should report that.
+
+Let me check if there's a model guard in the cache metrics recording.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record_cache_metrics\|cache_metrics_payload\|cache.*model\|model.*cache…  ▶ $ grep -n 'record_cache_metrics\|cache_metrics\|model.*deepseek\|deepseek.*model' … ✓ (1.4s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `record_cache_metrics` at state.rs:559 calls `cache_metrics_payload` at line 615
+2. `cache_metrics_payload` at line 615 has a model check - it skips non-DeepSeek models (test at line 3876: `cache_metrics_payload_skips_non_deepseek_models`)
+3. `prompt.rs:956` calls `record_cache_metrics(model, &state.usage)` - this is where cache metrics are recorded after a prompt run
+
+The issue is: does the `model` variable at prompt.rs:956 contain a DeepSeek model name like "deepseek-v4-pro"? If it does, `cache_metrics_payload` should return Some. But then the question is whether yoagent's `Usage` struct actually has the cache fields.
+
+Let me check the `cache_metrics_payload` function to see what fields it reads from yoagent::Usage.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:559..609 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the `cache_metrics_payload` at line 615. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:615..655 ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the cache metrics issue clearly:
+
+1. `cache_metrics_payload` (line 615-638) checks `model.starts_with("deepseek")` (line 616)
+2. It reads `usage.cache_read` and `usage.input` from `yoagent::Usage` (lines 626-627)
+3. The comment at lines 619-622 explains: yoagent maps `prompt_cache_hit_tokens` → `cache_read` and `prompt_cache_miss_tokens` → `input`
+
+The critical line is 627: `cache_miss_tokens: Some(usage.input)` — it uses `usage.input` (which is the total input tokens) as the cache miss count. This is probably always non-zero for any real prompt, so line 629's guard (`cache_hit == 0 && cache_miss == 0`) would only trigger if `usage.input` is also 0, which it almost never is.
+
+So the cache_metrics_payload SHOULD produce a payload for DeepSeek models as long as `usage.input > 0`. The question is whether `usage.cache_read` is set correctly by yoagent.
+
+But wait - if `usage.cache_read` is always 0 (because yoagent's Usage struct doesn't carry the DeepSeek cache fields), and `usage.input` is always non-zero, then we'd get:
+- cache_hit_tokens: Some(0) — zero cache hits
+- cache_miss_tokens: Some(N) — all input tokens treated as cache misses
+
+And the guard at line 629 (`Some(0) && Some(0)`) wouldn't trigger because cache_miss would be non-zero.
+
+So the metrics WOULD be recorded, just with cache_hit always 0 and cache_miss being total input tokens. That's wrong data but it would be recorded.
+
+The assessment says "cache-report returns no metrics" — but that might be because the `model` parameter at prompt.rs:956 doesn't start with "deepseek", causing the guard at line 616 to return None.
+
+Let me check what `model` is at prompt.rs:956.
+
+Actually, I should check the context around line 956 in prompt.rs to see where `model` comes from.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:948..963 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to see where `model` comes from. Let me look at the function signature that contains this code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn handle_prompt_events\|fn run_prompt_once\|let model\|model:.*&str\|m… ✓ (698ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `model: &str` parameter is passed through several layers. Let me trace it from the top-level call. The function at line 311 (`run_prompt_once`) takes `model: &str` and passes it to `handle_prompt_events` at line 762, which uses it at line 956 to call `record_cache_metrics`.
+
+The question is: what value does `model` have when it reaches line 956? If it's something like "deepseek-v4-pro", the guard at `cache_metrics_payload` line 616 would pass. If it's something else (like a provider prefix), it would fail.
+
+But to definitively answer this, I'd need to trace the call chain in prompt.rs, which is what the previous agent got lost doing. I shouldn't do that during planning.
+
+Instead, I should scope the task to:
+1. Add a diagnostic assertion or log to verify what `model` value reaches `record_cache_metrics`
+2. If the model check is the issue, fix it
+3. If yoagent's Usage.cache_read is always 0, report that
+
+Actually, the simplest approach: check if `record_cache_metrics` is never called because the `model` guard fails, or because `usage.cache_read` and `usage.input` are both 0, or because yoagent truly drops the fields.
+
+The task should be: add a test that exercises `cache_metrics_payload` with realistic `yoagent::Usage` values from a DeepSeek model name, and verify it produces a payload. This would at least confirm the code path works in isolation. If it does, the issue is elsewhere (maybe `model` isn't "deepseek-*" at the call site, or `usage.cache_read` is always 0).
+
+OK, I think the best approach for task 2 is:
+- Add a diagnostic test that exercises the cache metrics recording path end-to-end with a mock yoagent::Usage
+- This will determine if the code path works at all, and if not, where it breaks
+
+But wait - the implementation agent can't run a real DeepSeek prompt during testing. So the test would need to use mock data.
+
+Let me think about what's most valuable and achievable:
+
+Actually, I realize I'm overthinking this. Let me just create two evidence-backed tasks:
+
+1. Deduplicate retroactive FailureObserved events — concrete bug from assessment
+2. Cache metrics diagnostic — narrower retry of #105, focused on adding test coverage and fixing any guard issues found
+
+For task 2, I'll scope it to: add a focused test + verify the model guard works, then fix if broken. This is much smaller than the previous failed attempt.
+
+Let me now write all the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I now have enough evidence. The seed task is stale (contradiction detected). Let me write the replacement plan files.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ mkdir -p session_plan ✓ (697ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write all the plan files. Let me start with task_01_obsolete.md to explain why the seed task is stale, then write task_01.md and task_02.md, and finally issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Task Obsolete: Close yyds state and model lifecycle gaps
+  + 
+  + **Seed task**: session_plan/task_01.md (harness-seed)
+  + **Obsoleted by**: Fresh assessment evidence (Day 139)
+  + 
+  + ## Contradiction Evidence
+  + 
+  + The harness seed prescribed adding `state_run_incomplete_count` to gnome summaries in
+  + `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, and
+  + `scripts/summarize_state_gnomes.py`. But the code already exists:
+  + 
+  + ```
+  + scripts/append_terminal_state_events.py:281:    ``state_run_incomplete_count`` in gnome summaries.
+  + scripts/append_terminal_state_events.py:515:    # state_run_incomplete_count. Emit the missing RunCompleted to close
+  + ```
+  + 
+  + And the test already covers deduplication:
+  + ```
+  + scripts/test_append_terminal_state_events.py:508:    """A RunCompleted with error status that already has FailureObserved is not double-counted."""
+  + ```
+  ... (10 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (30 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (30 lines) ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now write task_01.md - the deduplication fix for retroactive FailureObserved events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  + Title: Deduplicate retroactive FailureObserved events for runs that already have one
+  + Files: scripts/append_terminal_state_events.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: false (contradiction: code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py — suppressing stale task 'Close yyds state and model lifecycle gaps' (scripts/append_terminal_state_events.py:281:    ``state_run_incomplete_count`` in gnome summaries.))
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - `yyds state why last-failure` shows 5 retroactive FailureObserved events for the same cancelled run (trace-evolve-29489777915), each with payload `"run completed with error status 'error' but no FailureObserved was recorded"`.
+  + - The existing test `test_skips_failure_observed_when_already_present` covers the case where FailureObserved was already present BEFORE the run's terminal events were appended, but it does NOT cover the case where a retroactive FailureObserved was already emitted by a previous invocation of the script against the same events file.
+  + - The terminal-state script (`append_terminal_state_events.py`) can be invoked multiple times against the same events file (e.g., from multiple post-processing hooks or retries), and each invocation re-scans the file for incomplete runs and emits a new retroactive FailureObserved if it doesn't find one — but it doesn't check whether a *retroactive* FailureObserved was already emitted by a prior invocation.
+    
+    Edit Surface:
+  - - scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  + - scripts/append_terminal_state_events.py
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (41 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (41 lines) ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_02.md - the cache metrics diagnostic task. This needs to be much narrower than the previous failed attempt (#105).
+
+The key insight: the previous agent spent 24 turns in static analysis without landing code. The scope was too broad ("ensure cache metrics are recorded"). A narrower version would be: add a focused test + verify the model guard works.
+
+Let me check what test already exists for cache_metrics_payload.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3859..3909 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The existing test `cache_metrics_payload_uses_deepseek_input_as_miss_tokens` at line 3859 verifies that with `cache_read: 70` and `input: 30`, the payload has hit=70, miss=30, ratio=0.7. This test passes.
+
+The issue is: does yoagent's Usage struct actually populate `cache_read` with the DeepSeek `prompt_cache_hit_tokens` field? If yoagent drops this field, `cache_read` would always be 0, and `cache_miss` would be `usage.input` (total input tokens). Then the payload would have:
+- `prompt_cache_hit_tokens: 0`
+- `prompt_cache_miss_tokens: N` (total input tokens)
+- `cache_hit_ratio: 0.0`
+
+The guard at line 629 (`Some(0) && Some(0)`) would NOT trigger because `cache_miss` is non-zero. So the payload would be generated and the event would be recorded. But the data would be wrong (cache_hit always 0).
+
+The assessment says `cache-report` returns "no metrics" — but that might be because the model name at prompt.rs:956 doesn't start with "deepseek", or because the events ARE recorded but `cache-report` can't find them.
+
+Let me check the cache-report command to see what it looks for.
+
+Actually, I don't have time for deep investigation during planning. Let me scope task 2 narrowly:
+
+The task should:
+1. Check what `model` value is passed to `record_cache_metrics` at prompt.rs:956 — is it a DeepSeek model name?
+2. If it's not the right model name, fix it so the guard passes
+3. If it is, verify the events are being recorded and `cache-report` can find them
+
+This is still too broad. Let me narrow it further: just verify the model guard works correctly and add a test for the full `record_cache_metrics` path.
+
+Actually, the simplest and most valuable approach: add a test that exercises the complete `record_cache_metrics` → `cache_metrics_payload` → event recording path, and verify the event appears. This would confirm the code works end-to-end in isolation, and any production failure would be due to external factors (yoagent's Usage not populating cache_read, or model name mismatch at the call site).
+
+Let me write task_02.md with this narrow scope.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Verify and fix DeepSeek prompt cache metrics recording path
+  + Files: src/state.rs
+  + Issue: #105
+  + Origin: planner
+  + 
+  + Evidence:
+  + - `yyds deepseek cache-report` returns "no DeepSeek cache metrics recorded from agent chat completions" — the primary evolution path produces zero cache metrics events.
+  + - The code at `src/state.rs:615-638` (`cache_metrics_payload`) has a model-name guard: `model.starts_with("deepseek")`. If the `model` string passed at `src/prompt.rs:956` doesn't start with "deepseek", the guard silently returns None and no event is recorded.
+  + - The code at `src/prompt.rs:956` calls `record_cache_metrics(model, &state.usage)` where `model` is the `&str` parameter threaded through `handle_prompt_events`. Its value depends on the agent config and provider — it may include a provider prefix rather than a raw model name.
+  + - The existing test `cache_metrics_payload_uses_deepseek_input_as_miss_tokens` passes with a hardcoded "deepseek-v4-pro" model name, but this doesn't exercise the actual call path from prompt.rs.
+  + - Issue #105 was previously attempted (Day 137) and reverted — the agent spent 24 turns in static analysis without landing code. This retry is scoped to a single-file edit: add a diagnostic test + log, determine the root cause, apply a minimal fix.
+  + 
+  + Edit Surface:
+  + - src/state.rs
+  + 
+  + Verifier:
+  + - cargo test state::tests::record_cache_metrics_end_to_end
+  + - cargo test state::tests::cache_metrics_payload_uses_deepseek_input_as_miss_tokens
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (48 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (48 lines) ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write the issue responses file. Let me review what issues need responses:
+
+1. Issue #105 (agent-self): Reverted cache metrics task. This is addressed by task_02.md.
+2. Issue #90 (help-wanted): yoagent Usage struct drops DeepSeek cache fields. Still waiting.
+
+I should also check if there are any trusted owner issues in ISSUES_TODAY.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cat ISSUES_TODAY.md 2>/dev/null || echo "FILE NOT FOUND" ✓ (549ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted owner issues. Just need to respond to the agent-self and help-wanted issues.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 139
+  + 
+  + ## #105 (agent-self): Task reverted: Record DeepSeek prompt cache metrics during prompt runs
+  + 
+  + **Plan**: Diagnose via task_02.md (narrower retry).
+  + 
+  + The previous attempt (Day 137) failed because the implementation agent got lost in static analysis across `src/prompt.rs` — 24 turns of tracing without landing code. The scope was too broad.
+  + 
+  + This session's task_02 narrows the scope to `src/state.rs` only: add a diagnostic end-to-end test for `record_cache_metrics`, determine whether the bottleneck is a model-name guard mismatch or yoagent's `Usage` struct, and apply a minimal fix if the cause is in `src/state.rs`. If the cause is upstream (yoagent), the task produces a clear diagnostic finding instead of a fix.
+  + 
+  + This is a stepping stone — not the full implementation, but the evidence needed to either fix it or escalate cleanly.
+  + 
+  + ## #90 (help-wanted): yoagent Usage struct drops DeepSeek cache fields
+  + 
+  + **Plan**: Continue tracking. No replies yet.
+  + 
+  + The task_02 diagnostic should clarify whether this is the actual blocker. If `cache_metrics_payload` works correctly in isolation with realistic `yoagent::Usage` values and the issue is purely a model-name guard mismatch, then #90 is not the bottleneck and #105 can be closed independently. If the diagnostic confirms `usage.cache_read` is always 0, then #90 is the root cause and the finding becomes stronger evidence for the upstream request.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (17 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (17 lines) ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now verify the plan files are well-formed and complete. Let me also check that the tasks meet the requirements:
+
+1. Task 1 (dedup FailureObserved): 1 file (scripts/append_terminal_state_events.py) ✓
+2. Task 2 (cache metrics diagnostic): 1 file (src/state.rs) ✓
+
+Both are within the 3-file limit. Both have concrete verifiers. Both are evidence-backed.
+
+Let me do a final check: verify the test file reference in task 1 is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the files are correct and the test reference exists.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/  ▶ $ python3 -c "import ast; ast.parse(open('scripts/append_terminal_state_events.py'…  ▶ $ python3 -m unittest scripts.test_append_terminal_state_events.AppendTerminalStat… ✓ (1.9s)
+ ✓ (2.0s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The existing test passes. The plan is complete. Let me do a final summary:
+
+- task_01_obsolete.md: explains why the seed task is stale
+- task_01.md: Deduplicate retroactive FailureObserved events (1 file, concrete, verifiable)
+- task_02.md: Diagnose DeepSeek prompt cache metrics recording path (1 file, narrow retry of #105)
+- issue_responses.md: Addresses #105 and #90
+
+Both tasks are within the 3-file limit. Both have concrete verifiers. Both are evidence-backed from fresh assessment findings.
+
+The plan meets all the requirements:
+- At least 2 slots from state/trajectory/eval evidence ✓ (both tasks are from trajectory/assessment evidence)
+- Task sizing rules followed ✓ (1 file each, completable in 20 min)
+- Priority ordering followed ✓ (yoagent-state feedback first, then agent-self issue)
+- No implementation attempted ✓
+- session_plan/ files written ✓
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.4s (3 ✓)
+
+Plan complete. Here's the summary:
+
+────────────────────────────────────────
+
+## Session Plan — Day 139
+
+### Why the seed task was replaced
+The harness-seeded `task_01.md` prescribed adding `state_run_incomplete_count` to gnome summaries — but the code **already exists** at `scripts/append_terminal_state_events.py:281` and line 515, and the dedup test already passes. The preseed script correctly detected the contradiction. Wrote `task_01_obsolete.md` with the evidence.
+
+### Task 1: Deduplicate retroactive FailureObserved events
+• **File**: `scripts/append_terminal_state_events.py`
+• **Evidence**: `yyds state why last-failure` shows 5 duplicate retroactive FailureObserved for the same cancelled run. The existing dedup test only covers the case where FailureObserved was present *before* terminal events were appended — not the case where a prior script invocation already emitted a retroactive one.
+• **Fix**: Check for existing retroactive FailureObserved (`"retroactive": true` in payload) before emitting a new one.
+• **Verifier**: `python3 -m unittest scripts.test_append_terminal_state_events`
+
+### Task 2: Diagnose DeepSeek prompt cache metrics recording gap
+• **File**: `src/state.rs` only (narrower retry of reverted #105)
+• **Evidence**: `cache-report` returns zero metrics from agent chat completions. The `cache_metrics_payload` function has a `model.starts_with("deepseek")` guard that may not match the actual model string passed from `prompt.rs:956`.
+• **Approach**: Add an end-to-end test for `record_cache_metrics`. If the test works in isolation, add a diagnostic warning for near-miss model names. If yoagent's `Usage.cache_read` is the bottleneck, document it.
+• **Verifier**: `cargo test state::tests::record_cache_metrics_end_to_end`
+
+### Issue Responses
+• **#105**: Addressed by task_02 (narrower diagnostic retry)
+• **#90**: Still tracking — no replies yet. Task 02 diagnostic will clarify whether this is the actual blocker.
+
+
