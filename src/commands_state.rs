@@ -512,10 +512,11 @@ fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
                 let ev = event_line_value(line).ok();
                 match rid {
                     "none" => ev.as_ref().and_then(|v| v.get("run_id")).is_none(),
-                    _ => ev
-                        .as_ref()
-                        .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
-                        == Some(rid),
+                    _ => {
+                        ev.as_ref()
+                            .and_then(|v| v.get("run_id").and_then(|v| v.as_str()))
+                            == Some(rid)
+                    }
                 }
             })
             .collect()
