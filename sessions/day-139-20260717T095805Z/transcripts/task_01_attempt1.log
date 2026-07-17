@@ -1,0 +1,350 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. I need to add a test for multi-invocation dedup of retroactive FailureObserved events
+2. The test should verify that running `append_terminal_events` twice doesn't produce duplicate retroactive FailureObserved events
+3. If `find_missing_failure_observed` already handles this correctly, the test is the deliverable
+4. If not, I need to fix `find_missing_failure_observed` in the main script
+
+Let me first read the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (1.7s)
+ ✓ (1.4s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the structure. I need to:
+
+1. Read the `find_missing_failure_observed` function to understand how it handles dedup
+2. Read the existing `test_skips_failure_observed_when_already_present` test
+3. Write a new test for multi-invocation dedup
+
+Let me read the key function and the existing test.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.5s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_failure_observed' in scripts/append_terminal_state_events.py  ▶ search 'test_skips_failure_observed_when_already_present' in scripts/test_append_terminal_state_events.py ✓ (695ms)
+ ✓ (709ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `find_missing_failure_observed` function and the existing test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:227..347  ▶ read scripts/test_append_terminal_state_events.py:507..587 ✓ (1.1s)
+ ✓ (695ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the situation. Let me analyze:
+
+`find_missing_failure_observed()` at line 227:
+- It scans all events and collects two sets:
+  - `error_completed`: runs that have a RunCompleted with non-success status
+  - `failure_observed_runs`: runs that have ANY FailureObserved event
+- It returns runs in `error_completed` that are NOT in `failure_observed_runs`
+
+So if a retroactive FailureObserved was already emitted by a prior invocation, it will be in `failure_observed_runs` and the function will skip it on the second invocation. The dedup already works correctly.
+
+Now, the task says: "If the function already works, the test proves it." So I need to write a test that proves the dedup works across multiple invocations.
+
+Let me also look at how the `append_terminal_events` function works and how it calls `find_missing_failure_observed` and emits FailureObserved events, so I can understand the test pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+Now let me see how `append_terminal_events` uses `find_missing_failure_observed` and where the retroactive FailureObserved events are emitted:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:460..590 ✓ (207ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. `find_missing_failure_observed()` scans all events and builds:
+   - `error_completed`: runs with non-success RunCompleted
+   - `failure_observed_runs`: runs with ANY FailureObserved event
+   - Returns runs in `error_completed` but NOT in `failure_observed_runs`
+
+2. On the first invocation: retroactive FailureObserved is emitted for error-run with `"retroactive": true`
+
+3. On the second invocation: Since the retroactive FailureObserved is now in the events file, `failure_observed_runs` will contain error-run's ID, so `find_missing_failure_observed` won't return it. The dedup works correctly.
+
+I need to write a test that:
+- Creates an error-run with RunCompleted(error) but NO FailureObserved
+- Calls `append_terminal_events` once → should emit retroactive FailureObserved
+- Calls `append_terminal_events` again → should NOT emit second retroactive FailureObserved
+
+Let me write the test. The pattern is similar to `test_skips_failure_observed_when_already_present` but instead of having an original FailureObserved in the events, I'll let the first invocation create the retroactive one.
+
+Let me also check how the test should call `append_terminal_events` on the same events file twice. The key concern is that after the first call, new events are appended, so `after_line` needs to account for that.
+
+Wait, let me re-read the append_terminal_events function signature to understand after_line.
+
+Let me look at the beginning of append_terminal_events to understand how after_line works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:350..450 ✓ (189ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `find_missing_failure_observed()` function (line 227) already handles dedup correctly — it scans ALL events and checks whether any FailureObserved event exists for each run_id. So if the first invocation emitted a retroactive FailureObserved, the second invocation will see it in `failure_observed_runs` and skip it.
+
+The test I need to write:
+1. Create events with an error-run that has RunCompleted(error) but NO FailureObserved
+2. Call `append_terminal_events` once — it should emit retroactive FailureObserved
+3. Count events, verify we got one retroactive FailureObserved  
+4. Call `append_terminal_events` again with a new after_line — it should NOT emit a second retroactive FailureObserved
+5. Verify only one FailureObserved per run exists
+
+For the second call, I need to set `after_line` to something that doesn't pick up new orphans. Since the first call already closed the run (emitted RunCompleted if not already present), the second call should have different after_line but the full-scan for `find_missing_failure_observed` runs regardless.
+
+Wait, actually the test needs to be careful. The `open_lifecycle` scan only looks at events AFTER `after_line`. But `find_missing_failure_observed` scans ALL events. So even with different after_line values, the full scan will pick up the retroactive FailureObserved.
+
+The test pattern from `test_skips_failure_observed_when_already_present` shows the existing pattern. Let me adapt it.
+
+For the test:
+- Write events with a RunCompleted(status="error") for an older run but NO FailureObserved
+- Set after_line to after those events (so the open lifecycle scan doesn't try to close them)
+- Add a "current run" with full lifecycle
+- First call: should detect missing FailureObserved for error-run and append one
+- Second call: should NOT append another (because the first one already exists)
+
+But I need to think about `after_line` more carefully. The `open_lifecycle` function only looks at events after `after_line`. When I call `append_terminal_events` the first time with `after_line` set to after the error-run events, it won't pick up error-run as open (since it has RunCompleted). But the full-scan `find_missing_failure_observed` scans ALL events, so it will find error-run missing FailureObserved and emit one.
+
+For the second call, I need a new `after_line` that reflects the state after the first call appended events. The second call should be:
+- `after_line` = current line count after first call
+- The full-scan `find_missing_failure_observed` will now find the retroactive FailureObserved and skip it
+
+Let me trace through the test more carefully.
+
+Setup:
+```
+RunStarted "error-run"
+ModelCallStarted "error-run" {"model": "deepseek-v4-pro"}
+RunCompleted "error-run" {"status": "error"}
+```
+→ after_line = 3
+
+Then add current run:
+```
+RunStarted "current-run"
+ModelCallStarted "current-run" {"model": "deepseek-v4-pro"}
+ModelCallCompleted "current-run" {"model": "deepseek-v4-pro"}
+RunCompleted "current-run" {"status": "completed"}
+```
+→ total lines = 7
+
+First call to `append_terminal_events` with after_line=3:
+- `open_lifecycle` scans events after line 3: current-run has RunStarted, ModelCallStarted, ModelCallCompleted, RunCompleted → all closed, nothing open
+- Full-scan `find_missing_failure_observed` scans ALL events: error-run has RunCompleted(status="error") but no FailureObserved → missing! Emits retroactive FailureObserved for error-run.
+- Total lines after first call: 8 (added 1 FailureObserved)
+
+Second call to `append_terminal_events` with after_line=8:
+- `open_lifecycle` scans events after line 8: nothing
+- Full-scan `find_missing_failure_observed` scans ALL events: error-run has RunCompleted(status="error") AND now has FailureObserved (the retroactive one) → not missing! Nothing emitted.
+
+This should work. Let me write the test.
+
+Actually, I should double-check: does the `after_line` in the second call get passed as a line index (0-based) or as a line count? Let me check `open_lifecycle` to see how `scan_start` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99..159 ✓ (360ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `after_line` is used as a line index (scan_start = max(after_line, 0)), which slices events[scan_start:]. So if after_line is 3, it scans events[3:] (events at index 3 and beyond). With 0-based indexing, events[3] is the 4th event.
+
+Now I can see: the `after_line` is used as a 0-based index into the list of JSONL lines. So when I set `after_line = len(events.read_text(...).splitlines())`, that's the line count, which when used as an index is actually one past the last element (Python's slice behavior handles this — it just returns an empty slice).
+
+Wait, actually `events[max(scan_start, 0):]` — if scan_start is 3 and there are 3 events, this gives `events[3:]` which is `[]` — empty. So after_line is being used as a 0-based index.
+
+So in my test:
+- Write 3 events (error-run: RunStarted, ModelCallStarted, RunCompleted)
+- after_line = 3 (line count = 3, used as index into 0-based list → empty scan)
+- Then write current-run events (4 events)
+- Total = 7 events, after_line = 3
+- First call: open_lifecycle scans events[3:] = current-run events (4 events). All closed. Full scan finds error-run missing FailureObserved.
+- After first call: 8 events (added 1 FailureObserved)
+- Second call: after_line = 8 (line count = 8, index 8 → empty slice since only 8 events, events[8:] = [])
+- Full scan: error-run now has FailureObserved → skip
+
+This will work. Now let me write the test. I need to position it logically near the existing `test_skips_failure_observed_when_already_present` test.
+
+Let me now write the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. The `find_missing_failure_observed()` function already handles dedup correctly — it scans ALL events and checks for any FailureObserved per run_id. A retroactive FailureObserved emitted by the first invocation will be found by the second. I just need to write the test to prove it.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (250ms)
+  ▶ todo ✓ (361ms)
+  ▶ todo ✓ (344ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test. I'll place it right after `test_skips_failure_observed_when_already_present` since they're closely related.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.0s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test. I'll insert it right after `test_skips_failure_observed_when_already_present` (which ends at line 548).
+────────────────────────────────────────────────────────────────────────────────
+
+                self.assertEqual(len(fo_rows), 1)
+  + 
+  +     def test_skips_retroactive_failure_observed_on_second_invocation(self):
+  +         """A second invocation does not emit a duplicate retroactive FailureObserved."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "error-run")
+  +             write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "error-run", {"status": "error"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+  + 
+  +             # First invocation: should emit retroactive FailureObserved for error-run.
+  +             result1 = append_terminal_state_events.append_terminal_events(
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (3 → 64 lines)
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (3 → 64 lines)
+                self.assertEqual(len(fo_rows), 1)
+  + 
+  +     def test_skips_retroactive_failure_observed_on_second_invocation(self):
+  +         """A second invocation does not emit a duplicate retroactive FailureObserved."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             write_event(events, "RunStarted", "error-run")
+  +             write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "error-run", {"status": "error"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+  + 
+  +             # First invocation: should emit retroactive FailureObserved for error-run.
+  +             result1 = append_terminal_state_events.append_terminal_events(
+  +                 events,
+  +                 after_line,
+  ... (44 more lines)
+ ✓ (390ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test is written. Now let me run it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the new test:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (341ms)
+  ▶ todo ✓ (297ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the specific test first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (713ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The new test passes. Let me now run all the existing tests to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+New test passes. Let me verify all existing tests still pass:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (600ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 23 tests pass (22 existing + 1 new). Now let me do the verification checks. The task says "cargo fmt -- --check, then cargo build or the smallest cargo test/clippy command directly tied to the changed task surface." Since this is a Python-only change, cargo checks are not directly relevant, but the task verifier specified `python3 -m unittest` which I've already run. Let me also check git diff.
+────────────────────────────────────────────────────────────────────────────────
+
+All 23 tests pass. Now let me verify what changed:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (706ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `scripts/test_append_terminal_state_events.py`, which is in the task's Edit Surface. The task's `find_missing_failure_observed` function already handles dedup correctly — the test proves it. No code changes needed in the main script.
+
+Let me also quickly run `git diff` to confirm the change looks right, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only the test file changed — exactly the task's Edit Surface. Let me view the diff:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (703ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The change is clean: a single new test method added. The task's Fallback says: "If the existing `find_missing_failure_observed` already handles the dedup correctly and the test passes on first attempt, the task is done — adding test coverage is the deliverable." That's exactly what happened.
+
+Now let me commit. No docs need updating since this is internal test coverage for an existing behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+The change is clean — just the new test. `find_missing_failure_observed` already handles dedup correctly, and the test proves it. Now let me commit:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (346ms)
+  ▶ todo ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (752ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the commit landed and then provide the final summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -1 --oneline ✓ (600ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me summarize the task completion.
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary:**
+
+find_missing_failure_observed() in scripts/append_terminal_state_events.py already handles multi-invocation dedup correctly — it builds a failure_observed_runs set from ALL events in the file, so a retroactive FailureObserved emitted by the first invocation prevents any duplicate on subsequent invocations.
+
+**What changed:** Added `test_skips_retroactive_failure_observed_on_second_invocation` to `scripts/test_append_terminal_state_events.py`. The test:
+1. Creates an error-run with `RunCompleted(status="error")` but no FailureObserved
+2. Invokes `append_terminal_events` — verifies it emits one retroactive FailureObserved
+3. Invokes `append_terminal_events` again — verifies it emits zero additional FailureObserved events
+4. Asserts exactly one FailureObserved exists for the error-run in the final events file
+
+**Verification:** All 23 tests pass (`python3 -m unittest scripts.test_append_terminal_state_events`).
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
