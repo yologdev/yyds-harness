@@ -677,8 +677,12 @@ def append_terminal_events(
             }
             if mcid:
                 payload_omc["model_call_id"] = mcid
-            else:
-                payload_omc["model_call_id"] = f"retroactive-{rid}"
+            # When the original ModelCallStarted had no model_call_id,
+            # omit it from the retroactive event as well.  On the next
+            # janitor invocation, find_orphaned_model_calls will detect
+            # this completed event by run_id (the same key used for the
+            # original started event), preventing duplicate retroactive
+            # events (same bug class as Day 139's FailureObserved dedup).
             ts = entry.get("timestamp_ms")
             if ts:
                 payload_omc["original_model_call_started_timestamp_ms"] = ts

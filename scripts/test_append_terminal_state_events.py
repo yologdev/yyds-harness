@@ -1055,11 +1055,76 @@ class AppendTerminalStateEvents(unittest.TestCase):
             ]
             self.assertEqual(len(retro_completed), 1)
             self.assertTrue(retro_completed[0]["payload"].get("retroactive"))
-            # Falls back to run_id-based key when model_call_id is absent
-            self.assertEqual(
+            # When the original ModelCallStarted had no model_call_id, the
+            # retroactive ModelCallCompleted also omits model_call_id so
+            # that find_orphaned_model_calls matches it by run_id on the
+            # next scan (same key as the original started event).
+            self.assertIsNone(
                 retro_completed[0]["payload"].get("model_call_id"),
-                "retroactive-old-run",
             )
+
+    def test_orphaned_model_call_without_mcid_dedup_on_second_run(self):
+        """Second janitor invocation writes zero retroactive ModelCallCompleted for same orphan.
+
+        When the original ModelCallStarted has no model_call_id, the orphan
+        detection keys by run_id.  The retroactive ModelCallCompleted must
+        also omit model_call_id so it is matched by run_id on the next scan,
+        preventing duplicate retroactive events.  (Same bug class as Day 139's
+        FailureObserved dedup.)
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            write_event(events, "RunStarted", "orphan-run")
+            write_event(events, "ModelCallStarted", "orphan-run",
+                        {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "orphan-run",
+                        {"status": "error"})
+            after_line = 0
+
+            # First invocation: should append one retroactive ModelCallCompleted.
+            result1 = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            self.assertEqual(result1["orphaned_model_calls_appended"], 1,
+                             "First janitor run should append 1 retroactive ModelCallCompleted")
+
+            # Second invocation: should append zero — the retroactive event
+            # matches the orphaned ModelCallStarted by run_id.
+            result2 = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-2",
+                "trace-2",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+            self.assertEqual(result2["orphaned_model_calls_appended"], 0,
+                             "Second janitor run should append 0 retroactive ModelCallCompleted (dedup)")
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            retro_completed = [
+                row for row in rows
+                if row["event_type"] == "ModelCallCompleted"
+                and row["run_id"] == "orphan-run"
+                and row["payload"].get("retroactive")
+            ]
+            self.assertEqual(len(retro_completed), 1,
+                             "Only one retroactive ModelCallCompleted should exist")
 
     def test_cancelled_run_gets_specific_failure_observed_reason(self):
         """Cancelled RunCompleted yields a specific cancellation reason in FailureObserved."""
