@@ -1,0 +1,385 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The task is about closing a forward-case ModelCall lifecycle gap where 357 ModelCallCompleted events exist without matching ModelCallStarted events. I need to inspect the call sites in src/prompt.rs to understand the control flow.
+
+Let me start by reading the relevant sections of src/prompt.rs to understand the 4 call sites for ModelCallStarted/ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ search 'ModelCallStarted' (*.rs)  ▶ search 'ModelCallCompleted' (*.rs) ✓ (1.1s)
+ ✓ (745ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to read the 4 call sites in src/prompt.rs to understand the control flow. Let me read around those lines.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:760..810  ▶ read src/prompt.rs:920..970  ▶ read src/prompt.rs:998..1048  ▶ read src/prompt.rs:1050..1100 ✓ (1.8s)
+ ✓ (3.0s)
+ ✓ (1.9s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the control flow. Let me trace through the logic:
+
+1. Line 778-782: `ModelCallStarted` is emitted at the beginning of `handle_prompt_events()`.
+2. Line 940-956: `ModelCallCompleted` is emitted on `AgentEvent::AgentEnd { messages }` - and `model_call_terminal_recorded` is set to true.
+3. Line 1010-1048: On ctrl+c signal, `ModelCallCompleted` is emitted if `!model_call_terminal_recorded`.
+4. Line 1066-1082: After the event loop exits (channel closed), `ModelCallCompleted` is emitted if `!model_call_terminal_recorded`.
+
+So the flow is:
+- `ModelCallStarted` is emitted at line 778.
+- Then it enters the event loop.
+- If ctrl+c or channel close, `ModelCallCompleted` is emitted if not already recorded.
+- `model_call_terminal_recorded` guards against double-recording.
+
+This looks correct - `ModelCallStarted` should always precede `ModelCallCompleted`.
+
+BUT - the key issue is: `handle_prompt_events()` is called from multiple places via `run_prompt*` functions. Let me check if there are call sites where `ModelCallCompleted` is recorded without going through `handle_prompt_events()`.
+
+Wait, the question is: are there other places in `src/prompt.rs` where `ModelCallCompleted` is recorded without a matching `ModelCallStarted`? Let me look at the full set of call sites.
+
+From the search results:
+- Line 943: Inside `handle_prompt_events` - guarded by ModelCallStarted at line 779 in same function
+- Line 1016: Inside `handle_prompt_events` - guarded by ModelCallStarted at line 779 in same function  
+- Line 1068: Inside `handle_prompt_events` - guarded by ModelCallStarted at line 779 in same function
+
+All three ModelCallCompleted sites are in `handle_prompt_events()`. All are preceded by the ModelCallStarted at line 779. This looks clean.
+
+But wait - search also shows lines in `state.rs`: lines 4114 and 4129 that also emit ModelCallStarted/ModelCallCompleted. Let me check those.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 8.3s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4100..4150  ▶ read src/prompt.rs:700..770 ✓ (1.1s)
+ ✓ (762ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The state.rs lines 4114 and 4129 are just test data, not actual event recording. So all the real ModelCallStarted and ModelCallCompleted emissions happen in `handle_prompt_events()` in `src/prompt.rs`.
+
+Now let me check - are there any callers of `handle_prompt_events()` or the `run_prompt*` functions that might emit ModelCallCompleted without going through `handle_prompt_events()`?
+
+Actually, let me reconsider. The search shows 3 ModelCallCompleted sites in prompt.rs (lines 943, 1016, 1068) and 1 ModelCallStarted site (line 779). All in `handle_prompt_events`. The guard `model_call_terminal_recorded` prevents double-recording. ModelCallStarted is unconditional at function entry.
+
+But wait - what if `handle_prompt_events()` is NOT the only function that emits ModelCallCompleted? Let me search for other references to ModelCallCompleted in prompt.rs. Actually, the search already confirmed only 3 sites. Let me look for any function that calls `record` with ModelCallCompleted outside of `handle_prompt_events`.
+
+Actually, let me think about this differently. The gap of 357 unmatched completions could come from:
+1. The `append_terminal_state_events.py` script adding ModelCallCompleted events retroactively (but that's the backward case, already handled)
+2. Some caller not going through `handle_prompt_events()`
+3. A bug in the state recording system where ModelCallStarted is lost/dropped
+
+Let me look at the callers to understand if ModelCallCompleted could be emitted without ModelCallStarted.
+
+Let me search for calls to `handle_prompt_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'handle_prompt_events' (*.rs)  ▶ search 'model.finished' (*.rs) ✓ (747ms)
+ ✓ (751ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! `handle_prompt_events` is called from two places. And `state.rs:3133` maps `"model.finished"` to `EventType::ModelCallCompleted`. This is in `compatibility_event_json_line`. This means when reading events from the JSONL file, events with label `"model.finished"` are treated as `ModelCallCompleted`. 
+
+The key question: **does the yoagent library emit its own events with label `"model.finished"`?** If yoagent internally writes events to the JSONL file with the label `"model.finished"`, those would appear as `ModelCallCompleted` without corresponding `ModelCallStarted` events.
+
+Let me check if yoagent emits events through the state mechanism. Looking at `src/prompt.rs` lines 318 and 330:
+
+Let me read those lines to understand the context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:290..350 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it clearly. There are two functions (`run_prompt_once` and `run_prompt_once_with_messages`) that both call `handle_prompt_events` - and `handle_prompt_events` always emits ModelCallStarted at line 778.
+
+However, there could be two issues:
+
+1. If `agent.prompt(input)` at line 317 returns an error/prompts an error before producing a receiver, the code would panic or return early - but in that case, `handle_prompt_events` is never called, so no ModelCallCompleted would be emitted. So this can't be the source.
+
+2. The real issue might be: what if yoagent's `agent.prompt()` or the internal event stream emits extra events that bypass our `handle_prompt_events`? But that seems unlikely - the event channel is what we're consuming.
+
+Actually wait - let me reconsider. The 357 unmatched completions - could they come from `scripts/append_terminal_state_events.py` itself? That script adds retroactive ModelCallCompleted events, and the Day 140 fix added the backward case. Let me check what the script does.
+
+But the task says: "Day 140 (02:33) added retroactive ModelCallCompleted in scripts/append_terminal_state_events.py (backward case), but the forward case (preventing gaps at creation time) is unresolved."
+
+So the backward case (retroactively adding ModelCallStarted for orphaned ModelCallCompleted) was already fixed. The forward case is about preventing gaps at creation time.
+
+Since I've established that all three ModelCallCompleted sites in `handle_prompt_events()` are already properly guarded (ModelCallStarted is emitted at the top of the function before the loop), the "forward case" might already be handled correctly. 
+
+Let me think about what could produce the gap:
+
+1. The `model.finished` label mapping in `state.rs:3133` - if yoagent emits events with label `"model.finished"` through its own state mechanism, separate from our `record()` calls, those would be read as `ModelCallCompleted` but wouldn't have matching `ModelCallStarted` events.
+
+2. But wait - yoagent doesn't use our state recording system. It doesn't write to our JSONL file. So `model.finished` events from yoagent wouldn't appear in our file...
+
+Unless yoagent calls back into our code through some event handler. Let me check if there's a hook or callback that writes events.
+
+Actually, let me look at this from a different angle. Let me search for where `record` is called in src/prompt.rs (all calls to `crate::state::record`), to see if there are any ModelCallCompleted emits outside of `handle_prompt_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'crate::state::record_cache_metrics' (*.rs)  ▶ search 'fn run_prompt' (prompt.rs) ✓ (395ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `run_prompt_auto_retry` function specifically - what if some failure path in the retry loop emits ModelCallCompleted without going through `handle_prompt_events`?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1378..1458 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so all the `run_prompt*` functions eventually go through `handle_prompt_events` (via `run_prompt_once` or `run_prompt_once_with_messages`). Each call to `handle_prompt_events` emits both ModelCallStarted (at entry) and ModelCallCompleted (at exit). So the forward case seems properly guarded.
+
+But wait - let me check if there's a path where `run_prompt_once` or `run_prompt_once_with_messages` returns without calling `handle_prompt_events`. Actually, they always call `handle_prompt_events` - the `agent.prompt()` call returns a receiver, and `handle_prompt_events` processes it.
+
+The real question is: could there be an error in `agent.prompt()` that panics or returns early before `handle_prompt_events` is called? If so, no ModelCallStarted would be emitted but somehow a ModelCallCompleted would be. But that doesn't make sense.
+
+Let me now consider the `model.finished` label mapping. Could yoagent somehow write events with label `model.finished` to our JSONL file? That seems unlikely - yoagent doesn't know about our state file.
+
+OK wait - let me re-read the task more carefully. The evidence says "357 completions without matching starts." Where does this number come from? It might come from the dashboard/gnome scripts that pair ModelCallStarted with ModelCallCompleted by model_call_id. If the pairing is done wrong, even correctly recorded events could appear unmatched.
+
+Let me look at the dashboard or gnome scripts to understand how the unmatched count is computed.
+
+Actually, let me look at `scripts/append_terminal_state_events.py` to understand what kind of gap it fixes, and then I can determine if the forward case is already addressed.
+
+Let me also check if there's a `commands_state.rs` function that computes this metric.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_unmatched_completed' (*.rs)  ▶ search 'model_call_unmatched_completed' (*.py) ✓ (350ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how `state_graph_tools.py` computes the unmatched completions count.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_completed' (state_graph_tools.py) ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the context of line 1264 to see how this is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:1240..1320 ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This shows how the gnome metrics are used, but not how the computations are done. Let me look at how `summarize_state_gnomes.py` computes `unmatched_completed`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:270..350 ✓ (384ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key lines - lines 335-340 and 341-352. The critical filtering is:
+
+```python
+if kind == "ModelCallStarted" and deepseek_model_payload(data):
+    model_call_started += 1
+```
+
+and
+
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    model_call_completed += 1
+```
+
+So both are filtered by `deepseek_model_payload(data)`. Let me check what this function does - it might be filtering differently, causing some ModelCallCompleted events to pass through while corresponding ModelCallStarted events are filtered out (or vice versa).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def deepseek_model_payload' (summarize_state_gnomes.py)  ▶ search 'def deepseek_model_payload' (scripts) ✓ (730ms)
+ ✓ (760ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:222..252 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see a potential issue! `deepseek_model_payload` checks for `"deepseek_native": True`, `model.startswith("deepseek")`, or `provider == "deepseek"`. 
+
+But look at `prompt.rs:779-782`:
+```rust
+crate::state::record(
+    crate::state::EventType::ModelCallStarted,
+    crate::state::Actor::Yoyo,
+    serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+);
+```
+
+And `prompt.rs:942-955`:
+```rust
+crate::state::record(
+    crate::state::EventType::ModelCallCompleted,
+    crate::state::Actor::Yoyo,
+    model_call_terminal_payload(
+        &model_call_id,
+        model,
+        ...
+    ),
+);
+```
+
+Let me check what `model_call_terminal_payload` includes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' (prompt.rs) ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..72 ✓ (401ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `model_call_terminal_payload` doesn't include `deepseek_native`, `provider`, or any special field beyond `model`. And the `ModelCallStarted` payload at line 779-781 also only has `model_call_id` and `model`.
+
+Now let me think about this. Both `ModelCallStarted` and `ModelCallCompleted` use the same model string. The `deepseek_model_payload` function filters on `model.startswith("deepseek")`. So if the model name starts with "deepseek", both should pass. If it doesn't, both should be filtered out. This is consistent.
+
+But wait - what about the `model.finished` label in state.rs:3133? Let me look at the `compatibility_event_json_line` function again. When reading events from the JSONL file, if an event has label `"model.finished"` it gets mapped to `ModelCallCompleted`. If such an event came from yoagent or some other source AND its payload does contain `deepseek` model info, it would be counted as a completion without a matching start.
+
+Let me check how events get into the JSONL file. Does yoagent write events there somehow?
+
+Actually, let me look at the `scripts/append_terminal_state_events.py` more carefully. It might be adding ModelCallCompleted events to fill gaps, and these retroactive completions wouldn't have matching starts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:300..400 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. The `find_missing_model_call_started` function pairs ModelCallStarted and ModelCallCompleted by `run_id`. But in `prompt.rs`, ModelCallStarted and ModelCallCompleted use `model_call_id` (not `run_id`) as their primary key.
+
+Wait, actually both use `model_call_id` and don't set `run_id` explicitly. Let me check if `run_id` is set automatically by the state recording system.
+
+Let me look at the `record` function in `state.rs` to see if it auto-sets a `run_id`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\b' (state.rs) ✓ (354ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `pub fn record` in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'pub fn record' (state.rs) ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:448..548 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `append` function to see how events get written, and specifically how `run_id` is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append' (state.rs) ✓ (353ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the append function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:289..389 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Important: line 303: `run_id: Some(self.run_id.clone())`. The `run_id` is set from `self.run_id` in the StateRecorder. So every event gets the same run_id as the overall run. 
+
+Now let me look at how `run_id` is generated to understand how the pairing works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_id:' (state.rs) ✓ (339ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `run_id` is generated per process invocation as `format!("run-{now}-{}", std::process::id())`. This means all events from the same process invocation share the same run_id.
+
+Now I understand the pairing model:
+- `find_missing_model_call_started` in `append_terminal_state_events.py` pairs by `run_id`
+- All events in a single process invocation share the same `run_id`
+- Within a single process, `handle_prompt_events` emits both ModelCallStarted and ModelCallCompleted for each call
+
+So the gap MUST be from:
+1. Historical data from before ModelCallStarted was added (this would be in the backward case)
+2. ModelCallCompleted events generated by `append_terminal_state_events.py` itself (the janitor adds completions)
+3. Some path where ModelCallCompleted is recorded but ModelCallStarted is skipped
+
+Wait - actually there's a key insight. In `handle_prompt_events`, ModelCallStarted is emitted at line 778, then the function enters a loop. But what if the event channel is closed immediately (no events, not even AgentEnd)? Then:
+- ModelCallStarted is emitted (line 778)
+- The loop's `rx.recv()` returns `None` immediately → we break (line 787)
+- `model_call_terminal_recorded` is still false
+- We fall through to line 1066: `if !model_call_terminal_recorded { record(ModelCallCompleted, ...) }`
+
+But that's fine - we'd get both ModelCallStarted AND ModelCallCompleted. No gap.
+
+But what if `agent.prompt()` at line 317 panics, or the process is killed before `handle_prompt_events` can emit ModelCallStarted? In that case, we wouldn't get ModelCallStarted OR ModelCallCompleted, and there'd be no gap (zero for both).
+
+The only way to get a gap is if ModelCallCompleted is somehow emitted WITHOUT a preceding ModelCallStarted. And from the code I've seen, all ModelCallCompleted emissions are inside `handle_prompt_events`, which always emits ModelCallStarted first.
+
+So the forward case is actually ALREADY PROPERLY GUARDED. The 357 unmatched completions must be from historical data before ModelCallStarted was added, which the backward-case janitor in `append_terminal_state_events.py` already addresses.
+
+Wait, but the task says "Day 140 (02:33) added retroactive ModelCallCompleted" not "model call started." Let me re-read the task:
+
+"Day 140 (02:33) added retroactive ModelCallCompleted in scripts/append_terminal_state_events.py (backward case)"
+
+Hmm, that's about retroactive ModelCallCompleted, not retroactive ModelCallStarted. Let me check what the Day 140 changes actually did.
+
+Actually, I should look at the actual gap-counting logic more carefully. Let me look at `summarize_state_gnomes.py`'s `unmatched_completed` computation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:306..386 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see how `unmatched_completed` is computed - it's at the end of summarize_state_lifecycle.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:385..465 ✓ (410ms)
+
+

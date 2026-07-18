@@ -1,0 +1,532 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Add bounded-command detection to `src/safety.rs` - specifically a `check_unbounded_command` function
+2. Add timeout-aware recovery hints to `src/tool_wrappers.rs`
+3. Write tests
+
+Let me first read the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/safety.rs  ▶ read src/tool_wrappers.rs ✓ (1.9s)
+ ✓ (1.5s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the existing structure. I need to:
+
+1. Add `check_unbounded_command` to `src/safety.rs` that detects unbounded commands (find without -maxdepth in root, grep -r on root, rg on root)
+2. Wire it into `analyze_bash_command` 
+3. Add tests
+4. Add timeout-aware recovery hints to `src/tool_wrappers.rs`
+
+Let me first look at the existing check functions in safety.rs to understand the pattern, then look at the recovery hint code in tool_wrappers.rs.
+
+Let me also check what the `analyze_bash_command` function currently returns - it seems to return `Option<String>` for destructive warnings. The task says I should append a warning to the warning string. But looking at the current pattern, `analyze_bash_command` returns `Some(reason)` on the first destructive match only. The unbounded command check is different - it's a warning, not a destructive detection. Let me re-read the task more carefully.
+
+The task says:
+- `analyze_bash_command` detects unbounded patterns and returns a warning
+- Wire it into `analyze_bash_command` return (append to the warning string if other warnings also exist)
+
+This is a bit ambiguous. The existing `analyze_bash_command` returns `Option<String>` - it short-circuits on the first destructive match. Unbounded commands aren't destructive, they're just likely to time out. So maybe the warning should be separate from destructive detection?
+
+Let me re-read... The task says: "add `check_unbounded_command(cmd: &str) -> Option<String>` to src/safety.rs following the existing pattern of check functions". And "Wire it into `analyze_bash_command` return (append to the warning string if other warnings also exist)."
+
+So it seems like it should be treated as another safety check in `analyze_bash_command`. But that would mean all unbounded commands get flagged as "dangerous" which isn't right. Let me look at how `analyze_bash_command` is actually used.
+
+Let me search for where `analyze_bash_command` is called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'analyze_bash_command' (*.rs)  ▶ search 'targeted_recovery_hint' (*.rs) ✓ (760ms)
+ ✓ (748ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `analyze_bash_command` is used in `tools.rs` and the `targeted_recovery_hint` function in `tool_wrappers.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:445..485  ▶ read src/tool_wrappers.rs:1010..1130 ✓ (1.1s)
+ ✓ (760ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan my changes:
+
+1. **src/safety.rs**: 
+   - Add `check_unbounded_command(cmd: &str) -> Option<String>` function
+   - Wire it into `analyze_bash_command` 
+   - Add tests
+
+2. **src/tool_wrappers.rs**:
+   - Enhance the timeout recovery hint (already exists at line 1048-1052 but is fairly basic)
+
+Let me look at the existing timeout hint more closely. It's at line 1048-1052:
+```
+} else if msg_lower.contains("timed out") {
+    Some(
+        "The command timed out. Try reducing scope: limit file traversal depth, \
+         add a `timeout` wrapper, or split the work into smaller sequential commands."
+            .to_string(),
+    )
+```
+
+The task says:
+- Timeout error messages include advice like "try adding --max-depth=N, -m N (max-count), or a specific directory path"
+
+So I need to enhance this hint. Also need to add "timeout" and "deadline exceeded" detection.
+
+Now let me think about the `check_unbounded_command` function. The key insight is: is this a safety check (blocks execution) or a warning? Looking at the current code, `analyze_bash_command` returns `Some(warning)` which gets treated as a dangerous command that requires confirmation. Unbounded commands aren't destructive, they just might time out.
+
+But the task explicitly says to wire it into `analyze_bash_command`. Let me re-read: "Wire it into `analyze_bash_command` return (append to the warning string if other warnings also exist)."
+
+This implies it should be added as an additional check in `analyze_bash_command`. But that would mean unbounded commands get the same "requires explicit approval" treatment. 
+
+Hmm, looking at the task objective more carefully: "Reduce bash tool timeout failures by detecting unbounded commands before execution and providing actionable timeout-aware recovery hints when commands do time out."
+
+And the Success Criteria: "`analyze_bash_command` detects at least these unbounded patterns and returns a warning"
+
+I think the intent is to add it to `analyze_bash_command` as a warning, but let me also check if there's a way to make it a soft warning. Actually, looking at how the safety check is used in tools.rs (lines 452-476), the warning from `analyze_bash_command` gets routed to a confirmation prompt. If no `confirm_fn` is set, the command is rejected entirely.
+
+That seems too aggressive for unbounded commands. But the task says to do it, so let me follow the task instructions. The task also says: "Do NOT flag: `find src/ -name '*.rs'`, `grep -r pattern ./src`, `rg pattern` (no path = cwd, bounded), `rg pattern src/`"
+
+So the check should only flag when the path is `/`, `~`, `$HOME` or no path in certain contexts. That makes sense - searching from root recursively without bounds is genuinely problematic.
+
+Let me also think about this: since this goes through the safety analysis path and would block commands with "requires explicit approval" — is that the right behavior? Well, `find /` without `-maxdepth` IS potentially very expensive and could hang. Same with `grep -r pattern /`. So flagging them as warnings that need confirmation is reasonable. The agent can still confirm and run them.
+
+Actually wait - the task says "No false positives on standard bounded commands (e.g., `grep -r pattern src/`, `find src/ -name '*.rs'`)". So `grep -r pattern src/` with a project-relative path is fine. Only root-level searches are flagged.
+
+OK, let me proceed with the implementation plan:
+
+1. Add `check_unbounded_command` to safety.rs
+2. Add it to `analyze_bash_command` 
+3. Enhance timeout recovery hint in tool_wrappers.rs
+4. Add tests
+
+Let me now look at the existing check function patterns more closely and find where to insert the new code. Let me also look at the last check function and the test module to understand where to add things.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.9s (2 ✓)
+
+Now let me look at the end of `analyze_bash_command` and the test module structure to understand exactly where to add code:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:97..172  ▶ read src/safety.rs:1050..1110 ✓ (1.1s)
+ ✓ (748ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see the end of the file and the test module start to understand where to place new code. Let me find the `check_systemctl_mask` function which is the last check function (#26), then see the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn check_systemctl_mask' (src/safety.rs)  ▶ search 'mod tests' (src/safety.rs) ✓ (742ms)
+ ✓ (747ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search didn't find these. Let me try different searches.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'check_systemctl_mask' (src/safety.rs)  ▶ search '#\[cfg(test)\]' (src/safety.rs) ✓ (745ms)
+ ✓ (749ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the searches are returning nothing but I know the file contains those patterns. Let me use bash grep instead.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'check_systemctl_mask\|#\[cfg(test)\|mod test' src/safety.rs ✓ (749ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I know the structure. `check_systemctl_mask` is at line 1145, and the test module starts at line 1166. I need to:
+1. Add `check_unbounded_command` function after `check_systemctl_mask` (before line 1166)
+2. Add the call in `analyze_bash_command` (at line 152-155 area)
+3. Add tests in the test module
+
+Let me read the `check_systemctl_mask` function and the area just before the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1140..1170  ▶ read src/safety.rs:1166..1196 ✓ (1.1s)
+ ✓ (747ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have a clear picture. Let me now look at the end of the test module to see where to add tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1590..1605 ✓ (391ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also look at the existing `targeted_recovery_hint` timeout section more carefully to understand how to enhance it. I already read it - lines 1048-1052. Let me now plan my edits.
+
+Here's my plan:
+
+### 1. src/safety.rs - Add `check_unbounded_command` function
+
+I need to add this after `check_systemctl_mask` (line 1160) and before the tests section.
+
+The function signature: `fn check_unbounded_command(cmd: &str) -> Option<String>`
+
+Patterns to detect:
+- `find` with first non-flag arg being `/`, `~`, `$HOME`, or no path at all, and no `-maxdepth`
+- `grep -r`/`grep --recursive` with first non-flag arg being `/` or `~`
+- `rg` with `/` or `~` as path (rg without a path is fine)
+
+Safe patterns (NOT flag):
+- `find src/ -name '*.rs'`
+- `grep -r pattern ./src`  
+- `rg pattern` (no path = cwd, bounded)
+- `rg pattern src/`
+
+### 2. src/safety.rs - Wire into `analyze_bash_command`
+
+Add after check #26 (line 153-155):
+```
+// 27. Unbounded commands (likely to time out)
+if let Some(reason) = check_unbounded_command(cmd) {
+    return Some(reason);
+}
+```
+
+### 3. src/safety.rs - Add tests
+
+Add a `test_analyze_unbounded_commands` test function.
+
+### 4. src/tool_wrappers.rs - Enhance timeout recovery hint
+
+The current timeout hint (line 1048-1052):
+```
+"The command timed out. Try reducing scope: limit file traversal depth, \
+ add a `timeout` wrapper, or split the work into smaller sequential commands."
+```
+
+Enhance to include specific advice about `-maxdepth`, `-m`, and explicit paths. Also add "timeout" and "deadline exceeded" detection.
+
+Looking at the code, it currently only matches "timed out". I should also match "timeout" and "deadline exceeded".
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the code structure. Let me implement the changes.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (352ms)
+  ▶ todo ✓ (349ms)
+  ▶ todo ✓ (394ms)
+  ▶ todo ✓ (395ms)
+  ▶ todo ✓ (354ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the implementation. First, I'll add `check_unbounded_command` and wire it in, then enhance the timeout hint.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.3s (5 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (354ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the `check_unbounded_command` function. I need to insert it after `check_systemctl_mask` (line 1160) and before the tests header.
+────────────────────────────────────────────────────────────────────────────────
+
+First, add `check_unbounded_command` after `check_systemctl_mask`:
+                "Masking system service via systemctl: makes service permanently unstartable"
+                    .into(),
+            );
+  +     }
+  +     None
+  + }
+  + 
+  + /// Check for commands that are likely to exhaust resources or time out due to
+  + /// unbounded filesystem traversal. Returns a warning when:
+  + /// - `find /` or `find ~` is used without `-maxdepth`
+  + /// - `grep -r` or `grep --recursive` targets `/` or `~`
+  + /// - `rg` targets `/` or `~` (rg without a path is fine — searches cwd)
+  + ///
+  + /// Does NOT flag bounded usage like `find src/ -name '*.rs'` or `grep -r pattern ./src`.
+  + fn check_unbounded_command(cmd: &str) -> Option<String> {
+  +     // Collect tokens: split on whitespace, preserving positional information
+  +     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  +     if tokens.is_empty() {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/safety.rs (11 → 120 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (11 → 120 lines)
+                "Masking system service via systemctl: makes service permanently unstartable"
+                    .into(),
+            );
+  +     }
+  +     None
+  + }
+  + 
+  + /// Check for commands that are likely to exhaust resources or time out due to
+  + /// unbounded filesystem traversal. Returns a warning when:
+  + /// - `find /` or `find ~` is used without `-maxdepth`
+  + /// - `grep -r` or `grep --recursive` targets `/` or `~`
+  + /// - `rg` targets `/` or `~` (rg without a path is fine — searches cwd)
+  + ///
+  + /// Does NOT flag bounded usage like `find src/ -name '*.rs'` or `grep -r pattern ./src`.
+  + fn check_unbounded_command(cmd: &str) -> Option<String> {
+  +     // Collect tokens: split on whitespace, preserving positional information
+  +     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  +     if tokens.is_empty() {
+  +         return None;
+  +     }
+  ... (96 more lines)
+ ✗ (747ms)
+    │ old_text not found in src/safety.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The old_text didn't match. Let me re-read the exact area to get the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1145..1170 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so it shows `            None` without trailing spaces. The indentation level for `return Some(` is different. Let me read the raw content more carefully. The text shows:
+```
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+```
+
+The issue is the indentation of `return Some(...)`. Let me use the exact text from the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                None
+  + }
+  + 
+  + /// Check for commands that are likely to exhaust resources or time out due to
+  + /// unbounded filesystem traversal. Returns a warning when:
+  + /// - `find /` or `find ~` is used without `-maxdepth`
+  + /// - `grep -r` or `grep --recursive` targets `/` or `~`
+  + /// - `rg` targets `/` or `~` (rg without a path is fine — searches cwd)
+  + ///
+  + /// Does NOT flag bounded usage like `find src/ -name '*.rs'` or `grep -r pattern ./src`.
+  + fn check_unbounded_command(cmd: &str) -> Option<String> {
+  +     // Collect tokens: split on whitespace, preserving positional information
+  +     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  +     if tokens.is_empty() {
+  +         return None;
+  +     }
+  + 
+  +     // --- find: flag /, ~, $HOME without -maxdepth ---
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/safety.rs (6 → 111 lines)
+  +             None
+  + }
+  + 
+  + /// Check for commands that are likely to exhaust resources or time out due to
+  + /// unbounded filesystem traversal. Returns a warning when:
+  + /// - `find /` or `find ~` is used without `-maxdepth`
+  + /// - `grep -r` or `grep --recursive` targets `/` or `~`
+  + /// - `rg` targets `/` or `~` (rg without a path is fine — searches cwd)
+  + ///
+  + /// Does NOT flag bounded usage like `find src/ -name '*.rs'` or `grep -r pattern ./src`.
+  + fn check_unbounded_command(cmd: &str) -> Option<String> {
+  +     // Collect tokens: split on whitespace, preserving positional information
+  +     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  +     if tokens.is_empty() {
+  +         return None;
+  +     }
+  + 
+  +     // --- find: flag /, ~, $HOME without -maxdepth ---
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/safety.rs (6 → 111 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (6 → 111 lines)
+                None
+  + }
+  + 
+  + /// Check for commands that are likely to exhaust resources or time out due to
+  + /// unbounded filesystem traversal. Returns a warning when:
+  + /// - `find /` or `find ~` is used without `-maxdepth`
+  + /// - `grep -r` or `grep --recursive` targets `/` or `~`
+  + /// - `rg` targets `/` or `~` (rg without a path is fine — searches cwd)
+  + ///
+  + /// Does NOT flag bounded usage like `find src/ -name '*.rs'` or `grep -r pattern ./src`.
+  + fn check_unbounded_command(cmd: &str) -> Option<String> {
+  +     // Collect tokens: split on whitespace, preserving positional information
+  +     let tokens: Vec<&str> = cmd.split_whitespace().collect();
+  +     if tokens.is_empty() {
+  +         return None;
+  +     }
+  + 
+  +     // --- find: flag /, ~, $HOME without -maxdepth ---
+  +     if tokens[0] == "find" || tokens[0] == "sudo" && tokens.get(1) == Some(&"find") {
+  +         let find_idx = if tokens[0] == "find" { 0 } else { 1 };
+  ... (89 more lines)
+ ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to check the indentation issue. The `return Some(` in the function had 4 spaces per indent level, let me verify the function indentation matches the rest of the file. Let me re-read the function to check.
+
+Actually, the key issue is the `            None` at the end of `check_unbounded_command`. The outer `fn check_unbounded_command` starts with no indent, the `if tokens.is_empty()` block uses 4 spaces, etc. The `None` at the end of the function should have 4 spaces indent (inside the fn body). Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1159..1269 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the function looks correct. The `None` is at the proper indent level (4 spaces inside the function body). But wait - I see `            None` on line 1159 and the function ends at line 1160 with `}`. Let me check line 1159 more carefully.
+
+Looking at line 1159, it says `            None`. That's the end of `check_systemctl_mask`. So that's correct.
+
+Now I need to wire it into `analyze_bash_command`. Let me add it after check #26.
+────────────────────────────────────────────────────────────────────────────────
+
+Now wire it into `analyze_bash_command`:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (352ms)
+  ▶ todo ✓ (353ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+        // 26. systemctl mask (more destructive than stop/disable — makes service permanently unstartable)
+        if let Some(reason) = check_systemctl_mask(&cmd_lower) {
+  +         return Some(reason);
+  +     }
+  + 
+  +     // 27. Unbounded commands (find /, grep -r /, rg / without bounds)
+  +     if let Some(reason) = check_unbounded_command(cmd) {
+            return Some(reason);
+        }
+    
+  ✓ Auto-approved: edit: src/safety.rs (7 → 12 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (7 → 12 lines)
+        // 26. systemctl mask (more destructive than stop/disable — makes service permanently unstartable)
+        if let Some(reason) = check_systemctl_mask(&cmd_lower) {
+  +         return Some(reason);
+  +     }
+  + 
+  +     // 27. Unbounded commands (find /, grep -r /, rg / without bounds)
+  +     if let Some(reason) = check_unbounded_command(cmd) {
+            return Some(reason);
+        }
+    
+ ✓ (353ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me add tests. Let me look at the end of the test module to find where to add.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (352ms)
+  ▶ todo ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/safety.rs ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file now has 1717 lines (was 1607 before, now +5 for the wiring + ~105 for the new function). Let me read the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/safety.rs:1700..1720 ✓ (399ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll add the unbounded command tests before the closing `}` of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            // Safe: systemctl status (read-only)
+            assert!(analyze_bash_command("systemctl status nginx").is_none());
+  +     }
+  + 
+  +     #[test]
+  +     fn test_analyze_unbounded_commands() {
+  +         // --- Unbounded find ---
+  +         // find / without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find / -name '*.rs'").is_some());
+  +         // find ~ without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find ~ -name '*.rs'").is_some());
+  +         // find $HOME without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find $HOME -name '*.rs'").is_some());
+  +         // find ~/something without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find ~/projects -name '*.rs'").is_some());
+  + 
+  +         // find with -maxdepth on / → safe (bounded)
+  +         assert!(analyze_bash_command("find / -maxdepth 3 -name '*.rs'").is_none());
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/safety.rs (4 → 63 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/safety.rs (4 → 63 lines)
+            // Safe: systemctl status (read-only)
+            assert!(analyze_bash_command("systemctl status nginx").is_none());
+  +     }
+  + 
+  +     #[test]
+  +     fn test_analyze_unbounded_commands() {
+  +         // --- Unbounded find ---
+  +         // find / without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find / -name '*.rs'").is_some());
+  +         // find ~ without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find ~ -name '*.rs'").is_some());
+  +         // find $HOME without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find $HOME -name '*.rs'").is_some());
+  +         // find ~/something without -maxdepth → flagged
+  +         assert!(analyze_bash_command("find ~/projects -name '*.rs'").is_some());
+  + 
+  +         // find with -maxdepth on / → safe (bounded)
+  +         assert!(analyze_bash_command("find / -maxdepth 3 -name '*.rs'").is_none());
+  +         // find on project dir → safe (bounded path)
+  +         assert!(analyze_bash_command("find src/ -name '*.rs'").is_none());
+  ... (43 more lines)
+ ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me enhance the timeout recovery hint in tool_wrappers.rs. Let me also add "deadline exceeded" detection to the timeout check.
+────────────────────────────────────────────────────────────────────────────────
+
+Now enhance the timeout recovery hint in `src/tool_wrappers.rs`:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (350ms)
+  ▶ todo ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current timeout recovery hint code again to get the exact text for replacement.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1048..1063 ✓ (407ms)
+
+
