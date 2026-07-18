@@ -1,0 +1,536 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evidence and plan tasks for this session. 
+
+## Evidence Summary
+
+### Critical Issues
+1. **Wall-clock budget not activated** - 5/10 recent sessions cancelled due to workflow overlap. The infrastructure exists in `src/prompt_budget.rs` but `scripts/evolve.sh` never exports `YOYO_SESSION_BUDGET_SECS`. This is a one-line fix.
+
+2. **SQLite projection drift** - 189 events in projection vs 187,189 in raw store. 1000x stale. Silent data corruption for state queries.
+
+3. **Task reversion rate** - Recent sessions revert all tasks. Graph pressure shows analysis-only attempts and unlanded source edits.
+
+4. **AgentExitReason verification** - Landed at 02:33 but hasn't been observed in a real session yet.
+
+### Task Selection Strategy
+
+Looking at the graph-derived pressure:
+1. Force analysis-only attempts into action (task_analysis_only_attempt_count=2)
+2. Raise verified task success rate (task_success_rate=0.0)
+3. Make source-edit outcomes land or explain reverts (task_unlanded_source_count=1)
+4. Require strict verifier evidence for tasks (task_verification_rate=0.0)
+5. Break recurring log failure fingerprints (recurring_failure_count=1)
+
+The #1 priority per the assessment is activating the wall-clock budget. This is a one-line change in `scripts/evolve.sh`. It directly addresses the 50% cancellation rate.
+
+The #2 priority is rebuilding the SQLite projection and adding a drift check. This is a data integrity fix.
+
+The #3 priority could be improving task scoping in preseed_session_plan.py.
+
+Let me look at what's actionable:
+
+**Task 01: Activate wall-clock budget** - This is a shell script change, not Rust. It doesn't need cargo build/test. But it's the highest-impact fix.
+
+**Task 02: Rebuild SQLite projection and add drift detection** - Need to add a check somewhere (state doctor or state summary) that warns when projection is stale.
+
+**Task 03: Improve task scoping for low-success sessions** - Modify preseed_session_plan.py to prefer smaller tasks when recent success rate is low.
+
+Let me check what files these would touch:
+
+Task 01: `scripts/evolve.sh` only
+Task 02: `src/commands_state.rs` (state commands), maybe `src/state.rs` 
+Task 03: `scripts/preseed_session_plan.py` only
+
+Now, the task sizing rules say each task must be completable in 20 minutes. Let me think about each:
+
+Task 01 is trivial - one export line. Very fast. But it's a shell script, so cargo test doesn't apply.
+
+Task 02: Add a projection staleness check. This could go in `state doctor` (which already reports health) or `state summary`. The check is: compare projection event count to raw event count, warn if >10% drift.
+
+Task 03: Modify preseed_session_plan.py to prefer smaller tasks when recent sessions have low success rate. This is a behavioral change in script logic.
+
+Let me also look at the issue responses needed:
+- #120: Planning-only session, all tasks reverted - Already addressed by trajectory
+- #119: Task reverted (bounded-command detection) - Could retry smaller
+- #118: Task reverted (ModelCall lifecycle gap) - Implementation discovered it may already be guarded
+- #116: Planning-only session, all tasks reverted - Already addressed
+- #105: Task reverted (cache metrics) - Blocked upstream (#90)
+- #90: Help wanted - Still waiting for human
+
+Now let me check the seed task. The assessment says "The harness may have already created session_plan/task_01.md from assessment evidence before you started." Let me check if it exists.
+
+Actually, I need to first mkdir and check if a seed task exists. Let me also verify which files are in scope for each task.
+
+For Task 01, `scripts/evolve.sh` is a protected file per CLAUDE.md: "Never modify ... scripts/evolve.sh". Wait, let me re-read:
+
+"Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+That's a problem! `scripts/evolve.sh` is explicitly protected. So I can't modify it. The assessment even notes: "The shell-side export in scripts/evolve.sh is a separate (human-approved) follow-up."
+
+So Task 01 can't be scripts/evolve.sh. It needs human approval. I should note this in issue_responses.md and move on.
+
+Given this constraint, let me reconsider:
+
+**Actual actionable tasks:**
+
+1. **Rebuild SQLite projection and add drift detection** - HIGH priority, actionable
+2. **Verify AgentExitReason end-to-end** - MEDIUM, verify the feature landed earlier
+3. **Improve task scoping in preseed_session_plan.py** - MEDIUM, addresses task reversion
+
+Let me check what files each touches:
+
+Task A: SQLite projection drift
+- Files: `src/commands_state.rs` (state doctor/summary commands), possibly `src/state.rs` (projection rebuild logic)
+- Verifier: `cargo test commands_state state -- --test-threads=1`
+
+Task B: AgentExitReason verification
+- This is more of a verification/observability task. It could be: add a test that exercises AgentExitReason recording, or add it to state tail output.
+- Files: `src/state.rs`, `src/commands_state.rs`
+
+Task C: Task scoping improvement
+- Files: `scripts/preseed_session_plan.py`
+- Not Rust, no cargo test
+
+Let me also consider: the trajectory says `task_analysis_only_attempt_count=2` and `task_unlanded_source_count=1`. The graph pressure says to force analysis-only attempts into action. This could mean improving preseed_session_plan.py to detect and avoid analysis-only tasks, or adding a mechanism in evolve.sh to detect stuck sessions.
+
+But `scripts/evolve.sh` is protected, so changes to the evolution pipeline need to go elsewhere.
+
+Actually, wait. Let me re-read the safety rules more carefully:
+
+"Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+This is pretty clear - I cannot touch `scripts/evolve.sh`. But I CAN modify `scripts/preseed_session_plan.py` - it's not on the protected list.
+
+Let me plan:
+
+**Task 01: Rebuild SQLite projection and add staleness detection**
+- The most impactful, code-level fix I can make
+- Touches `src/commands_state.rs` primarily
+- Verifiable with `cargo test`
+
+**Task 02: Add AgentExitReason test coverage**
+- Verify the feature landed at 02:33 works
+- Touches `src/state.rs` and `src/commands_state.rs`
+- Verifiable with `cargo test`
+
+**Task 03: Improve task scoping for low-success-rate sessions**
+- Touches `scripts/preseed_session_plan.py`
+- Script change, not Rust
+- Verifiable with script's own tests
+
+Let me first check if seed task file exists, then write all three.
+
+Actually, I should first check: does `session_plan/task_01.md` already exist? Let me create the directory and check.
+
+Let me also verify which files exist for the task ownership checks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null; echo "---"; git ls-files …  ▶ $ git grep -n 'state project\|projection.*rebuild\|rebuild.*projection\|projection…  ▶ $ git grep -n 'AgentExitReason\|ExitReason\|agent_exit_reason' src/state.rs src/pr… ✓ (32ms)
+ ✓ (22ms)
+ ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. A seed `task_01.md` already exists. Let me read it to understand what was pre-seeded, then check if I should refine it or create task_02.md and task_03.md.
+
+Also: `scripts/evolve.sh` IS protected per CLAUDE.md safety rules, so I can't modify it. The wall-clock budget task is blocked by human-approval requirement.
+
+Let me read the seed task and the assessment.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md has a contradiction marker: `validated_against_assessment: false (contradiction: code already exists)`. The harness pre-seeded it but the assessment says the issue (sub-agent API key) is expected behavior - those are state commands from evolve.sh that intentionally don't carry API keys. So the seed task is stale.
+
+I need to replace it with a real evidence-backed task.
+
+Now let me plan my tasks:
+
+**Task 01: Rebuild SQLite projection and add staleness detection to state doctor**
+- This is the #1 actionable issue
+- Files: `src/commands_state.rs` (the state doctor/summary commands), possibly `src/state.rs` (rebuild_sqlite_projection already exists)
+- The state doctor already reports health - I need to add a check that compares raw event count vs projection event count and warns on drift
+- Also need to investigate why auto-rebuild isn't triggering
+
+**Task 02: Improve task scoping in preseed_session_plan.py for low-success sessions**
+- Addresses the graph pressure: task_analysis_only_attempt_count=2, task_unlanded_source_count=1
+- When recent sessions have low success rate, prefer smaller, single-file tasks
+- Files: `scripts/preseed_session_plan.py`
+
+**Task 03: Verify AgentExitReason end-to-end with a test that exercises the recording path**
+- The feature landed at 02:33 but isn't validated
+- Add a test that creates a prompt outcome with exit reason and verifies it's recorded
+- Files: `src/state.rs` (test), `src/commands_state.rs` (state tail could show it)
+
+Wait, but the task sizing rules say each task must touch at most 3 files. Let me be more precise.
+
+For Task 01 (SQLite projection drift):
+- Primary file: `src/commands_state.rs` - the state doctor command
+- Secondary: `src/state.rs` - if I need to add a helper to compare counts
+- Actually, the rebuild logic is already in `src/commands_state.rs` at line ~18978. The state doctor is also there. I can add a staleness check in the doctor output.
+
+For Task 02 (task scoping):
+- Primary: `scripts/preseed_session_plan.py`
+
+For Task 03 (AgentExitReason test):
+- `src/state.rs` already has a test at line 7950: `agent_exit_reason_event_is_recorded`
+- I should check what that test covers and if it's sufficient
+
+Let me check what the existing AgentExitReason test does and also look at the state doctor to understand where to add the projection staleness check.
+
+Actually, let me also consider: the wall-clock budget task is the highest-impact fix (50% cancellation rate) but `scripts/evolve.sh` is explicitly protected. I should note this in issue_responses.md and flag it for human attention.
+
+Let me now write the task files. I have enough evidence from the assessment.
+
+Plan:
+1. Replace seed task_01.md with SQLite projection staleness detection
+2. Write task_02.md for task scoping improvement
+3. Write task_03.md for AgentExitReason verification
+4. Write issue_responses.md
+
+Let me do some quick ownership checks before writing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.2s (2 ✓)
+
+The seed task has a contradiction marker — the assessment confirms those `api_key_present: false` traces are expected (state commands from evolve.sh that intentionally don't carry API keys). I need to replace it with real evidence-backed tasks.
+
+Let me verify file ownership for my planned tasks:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn.*state_doctor\|fn.*state_summary\|fn.*handle_state_subcommand\|f…  ▶ $ git grep -n 'fn agent_exit_reason' src/state.rs  ▶ $ git grep -n 'def choose_task\|def numeric_metrics\|def has_lifecycle_metrics\|ta… ✓ (10ms)
+ ✓ (33ms)
+ ✓ (57ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me read a small section of each target file to understand the structure I'll be working with, just enough to write accurate task files.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'state doctor\|state-doctor\|doctor_output\|DoctorReport\|HealthStat…  ▶ $ git grep -n 'fn rebuild_sqlite_projection\|fn query_sqlite\|sqlite_projection_pa… ✓ (10ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me look at the `handle_doctor` function briefly and the `rebuild_sqlite_projection` function to understand the structure, then write the task files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:165..245  ▶ read src/state.rs:845..895 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read a bit more of the handle_doctor function to see where it ends and what the output format looks like:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:244..324 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context to write the task files. Let me plan my 3 tasks:
+
+**Task 01: Add SQLite projection staleness detection to state doctor**
+- The `handle_doctor` function in `src/commands_state.rs` already reads total_events count and checks the SQLite store. I need to add a check that compares the raw event count to the projection count and warns if there's drift.
+- The `rebuild_sqlite_projection` function is in `src/state.rs` and can be called to count projection events.
+- Files: `src/commands_state.rs` (primary), `src/state.rs` (may need a count helper)
+- Verifier: `cargo test commands_state state -- --test-threads=1`
+
+**Task 02: Add low-success-rate task scoping guard to preseed_session_plan.py**
+- When recent sessions have low success rate (task_success_rate < 0.5), prefer tasks touching a single source file
+- Files: `scripts/preseed_session_plan.py`
+- This is a script change, no cargo test
+
+**Task 03: Verify AgentExitReason end-to-end with integration test**
+- The feature landed at 02:33. The existing test at state.rs:7950 verifies the recording path, but there's no end-to-end test that exercises the prompt.rs → state.rs pipeline.
+- Files: `src/state.rs` (test addition), `src/prompt.rs` (context only), `src/commands_state.rs` (state tail verification)
+- Wait, this might be too broad. Let me think about a smaller scope.
+
+Actually, let me reconsider Task 03. The AgentExitReason feature was already tested (state.rs:7950). The gap is that it hasn't been observed in a real session. I could make the state tail command highlight AgentExitReason events when they appear, making them more visible. But that's a cosmetic change.
+
+Alternatively, I could look at the preseed task picker to see if it uses task_analysis_only_attempt_count correctly. The graph pressure says this is at 2.
+
+Let me focus on what's most impactful given the trajectory evidence:
+
+1. **SQLite projection staleness** - This is a real data integrity bug that silently corrupts diagnostics. High impact.
+
+2. **Preseed task picker improvement** - Addresses the task reversion problem directly. Medium impact.
+
+3. For task 3, let me think about what actually moves the needle. The graph pressure says:
+   - task_analysis_only_attempt_count=2 
+   - task_unlanded_source_count=1
+   - task_success_rate=0.0
+   - task_verification_rate=0.0
+
+   The "force analysis-only attempts into action" pressure suggests the implementation agents are getting stuck in analysis without making edits. This could be addressed by making the preseed task picker produce tasks that are small enough to actually complete.
+
+Actually, looking more carefully at the preseed script, let me see if it already has a `choose_task` function that considers success rate:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:220..300 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see! The preseed script already has a task template for "Make analysis-only task pressure landable" (keys include "force analysis-only attempts into action", "task_analysis_only_attempt_count", etc.). The task's success criteria include:
+- "The selected seed Files list contains no protected implementation files"
+- "Preseed self-tests cover the analysis-only/no-edit pressure path"
+
+And the files are: `scripts/preseed_session_plan.py, scripts/state_graph_tools.py, scripts/test_state_graph_tools.py`
+
+That's 3 files - within the limit. But this is a pre-existing template that hasn't been selected yet. The issue is that the task picker doesn't select it. Let me look at the `choose_task` function to understand why.
+
+Actually, let me now write the task files. I have enough context.
+
+My three tasks:
+1. **SQLite projection staleness detection** in `src/commands_state.rs` and `src/state.rs`
+2. **Task scoping improvement** in `scripts/preseed_session_plan.py` - make the task picker prefer smaller tasks when recent success rate is low
+3. **AgentExitReason end-to-end integration test** - verify the feature works across the prompt→state pipeline
+
+Wait, task 3 might be better as: add a `state tail` filter for AgentExitReason events to make them visible. But that's a cosmetic change. Let me think about what actually matters.
+
+Actually, the assessment says: "The AgentExitReason feature (landed at 02:33) should close this gap for future sessions." The feature is already landed. The verification task (#4 in assessment) is: "Run a bounded agent prompt and check that exit reasons appear in state tail." This is more of an operational verification than a code change.
+
+Let me reconsider. The three most impactful code-level changes are:
+
+1. SQLite projection staleness detection (data integrity)
+2. Task scoping improvement (reduces reversion rate)
+3. Something else that addresses the graph pressure directly
+
+Looking at the graph pressure again:
+- task_analysis_only_attempt_count=2 → preseed task picker improvement addresses this
+- task_success_rate=0.0 → addressed by task scoping
+- task_unlanded_source_count=1 → implementation agents are writing code but it gets reverted
+- task_verification_rate=0.0 → evaluator isn't producing verdicts
+
+The `task_unlanded_source_count=1` is interesting - the implementation agent touched source files but the changes didn't land. This could be because the verifier/evaluator rejected them, or because the implementation agent reverted them itself.
+
+For task 3, I could address the verification gap by improving the evaluator timeout handling or adding a fallback verifier. But that might touch protected files (evolve.sh).
+
+Actually, let me look at what `commands_eval.rs` contains - it's the eval fixture runner. That's not protected.
+
+But I think the most practical third task would be a smaller, more concrete improvement. Let me focus on what's actionable:
+
+Task 01: SQLite projection drift detection (HIGH priority from assessment)
+Task 02: Preseed task picker - prefer single-file tasks when success rate is low (MEDIUM)  
+Task 03: Add AgentExitReason visibility to state tail output (LOW-MEDIUM, verifies the feature)
+
+Actually wait - for task 03, `state tail` already shows all events. AgentExitReason events would already appear there. The question is whether they're being recorded. The test at state.rs:7950 verifies the recording path. The missing piece is an integration test.
+
+Let me make task 03: "Add AgentExitReason integration test that exercises the prompt-event-recording pipeline" - but this could be complex. Let me think smaller.
+
+Alternative task 03: improve the state doctor to report the SQLite projection event count and warn about drift (this overlaps with task 01 - I should combine them).
+
+OK let me settle on two strong tasks:
+
+Task 01: SQLite projection staleness detection + rebuild trigger
+Task 02: Preseed task picker scoping improvement for low-success sessions
+
+And for task 03, let me address the `task_unlanded_source_count=1` pressure by looking at what causes unlanded source edits. Actually, this might be too deep.
+
+Let me go with:
+
+Task 01: SQLite projection staleness detection in state doctor
+Task 02: Preseed task picker: prefer smaller tasks when recent success rate is low
+Task 03: Add AgentExitReason end-to-end test exercising prompt.rs→state.rs→state tail
+
+Actually, for task 03, let me keep it simple and focused. The existing test at state.rs:7950 only tests the recording. Let me add a test that verifies the event type variants are all covered and round-trip correctly through the event store.
+
+Wait, I'm overthinking this. Let me just write the three task files now.
+
+Final plan:
+1. Task 01: SQLite projection staleness detection
+2. Task 02: Preseed task scoping for low-success sessions
+3. Task 03: AgentExitReason integration test
+
+Now let me write them.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough context. Let me write the three task files and issue responses.
+  - Title: Verify and fix sub-agent API key propagation
+  - Files: src/tools.rs, src/agent_builder.rs, src/lib.rs
+  + Title: Add SQLite projection staleness detection to state doctor
+  + Files: src/commands_state.rs, src/state.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: false (contradiction: code already exists: 'sub-agent' found in src/tools.rs — suppressing stale task 'Verify and fix sub-agent API key propagation' (src/tools.rs:9://! - `build_sub_agent_tool` — creates a sub-agent with inherited config))
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found rapid RunStarted -> SessionStarted -> error traces with `api_key_present: false`. Those traces make autonomous planning brittle and hide whether DeepSeek worker agents are failing from missing credentials or another startup path.
+  + - Assessment self-tests: `state summary` shows 189 events; `state doctor` shows 187,189 events. The SQLite projection is 1000x stale — it hasn't been rebuilt in many sessions.
+  + - `state doctor` currently reports event count from the raw events file, and SQLite store integrity, but never compares the two counts. Any code path querying the SQLite projection (state why, graph commands) sees incomplete data silently.
+  + - The `rebuild_sqlite_projection` function exists in `src/state.rs` (line 852) and is callable from `src/commands_state.rs` (line 18978). The infrastructure exists; the missing piece is detection and reporting.
+    
+    Edit Surface:
+  - - src/tools.rs, src/agent_builder.rs, src/lib.rs
+  + - src/commands_state.rs (handle_doctor: add projection event count query and staleness warning)
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (53 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (53 lines) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now write task_02.md for the preseed task picker improvement.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'def choose_task\|def check_task_contradiction\|def render_task\|TAS… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `choose_task` function and `TASKS` structure to understand how the task picker works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1380..1460 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `choose_task` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n '^def choose_task' scripts/preseed_session_plan.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:927..1047 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the structure now. The `choose_task` function iterates over TASKS, checks if assessment keys match, filters by various conditions, then picks the first uncontradicted candidate. 
+
+The key insight: at line 970-972, when `analysis_only_active` is True, it sorts candidates to prefer src-file tasks. But there's no additional guard that ensures the chosen task is small/scoped enough for low-success sessions.
+
+I also see `_task_file_count(task)` at line 950 — it already filters tasks with >3 files when analysis_only_active. Good.
+
+The issue is: even with src-file preference, tasks can still be too broad (multiple files, complex changes). When recent sessions have low success rate, the picker should prefer tasks that touch a single file and can be verified independently.
+
+Let me write task_02.md now, focusing on adding a success-rate-aware scoping guard. Actually, looking at the existing code more carefully, the `analysis_only_active` flag already handles the case. The problem might be deeper — the TASKS list itself may not contain enough small, single-file tasks.
+
+Let me focus task_02 on: add a `task_success_rate` check that, when success rate is 0.0 (or below some threshold), filters candidates to single-file tasks only. This is a small change in the `choose_task` function.
+
+Now let me write task_02 and task_03.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add success-rate-aware task scoping to preseed task picker
+  + Files: scripts/preseed_session_plan.py
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Trajectory: `task_success_rate=0.0`, `task_verification_rate=0.0`, `task_analysis_only_attempt_count=2`, `task_unlanded_source_count=1`. Recent sessions (Day 139 17:12, Day 140 09:26) reverted all selected tasks.
+  + - Graph pressure row 2: "Raise verified task success rate (task_success_rate=0.0): Dominant task failure: task_analysis_only_attempt_count=2 (analysis-only attempts). Consider smaller, self-contained tasks that can pass verification independently."
+  + - The `choose_task` function (line 927) already has `analysis_only_active` filtering that prefers src-file tasks and rejects >3-file tasks. But it doesn't adjust task scope based on success rate — a session with 0.0 success rate gets the same task candidates as a session with 1.0 success rate.
+  + - The `TASKS` list contains templates of varying complexity; when success rate is zero, simpler templates should rank higher.
+  + 
+  + Edit Surface:
+  + - scripts/preseed_session_plan.py (choose_task: add success-rate-aware candidate filtering; add test cases)
+  + 
+  + Verifier:
+  + - python3 scripts/preseed_session_plan.py --test
+  + 
+  + Fallback:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (54 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (54 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now Task 03. Let me check the existing AgentExitReason test and the recording path in prompt.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7945..7985  ▶ $ git grep -n 'AgentExitReason' src/prompt.rs ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the recording sites in prompt.rs to understand the full recording path:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1025..1055  ▶ read src/prompt.rs:1078..1108 ✓ (16ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the recording path. Let me write task_03. The existing test at state.rs:7950 tests recording in isolation. The gap is verifying that the prompt.rs → state.rs pipeline works end-to-end. 
+
+But wait - I said earlier that `handle_prompt_events` is the function in prompt.rs. Let me check if there's an existing test that exercises the full pipeline:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn.*agent_exit\|exit_reason\|AgentExitReason' src/prompt.rs | head … ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests in prompt.rs for AgentExitReason recording. The existing test in state.rs tests recording in isolation. 
+
+For task 03, I should add a test that exercises the full path from prompt event handling to state recording. But actually, that requires an agent, which requires network, which is hard in unit tests.
+
+A more practical approach: add a test that verifies the event type variants and payload shape are consistent, and that the `state tail` command can display them. The state.rs test already verifies recording. What's missing is making them visible in diagnostics.
+
+Actually, let me rethink. The assessment says: "The AgentExitReason feature (landed at 02:33) should close this gap for future sessions, but past error runs remain opaque." and "Verify AgentExitReason is working end-to-end."
+
+The real verification would be: run an actual bounded agent prompt, interrupt it, and check `state tail` shows AgentExitReason. But that requires an API key and network.
+
+A better task: add a `state tail` filter option so operators can filter for specific event types like AgentExitReason. Or: add AgentExitReason to the state doctor's event type distribution so it's visible in diagnostics.
+
+Actually, the simplest and most impactful change: add AgentExitReason to the `group_event_types` function that the state doctor uses, so it appears in the type distribution. Currently the doctor shows event type counts — if AgentExitReason events exist but aren't grouped, they'd fall into an "other" category.
+
+But wait, the doctor already counts all event types. Let me check `group_event_types`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn group_event_types' src/commands_state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I think task_03 should be a different direction. Instead of verifying AgentExitReason (which is hard to test without a real API call), let me address a different pressure point from the trajectory.
+
+Looking at the trajectory again:
+- `task_unlanded_source_count=1` - implementation touched source but changes didn't land
+- This could be because the evaluator rejected the changes
+
+Another angle: the assessed capability gap #4 says "Task reversion rate. Recent sessions are reverting all selected tasks."
+
+For task_03, let me focus on a concrete, verifiable improvement. The state doctor is the most obvious — it already works, I just need to add the projection staleness check (task_01). The preseed script needs scoping improvement (task_02).
+
+For task_03, let me pick: improve the `state why` command to show AgentExitReason events when explaining session failures. Currently `state why last-failure` says "1 session completed with errors but no FailureObserved events" — it doesn't check for AgentExitReason events, which carry richer diagnostic info.
+
+Let me verify this:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'why last-failure\|fn.*handle_why\|fn.*state_why\|FailureObserved\|a… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a lot of matches for FailureObserved in state why. Let me look at the specific function that handles `state why last-failure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'last.failure\|last_failure\|lastfailure' src/commands_state.rs | he… ✓ (10ms)
+
+

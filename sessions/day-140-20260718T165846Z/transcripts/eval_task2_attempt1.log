@@ -1,0 +1,347 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is about modifying `scripts/preseed_session_plan.py` to add success-rate-aware task scoping to the `choose_task` function. Let me first look at the diff to see what changes were made.
+
+Wait, the diff section says:
+
+```
+=== CHANGES MADE (git diff) ===
+
+
+```
+
+It's empty! There are no changes. Let me verify this by checking git status and looking at the actual file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (19ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there is a diff. Let me read the full diff to see exactly what was changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/preseed_sessi… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated in the middle. Let me look at the actual file to see the changed sections more clearly. Let me read the relevant parts of the file around the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:965..995  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:2275..2355 ✓ (6ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify that the task description's requirements are met:
+
+1. "When `task_success_rate` is 0.0 in the assessment metrics, `choose_task` prefers single-file candidates over multi-file candidates." - The code at lines 974-983 does this: it parses `task_success_rate` from metrics, and if it's 0, sorts candidates by `_task_file_count`. ✓
+
+2. "When `task_success_rate` >= 0.5, existing behavior is unchanged." - The condition is `success_rate == 0`, so >= 0.5 doesn't trigger the sort. The test at lines 2315-2327 confirms this. ✓
+
+3. "When `task_success_rate` is absent from metrics, existing behavior is unchanged (backward compatible)." - The code checks `success_rate is not None`, so if absent, the filter is skipped. The test at lines 2304-2313 confirms this. ✓
+
+4. "A `reverted_no_edit` count > 0 also triggers the single-file preference" - The code has `reverted_no_edit > 0` in the condition. The test at lines 2329-2344 confirms this. ✓
+
+5. "Test coverage: a new test in the `--test` path verifies that low-success-rate assessments select smaller-file-count candidates." - Four test cases were added (low_success, no_rate, ok_rate, reverted_only). ✓
+
+Now I need to verify the tests actually pass. The build status says PASS, but let me run the verifier command.
+
+Wait, one concern: the condition is `if success_rate is not None or reverted_no_edit > 0:`. This means if `success_rate` is `None` but `reverted_no_edit > 0`, it enters the block. And then `(success_rate == 0) or reverted_no_edit > 0` — if `success_rate` is `None` and `reverted_no_edit > 0`, it triggers the sort. That's correct behavior — `reverted_no_edit > 0` alone triggers the sort.
+
+But what if `success_rate` is `None` and `reverted_no_edit` is 0? Then the outer condition `success_rate is not None or reverted_no_edit > 0` is `False or False` = `False`, so the block is skipped. That's backward-compatible.
+
+Wait, what about `success_rate == 0` vs `success_rate == 0.0`? The task says `task_success_rate=0.0`. If the metrics dict stores `0.0` as a float, `success_rate == 0` works in Python (`0.0 == 0` is `True`). If it's stored as an int `0`, also works. OK.
+
+The task says "When `task_success_rate` is 0.0... When `task_success_rate` >= 0.5..." — this implies the value is a float. The code uses `== 0` which handles both int and float 0.0.
+
+One edge case: what if `success_rate` is `0.5` and `reverted_no_edit > 0`? The outer condition enters (`success_rate is not None` is True), then `(success_rate == 0) or reverted_no_edit > 0` — the `reverted_no_edit > 0` is True → sort happens. That's correct per the task: "reverted_no_edit count > 0 also triggers the single-file preference (since reverts indicate scoping problems even when other tasks succeeded)".
+
+This looks correct. Let me run the verifier command.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (224ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is failing, but not on the newly added tests. It's failing on line 1791, which is before the new tests. Let me check what test is at line 1791 and whether this is a pre-existing failure or something caused by the change.
+
+Wait, actually the test file might have been broken before these changes. Let me check if the test at line 1791 is part of the original code or was affected by our changes.
+
+Let me look at line 1791.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:1780..1800 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now, the task description says `task_success_rate` can be parsed from assessment text. The `choose_task` function has a `metrics` dict. Let me look at the `choose_task` function to see how `metrics` is populated. The assertion is happening because the new code is now re-sorting candidates by file count when `reverted_no_edit > 0` or `success_rate == 0`.
+
+Let me check: the assessment text at lines 1780-1788 mentions "search_regex_error (57 occurrences)". It doesn't mention `task_success_rate` or `reverted_no_edit`. So `success_rate` should be `None` and `reverted_no_edit` should be `0` (default). The condition `success_rate is not None or reverted_no_edit > 0` should be `False or False` = `False`, so the new sort block shouldn't trigger.
+
+But wait — let me look at how `metrics` is populated. The `choose_task` function parses `task_success_rate` from the assessment text using regex. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'task_success_rate' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `metrics` is built in the `choose_task` function to see how `task_success_rate` and `reverted_no_edit` are parsed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'metrics\[' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `metrics` is defined/populated in `choose_task`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'metrics =' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 930 to see the `numeric_metrics` function and how `metrics` is populated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:920..965 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `numeric_metrics` to understand how `task_success_rate` and `reverted_no_edit` are parsed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def numeric_metrics' in /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:742..802 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `numeric_metrics` function (line 742-746) returns `dict[str, int]`. The regex is:
+
+```python
+re.finditer(r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)", text)
+```
+
+This matches patterns like `task_success_rate=0` or `task_success_rate: 0` in the text. The value is always an `int`, never `float`. So `task_success_rate=0.0` would NOT match because `0.0` is not `-?\d+`.
+
+Now let me also look at the test that's failing in more detail. The assessment at lines 1780-1788 doesn't mention `task_success_rate` or `reverted_no_edit`. But the regex `([a-z][a-z0-9_]+)\s*[=:]\s*(-?\d+)` might match something else. Let me check what might be captured.
+
+Looking at the assessment text:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+I see `search_regex_error` (57...) - but that's "57 occurrences" - the regex would match `search_regex_error` ... hmm, there's `57` but there's parentheses around it. Let me check... The regex is: `` `?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+) ``
+
+That needs `=` or `:` between the name and number. `search_regex_error` (57 occurrences) has `(` not `=` or `:`, so it wouldn't match.
+
+What about `commands_state.rs` with `23,548`? The `23,548` has a comma, so it wouldn't match `-?\d+`. 
+
+Hmm, what if `Day 105` is parsed? The regex checks for `[a-z][a-z0-9_]+` - `Day` starts with uppercase `D`, so no match.
+
+Actually wait, the `numeric_metrics` function runs on `lower`, which is the lowercased text. So `day 105` → `day` starts with lowercase `d`, and `105` matches. So `day = 105`? No, it's "day 105 added" — there's no `=` or `:` between them.
+
+Let me think again. The lowercased text would be:
+```
+day 105 added regex-error recovery hint to search tool errors.
+```
+There's no `=` or `:` between `day` and `105`, so no match.
+
+Actually, I realized I need to look more carefully at how `_describe_actionable_gnomes` checks `task_success_rate == 0` (line 759: `if gnomes.get(key) == 0:`). The `numeric_metrics` function returns `int` values, so `0.0` wouldn't parse. But the task description says `task_success_rate=0.0` — if the assessment text uses `0.0`, it won't match the integer regex.
+
+But in the test assessment text, the format is:
+```
+- Raise verified task success rate (task_success_rate=0.0): All recent tasks were reverted.
+```
+
+Let me check: `task_success_rate=0.0` — the regex `-?\d+` would match `0` from `0.0` but not the `.0`. Actually no — `\d+` matches one or more digits. In the string `0.0`, the regex would try to match starting at `0`, and `\d+` would greedily match `0`, then expect end of match. Since the next char is `.`, the match would be just `0` for the number. So `task_success_rate=0` would be captured with value `0`.
+
+Actually wait, let me re-read: the regex is `r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)"`. Applied to `task_success_rate=0.0`:
+- `? matches optional backtick (none)
+- `([a-z][a-z0-9_]+)` matches `task_success_rate`
+- `\s*[=:]\s*` matches `=`
+- `(-?\d+)` matches `0` (just the first digit, because `\d+` is greedy but stops at `.`)
+
+So yes, `task_success_rate=0` would be captured as `metrics["task_success_rate"] = 0` (int).
+
+OK so the value in metrics would be `int` 0. In the new code:
+```python
+success_rate = metrics.get("task_success_rate")
+```
+This returns `0` (int). Then:
+```python
+if success_rate is not None or reverted_no_edit > 0:
+    if (success_rate == 0) or reverted_no_edit > 0:
+```
+`success_rate == 0` is `0 == 0` which is `True`. Good.
+
+Now the failing test: the assessment at line 1780-1788. Let me look at what `numeric_metrics` returns for it. Let me manually trace...
+
+The lowercased text:
+```
+## Graph-derived Next-Task Pressure
+- Unblock task execution: lifecycle imbalance — run_completed=12, session_started=1. old sessions accumulating state.
+```
+
+Wait, that's not the right text. Let me look at the actual assessment text that's fed to `choose_task`. Let me read around line 1770.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:1770..1790 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. This assessment text doesn't contain any `task_success_rate=0` or `reverted_no_edit=N` patterns. So `numeric_metrics` would return an empty or near-empty dict for the relevant keys.
+
+Let me verify: the lowercased text would be:
+```
+## recent changes
+day 105 added regex-error recovery hint to search tool errors.
+
+## source architecture
+| `commands_state.rs` | 23,548 | state cli |
+
+## bugs / friction found
+high - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+The regex `\`?([a-z][a-z0-9_]+)\`?\s*[=:]\s*(-?\d+)` needs `=` or `:` between name and number. Looking at the text:
+- `day 105` — space, not `=` or `:` → no match
+- `23,548` — comma in number → no match
+- `57 occurrences` — `57` is the number, but there's no `key=57` or `key:57` pattern before it → no match
+
+So `metrics` would be `{}`, and `metrics.get("task_success_rate")` would be `None`, `metrics.get("reverted_no_edit", 0)` would be `0`.
+
+So the new code: `success_rate is not None or reverted_no_edit > 0` → `False or False` = `False`. The block is skipped. So the new code shouldn't affect this test.
+
+Then why is the test failing? The assertion:
+```python
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+```
+
+Maybe the task selection is returning a different task. Let me think about what could have changed...
+
+Wait, actually I should look at what the `_has_analysis_only_pressure` function does and whether `analysis_only_active` affects things. Let me look at the `_has_analysis_only_pressure` function and `_ANALYSIS_ONLY_METRICS`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:855..880 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `_ANALYSIS_ONLY_METRICS` includes `reverted_no_edit`. And `_has_analysis_only_pressure` returns `True` if any of these metrics > 0.
+
+But for the test assessment at lines 1778-1788, `metrics` should be `{}` since no key=value numbers match. So `analysis_only_active = False`, and the new sort block should also be skipped.
+
+So why is the test failing? The assertion is:
+```python
+assert task.get("validated_against_assessment") is True
+```
+
+This means the task was contradicted. This could happen if `check_task_contradiction` returns True for some reason. Let me check if the lowercased text contains something that contradicts the "Reduce recurring search-tool friction" task.
+
+Actually wait — let me re-read the traceback more carefully. The error is on line 1791:
+
+```
+File "/home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py", line 1791, in main
+    assert task.get("validated_against_assessment") is True, (
+AssertionError: Expected validated_against_assessment=true, got False
+```
+
+So `validated_against_assessment` is `False`. This means `check_task_contradiction` returned `True` for all candidates, and the first candidate was returned with `validated_against_assessment=False`.
+
+But wait — looking at the code:
+```python
+for candidate in candidates:
+    contradicted, reason = check_task_contradiction(candidate, assessment)
+    if not contradicted:
+        candidate["validated_against_assessment"] = True
+        return candidate
+
+# All candidates are contradicted — return the first with annotation
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+    candidates[0]["validated_against_assessment"] = False
+```
+
+So this means ALL candidates were contradicted. And the first one is returned with `validated_against_assessment=False`. The test expected `validated_against_assessment=True`.
+
+Now the question is: could the new sort code have caused this? The new sort block should be skipped when `success_rate` is `None` and `reverted_no_edit` is 0. But maybe the `numeric_metrics` function is actually parsing something from the assessment text that gives `reverted_no_edit > 0`?
+
+Let me check: the lowercased text is:
+```
+## recent changes
+day 105 added regex-error recovery hint to search tool errors.
+
+## source architecture
+| `commands_state.rs` | 23,548 | state cli |
+
+## bugs / friction found
+high - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+There's no `reverted_no_edit=N` pattern. So `metrics` should be empty.
+
+But wait — maybe this is a pre-existing failure that was already in the code before the changes? Let me check if this test was already failing before the change by reverting and testing.
+
+Actually, let me just check if the assertion at line 1791 was passing before the change by looking at the original git state.
+
+Actually, let me first verify the test without the changes. But wait, the build status says "Tests: PASS". This seems contradictory. Let me check what "Tests: PASS" means — maybe it means `cargo test` passed, not the Python tests.
+
+Let me just check whether this Python test assertion was already failing before the change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 scripts/p… ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test failure on line 1791 is a **pre-existing** failure — it was already failing before the changes. The task's changes are not responsible for the test failure.
+
+Now, the task says the verifier is:
+```
+python3 scripts/preseed_session_plan.py --test
+```
+
+But the test was already broken before the changes. The task's changes add new tests at the end, but the test runs abort at line 1791 before reaching the new tests.
+
+This is tricky: the task's changes are correct, but the test suite has a pre-existing failure that prevents the new tests from even being reached. 
+
+However, looking at the build status which says "Tests: PASS" — this might only refer to `cargo test`, not this Python script.
+
+For evaluation purposes: the code changes are correct and align with the task description. The pre-existing test failure is not caused by the changes. The changes themselves would work correctly.
+
+But the verifier as specified (`python3 scripts/preseed_session_plan.py --test`) fails due to a pre-existing issue. This means the task's verifier doesn't pass, but the failure is not caused by the changes.
+
+Let me check if the new tests would pass if I skip the failing pre-existing test. Actually, let me verify that the new code at least doesn't introduce any issues by validating the sort logic directly.
+
+Let me verify the logic works by running a focused test on just the new feature.
+────────────────────────────────────────────────────────────────────────────────
+
+The pre-existing test at line 1791 was already failing before the changes. Let me verify the new logic works correctly in isolation:
