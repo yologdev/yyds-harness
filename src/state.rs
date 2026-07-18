@@ -153,6 +153,7 @@ pub enum EventType {
     CacheMetricsRecorded,
     JsonOutputFailure,
     ToolSchemaFailure,
+    AgentExitReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3119,6 +3120,7 @@ fn event_type_label(event_type: &EventType) -> &'static str {
         EventType::CacheMetricsRecorded => "CacheMetricsRecorded",
         EventType::JsonOutputFailure => "JsonOutputFailure",
         EventType::ToolSchemaFailure => "ToolSchemaFailure",
+        EventType::AgentExitReason => "AgentExitReason",
         EventType::SessionStarted => "SessionStarted",
     }
 }
@@ -7941,6 +7943,49 @@ mod tests {
         assert!(
             !raw.contains("CacheMetricsRecorded"),
             "both-none should not write cache metrics: {raw}"
+        );
+    }
+
+    #[test]
+    fn agent_exit_reason_event_is_recorded() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        record(
+            EventType::AgentExitReason,
+            Actor::Yoyo,
+            json!({
+                "exit_reason": "normal",
+                "model_calls_completed": 3,
+                "had_tool_errors": false,
+            }),
+        );
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("AgentExitReason"),
+            "should contain AgentExitReason event: {raw}"
+        );
+        assert!(
+            raw.contains(r#""exit_reason":"normal""#),
+            "should contain exit_reason normal: {raw}"
+        );
+        assert!(
+            raw.contains(r#""model_calls_completed":3"#),
+            "should contain model_calls_completed: {raw}"
+        );
+        assert!(
+            raw.contains(r#""had_tool_errors":false"#),
+            "should contain had_tool_errors: {raw}"
         );
     }
 }

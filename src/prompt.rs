@@ -767,6 +767,7 @@ async fn handle_prompt_events(
 ) -> PromptResult {
     let mut state = PromptEventState::new();
     let mut model_call_terminal_recorded = false;
+    let mut model_calls_completed: u64 = 0;
     let model_call_id = format!(
         "mc-{:x}",
         std::time::SystemTime::now()
@@ -953,6 +954,7 @@ async fn handle_prompt_events(
                             ),
                         );
                         model_call_terminal_recorded = true;
+                        model_calls_completed += 1;
                         crate::state::record_cache_metrics(model, &state.usage);
                     }
                     AgentEvent::InputRejected { reason } => {
@@ -1024,11 +1026,21 @@ async fn handle_prompt_events(
                             state.last_tool_name.as_deref(),
                         ),
                     );
+                    model_calls_completed += 1;
                 }
                 if state.in_text {
                     println!();
                 }
                 println!("\n{DIM}  (interrupted — press Ctrl+C again to exit){RESET}");
+                crate::state::record(
+                    crate::state::EventType::AgentExitReason,
+                    crate::state::Actor::Yoyo,
+                    serde_json::json!({
+                        "exit_reason": "interrupted",
+                        "model_calls_completed": model_calls_completed,
+                        "had_tool_errors": state.last_tool_error.is_some(),
+                    }),
+                );
                 return PromptResult::Done {
                     collected_text: state.collected_text,
                     usage: state.usage,
@@ -1066,11 +1078,22 @@ async fn handle_prompt_events(
                 state.last_tool_name.as_deref(),
             ),
         );
+        model_calls_completed += 1;
     }
 
     if state.in_text {
         println!();
     }
+
+    crate::state::record(
+        crate::state::EventType::AgentExitReason,
+        crate::state::Actor::Yoyo,
+        serde_json::json!({
+            "exit_reason": if model_call_terminal_recorded && model_calls_completed > 0 { "normal" } else { "stream_closed" },
+            "model_calls_completed": model_calls_completed,
+            "had_tool_errors": state.last_tool_error.is_some(),
+        }),
+    );
 
     state.into_result()
 }
