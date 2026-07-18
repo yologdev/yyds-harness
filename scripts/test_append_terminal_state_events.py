@@ -900,6 +900,167 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertTrue(diag.get("skipped"))
             self.assertEqual(diag["reason"], "ambiguous_reset_full_scan")
 
+    def test_closes_orphaned_model_call_started_in_closed_run(self):
+        """Retroactive ModelCallCompleted for ModelCallStarted without match in a closed run."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # Historical run: fully closed at run level but has orphaned model call
+            write_event(events, "RunStarted", "old-run")
+            write_event(events, "ModelCallStarted", "old-run",
+                        {"model_call_id": "mc-abc123", "model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "old-run", {"status": "completed"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            # Current session events (fully closed)
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run",
+                        {"model_call_id": "mc-current", "model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run",
+                        {"model_call_id": "mc-current", "model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # Should have emitted a retroactive ModelCallCompleted for old-run
+            retro_completed = [
+                row for row in rows
+                if row["event_type"] == "ModelCallCompleted" and row["run_id"] == "old-run"
+            ]
+            self.assertEqual(len(retro_completed), 1,
+                             f"Expected 1 retroactive ModelCallCompleted, got {len(retro_completed)}")
+            self.assertTrue(retro_completed[0]["payload"].get("retroactive"))
+            self.assertEqual(
+                retro_completed[0]["payload"].get("model_call_id"),
+                "mc-abc123",
+            )
+            self.assertEqual(retro_completed[0]["payload"].get("model"), "deepseek-v4-pro")
+            self.assertEqual(retro_completed[0]["payload"].get("status"), "interrupted")
+            self.assertEqual(
+                retro_completed[0]["payload"].get("terminal_reason"),
+                "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found",
+            )
+            self.assertEqual(retro_completed[0]["actor"], "harness")
+
+            # Diagnostics should reflect the orphaned model call
+            omc_diag = result["diagnostics"]["orphaned_model_call_diagnostics"]
+            self.assertEqual(omc_diag["model_call_started_count"], 2)
+            self.assertEqual(omc_diag["model_call_completed_count"], 1)
+            self.assertEqual(omc_diag["orphaned_model_calls"], 1)
+
+            # Should not have changed the current run
+            current_completed = [
+                row for row in rows
+                if row["event_type"] == "ModelCallCompleted" and row["run_id"] == "current-run"
+            ]
+            self.assertEqual(len(current_completed), 1)  # only the original
+
+    def test_no_retroactive_model_call_completed_when_all_matched(self):
+        """Do not emit retroactive ModelCallCompleted when all model calls are matched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # Historical run: fully closed at both run and model levels
+            write_event(events, "RunStarted", "old-run")
+            write_event(events, "ModelCallStarted", "old-run",
+                        {"model_call_id": "mc-matched", "model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "old-run",
+                        {"model_call_id": "mc-matched", "model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "old-run", {"status": "completed"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            # Current session
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run",
+                        {"model_call_id": "mc-cur", "model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run",
+                        {"model_call_id": "mc-cur", "model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            # No new ModelCallCompleted for old-run (already has one)
+            old_completed = [
+                row for row in rows
+                if row["event_type"] == "ModelCallCompleted" and row["run_id"] == "old-run"
+            ]
+            self.assertEqual(len(old_completed), 1)  # only the original
+
+            omc_diag = result["diagnostics"]["orphaned_model_call_diagnostics"]
+            self.assertEqual(omc_diag["orphaned_model_calls"], 0)
+
+    def test_closes_orphaned_model_call_without_model_call_id(self):
+        """Retroactive ModelCallCompleted for orphaned ModelCallStarted without model_call_id field."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # Historical run: ModelCallStarted without model_call_id (test fixture style)
+            write_event(events, "RunStarted", "old-run")
+            write_event(events, "ModelCallStarted", "old-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "old-run", {"status": "completed"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            # Current session
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run",
+                        {"model_call_id": "mc-cur", "model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run",
+                        {"model_call_id": "mc-cur", "model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+
+            retro_completed = [
+                row for row in rows
+                if row["event_type"] == "ModelCallCompleted" and row["run_id"] == "old-run"
+            ]
+            self.assertEqual(len(retro_completed), 1)
+            self.assertTrue(retro_completed[0]["payload"].get("retroactive"))
+            # Falls back to run_id-based key when model_call_id is absent
+            self.assertEqual(
+                retro_completed[0]["payload"].get("model_call_id"),
+                "retroactive-old-run",
+            )
+
     def test_cancelled_run_gets_specific_failure_observed_reason(self):
         """Cancelled RunCompleted yields a specific cancellation reason in FailureObserved."""
         with tempfile.TemporaryDirectory() as tmp:

@@ -351,6 +351,71 @@ def find_missing_model_call_started(
     return missing, diagnostics
 
 
+def find_orphaned_model_calls(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Find ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+
+    Unlike lifecycle_for_scope which pairs by run_id within a limited scan
+    window, this scans ALL events and pairs by model_call_id (the natural
+    key in production events).  When model_call_id is absent (legacy test
+    fixtures), it falls back to run_id.
+
+    Returns (orphaned_entries, diagnostics) where each orphaned entry is a
+    dict with keys run_id, model, model_call_id, timestamp_ms, key.
+    """
+    model_started_entries: dict[str, dict[str, Any]] = {}
+    model_completed_keys: set[str] = set()
+    keyed_by_model_call_id: set[str] = set()
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "ModelCallStarted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                key = mcid
+                keyed_by_model_call_id.add(key)
+            else:
+                key = rid
+            # When multiple ModelCallStarted events share the same key
+            # (e.g., same run_id without model_call_id), keep the last one.
+            model_started_entries[key] = {
+                "run_id": rid,
+                "model": data.get("model"),
+                "model_call_id": mcid if isinstance(mcid, str) and mcid else None,
+                "timestamp_ms": event.get("timestamp_ms", 0),
+                "key": key,
+            }
+        elif kind == "ModelCallCompleted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                model_completed_keys.add(mcid)
+            else:
+                model_completed_keys.add(rid)
+
+    orphaned = sorted(
+        [
+            info
+            for key, info in model_started_entries.items()
+            if key not in model_completed_keys
+        ],
+        key=lambda m: m["run_id"],
+    )
+
+    diagnostics = {
+        "model_call_started_count": len(model_started_entries),
+        "model_call_completed_count": len(model_completed_keys),
+        "orphaned_model_calls": len(orphaned),
+        "keyed_by_model_call_id": len(keyed_by_model_call_id),
+    }
+
+    return orphaned, diagnostics
+
+
 def _maybe_append_event(
     events_path: Path,
     event_type: str,
@@ -590,12 +655,48 @@ def append_terminal_events(
             "reason": "ambiguous_reset_full_scan",
         }
 
+    # Full-scan for orphaned ModelCallStarted: find any ModelCallStarted
+    # events whose model_call_id has no matching ModelCallCompleted.  Emit
+    # retroactive ModelCallCompleted events to close the model-call lifecycle
+    # gap.  This is the forward-direction counterpart to the
+    # find_missing_model_call_started scan above (which handles the inverse).
+    # Gated by the ambiguous-reset guard.
+    orphaned_model_calls_appended = 0
+    if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+        orphaned_model_calls, omc_diag = find_orphaned_model_calls(events)
+        diagnostics["orphaned_model_call_diagnostics"] = omc_diag
+
+        for entry in orphaned_model_calls:
+            rid = entry["run_id"]
+            mcid = entry.get("model_call_id")
+            payload_omc: dict[str, Any] = {
+                "status": "interrupted",
+                "model": entry.get("model"),
+                "terminal_reason": "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found",
+                "retroactive": True,
+            }
+            if mcid:
+                payload_omc["model_call_id"] = mcid
+            else:
+                payload_omc["model_call_id"] = f"retroactive-{rid}"
+            ts = entry.get("timestamp_ms")
+            if ts:
+                payload_omc["original_model_call_started_timestamp_ms"] = ts
+            _maybe_append_event(events_path, "ModelCallCompleted", "harness", rid, session_id, trace_id, payload_omc, dry_run)
+            orphaned_model_calls_appended += 1
+    else:
+        diagnostics["orphaned_model_call_diagnostics"] = {
+            "skipped": True,
+            "reason": "ambiguous_reset_full_scan",
+        }
+
     return {
         "completed_model_calls": completed_models,
         "completed_runs": completed_runs,
         "completed_session_runs": completed_session_runs,
         "failure_observed_appended": [m["run_id"] for m in missing_failures],
         "model_call_started_appended": model_call_started_appended,
+        "orphaned_model_calls_appended": orphaned_model_calls_appended,
         "diagnostics": diagnostics,
     }
 
