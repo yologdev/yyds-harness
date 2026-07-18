@@ -849,6 +849,23 @@ pub fn sqlite_projection_path(events_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("state.sqlite"))
 }
 
+/// Count events in the SQLite projection. Returns `None` if the file does not
+/// exist yet (projection not built). Returns `Some(Ok(count))` on success or
+/// `Some(Err(msg))` on a query error.
+pub fn count_projection_events(sqlite_path: &Path) -> Option<Result<u64, String>> {
+    if !sqlite_path.exists() {
+        return None;
+    }
+    Some((|| -> Result<u64, String> {
+        let conn = Connection::open(sqlite_path)
+            .map_err(|e| format!("open projection '{}': {e}", sqlite_path.display()))?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM state_events", [], |row| row.get(0))
+            .map_err(|e| format!("count projection events: {e}"))?;
+        Ok(count as u64)
+    })())
+}
+
 pub fn rebuild_sqlite_projection(
     events_path: &Path,
     sqlite_path: &Path,

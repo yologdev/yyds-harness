@@ -310,6 +310,31 @@ fn handle_doctor(limit: usize) {
     };
     println!("{schema_status}");
 
+    // --- Projection staleness ---
+    let projection_path = crate::state::sqlite_projection_path(&events_path);
+    let projection_line = match crate::state::count_projection_events(&projection_path) {
+        None => {
+            format!("{YELLOW}  Projection: not built yet — run `state project --rebuild`{RESET}")
+        }
+        Some(Err(e)) => format!("{RED}  Projection: error counting events — {e}{RESET}"),
+        Some(Ok(proj_count)) => {
+            let raw_count = total_events as u64;
+            let pct = if raw_count > 0 {
+                ((proj_count as f64) / (raw_count as f64)) * 100.0
+            } else {
+                100.0
+            };
+            if pct >= 90.0 {
+                format!("{GREEN}  Projection: {proj_count} events (in sync with raw store, {raw_count}){RESET}")
+            } else {
+                format!(
+                    "{YELLOW}  Projection: {proj_count} events — stale! Raw store has {raw_count} events. Run `state project --rebuild`{RESET}"
+                )
+            }
+        }
+    };
+    println!("{projection_line}");
+
     // --- Event type distribution (grouped) ---
     let grouped = group_event_types(&type_counts);
     if !grouped.is_empty() {
