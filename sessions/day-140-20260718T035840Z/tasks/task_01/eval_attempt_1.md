@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The fix correctly removes the `model_call_id = f"retroactive-{rid}"` assignment so that retroactive ModelCallCompleted events for orphaned calls without a model_call_id are keyed by run_id — the same key used by find_orphaned_model_calls for orphan detection. The new test verifies a second janitor invocation produces zero additional retroactive events. Build and all tests pass.

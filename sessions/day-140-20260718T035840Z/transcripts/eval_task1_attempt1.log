@@ -1,0 +1,75 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff carefully.
+
+**Task**: Deduplicate retroactive ModelCallCompleted events in the janitor (`scripts/append_terminal_state_events.py`).
+
+**Root cause**: When the original `ModelCallStarted` event has no `model_call_id`, `find_orphaned_model_calls` keys it by `run_id`. But the retroactive `ModelCallCompleted` gets `model_call_id = f"retroactive-{rid}"`, which doesn't match the `run_id` key. So the next janitor scan sees the original `ModelCallStarted` (still keyed by `run_id`) as still orphaned, and writes another retroactive event.
+
+**The fix in the diff**: 
+
+In `scripts/append_terminal_state_events.py` lines 677-683 (removed the `else:` branch that set `model_call_id = f"retroactive-{rid}"`):
+```python
+if mcid:
+    payload_omc["model_call_id"] = mcid
+# When the original ModelCallStarted had no model_call_id,
+# omit it from the retroactive event as well.
+```
+
+And in the test file, the existing test was updated to assert `model_call_id` is `None` (instead of `"retroactive-old-run"`), plus a new test `test_orphaned_model_call_without_mcid_dedup_on_second_run` was added.
+
+Let me check: does the fix make `find_orphaned_model_calls` match the retroactive event by `run_id` on the next scan?
+
+Looking at the task's explanation:
+- When the original ModelCallStarted has no `model_call_id`, `find_orphaned_model_calls` keys it by `run_id`.
+- The retroactive ModelCallCompleted now also omits `model_call_id` (instead of using `"retroactive-{rid}"`).
+- So on the next scan, when `find_orphaned_model_calls` builds `model_completed_keys`, the retroactive ModelCallCompleted (which also has no `model_call_id`) should be keyed by `run_id` as well, matching the original ModelCallStarted's key.
+
+Wait, I need to verify this logic. Let me look at how `find_orphaned_model_calls` handles the keys. The task says lines 354-403 and 393-398 handle run_id fallback matching. Let me check.
+
+Actually, let me read the relevant part of the janitor to verify the fix is correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/append_terminal_state_events.py:354..409 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can verify the fix logic:
+
+**Before the fix**: When a ModelCallStarted has no `model_call_id`:
+- `find_orphaned_model_calls` keys it by `run_id` (line 383) → `model_started_entries["orphan-run"] = {...}`
+- The retroactive ModelCallCompleted gets `model_call_id = "retroactive-orphan-run"` (old code, line 680)
+- On the next scan: `model_completed_keys` gets `"retroactive-orphan-run"` (line 396) — NOT `"orphan-run"`
+- The original ModelCallStarted still has key `"orphan-run"` — NOT in `model_completed_keys` → still orphaned!
+
+**After the fix**: When a ModelCallStarted has no `model_call_id`:
+- `find_orphaned_model_calls` keys it by `run_id` (line 383)
+- The retroactive ModelCallCompleted now also has no `model_call_id` (the else branch was removed)
+- On the next scan: `model_completed_keys` gets `rid` = `"orphan-run"` (line 398)
+- The original ModelCallStarted has key `"orphan-run"` — IS in `model_completed_keys` → not orphaned! ✓
+
+The fix is correct and minimal. The new test `test_orphaned_model_call_without_mcid_dedup_on_second_run` verifies exactly this: first janitor run creates 1 retroactive, second run creates 0.
+
+Let me also quickly verify the test in the diff updated the assertion correctly: `self.assertIsNone(retro_completed[0]["payload"].get("model_call_id"))` — this checks the payload's model_call_id is None, which is correct.
+
+Build: PASS, Tests: PASS.
+
+The fix matches the task description perfectly. Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+The fix is correct. Let me verify the logic one more time by looking at how the retroactive append loop works with the fix:
+
+• `find_orphaned_model_calls` at line 377-383: when `ModelCallStarted` has no `model_call_id`, it's keyed by `run_id` (e.g. `"orphan-run"`)
+• After fix: the retroactive `ModelCallCompleted` also omits `model_call_id`
+• Next scan at lines 393-398: `ModelCallCompleted` without `model_call_id` → `model_completed_keys.add(rid)` → key `"orphan-run"` matches the `ModelCallStarted`'s key → not orphaned ✓
+
+The task description, diff, test changes, and build/test status all align. Writing verdict.
+  + Verdict: PASS
+  + Reason: The fix correctly removes the `model_call_id = f"retroactive-{rid}"` assignment so that retroactive ModelCallCompleted events for orphaned calls without a model_call_id are keyed by run_id — the same key used by find_orphaned_model_calls for orphan detection. The new test verifies a second janitor invocation produces zero additional retroactive events. Build and all tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_1.md (2 lines) ✓ (7ms)
