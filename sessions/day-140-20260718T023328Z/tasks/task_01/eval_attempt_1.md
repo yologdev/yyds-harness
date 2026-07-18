@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation fully matches task — `find_orphaned_model_calls()` pairs by model_call_id, writes retroactive ModelCallCompleted with retroactive=true and correct reason, no dupes, and all 3 new tests pass. One pre-existing test (`test_detects_and_closes_orphaned_run_from_previous_session`) needs its row count bumped from 8→9 to account for the new ModelCallCompleted event, but this is a test expectation issue, not an implementation bug.

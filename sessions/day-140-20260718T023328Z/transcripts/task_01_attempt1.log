@@ -1,0 +1,637 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to extend the state janitor (`scripts/append_terminal_state_events.py`) to detect and close ModelCallStarted events that have no matching ModelCallCompleted. Let me first read the evolve skill, then examine the relevant files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (1.8s)
+ ✓ (1.5s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full append_terminal_state_events.py to understand the existing structure. The file was truncated at line 99 - I need to see the rest of it.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.8s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99.. ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the middle section of the file more carefully - the `find_stale_orphaned_runs`, `find_missing_failure_observed`, `find_runs_with_failure_observed_no_completion`, and the `append_terminal_events` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:197.. ✓ (365ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `append_terminal_events` function and the `find_missing_model_call_started` function to see what's already there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:296.. ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the middle section between line 394 and 588 to see the full `append_terminal_events` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:394..594 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the codebase. Let me understand the current state:
+
+1. The existing code already handles several lifecycle gaps:
+   - `find_stale_orphaned_runs` — finds runs with RunStarted but no RunCompleted
+   - `find_missing_failure_observed` — finds runs completed with error but no FailureObserved
+   - `find_runs_with_failure_observed_no_completion` — finds runs with FailureObserved but no RunCompleted
+   - `find_missing_model_call_started` — finds ModelCallCompleted with no ModelCallStarted (inverse direction)
+
+2. What's MISSING — the task is about:
+   - Finding ModelCallStarted events that have no matching ModelCallCompleted (the forward direction)
+   - Writing retroactive ModelCallCompleted for those orphaned ModelCallStarted events
+
+The task mentions `model_call_id` as the pairing key. Let me check how ModelCallStarted and ModelCallCompleted events are actually structured in the codebase.
+
+Let me look at how ModelCallStarted is emitted in src/prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how ModelCallStarted and ModelCallCompleted are actually emitted in the Rust source to understand the `model_call_id` pairing:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallStarted' (*.rs)  ▶ search 'model_call_id' in scripts (*.py) ✓ (348ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how ModelCallStarted is emitted in src/prompt.rs to understand the `model_call_id` field.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..800  ▶ read src/prompt.rs:930..960 ✓ (1.1s)
+ ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key structure:
+- `ModelCallStarted` has `model_call_id` and `model` in its payload
+- `ModelCallCompleted` uses `model_call_terminal_payload` which presumably also includes `model_call_id`
+
+Let me check what `model_call_terminal_payload` includes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand the model_call_completed payload.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..64 ✓ (366ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me understand the current state and what needs to be done:
+
+**Current state:**
+1. `ModelCallStarted` payload has: `{"model_call_id": "mc-<hex>", "model": "<model-name>"}`
+2. `ModelCallCompleted` payload has: `{"model_call_id": "<same-id>", "model": "...", "status": "...", ...}`
+3. The pairing is by `model_call_id`, NOT by `run_id`. But... I notice the existing code uses `run_id` for pairing model events. Let me re-examine.
+
+Wait, looking at the existing code more carefully:
+- `lifecycle_for_scope()` at line 105-110 uses `rid` (run_id) as the key for both model_started and model_completed. So the current code pairs by run_id, not model_call_id.
+- But the actual events pair by `model_call_id`, and multiple model calls can happen within the same run.
+
+However, looking at the existing tests, they seem to use a single ModelCallStarted/ModelCallCompleted per run, and pair by run_id. This could be a simplification that works for the current use case but might not handle multiple model calls per run.
+
+Now, the task says:
+- "ModelCallStarted and ModelCallCompleted are paired by model_call_id in the payload."
+- The task says there are 8 orphaned ModelCallStarted events.
+
+But looking at the current code, `lifecycle_for_scope()` pairs by run_id, not model_call_id. And the existing code actually also writes a retroactive ModelCallCompleted per open run (using run_id). So for the historical 8 cases, if each run has exactly one model call, the current code might already handle this.
+
+But wait - the task says these are from "historical runs that crashed before any of these completion paths fired." So maybe the current janitor already handles them for the current session (via `open_lifecycle`), but the task is about the *stalely* orphaned ones from previous sessions that are already in the events file with ModelCallStarted but no ModelCallCompleted.
+
+Hmm, let me re-read the current code flow:
+
+1. `open_lifecycle()` - scans from `after_line` to find currently-open runs/models in this session
+2. `find_stale_orphaned_runs()` - full scan for runs with RunStarted but no RunCompleted (only those with ModelCall activity)
+3. `find_missing_failure_observed()` - full scan for error-completed runs without FailureObserved
+4. `find_runs_with_failure_observed_no_completion()` - FailureObserved without RunCompleted
+5. `find_missing_model_call_started()` - ModelCallCompleted without ModelCallStarted
+
+What's missing: ModelCallStarted without ModelCallCompleted.
+
+Let me think about this more carefully. The existing code already has:
+- In `open_lifecycle`, it finds `open_models` (ModelCallStarted without ModelCallCompleted for the current session scope), and in `append_terminal_events`, it writes ModelCallCompleted for them.
+
+But this only catches ones within the scan scope. What about stale ones from previous sessions that are already in the file?
+
+Actually, wait. Let me reconsider. The `open_lifecycle` function pairs by `run_id`, not `model_call_id`. So:
+- `model_started[rid]` stores the payload of the last ModelCallStarted for a given run_id
+- `model_completed` is a set of run_ids
+
+So if a single run has multiple ModelCallStarted events, only the last one gets tracked. And if ModelCallCompleted happens for the run_id (even once), all ModelCallStarted events for that run are considered "closed".
+
+This means the current code works at the granularity of run_id, not model_call_id. For the typical case of one model call per run, this is fine. But for multiple model calls per run, it could miss things.
+
+But looking at the task description more carefully:
+- "The 8 orphaned ModelCallStarted events are from historical runs that crashed before any of these completion paths fired"
+- The typical case: a run starts, a model call starts, and then the agent crashes before the model call completes.
+
+In this case, the run doesn't have a RunCompleted either. So `find_stale_orphaned_runs` would find these runs and close them with RunCompleted. But it does NOT write a ModelCallCompleted for them.
+
+So the gap is: `find_stale_orphaned_runs` closes the Run lifecycle but doesn't close the ModelCall lifecycle.
+
+Now, looking at how the current code works at a more granular level, in the `lifecycle_for_scope` function, model events are tracked by run_id. If a run has ModelCallStarted but no ModelCallCompleted at the run_id level, it's considered "open". The `append_terminal_events` function then writes both ModelCallCompleted and RunCompleted for any open runs/models from the incremental scan.
+
+But `find_stale_orphaned_runs` only writes RunCompleted for stale orphans - it doesn't write ModelCallCompleted. That's the gap!
+
+So the fix should be:
+1. After `find_stale_orphaned_runs` finds orphaned runs, also check which of those have ModelCallStarted events without matching ModelCallCompleted (by model_call_id, or by simpler run_id pairing)
+2. Write retroactive ModelCallCompleted for those ModelCallStarted events
+
+Actually, thinking about it more, the task says to pair by `model_call_id`. Let me look at it from the perspective of what the task is asking:
+
+The task wants a new function (similar to `find_missing_model_call_started` but in the opposite direction) that:
+- Scans all events for ModelCallStarted events
+- For each ModelCallStarted, checks if there's a matching ModelCallCompleted with the same `model_call_id`
+- Returns the unmatched ModelCallStarted events
+
+Then `append_terminal_events` would write retroactive ModelCallCompleted for them.
+
+Now, looking at the fallback: "If the 8 orphaned ModelCallStarted events all belong to runs that already have RunCompleted closed by the janitor (i.e., the runs are fully closed at the run level), add a simpler 'closed-run model-call sweep' that writes ModelCallCompleted for any ModelCallStarted whose run_id maps to a completed run AND that has no existing ModelCallCompleted."
+
+This is actually a simpler approach that might work well for the existing cases. Let me think about which approach to take.
+
+Since the task specification says to pair by `model_call_id`, I should do that. But I should also handle the simpler run-level approach as a complement.
+
+Let me now plan the implementation:
+
+1. Add a new function `find_orphaned_model_calls(events)` that:
+   - Scans all events for ModelCallStarted events, collecting their `model_call_id` and payload
+   - Scans for ModelCallCompleted events, collecting their `model_call_id` 
+   - Returns ModelCallStarted events that have no matching ModelCallCompleted
+
+2. In `append_terminal_events`, after the existing orphaned-run handling, add a call to `find_orphaned_model_calls` and write retroactive ModelCallCompleted for each.
+
+3. Add tests for this new functionality.
+
+But wait - I need to be careful about duplicate model_call_ids. Let me check: in the current test file, how are model_call_ids used?
+
+Looking at tests: `write_event(events, "ModelCallStarted", "agent-run", {"model": "deepseek-v4-pro"})` - the payload doesn't include `model_call_id`. In the actual production code, ModelCallStarted always includes both `model_call_id` and `model`. 
+
+So in test data, ModelCallStarted events may or may not have `model_call_id`. The existing tests pair by run_id, not model_call_id. 
+
+For the new function, I should:
+1. Pair by `model_call_id` when it's present in the payload
+2. Fall back to run_id when model_call_id is absent (for backward compatibility with test fixtures)
+
+Actually, let me look at test_append_terminal_state_events.py more carefully to see how tests handle model_call_id:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:800..950 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the existing patterns well. Let me also check the `write_event` helper more closely and look at existing orphaned-run tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at the existing stale orphan test and the `write_event` helper more carefully:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:610..690 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me now plan and implement the solution.
+
+Current state:
+1. `find_stale_orphaned_runs` finds runs with RunStarted but no RunCompleted (and with model activity). It closes them with RunCompleted only.
+2. `find_missing_model_call_started` finds ModelCallCompleted without ModelCallStarted (the inverse direction).
+3. The gap: ModelCallStarted without ModelCallCompleted is NOT handled for stale/orphaned runs.
+
+What I need to add:
+1. A new function `find_orphaned_model_calls(events)` that scans for ModelCallStarted events with no matching ModelCallCompleted (paired by `model_call_id` when present, falling back to `run_id`).
+2. In `append_terminal_events`, after the stale orphan run scan, call this new function and write retroactive ModelCallCompleted for the orphaned model calls.
+3. Tests for this new functionality.
+
+Let me implement this step by step.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (350ms)
+  ▶ todo ✓ (390ms)
+  ▶ todo ✓ (348ms)
+  ▶ todo ✓ (393ms)
+  ▶ todo ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the `find_orphaned_model_calls` function. It should:
+
+1. Scan all events for ModelCallStarted events, collecting their model_call_id (or run_id as fallback) and payload data
+2. Scan for ModelCallCompleted events, collecting their model_call_id (or run_id as fallback)
+3. Return ModelCallStarted events that have no matching ModelCallCompleted
+
+Pairing:
+- Primary: `model_call_id` in payload
+- Fallback: `run_id` (for backward compatibility with events that don't have model_call_id)
+
+Let me now write this function carefully.
+
+Looking at the existing `find_missing_model_call_started` function as a template:
+```python
+def find_missing_model_call_started(events):
+    model_started_runs: set[str] = set()
+    model_completed_entries: dict[str, dict[str, Any]] = {}
+    
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "ModelCallStarted":
+            model_started_runs.add(rid)
+        elif kind == "ModelCallCompleted":
+            model_completed_entries[rid] = {
+                "model": data.get("model"),
+                "timestamp_ms": event.get("timestamp_ms", 0),
+            }
+    
+    missing = ...
+```
+
+For the new function, I want to pair by `model_call_id` primarily. Here's my approach:
+
+```python
+def find_orphaned_model_calls(events):
+    """Find ModelCallStarted events with no matching ModelCallCompleted.
+    
+    Pairs by model_call_id in the payload when present, falling back to
+    run_id. Returns (orphaned_entries, diagnostics).
+    """
+    model_started_entries: dict[str, dict[str, Any]] = {}  # key -> {run_id, model, model_call_id, timestamp_ms}
+    model_completed_keys: set[str] = set()
+    keyed_by_model_call_id: set[str] = set()  # which started keys used model_call_id
+    
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        
+        if kind == "ModelCallStarted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                key = mcid
+                keyed_by_model_call_id.add(key)
+            else:
+                key = rid  # fallback to run_id
+            model_started_entries[key] = {
+                "run_id": rid,
+                "model": data.get("model"),
+                "model_call_id": mcid if isinstance(mcid, str) else None,
+                "timestamp_ms": event.get("timestamp_ms", 0),
+                "key": key,
+            }
+        elif kind == "ModelCallCompleted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                model_completed_keys.add(mcid)
+            else:
+                model_completed_keys.add(rid)  # fallback to run_id
+    
+    orphaned = sorted(
+        [
+            info
+            for key, info in model_started_entries.items()
+            if key not in model_completed_keys
+        ],
+        key=lambda m: m["run_id"],
+    )
+    
+    diagnostics = {
+        "model_call_started_count": len(model_started_entries),
+        "model_call_completed_count": len(model_completed_keys),
+        "orphaned_model_calls": len(orphaned),
+        "keyed_by_model_call_id": len(keyed_by_model_call_id),
+    }
+    
+    return orphaned, diagnostics
+```
+
+Wait, actually I need to think about this more carefully. The existing `lifecycle_for_scope` function uses run_id as key because it only deals with one model call per run. And the existing `find_missing_model_call_started` also uses run_id as key. 
+
+But the task description specifically says to pair by `model_call_id`. In practice, for the existing event data, what do we have? Let me check:
+
+In `src/prompt.rs`:
+- ModelCallStarted payload: `{"model_call_id": "mc-<hex>", "model": "<model>"}`
+- ModelCallCompleted payload: `{"model_call_id": "<same-id>", "model": "...", ...}`
+
+So in production, model_call_id is always present and is the correct pairing key. In tests, sometimes it's omitted and run_id is used.
+
+For the new function, I should:
+1. Use model_call_id as the primary key when present
+2. Fall back to run_id when model_call_id is not present
+3. This way it works correctly with both production data and test fixtures
+
+Now, the main question: should I update the EXISTING `find_missing_model_call_started` to also pair by model_call_id? The task says "Existing janitor behavior... is unchanged." So I should leave that function alone and add a new one.
+
+Actually wait, looking at this more carefully: the `find_missing_model_call_started` function handles the INVERSE case (ModelCallCompleted without ModelCallStarted). My new function handles ModelCallStarted without ModelCallCompleted. They're different directions.
+
+OK, let me now implement this. 
+
+For the `append_terminal_events` function, I need to add the call after the existing stale-orphan and existing model-call-started handling. The retroactive ModelCallCompleted should include:
+- `model_call_id` from the original started event
+- `model` from the original started event
+- `retroactive: true`
+- `status: "interrupted"` or similar
+- `terminal_reason` with a descriptive message
+
+Let me also think about where to place it. I'll add it after the existing `find_missing_model_call_started` block (which handles the inverse direction), and gate it by the ambiguous_reset_full_scan guard (same as the stale orphan scan and the existing model_call_started append).
+
+Here's my plan for the code in `append_terminal_events`:
+
+```python
+# Full-scan for orphaned ModelCallStarted: find any ModelCallStarted events
+# that have no matching ModelCallCompleted, regardless of when they were
+# written. This catches model calls from previous sessions that started but
+# never completed (e.g., harness crash before ModelCallCompleted was written).
+# Gated by the ambiguous-reset guard.
+orphaned_model_calls: list[dict[str, Any]] = []
+orphaned_model_calls_appended = 0
+if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+    orphaned_model_calls, omc_diag = find_orphaned_model_calls(events)
+    diagnostics["orphaned_model_call_diagnostics"] = omc_diag
+    
+    for entry in orphaned_model_calls:
+        rid = entry["run_id"]
+        mcid = entry.get("model_call_id")
+        payload_omc: dict[str, Any] = {
+            "status": "interrupted",
+            "model": entry.get("model"),
+            "terminal_reason": "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found",
+            "retroactive": True,
+        }
+        if mcid:
+            payload_omc["model_call_id"] = mcid
+        else:
+            payload_omc["model_call_id"] = f"retroactive-{rid}"
+        ts = entry.get("timestamp_ms")
+        if ts:
+            payload_omc["original_model_call_started_timestamp_ms"] = ts
+        _maybe_append_event(events_path, "ModelCallCompleted", "harness", rid, session_id, trace_id, payload_omc, dry_run)
+        orphaned_model_calls_appended += 1
+else:
+    diagnostics["orphaned_model_call_diagnostics"] = {
+        "skipped": True,
+        "reason": "ambiguous_reset_full_scan",
+    }
+```
+
+And update the return dict to include `orphaned_model_calls_appended`.
+
+Now let me implement this. First, let me write the test, then the function.
+
+Actually, let me follow the evolve skill: "Write a test first if possible". Let me write the test first.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 26.3s (5 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the test first. I'll add a new test method to the `AppendTerminalStateEvents` class. The test should:
+1. Write events with ModelCallStarted but no ModelCallCompleted for a historical run
+2. Set after_line so the run is in the "past" (before the incremental scan)
+3. Call append_terminal_events
+4. Assert that a retroactive ModelCallCompleted was appended
+5. Assert the payload has retroactive: true and the correct reason
+
+I need to think about where to place the after_line. The current test pattern is: write historical events, set after_line to the current line count, then write current session events.
+
+For the orphaned model call case:
+- The historical run needs ModelCallStarted but no ModelCallCompleted
+- The run should have a RunStarted (so find_stale_orphaned_runs can find it)
+- Or the run could have RunStarted AND RunCompleted but still have an orphaned ModelCallStarted
+
+Let me test the case where the run is fully closed at the Run level but has an orphaned ModelCall. This matches the fallback scenario: "closed-run model-call sweep".
+
+Actually, let me test both cases:
+1. ModelCallStarted orphaned within a run that has RunCompleted (closed-run sweep)
+2. ModelCallStarted orphaned within a run that has no RunCompleted (the stale-orphan case, where the existing code closes Run but not ModelCall)
+
+For test 1: a historical fully-closed run (RunStarted + ModelCallStarted + RunCompleted, no ModelCallCompleted) followed by a current session run.
+
+Wait, let me re-examine the test structure. The `after_line` determines what the incremental scan sees. Events before `after_line` are "past" and only caught by full scans. Events after `after_line` are "current" and caught by the incremental scan.
+
+For the historical orphaned case, I want events before `after_line` that have ModelCallStarted but no ModelCallCompleted.
+
+Let me write the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the test first. I'll add it to the test file near the existing model-call-related tests:
+                diag = result["diagnostics"]["model_call_started_diagnostics"]
+                self.assertTrue(diag.get("skipped"))
+                self.assertEqual(diag["reason"], "ambiguous_reset_full_scan")
+  + 
+  +     def test_closes_orphaned_model_call_started_in_closed_run(self):
+  +         """Retroactive ModelCallCompleted for ModelCallStarted without match in a closed run."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             # Historical run: fully closed at run level but has orphaned model call
+  +             write_event(events, "RunStarted", "old-run")
+  +             write_event(events, "ModelCallStarted", "old-run",
+  +                         {"model_call_id": "mc-abc123", "model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "old-run", {"status": "completed"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             # Current session events (fully closed)
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (31 → 192 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (31 → 192 lines)
+                diag = result["diagnostics"]["model_call_started_diagnostics"]
+                self.assertTrue(diag.get("skipped"))
+                self.assertEqual(diag["reason"], "ambiguous_reset_full_scan")
+  + 
+  +     def test_closes_orphaned_model_call_started_in_closed_run(self):
+  +         """Retroactive ModelCallCompleted for ModelCallStarted without match in a closed run."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             # Historical run: fully closed at run level but has orphaned model call
+  +             write_event(events, "RunStarted", "old-run")
+  +             write_event(events, "ModelCallStarted", "old-run",
+  +                         {"model_call_id": "mc-abc123", "model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "old-run", {"status": "completed"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             # Current session events (fully closed)
+  +             write_event(events, "RunStarted", "current-run")
+  +             write_event(events, "ModelCallStarted", "current-run",
+  +                         {"model_call_id": "mc-current", "model": "deepseek-v4-pro"})
+  +             write_event(events, "ModelCallCompleted", "current-run",
+  ... (144 more lines)
+ ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the test is written. Now let me implement the `find_orphaned_model_calls` function and wire it into `append_terminal_events`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (346ms)
+  ▶ todo ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `find_orphaned_model_calls` function. I'll place it right after the existing `find_missing_model_call_started` function (around line 351).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+Now let me add the `find_orphaned_model_calls` function. I'll place it after `find_missing_model_call_started`:
+        return missing, diagnostics
+  + 
+  + 
+  + def find_orphaned_model_calls(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+  + 
+  +     Unlike lifecycle_for_scope which pairs by run_id within a limited scan
+  +     window, this scans ALL events and pairs by model_call_id (the natural
+  +     key in production events).  When model_call_id is absent (legacy test
+  +     fixtures), it falls back to run_id.
+  + 
+  +     Returns (orphaned_entries, diagnostics) where each orphaned entry is a
+  +     dict with keys run_id, model, model_call_id, timestamp_ms, key.
+  +     """
+  +     model_started_entries: dict[str, dict[str, Any]] = {}
+  +     model_completed_keys: set[str] = set()
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (4 → 69 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (4 → 69 lines)
+        return missing, diagnostics
+  + 
+  + 
+  + def find_orphaned_model_calls(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Find ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+  + 
+  +     Unlike lifecycle_for_scope which pairs by run_id within a limited scan
+  +     window, this scans ALL events and pairs by model_call_id (the natural
+  +     key in production events).  When model_call_id is absent (legacy test
+  +     fixtures), it falls back to run_id.
+  + 
+  +     Returns (orphaned_entries, diagnostics) where each orphaned entry is a
+  +     dict with keys run_id, model, model_call_id, timestamp_ms, key.
+  +     """
+  +     model_started_entries: dict[str, dict[str, Any]] = {}
+  +     model_completed_keys: set[str] = set()
+  +     keyed_by_model_call_id: set[str] = set()
+  + 
+  ... (49 more lines)
+ ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to wire this function into `append_terminal_events`. Let me add the call after the existing `find_missing_model_call_started` block (after line ~591 in the updated file, around line 656 after my addition).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (363ms)
+  ▶ todo ✓ (387ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current state of the file around where I need to add the call:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:630.. ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the orphaned ModelCallStarted handling between the existing model_call_started block and the return statement. Let me insert it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        else:
+            diagnostics["model_call_started_diagnostics"] = {
+  +             "skipped": True,
+  +             "reason": "ambiguous_reset_full_scan",
+  +         }
+  + 
+  +     # Full-scan for orphaned ModelCallStarted: find any ModelCallStarted
+  +     # events whose model_call_id has no matching ModelCallCompleted.  Emit
+  +     # retroactive ModelCallCompleted events to close the model-call lifecycle
+  +     # gap.  This is the forward-direction counterpart to the
+  +     # find_missing_model_call_started scan above (which handles the inverse).
+  +     # Gated by the ambiguous-reset guard.
+  +     orphaned_model_calls_appended = 0
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         orphaned_model_calls, omc_diag = find_orphaned_model_calls(events)
+  +         diagnostics["orphaned_model_call_diagnostics"] = omc_diag
+  + 
+  +         for entry in orphaned_model_calls:
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (14 → 50 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (14 → 50 lines)
+        else:
+            diagnostics["model_call_started_diagnostics"] = {
+  +             "skipped": True,
+  +             "reason": "ambiguous_reset_full_scan",
+  +         }
+  + 
+  +     # Full-scan for orphaned ModelCallStarted: find any ModelCallStarted
+  +     # events whose model_call_id has no matching ModelCallCompleted.  Emit
+  +     # retroactive ModelCallCompleted events to close the model-call lifecycle
+  +     # gap.  This is the forward-direction counterpart to the
+  +     # find_missing_model_call_started scan above (which handles the inverse).
+  +     # Gated by the ambiguous-reset guard.
+  +     orphaned_model_calls_appended = 0
+  +     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+  +         orphaned_model_calls, omc_diag = find_orphaned_model_calls(events)
+  +         diagnostics["orphaned_model_call_diagnostics"] = omc_diag
+  + 
+  +         for entry in orphaned_model_calls:
+  +             rid = entry["run_id"]
+  +             mcid = entry.get("model_call_id")
+  ... (27 more lines)
+ ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (348ms)
+  ▶ todo ✓ (390ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Run the tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (701ms)
+
+
