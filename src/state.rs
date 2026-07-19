@@ -825,6 +825,7 @@ pub struct ProjectionReport {
     pub decisions: usize,
     pub cache_metrics: usize,
     pub relations: usize,
+    pub skipped_unknown: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -883,8 +884,14 @@ pub fn rebuild_sqlite_projection(
         .map_err(|e| format!("start sqlite projection transaction: {e}"))?;
     let mut report = ProjectionReport::default();
     for (idx, line) in raw.lines().enumerate() {
-        let event = parse_state_event_line(line)
-            .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+        let event = match parse_state_event_line(line) {
+            Ok(event) => event,
+            Err(e) => {
+                eprintln!("warning: skipping event line {}: {e}", idx + 1);
+                report.skipped_unknown += 1;
+                continue;
+            }
+        };
         project_event_with_conn(&tx, &event, &mut report)?;
     }
     tx.commit()

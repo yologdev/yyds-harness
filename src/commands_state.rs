@@ -615,6 +615,12 @@ fn handle_project(args: &[String]) {
             println!("  decisions:    {}", report.decisions);
             println!("  cache metrics: {}", report.cache_metrics);
             println!("  relations:     {}", report.relations);
+            if report.skipped_unknown > 0 {
+                println!(
+                    "  skipped:       {} (unknown event types)",
+                    report.skipped_unknown
+                );
+            }
             println!("  sqlite:        {}", sqlite_path.display());
         }
         Err(e) => eprintln!("{RED}  failed to rebuild state projection: {e}{RESET}"),
