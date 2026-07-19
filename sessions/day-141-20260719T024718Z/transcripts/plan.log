@@ -1,0 +1,625 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. I'm in Phase A2 (PLANNING). My only deliverable is session_plan/task_*.md files.
+2. The assessment has already been done. Build is green. State evidence shows:
+   - task_success_rate=0.5 (1/2 strict verified from last session)
+   - evaluator_timeout_count=1
+   - task_unlanded_source_count=1
+   - bash_tool_error=7
+   - Graph pressure rows exist
+
+3. Recent success (Day 140 04:35 and 05:00): 2/2 and 1/1 tasks verified cleanly
+4. Recent failures: evaluator timeouts and unlanded source edits
+
+Let me focus on what matters:
+
+**Graph-derived next-task pressure:**
+1. Raise verified task success rate (task_success_rate=0.5) - source edits not landing
+2. Bound evaluator checks so verdicts are not skipped (evaluator_unverified_count=1)
+3. Make source-edit outcomes land or explain reverts (task_unlanded_source_count=1)
+4. Bound failing shell commands before retrying (bash_tool_error=7)
+5. Make evaluator timeouts resumable or cheaper (evaluator_timeout_count=1)
+
+**Agent-self issues:**
+- #121: Task reverted: success-rate-aware task scoping (evaluator timeout)
+- #120: Planning-only session Day 140
+- #119: Task reverted: bounded-command detection (evaluator timeout)
+- #118: Task reverted: ModelCall lifecycle gap (blocked by agent - no progress)
+- #116: Planning-only session Day 139
+
+**Key observation from the assessment:**
+- #119 (bounded-command detection) has been attempted and reverted TWICE. The task is too broad (touching both safety.rs pattern detection AND tool_wrappers.rs recovery hints).
+- #118 (ModelCall lifecycle) was blocked by the agent itself - it spent 24 turns reading code without making any edits. The implementation notes even concluded "the forward case is actually ALREADY PROPERLY GUARDED."
+- #121 (success-rate-aware task scoping) got reverted due to evaluator timeout.
+
+**What should I plan?**
+
+Priority should be: tasks that are likely to succeed (small, concrete, verifiable), that address real graph pressure, and that haven't been reverted before.
+
+Looking at the successful Day 140 sessions (04:35 and 05:00), they shipped real code. The 04:35 session delivered `AgentExitReason` in `src/prompt.rs` and `src/state.rs`. The 05:00 session delivered... let me check... the assessment says "Three tasks total, one reverted (ModelCall lifecycle). This was the session that built the exit-reason feature."
+
+So successful tasks tend to be small, focused changes to src/*.rs files.
+
+Let me look at what tasks could work:
+
+**Task candidate 1: Fix projection staleness (auto-rebuild or prompt)**
+The assessment says: "Projection staleness: detected but not resolved — The doctor now warns about stale projection (128 vs 187,938 events), but the projection hasn't been rebuilt."
+Files: `src/commands_state.rs` (already contains doctor code)
+This is small, concrete, and verifiable - but it's a diagnostic fix, not a fitness improvement. And it was just recently added by Day 140's Task 1.
+
+**Task candidate 2: Make the preseed task picker shrink task scope based on success rate (#121)**
+This was reverted due to evaluator timeout, not a code quality issue. The task itself is clear and well-scoped (one file, `scripts/preseed_session_plan.py`). But it just failed, so it might need to be smaller.
+
+**Task candidate 3: Bounded-command detection — scoped down (#119)**
+This was attempted and reverted twice. The assessment says: "The bounded-command detection task (issue #119) has been attempted and reverted twice. The preseed task picker keeps re-selecting similar tasks." The task touches both `src/safety.rs` AND `src/tool_wrappers.rs`. Maybe split it: just do the safety.rs detection part this time, make it a micro-task.
+
+**Task candidate 4: Address the reverted-task feedback loop itself**
+The assessment says: "The success-rate-aware scoping fix (issue #121) was designed to address this but also got reverted. This is a self-referential problem." But this is meta - it's about the planning pipeline, which touches preseed_session_plan.py, and that task just got reverted.
+
+Let me think about what's most likely to succeed this session:
+
+The last two sessions (Day 140 04:35 and 05:00) both succeeded by shipping concrete, small changes to src/*.rs files. The sessions that failed had tasks that were:
+- Too broad (touching multiple unrelated modules)
+- Planning heavy (reading lots of code without making edits)
+- Evaluator-timeout-prone
+
+**My plan:**
+
+**Task 1: Add bounded grep/find detection to src/safety.rs (SCOPED DOWN from #119)**
+- ONLY touch `src/safety.rs` - drop the tool_wrappers.rs part
+- Add `check_unbounded_command` function
+- Very focused: detect `find /` without `-maxdepth`, `grep -r /` pattern
+- ~50 lines of code + tests
+- Verifier: `cargo test safety -- --test-threads=1`
+- This addresses graph pressure #4: bash_tool_error=7
+
+**Task 2: Fix projection staleness — add auto-rebuild or clear guidance to state doctor**
+- Files: `src/commands_state.rs`
+- When the doctor detects staleness, either auto-rebuild or output a clear command to run
+- ~30 lines
+- Verifier: `cargo test commands_state -- --test-threads=1` or `cargo build && yyds state doctor`
+- This addresses the MEDIUM bug from assessment
+
+Wait, but Task 2 is a diagnostic fix, not a fitness improvement. The policy says: "Diagnostic gnomes... are gates. Fix them when they block fitness measurement or waste DeepSeek turns; do not treat dashboard cleanliness as the final objective."
+
+The projection staleness doesn't block fitness measurement - it's just cosmetic/observability. So it's lower priority.
+
+Let me rethink. What directly improves coding-agent fitness?
+
+**Actual priorities from graph pressure:**
+1. task_success_rate=0.5 - need tasks that land successfully
+2. evaluator_timeout_count=1 - evaluator timeouts cause task reversion
+3. task_unlanded_source_count=1 - source edits not committed
+4. bash_tool_error=7 - shell command failures
+5. evaluator timeout friction
+
+Tasks 2, 3, and 5 are all about the evaluation pipeline - fixing evaluator timeouts or making them resumable. But those are meta-level changes that touch the harness pipeline (evolve.sh), which is a protected file.
+
+Wait - let me check the safety rules. The CLAUDE.md says: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So I can't touch `scripts/evolve.sh`. The evaluator timeout issues are in the harness pipeline, which I can't modify. So I need to work around this.
+
+Task 4 (bash_tool_error=7) IS addressable - bounded command detection in `src/safety.rs`. This directly improves agent reliability.
+
+Let me also consider: what about the reverted tasks? #121 (success-rate-aware task scoping in preseed_session_plan.py) could be retried but SMALLER. The assessment says: "If a task has been reverted before, make it SMALLER than last time."
+
+OK here's what I'll do:
+
+**Task 1: Add bounded-command detection to src/safety.rs (micro-scope from #119)**
+- ONLY `src/safety.rs` - just the detection function, no tool_wrappers.rs changes
+- Detect `find /` without `-maxdepth` and `grep -r /` patterns
+- ~40 lines + tests
+- Addresses graph pressure: bash_tool_error=7
+- This is much smaller than the reverted version which touched both safety.rs AND tool_wrappers.rs
+
+**Task 2: Add single-file preference to preseed task picker when success rate is low (micro-scope from #121)**
+- ONLY `scripts/preseed_session_plan.py` - add ~15 lines to `choose_task`
+- When `task_success_rate <= 0.5` or `reverted_no_edit > 0`, prefer candidates touching fewer files
+- Addresses graph pressure: task_success_rate=0.5, task_unlanded_source_count=1
+- This is smaller than the reverted version which also included analysis_only_active changes
+
+Wait, but #121 was reverted due to evaluator timeout, not code issues. The evaluator timed out without a verdict. Making it smaller doesn't necessarily fix the evaluator timeout problem. But making it smaller might mean the implementation agent finishes faster, avoiding the timeout.
+
+Actually, let me think about this differently. The evaluator timeout could be a persistent infrastructure issue. If I keep submitting tasks that will timeout in the evaluator, I'm wasting slots. Maybe I should pick tasks that are so small they can't possibly timeout.
+
+Let me go with concrete, tiny tasks:
+
+**Task 1: Add bounded-command detection to src/safety.rs**
+- One file, ~40 lines, clear test cases
+- Verifier: `cargo test safety -- --test-threads=1`
+
+**Task 2: Add timeout-aware recovery hint to bash tool wrapper**
+- One file: `src/tool_wrappers.rs` 
+- Detect "timed out" / "timeout" in error messages and return specific advice
+- ~30 lines
+- Verifier: `cargo test tool_wrappers -- --test-threads=1`
+
+Wait, but task 2 was also part of the reverted #119. And the assessment specifically said to split the bounded-command task because it was too broad touching both safety.rs and tool_wrappers.rs. 
+
+OK, I think Task 1 (safety.rs only) is clean and small. Let me think about what else.
+
+Actually, let me step back. The trajectory says:
+- "Graph-derived next-task pressure" row 1: "Raise verified task success rate (task_success_rate=0.5): Dominant task failure: task_unlanded_source_count=1 (source edits not landed). Consider smaller, self-contained tasks that can pass verification independently."
+- Row 4: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=7)"
+
+And the log feedback says:
+- "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- "tasks lacked strict verifier evidence -> require bounded verifier evidence before counting task success"
+- "task source edits were not landed in source commits -> verify task source edits are committed before marking task completion"
+
+So the pattern is: tasks are failing because of bash tool timeouts during implementation, and tasks are also not landing source edits (unlanded_source_count=1).
+
+Let me pick:
+
+**Task 1: Add bounded-command pre-execution warning to bash safety checker**
+- File: `src/safety.rs`
+- Add `check_unbounded_command` function
+- Detect `find /`, `find ~`, `grep -r /`, `grep -r ~` without proper bounds
+- ~40 lines + tests
+- Addresses bash_tool_error=7
+
+**Task 2: Add timeout-specific recovery hint to bash tool wrapper**
+- File: `src/tool_wrappers.rs`
+- In `targeted_recovery_hint`, detect timeout patterns and add specific advice
+- ~20 lines
+- Addresses bash_tool_error=7 from a different angle (post-hoc recovery)
+
+**Task 3: Skip or...**
+
+Actually wait, Task 1 and 2 are both addressing the same graph pressure (bash_tool_error=7) from the same original issue (#119). I could combine them into one task touching 2 files (safety.rs + tool_wrappers.rs). But the assessment said the original task was too broad. 
+
+Hmm, but 2 files is within the 3-file limit. And each change is tiny (~40 lines and ~20 lines). Let me make them separate tasks to keep each independently verifiable.
+
+Actually, let me reconsider. Let me look at the actual state of what's available. The assessment mentions:
+
+1. bash_tool_error=7 - clear problem, actionable
+2. task_success_rate=0.5 - needs improvement
+3. evaluator_timeout_count=1 - can I fix this? Not really, it's in evolve.sh which is protected
+4. task_unlanded_source_count=1 - source edits not landing
+
+For #4, the unlanded source edits... how would I fix that? It's about task verification, which happens in the harness pipeline. I can't modify evolve.sh. So this is probably not actionable directly.
+
+For #2, task success rate, I could make tasks smaller (which I'm doing by scoping tasks small), but the actual fix (#121) was in preseed_session_plan.py. It's a Python script, not protected, so I CAN modify it.
+
+OK let me go with these three tasks:
+
+**Task 1: Add bounded-command pre-execution warning to src/safety.rs**
+- ~40 lines
+- Verifier: `cargo test safety -- --test-threads=1`
+
+**Task 2: Add timeout-specific recovery hint to src/tool_wrappers.rs**  
+- ~20 lines
+- Verifier: `cargo test tool_wrappers -- --test-threads=1`
+
+**Task 3: Add success-rate-aware candidate sorting to preseed_session_plan.py (micro-scope from #121)**
+- ~15 lines in choose_task function
+- When success_rate is low, prefer single-file candidates
+- Verifier: `python3 scripts/preseed_session_plan.py --test`
+
+Wait, all three are independent and small. But I'm worried about evaluator timeouts. Let me check: the evaluator timeout affected tasks that were larger. These are micro-tasks. Let me go with it.
+
+Actually, one more thought. Task 3 was just reverted in the previous session due to evaluator timeout. If the evaluator timeout is a systemic issue (not task-size-dependent), this task could fail again. But the implementation notes for #121 said "Evaluator timed out without a verifier verdict" with "no details captured." This could mean the implementation agent itself timed out, not the evaluator. The task involves editing `scripts/preseed_session_plan.py` which is a large file (2317 lines).
+
+Let me make task 3 even smaller: just add ONE sort block to `choose_task`, with one test case.
+
+OK, let me finalize. Three micro-tasks, each touching one file:
+
+1. safety.rs - bounded command detection
+2. tool_wrappers.rs - timeout recovery hints
+3. preseed_session_plan.py - success-rate-aware sorting
+
+Let me write the plan files. First, create the directory.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan ✓ (749ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me look at the existing preseed task to see if task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls session_plan/ 2>/dev/null || echo "empty" ✓ (749ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and assessment.md. Let me read the existing task_01.md to see what the preseed picker created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The preseed task_01.md is about "Repair evidence-backed planning after no-task sessions" - it's a meta-task about the planning pipeline itself. But the assessment says the build is green, state evidence shows concrete problems (bash_tool_error=7, task_success_rate=0.5), and I have actual graph pressure rows to address.
+
+This seed task is questionable because:
+1. The assessment and trajectory DO have concrete evidence - the planning IS working (we have evidence)
+2. The task touches 3 Python script files, which are less reliable to verify than Rust source
+3. It's a "fix the planning pipeline" task - which is self-referential and matches the "fallback self-reference turns 'nothing broken' into busywork" lesson
+
+However, the instructions say: "The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+Let me check: does fresh assessment evidence contradict the seed task? The assessment says:
+- Build PASS
+- State doctor shows all health checks pass
+- Graph pressure rows exist (bash_tool_error=7, task_success_rate=0.5, evaluator_timeout_count=1)
+- Recent sessions had both successes (2/2, 1/1) and failures (reverted tasks)
+
+So the seed task says "Repair evidence-backed planning after no-task sessions" - but we HAVE evidence and we HAVE planning capability (the preseed picker created this task). The assessment is rich with evidence. This seed task seems like a stale preseed that doesn't match current reality.
+
+Wait, the assessment says: "The preseed task picker keeps re-selecting similar tasks" and "the bounded-command detection task has been attempted and reverted twice." So the planning pipeline IS having issues with re-selecting reverted tasks. But that's different from "no-task sessions" - we have tasks, they just get reverted.
+
+Let me look more carefully at the seed task. It says: "The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation." But we DO have task artifacts - the preseed created task_01.md! So this seed task contradicts itself.
+
+I think the seed task is from a template that fires when the preseed thinks there are no tasks, but it's wrong because the assessment IS evidence-rich. I should refine this seed task to address a real, concrete problem instead.
+
+Actually, the instructions say I can "refine it" - so let me refine task_01.md to be about a real, evidence-backed task, and add task_02.md and task_03.md.
+
+Let me plan three micro-tasks:
+
+1. **Task 1: Add bounded-command pre-execution detection to src/safety.rs** (from #119, scoped down)
+   - Graph pressure: bash_tool_error=7
+   - One file change
+   
+2. **Task 2: Add timeout-specific recovery hints to src/tool_wrappers.rs** (from #119, scoped down)  
+   - Graph pressure: bash_tool_error=7
+   - One file change
+
+3. **Task 3: Add success-rate-aware candidate sorting to preseed_session_plan.py** (from #121, scoped down)
+   - Graph pressure: task_success_rate=0.5
+   - One file change
+
+Let me refine task_01.md into the safety.rs task (since it's the most concrete and has the clearest graph pressure), and add tasks 2 and 3.
+
+Wait, but the seed task has `validated_against_assessment: true`. If I completely change it, should I add a seed-contradiction note? The instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task's stated problem is "The harness reached planning with no task artifacts." But the assessment clearly shows:
+1. Previous sessions DID produce tasks (they were just reverted)
+2. The preseed picker produced task_01.md (so planning IS working)
+3. Graph pressure rows are present and actionable
+
+So yes, the seed task is contradicted by fresh evidence. The assessment disproves the premise. I should write an obsolete note.
+
+Actually wait - let me re-read the instruction more carefully: "Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+I'll replace it with a better task AND write the obsolete note. But the primary action should be to replace it with an evidence-backed task. Let me write task_01.md as the bounded-command detection task.
+
+Let me also check the Files entries for accuracy before writing.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the source files I'll be referencing to make sure the ownership is correct.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn analyze_bash_command\|fn check_rm_destruction\|fn check_' src/safety…  ▶ $ grep -n 'fn targeted_recovery_hint\|timeout\|timed.out' src/tool_wrappers.rs | h…  ▶ $ grep -n 'def choose_task\|def _task_file_count\|analysis_only_active' scripts/pr… ✓ (2.2s)
+ ✓ (2.2s)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I can see:
+
+1. `src/safety.rs`: `analyze_bash_command` at line 23, check functions from line 191 onwards. The pattern is clear - each check function returns `Option<String>`.
+
+2. `src/tool_wrappers.rs`: `targeted_recovery_hint` at line 1018, already has timeout detection at line 1048. Let me check what it currently does for timeouts.
+
+3. `scripts/preseed_session_plan.py`: `choose_task` at line 927, `_task_file_count` at line 891. There's already `analysis_only_active` sorting at line 970.
+
+Let me check the existing timeout handling in tool_wrappers.rs more closely.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1040..1070 ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the timeout recovery hint already exists at line 1048-1053. It's basic - just says "try reducing scope." The reverted task #119 wanted to add more specific timeout advice like "--max-depth=N, -m N (max-count), or a specific directory path."
+
+Since the timeout hint already exists, the improvement would be to make it more specific to the actual command being run. But that's trickier - we'd need the command string available, not just the error message.
+
+Let me reconsider my task plan. The timeout hint already handles the basic case. The pre-execution detection (safety.rs) would be the more impactful change - catching unbounded commands BEFORE they run.
+
+So my refined plan:
+
+1. **Task 1: Add bounded-command pre-execution detection to src/safety.rs** 
+   - Detect `find /` without `-maxdepth`, `grep -r /`, `rg /` patterns
+   - This is new functionality that doesn't exist yet
+   - Graph pressure: bash_tool_error=7
+
+2. **Task 2: Improve timeout recovery hints with command-specific advice**
+   - The hint is generic ("try reducing scope") - make it more actionable
+   - Could detect the command type from the tool call and give specific advice
+   - But wait, `targeted_recovery_hint` only receives `tool_name` and `error_msg`, not the command itself
+   - This might be harder than I thought
+
+Let me think about what's actually achievable...
+
+Actually, looking at the assessment more carefully:
+
+"Bugs / Friction Found:
+3. [MEDIUM] Reverted task feedback loop — The bounded-command detection task (issue #119) has been attempted and reverted twice. The preseed task picker keeps re-selecting similar tasks."
+
+"The success-rate-aware scoping fix (issue #121) was designed to address this but also got reverted."
+
+So the most impactful thing I could do is break the feedback loop. The preseed picker keeps re-selecting tasks that keep getting reverted. The #121 fix (success-rate-aware scoping) was supposed to address this by preferring smaller tasks when success rate is low. But #121 itself got reverted.
+
+Let me look at this from a different angle. What task is most likely to succeed?
+
+Looking at the successful Day 140 sessions:
+- 02:33: AgentExitReason in src/prompt.rs + src/state.rs (small, concrete src/*.rs changes)
+- 04:35: 2/2 tasks (what were they? assessment says "Three tasks total, one reverted (ModelCall lifecycle). This was the session that built the exit-reason feature" - wait, that was 02:33)
+- 05:00: 1/1 task
+
+The successful tasks are small Rust source changes. The failed tasks are either too broad (touching multiple unrelated modules) or planning-heavy.
+
+OK, my final plan:
+
+**Task 1: Add bounded-command pre-execution detection to src/safety.rs** (refined from seed)
+- Small, concrete, one file, clear test cases
+- Graph pressure: bash_tool_error=7
+
+**Task 2: Make preseed task picker skip previously-reverted tasks** 
+- If a task was reverted in the last 2 sessions, don't re-select it
+- File: scripts/preseed_session_plan.py
+- This breaks the reverted-task feedback loop (#119 reverted twice, #121 reverted, #118 blocked)
+- Small change (~20 lines)
+
+Wait, but how would the picker know what was reverted? It would need to read the agent-self issues or the trajectory data. That might be more complex than I think.
+
+Let me keep it simple. Three micro-tasks, each one file:
+
+**Task 1: Add bounded-command pre-execution detection to src/safety.rs**
+- ~40 lines + tests
+- Verifier: cargo test safety
+
+**Task 2: Add success-rate-aware candidate sorting to preseed_session_plan.py**
+- ~15 lines in choose_task
+- When success_rate <= 0.5, prefer single-file candidates
+- Verifier: python3 scripts/preseed_session_plan.py --test
+
+**Task 3: Add model call started guard before all completion sites in src/prompt.rs**
+- From #118 - the implementation agent concluded "the forward case is actually ALREADY PROPERLY GUARDED"
+- But wait, #118 says the agent spent 24 turns reading code and concluded no bug exists
+- This task should be an investigation task: verify the guard exists, then write the obsolete note
+- Actually, that's diagnostic-only, not a fitness improvement
+
+Hmm, let me reconsider task 3. The assessment says #118 was "blocked by agent; no implementation landed" and the implementation notes show the agent concluded the forward case is already guarded. So this task is actually not needed - the issue should be closed as obsolete.
+
+Let me write the issue response for #118 saying investigation showed no bug, and focus on two real tasks.
+
+Actually, I should also think about whether there's anything actionable about the evaluator timeout issue. The assessment says evaluator_timeout_count=1. Can I fix that? The evaluator is in evolve.sh which is protected. So no.
+
+OK, final plan: 2 tasks.
+
+**Task 1: Add bounded-command pre-execution detection to src/safety.rs**
+**Task 2: Add success-rate-aware candidate sorting to preseed_session_plan.py**
+
+And I'll refine the seed task_01.md into task 1, add task_02.md for task 2, and write issue_responses.md.
+
+Let me also write a task_01_obsolete.md for the seed task since it's contradicted by evidence.
+
+Actually, the instructions say: "do not delete it unless you immediately write an equal-or-better evidence-backed task file." I'm replacing it, so I write the new task_01.md (which overwrites the old one) and explain the contradiction. I don't need a separate obsolete file if I'm replacing it - the instructions say "Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md." The "or" means I can replace rather than write the obsolete note.
+
+Let me write the files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. The existing timeout hint already covers the basic case. Now let me verify one more thing about the `choose_task` function structure before writing the plan.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:927..987 ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the structure clearly:
+
+- `choose_task` gets assessment text, computes metrics
+- `analysis_only_active` already exists and filters candidates
+- At line 970-972, there's already a sort for `analysis_only_active` that prefers src-file tasks
+- I need to add a similar sort for low success rate
+
+The function already has `_task_file_count` at line 891 and `_has_src_files` accessible. The metrics dict has `task_success_rate`.
+
+Now let me check what `_has_analysis_only_pressure` looks like and what metrics keys are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def _has_analysis_only_pressure\|def _has_src_files\|task_success_rate\… ✓ (742ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me read line 862 to see the `_has_analysis_only_pressure` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..892 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me also quickly check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_ANALYSIS_ONLY_METRICS' scripts/preseed_session_plan.py | head -5 ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..865 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the context I need. Let me write the plan files.
+
+My plan:
+
+1. **Refine task_01.md** - replace the stale seed task with: "Add bounded-command pre-execution detection to bash safety checker"
+   - File: `src/safety.rs` only
+   - Graph pressure: bash_tool_error=7
+   - ~40 lines + tests
+
+2. **task_02.md** - "Add success-rate-aware candidate sorting to preseed task picker"
+   - File: `scripts/preseed_session_plan.py` only  
+   - Graph pressure: task_success_rate=0.5, reverted task feedback loop
+   - ~15 lines + test
+
+3. **issue_responses.md** - respond to issues
+
+For the seed task contradiction: the seed task's premise is "The harness reached planning with no task artifacts" but the assessment clearly shows we have rich evidence and the preseed picker DID produce a task. The real problem is different: tasks are being selected, attempted, and reverted.
+
+Let me write all three files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the context needed. Let me write the plan files. The seed task_01.md is contradicted by fresh assessment evidence (the assessment is evidence-rich, the preseed picker did produce a task, and graph pressure rows show concrete problems — not a "no task artifacts" scenario). I'll replace it with an evidence-backed task.
+  - Title: Repair evidence-backed planning after no-task sessions
+  - Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Add bounded-command pre-execution detection to bash safety checker
+  + Files: src/safety.rs
+  + Issue: #119 (scoped down — safety.rs only, drop tool_wrappers.rs)
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - Graph-derived pressure #4: `failed_tool_summary.bash_tool_error=7` — the dominant tool failure category across multiple sessions (trajectory 2026-07-19T02:51Z).
+  + - GH Actions log feedback: "command timed out after 120s (3x), command timed out after 180s (2x)" — recurring timeout pattern (assessment).
+  + - Log feedback corrected lesson: "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks."
+  + - The previous attempt (#119) was reverted twice because it was too broad (touching both `src/safety.rs` AND `src/tool_wrappers.rs`). This task scopes down to only the pre-execution detection in `src/safety.rs`.
+  + - `src/safety.rs` already has 20+ check functions following the pattern `fn check_X(cmd: &str) -> Option<String>` wired into `analyze_bash_command` at line 23. Adding one more check function is low-risk.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (56 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (56 lines) ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add success-rate-aware candidate sorting to preseed task picker
+  + Files: scripts/preseed_session_plan.py
+  + Issue: #121 (scoped down — single sort block only)
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Graph-derived pressure #1: "Raise verified task success rate (task_success_rate=0.5): Dominant task failure: task_unlanded_source_count=1 (source edits not landed). Consider smaller, self-contained tasks that can pass verification independently." (trajectory 2026-07-19T02:51Z).
+  + - Day 140 (16:58): 1/2 strict verified, task states include `reverted_unlanded_source_edits=1`. Day 140 (10:39): 0/2 strict verified, `reverted_no_edit=1, reverted_unlanded_source_edits=1` (assessment).
+  + - The preseed task picker currently treats all sessions the same regardless of recent success rate. A session coming off 0/2 or 1/2 reverts gets the same task candidates as a session coming off 2/2 success.
+  + - The previous attempt (#121) was reverted due to evaluator timeout (not a code defect). The task scope is reduced: only the sort block in `choose_task`, no TASKS list changes, no new template.
+  + - `choose_task` at line 927 already has an `analysis_only_active` sort block (lines 970-972) that prefers src-file candidates. The new sort block follows the same pattern for low success rate.
+  + - `_task_file_count` already exists at line 891. `numeric_metrics` extracts `task_success_rate` from assessment text.
+  + 
+  + Edit Surface:
+  + - scripts/preseed_session_plan.py (add success-rate-aware sort block in `choose_task`, add one test case)
+  + 
+  + Verifier:
+  + - python3 scripts/preseed_session_plan.py --test
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (60 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (60 lines) ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write the issue_responses.md. I need to address all the issues shown:
+
+- #121: Implement as task (Task 2)
+- #120: Planning-only session - acknowledge, no action (journaled)
+- #119: Implement as task (Task 1, scoped down)
+- #118: Task reverted: ModelCall lifecycle - investigation showed no bug, close
+- #116: Planning-only session - acknowledge, no action (journaled)
+- #90: Help wanted - still waiting for human
+
+Also need to address the trusted owner issues - but there are none shown in the ISSUES_TODAY.md section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 141
+  + 
+  + ## #121: Task reverted: success-rate-aware task scoping
+  + → **Implement as Task 2** (scoped down). The original task was reverted due to evaluator timeout, not a code defect. This attempt reduces scope to a single sort block (~15 lines) in `choose_task` with one test case. No TASKS list changes, no new templates.
+  + 
+  + ## #120: Planning-only session Day 140
+  + → **Acknowledge, no action.** The session produced no code but the cause was identified (exit code 1, no post-mortem). Day 140 (02:33) shipped `AgentExitReason` to make these opaque failures diagnosable going forward. The fix is already in place; this is now a monitoring question.
+  + 
+  + ## #119: Task reverted: bounded-command detection
+  + → **Implement as Task 1** (scoped down — safety.rs only). The task was reverted twice because it was too broad (touching both `src/safety.rs` AND `src/tool_wrappers.rs`). This attempt only adds the pre-execution detection function to `src/safety.rs` (~40 lines + tests). The timeout recovery hint in `src/tool_wrappers.rs` already exists (line 1048) and handles the post-hoc case.
+  + 
+  + ## #118: Task reverted: ModelCall lifecycle gap
+  + → **Close — investigation showed no forward-case bug.** The implementation agent spent 24 turns reading `src/prompt.rs` and `src/state.rs` and concluded: "the forward case is actually ALREADY PROPERLY GUARDED." Every ModelCallCompleted emission site is structurally preceded by a ModelCallStarted. The 357 unmatched completions are from historical data before ModelCallStarted was added — the backward-case janitor in `scripts/append_terminal_state_events.py` already handles these. No code change needed. Will close with a summary of the investigation.
+  + 
+  + ## #116: Planning-only session Day 139
+  + → **Acknowledge, no action.** Similar to #120 — the session predates the `AgentExitReason` feature. Day 139 later sessions (17:12, 19:10) shipped code successfully (2/2 and 2/2 strict verified). The pattern was temporary.
+  + 
+  + ## #90: Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + → **Still waiting.** No human reply since Day 140. The fix is genuinely small — two fields (`cache_read_input_tokens`, `cache_creation_input_tokens`) in yoagent's `Usage` struct. The diagnostic paths (`stream-check`, `fim-complete`) prove the data is there. Will keep checking. No new comment needed unless something changed.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (19 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (19 lines) ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify my plan files are valid and complete. Let me list the session_plan directory.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan is complete and well-formed.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "---" && wc -l session_plan/*.md ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. All files are in place. Let me do a quick sanity check on my tasks:
+
+Task 1: `src/safety.rs` - add `check_unbounded_command`, wire into `analyze_bash_command`, add tests
+- One file ✓
+- Under 60 lines ✓
+- Clear verifier: `cargo test safety -- --test-threads=1` ✓
+- Addresses graph pressure: bash_tool_error=7 ✓
+- Scoped down from #119 ✓
+
+Task 2: `scripts/preseed_session_plan.py` - add success-rate-aware sort in `choose_task`, add one test
+- One file ✓
+- ~15 lines ✓
+- Clear verifier: `python3 scripts/preseed_session_plan.py --test` ✓
+- Addresses graph pressure: task_success_rate=0.5 ✓
+- Scoped down from #121 ✓
+
+Both tasks are micro-tasks that should complete in well under 20 minutes. Both address concrete graph pressure rows. Both are independent and verifiable.
+
+Issue responses: all 7 issues addressed. #118 gets closed (investigation complete). #119 and #121 get implemented. #90, #116, #120 acknowledged.
+
+This looks solid. Let me summarize.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's what I produced:
+
+## Session Plan — Day 141
+
+### Task 1: Bounded-command pre-execution detection
+• **File:** `src/safety.rs` only (~40 lines + tests)
+• **Addresses:** Graph pressure `bash_tool_error=7` — the #1 tool failure category
+• **Scoped down from #119:** Previous attempts failed touching both `safety.rs` + `tool_wrappers.rs`. This is safety.rs only.
+• **Verifier:** `cargo test safety -- --test-threads=1`
+
+### Task 2: Success-rate-aware candidate sorting
+• **File:** `scripts/preseed_session_plan.py` only (~15 lines + 1 test)
+• **Addresses:** Graph pressure `task_success_rate=0.5`, breaks the reverted-task feedback loop
+• **Scoped down from #121:** Previous attempt was reverted (evaluator timeout). This is a single sort block only.
+• **Verifier:** `python3 scripts/preseed_session_plan.py --test`
+
+### Issue Responses
+• **#121 → Task 2** (scoped down retry)
+• **#119 → Task 1** (scoped down retry, safety.rs only)
+• **#118 → Close** — implementation agent proved no forward-case bug exists; all ModelCallCompleted sites are guarded
+• **#120, #116 → Acknowledge** — `AgentExitReason` already shipped to diagnose these
+• **#90 → Still waiting** — no human reply
+
+### Why these two tasks
+Both address the highest-ranked graph pressure rows from the trajectory. Both are micro-tasks (single file, under 60 lines each) designed to avoid the evaluator-timeout pattern that reverted the previous attempts. The seed task was contradicted by fresh assessment evidence (the assessment IS evidence-rich, and concrete graph pressure rows exist) — replaced rather than propagated.
+
+
