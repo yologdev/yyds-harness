@@ -1,0 +1,360 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 1170 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the state and plan tasks for this session. I have:
+
+1. **Trajectory evidence**: task_success_rate=0.5, task_verification_rate=0.5, bash_tool_error=4, deepseek_model_call_unmatched_completed_count=24
+2. **Assessment evidence**: State format migration debt (hybrid event format), 3/5 CI runs cancelled (session overlap), cache metrics gap (#90 upstream blocked)
+3. **Open agent-self issues**: #124 (already landed!), #121 (preseed success-rate-aware), #118 (ModelCall lifecycle forward case), #116 (Day 139 planning-only), #105 (cache metrics - blocked upstream)
+4. **Graph pressure**: Raise task success rate, require strict verifier evidence, bound failing shell commands, replace stale/obsolete tasks, close lifecycle gaps
+
+Key observations:
+- #124 is already resolved (bash bounded-command landed in the 02:47 session) - should close it
+- #121 (preseed success-rate-aware) was reverted - evaluator timeout. Worth retrying but smaller scope
+- #118 (ModelCall lifecycle forward case) was blocked - agent spent turns analyzing without landing code. The implementation agent found the forward case is already properly guarded and the gap is historical. Should close as already-guarded.
+- #105 (cache metrics) is blocked on #90 upstream - skip
+- #116 is an aggregate issue - no specific action
+
+The graph pressure rows are clear:
+1. Task success rate is 0.5 with obsolete tasks being selected
+2. Task verification rate at 0.5
+3. bash_tool_error=4
+4. Stale/obsolete tasks being served
+5. Lifecycle gaps (model_call_unmatched_completed=24, down from 357)
+
+Let me check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls session_plan/ 2>/dev/null && echo "---EXISTS---" || echo "---EMPTY---" ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing task_01.md to see if the harness already seeded one.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the files referenced in this task actually exist, and whether the assessment contradicts the need for this task.
+
+The seed task says "recent runs reached planning without durable task files" but the assessment says Day 141 had two sessions that both had tasks (1/2 strict verified each). The trajectory shows tasks are being selected and partially verified - the issue is task *quality* (obsolete tasks, reverted tasks), not absence of tasks. The seed task seems slightly misaligned with the current evidence.
+
+However, the graph pressure does show "Replace stale or already-satisfied tasks (task_obsolete_count=1)" and "Raise verified task success rate (task_success_rate=0.5)". The preseed contradiction detector IS a relevant area to improve.
+
+Let me check if the files exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ for f in scripts/preseed_session_plan.py scripts/task_manifest.py scripts/test_t… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all three files exist. Now let me assess what tasks to plan. The seed task (#1) is about fixing the preseed contradiction detector. Let me look at whether the seed task is evidence-backed from the current assessment and trajectory.
+
+The assessment mentions:
+- task_success_rate=0.5
+- task_obsolete_count=1 (obsolete selected tasks being served)
+- "The preseed contradiction detector and task manifest quality checks exist but miss some cases"
+- Issue #124 is a perfect example: a task was selected that was already done
+
+The seed task is reasonable but needs refinement to be more specific to the actual observed failure modes. Let me refine it.
+
+For task 2, the graph pressure says:
+- "Raise verified task success rate (task_success_rate=0.5)"
+- "Require strict verifier evidence for tasks (task_verification_rate=0.5)"
+
+Issue #121 (success-rate-aware task scoping) is the most actionable. It was reverted last time but the assessment says evaluator timed out - the implementation didn't fail, the evaluator timed out waiting. The scope was reasonable (single file: preseed_session_plan.py), and it's directly tied to the graph pressure.
+
+For task 3, the lifecycle gaps are the largest structural pressure. But #118 was investigated by the implementation agent and found the forward case is already guarded - the 24 unmatched completions are likely historical. The number dropped from 357 to 24, which suggests the janitor is working. Let me not reopen that.
+
+Instead, let me focus on the state format migration issue: `state summary` shows "runs: 0 started, 0 completed" despite 199 events. This is real and affects observability.
+
+Actually, let me reconsider. The assessment has clear evidence for these tasks:
+
+1. **Task 1 (seed refined)**: Fix preseed contradiction detector to catch "already landed" tasks - evidence: #124 shows a task was selected that was already implemented in a prior session. This directly addresses `task_obsolete_count=1`.
+
+2. **Task 2**: Success-rate-aware task scoping (#121) - evidence: task_success_rate=0.5, graph pressure. Single file change in preseed_session_plan.py.
+
+3. **Task 3**: State summary format migration fix - evidence: `state summary` shows "runs: 0 started, 0 completed" with 199 events. This is the state format migration debt the assessment identified.
+
+Wait - task 3 touches state.rs and/or commands_state.rs which are huge files (8K and 25K lines). But the fix might be small. Let me think about scope.
+
+Actually, the assessment says the issue is "The state event file contains both old-format event lines (binary-prefixed, timestamp+type headers) and new-format structured JSON. The state summary command can't count runs from this mixed format." This is format migration debt. The fix would be in the state reader - probably `src/state.rs` or `src/commands_state.rs`.
+
+But these are huge files and the task might be too big for 20 minutes. Let me think about whether there's a simpler, more targeted fix.
+
+Actually, let me reconsider my task selection. The seed task is about preseed contradiction detection. The #121 issue is about success-rate-aware scoping (also in preseed). Both touch the same file. I could combine them into one task or keep them separate.
+
+Given the task sizing rules (at most 3 source files, completable in 20 minutes), combining them into one preseed improvement task makes sense. Then I can have a second task for the state summary issue.
+
+Let me plan:
+
+Task 1: Refine the seed - focus on the specific contradiction detection gap shown by #124 (already-landed tasks served as new) + success-rate-aware scoping. Both in preseed_session_plan.py.
+
+Task 2: Fix state summary to handle hybrid event format - this is the "runs: 0 started, 0 completed" bug.
+
+Let me check what symbols to look for in the state summary code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n 'runs:.*started\|runs:.*completed\|fn.*summary\|fn.*count_runs' src/comman…  ▶ $ rg -n 'RunStarted\|RunCompleted\|fn.*read_events\|fn.*count_events' src/state.rs… ✓ (13ms)
+ ✓ (39ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `rg` available, let me use `grep` instead.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'runs:.*started\|runs:.*completed\|fn.*count_runs\|RunStarted\|RunComple…  ▶ $ grep -n 'read_events\|count_events\|fn read_' src/state.rs | head -20 ✓ (12ms)
+ ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state summary code around line 3053 to understand the "runs: 0 started, 0 completed" bug.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:3040..3120  ▶ read src/commands_state.rs:3095..3145 ✓ (18ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. At line 3102, `event_string(event, "event_type")` is used to get the event type. The `event_string` function likely extracts from a JSON field. Let me look at how it works and how old-format events are parsed.
+
+The assessment says: "The state event file contains both old-format event lines (binary-prefixed, timestamp+type headers) and new-format structured JSON. The state summary command can't count runs from this mixed format."
+
+So the issue is likely that old-format events don't have an "event_type" JSON field, so `event_string` returns `None`, and `match event_type { "RunStarted" => ... }` never matches. The reads are occurring but old events aren't being classified correctly.
+
+But wait, `event_string` falls back to "Unknown" via `unwrap_or("Unknown")`. So the event type for old-format events would be "Unknown", not "RunStarted"/"RunCompleted". This means the old-format events that contain RunStarted/RunCompleted type info aren't being counted because their format doesn't match the new JSON structure.
+
+Now, let me look at the `event_string` function and how old events are read.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.5s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event_string' src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the event_string function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14477..14507 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`event_string` is simple: it does `event.get(key).and_then(|v| v.as_str())`. For old-format events that don't have an "event_type" JSON field, this returns None, and the code uses `unwrap_or("Unknown")` which means old format events get classified as "Unknown" and never counted as RunStarted/RunCompleted.
+
+Now let me look at how events are read. The `read_events` and `read_events_bounded` functions parse the event file. Let me look at the `read_events` function used by `state summary`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn read_events\b\|fn read_events_bounded' src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1443..1503 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. `read_events` at line 1443 calls `crate::state::read_compatibility_events(path)` which reads the raw file and then for each line calls `compatibility_event_json_line` to normalize it. Let me look at that function to see if it properly normalizes old-format events to have `event_type` as a JSON field.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3256..3336 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to look at `compatibility_event_json_line` to understand how old-format events get normalized.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn compatibility_event_json_line' src/state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3241..3261 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see `parse_state_event_line` and `compatibility_event_value` to understand how old events are normalized.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn parse_state_event_line\|fn compatibility_event_value\|fn normalize_e… ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `compatibility_event_value` and `normalize_event_json_line` to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3353..3433  ▶ read src/state.rs:3234..3244 ✓ (24ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `compatibility_event_value` function at line 3353 creates a JSON object with `event_type` set from `event_type_label(&event.event_type)`. This is the key - it normalizes old-format events into the new JSON format with an `event_type` field. So old events SHOULD be readable through this path.
+
+But the assessment says `state summary` shows "runs: 0 started, 0 completed" with 199 events. Let me check how `state summary` actually reads events. It may not be using `read_compatibility_events` but instead reading raw JSON directly.
+
+Let me look at how `state summary` reads events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn.*state_summary\|fn.*build_summary\|fn.*summary_report\|handle_state_… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how `handle_state_summary` calls `build_state_summary` and what event reader it uses.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1353..1393  ▶ read src/commands_state.rs:2973..3023 ✓ (7ms)
+ ✓ (29ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. At line 1356, `handle_state_summary` calls `read_tail_events(&path, limit)` with `limit` from the caller. Let me check what limit is passed when `state summary` is called without `--limit`.
+
+The default `limit` for `state summary` comes from the `StateSubcommand::Summary` match. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'Summary\b.*=>\|"summary".*=>\|Summary.*limit\|handle_state_summary' src… ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `state summary` uses a default limit of 200, which then calls `read_tail_events` with `limit=200`. Let me look at `read_tail_events` again. At line 1482-1495:
+
+```rust
+fn read_tail_events(path: &Path, limit: usize) -> Result<(Vec<Value>, String), String> {
+    if limit == 0 {
+        return crate::state::read_events_bounded(path, BOUNDED_FULL_SCAN_CAP);
+    }
+    let raw_lines = read_tail(path, limit)
+        .map_err(|e| format!("error reading tail of {}: {e}", path.display()))?;
+    let mut events = Vec::with_capacity(raw_lines.len());
+    for line in &raw_lines {
+        if let Ok(value) = serde_json::from_str::<Value>(line) {
+            events.push(value);
+        }
+    }
+    Ok((events, String::new()))
+}
+```
+
+When `limit` is non-zero, it uses `read_tail` to read the last N lines, then for each line does `serde_json::from_str::<Value>(line)` - just raw JSON parsing. It does NOT call `compatibility_event_json_line` to normalize old-format events.
+
+This is the bug! When `limit > 0`, `read_tail_events` parses raw JSON lines without normalizing old-format events. The old-format events (binary-prefixed) would fail `serde_json::from_str` and get silently dropped, or if they're raw JSON but lack the `event_type` field, they'd get classified as "Unknown" and not counted as RunStarted/RunCompleted.
+
+Wait, actually - let me re-read. `read_tail_events` returns `(Vec<Value>, String)` and for each raw line, it does `serde_json::from_str::<Value>(line)`. If the line is old-format binary-prefixed, this would fail and the event would be silently dropped. Only new-format JSON events would survive.
+
+But the assessment says `state summary` shows 199 events. So 199 events are surviving the JSON parse. But the old-format events that have RunStarted/RunCompleted info are being dropped.
+
+Actually wait, let me check what `read_tail` does - maybe it already strips binary prefixes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn read_tail\b' src/commands_state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1400..1450 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `handle_state_summary` with `limit=200` calls `read_tail_events(&path, 200)`
+2. `read_tail_events` when `limit > 0` calls `read_tail(path, limit)` which reads raw lines from the file, then does `serde_json::from_str::<Value>(line)` on each
+3. Old-format events (binary-prefixed) would fail `serde_json::from_str` and be silently dropped
+4. The 199 events it reports are only the new-format JSON events - old-format events are dropped
+
+The fix should be in `read_tail_events` - after reading raw lines, it should pass them through `compatibility_event_json_line` (or `normalize_event_json_line`) before JSON parsing, similar to how `read_events_lenient` does.
+
+Wait, actually `read_events_lenient` already does this:
+```rust
+let parsed = crate::state::compatibility_event_json_line(line)
+    .ok()
+    .and_then(|normalized| serde_json::from_str::<Value>(&normalized).ok())
+    .or_else(|| serde_json::from_str::<Value>(line).ok());
+```
+
+So the fix in `read_tail_events` would be to apply the same normalization before JSON parsing.
+
+Now, this is a good task but it touches `src/commands_state.rs` (25K lines) and `src/state.rs` (8K lines). The fix is small but the files are huge. The assessment already identified this issue clearly.
+
+OK let me now plan my tasks:
+
+**Task 1 (seed refined)**: Fix preseed contradiction detection to catch already-landed tasks. The seed task is generic; I need to make it specific to the #124 pattern: a task was selected that was already implemented in a prior session. The fix is in `scripts/preseed_session_plan.py` - the contradiction detector needs to check if the task's stated problem was already addressed in recent commits.
+
+Actually, the seed task says "Improve yyds fallback task selection and manifest validation" but the real evidence is #124: a task was re-created that was already landed. The issue is in `check_task_contradiction` in `preseed_session_plan.py` - it needs to detect when a task says "add X" and X already exists in the codebase.
+
+But wait - the seed task mentions `scripts/task_manifest.py` and `scripts/test_task_manifest.py` too. Let me check if those are relevant.
+
+Actually, let me step back. The seed task seems misaligned. The seed was written by the harness before the assessment ran. The assessment and trajectory show different issues. Let me refine the seed to match current evidence.
+
+The strongest graph pressure is:
+1. "Replace stale or already-satisfied tasks (task_obsolete_count=1)" - this is the #124 pattern
+2. "Raise verified task success rate (task_success_rate=0.5)" - this is the #121 scope
+
+These are related - both improve task selection quality. I can combine them into a single preseed improvement task.
+
+For the state summary fix, that's a separate, clean task. But it has a risk: `commands_state.rs` is 25K lines - finding the right fix location might be complex. The assessment already identified the exact issue: hybrid format events aren't normalized in `read_tail_events`.
+
+Let me plan:
+
+**Task 1**: Refine the seed - specific preseed contradiction detection improvements:
+- Fix the contradiction detector to catch already-landed tasks (#124 pattern)
+- Add success-rate-aware scoping (#121 pattern, simplified)
+- Files: `scripts/preseed_session_plan.py`
+
+**Task 2**: Fix `state summary` to count runs correctly with hybrid event format
+- In `read_tail_events`, apply `compatibility_event_json_line` normalization before JSON parsing
+- Files: `src/commands_state.rs`
+
+That's 2 tasks addressing the top 2 graph pressures. Let me also address the issue responses:
+
+- #124: Close as already-resolved (landed in Day 141 02:47 session)
+- #121: Will implement as Task 1 (scope reduction)
+- #118: Close - implementation investigation found the forward case is already guarded, gaps are historical
+- #116: Keep open - aggregate issue, no new action
+- #105: Skip - blocked on #90 upstream
+- #90: Keep open - still waiting for human with yoagent access
+
+Now let me write the task files and issue_responses.md.
+
+First, let me refine Task 1. Let me check the `check_task_contradiction` function in preseed_session_plan.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def check_task_contradiction\|def choose_task\|def _task_file_count\|an… ✓ (11ms)
+
+
