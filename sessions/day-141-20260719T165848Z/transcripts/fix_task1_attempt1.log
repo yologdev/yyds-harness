@@ -1,0 +1,630 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task carefully:
+
+1. The evaluator says no changes were made (empty git diff) - the task requires modifying `scripts/preseed_session_plan.py`
+2. The goal is to inject trajectory gnome evidence into seed tasks when assessment.md is missing
+3. I need to understand the current code structure first
+
+Let me start by reading the relevant file and understanding the trajectory extractor output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+  ▶ todo ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading both files to understand the current structure.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.5s (5 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ read scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that the code already has some trajectory gnome injection logic at lines 2300-2324. Let me read more carefully.
+
+Looking at lines 2295-2344, I can see there's already some trajectory gnome injection code. But the evaluator says no changes were made - so this code might not be working correctly, or there might be additional issues.
+
+Let me look at:
+1. The `choose_task` function to understand how assessment_was_missing is used
+2. The trajectory data format from extract_trajectory.py
+3. The --test mode
+4. The argument parsing
+
+Let me read more of the file to understand the full picture, focusing on `choose_task`, `numeric_metrics`, and the argument parsing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2230..  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'def numeric_metrics' in scripts/preseed_session_plan.py  ▶ search 'def render_task' in scripts/preseed_session_plan.py ✓ (17ms)
+ ✓ (29ms)
+ ✓ (23ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the code at lines 2300-2324 already has trajectory gnome injection logic. But it has a condition: `args.trajectory_file` needs to exist AND `assessment.name == "assessment_missing.md"`. 
+
+Wait - I see a logical issue. At line 2288-2295, if the assessment file doesn't exist, the function returns 0 early. The trajectory gnome injection code at lines 2300-2324 runs after line 2297, which tries to read the assessment file. But the condition at line 2288 says: if assessment doesn't exist, return early. But the trajectory injection expects `assessment.name == "assessment_missing.md"` - which implies the file exists but has a specific name.
+
+Let me look at the argument parsing to understand what `--trajectory-file` is and how `--assessment` is passed. Let me also look at `choose_task` and `render_task` to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.2s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:927..1077  ▶ read scripts/preseed_session_plan.py:742..822  ▶ read scripts/preseed_session_plan.py:1302..1402 ✓ (26ms)
+ ✓ (22ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the rest of the `choose_task` function (from line 1076 onward) and understand the full trajectory evidence enrichment logic. I also need to check if there's recently-landed work detection.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1076..1276  ▶ search 'recently_landed|git log|recently.landed' in scripts/preseed_session_plan.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clearer picture. Let me analyze:
+
+1. The code at lines 2300-2324 attempts to inject trajectory gnomes into the assessment text before `choose_task` is called. This is the first injection point.
+
+2. The code at lines 1017-1193 (inside `choose_task`) does trajectory evidence enrichment when the fallback path is hit (when no candidates match). It reads trajectory gnomes from the assessment text using `numeric_metrics(assessment)`.
+
+3. The code at lines 1041-1096 adds trajectory gnomes to evidence, and changes the `files` field to include `src/state.rs` when there are actionable src gnomes.
+
+4. The code at lines 1137-1191 handles the case where exit_code=0 and no provider error - it changes the title and objective when there are actionable src gnomes.
+
+Now, here's the issue: the evaluator says "No changes were made (empty git diff)". Let me check what the current git status is.
+
+Wait - the user says the evaluator rejected the implementation. Let me check the git status to understand what's there and what's missing.
+
+Actually, looking more carefully, the question is what changes need to be made. Let me look at the test cases to understand what's tested vs what's missing.
+
+Let me check the test that validates trajectory evidence enrichment (around line 2200) and see what other tests exist.
+
+Let me also check: the task says "the seed task picker should consume at minimum: task_success_rate, task_verification_rate, task_obsolete_count, and the top graph-pressure row." Let me look at what `extract_trajectory.py` produces to understand the gnome format.
+
+Let me also check: does `--trajectory-file` get passed in `evolve.sh`? And does the existing code actually work end-to-end?
+
+Let me read the test section more carefully and also check how the assessment_missing guard works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2180..2300  ▶ search 'assessment_missing_guard|assessment_missing\.md' in scripts/preseed_session_plan.py  ▶ search 'def current_evidence_text' in scripts/preseed_session_plan.py ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the full flow:
+
+1. The `main()` function at line 1359:
+   - Lines 2288-2295: If assessment doesn't exist, write `planning_failure.md` and return. **This is the problem!** When the assessment file doesn't exist, it returns early without generating any seed task. But the task says we need to use trajectory data to still produce a seed task.
+
+   Wait, but the task says `assessment_missing.md` - that's a special file that is written when the assessment phase runs but doesn't produce the real `assessment.md`. Let me check where `assessment_missing.md` is written vs when `assessment.md` is simply absent.
+
+Let me search for "assessment_missing" in evolve.sh to understand the flow.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_missing' in scripts/evolve.sh ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the evolve.sh around line 1380 to understand the flow better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1345..1425 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. When assessment.md is produced → `preseed_session_plan.py --assessment session_plan/assessment.md` is called
+2. When assessment.md is NOT produced → `assessment_missing.md` is written by evolve.sh, then `preseed_session_plan.py --assessment session_plan/assessment_missing.md` is called
+
+BUT: evolve.sh does NOT pass `--trajectory-file` to `preseed_session_plan.py`! So even though the code at lines 2300-2324 of preseed_session_plan.py tries to augment assessment with trajectory gnomes, it checks `args.trajectory_file`, which is never set.
+
+Also, the code at lines 2288-2295 returns early when `args.assessment` doesn't exist - but `assessment_missing.md` DOES exist (it's just empty or contains the guard text), so that path should be fine.
+
+Let me trace the actual problems:
+
+1. **`--trajectory-file` is never passed**: evolve.sh line 1386-1390 calls preseed_session_plan.py without `--trajectory-file`. So even though there's trajectory injection code at lines 2300-2324, it never activates.
+
+2. **The code at lines 2300-2324** tries to inject trajectory gnomes from `--trajectory-file` into the `assessment` variable before `choose_task` is called. But since evolve.sh doesn't pass it, this code path is dead.
+
+3. **The code inside `choose_task` at lines 1041-1096** already handles trajectory enrichment from metrics found WITHIN the assessment text. It uses `numeric_metrics(assessment)` to find trajectory gnomes in the assessment text. This works if the assessment text contains trajectory gnomes.
+
+4. **The test at line 2200** tests that when `assessment_missing.md` text contains trajectory gnomes like "task_no_edit_revert_count = 1; task_obsolete_count = 1", the fallback task properly uses them.
+
+So the current code already handles the case where:
+- The assessment_missing.md text already contains trajectory gnomes
+- The trajectory gnomes are embedded within the assessment text
+
+The gap is:
+- The `--trajectory-file` path (lines 2300-2324) is dead code because evolve.sh never passes it
+- But the internal `choose_task` path (lines 1041-1096) already does trajectory enrichment if the assessment text contains gnomes
+
+Wait, let me re-read the task requirements:
+
+> When the assessment phase produces no assessment.md, the fallback seed task in preseed_session_plan.py should include trajectory gnome evidence
+
+> The seed task picker can detect recently-landed work (via git log) and avoid re-creating tasks that were already completed.
+
+The "recently-landed work" detection is a new feature that doesn't exist yet. Let me check what the current code does about obsolete tasks.
+
+Also, let me check how `assessment_missing.md` gets trajectory gnomes in it. The current evolve.sh just writes the guard text (lines 1356-1376) - it doesn't include trajectory gnomes.
+
+So the flow is:
+1. evolve.sh creates `assessment_missing.md` with guard text only (no gnomes)
+2. preseed_session_plan.py reads it, finds no gnomes in it
+3. `choose_task` with `assessment_was_missing=True` hits the fallback path
+4. The fallback path at lines 1041-1046 calls `numeric_metrics(assessment)` which finds no gnomes because the assessment_missing.md text doesn't contain them
+5. So `trajectory_evidence_str` becomes "Trajectory evidence unavailable..." 
+
+This means the trajectory gnomes are NOT being injected when assessment.md is missing! That's the main problem.
+
+Now let me think about what needs to change:
+
+**Option A**: Modify evolve.sh to pass trajectory data to preseed_session_plan.py via `--trajectory-file`
+- But the task says "Do NOT modify evolve.sh or protected workflow files"
+- evolve.sh is in PROTECTED_IMPLEMENTATION_FILES
+
+**Option B**: Modify preseed_session_plan.py to pull trajectory data itself (run extract_trajectory.py or read trajectory.md directly when assessment is missing)
+- This is the right approach since it only changes the allowed file
+
+Actually, wait. Let me re-read the task: "Do not modify protected files (scripts/evolve.sh, .github/workflows/)." So I can only modify preseed_session_plan.py.
+
+And the original instruction says the evaluator rejected because "No changes were made (empty git diff)".
+
+Let me check what the current git status is.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status && git diff ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so there ARE changes already made! Let me see the full diff to understand what's been implemented.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/preseed_sessi… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me see it in full.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --no-color scripts/pr… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff output is being truncated. Let me look at the actual file content around the changed lines to see what's there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2290..2340 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the code is in place. The diff shows:
+1. Added `--trajectory-file` argument
+2. Added the trajectory gnome injection block at lines 2300-2324
+
+The problem is that evolve.sh never passes `--trajectory-file` and the task explicitly says "Do NOT modify evolve.sh". But the code must work even without `--trajectory-file` being passed.
+
+Wait, let me re-read the evaluator feedback: "No changes were made (empty git diff) — the task requires modifying scripts/preseed_session_plan.py to inject trajectory gnome evidence into seed tasks when assessment.md is missing, but no code was actually implemented."
+
+But there ARE changes (the diff is not empty). So maybe the evaluator saw a different state? Or maybe the evaluator expected different changes?
+
+Actually wait - let me re-read the task. It says:
+
+> Edit Surface:
+> - scripts/preseed_session_plan.py (the fallback task seeding logic that runs when assessment.md is absent)
+
+> Implementation Notes:
+> - In preseed_session_plan.py, the `choose_task` function or the harness seed path should pull from available trajectory data when assessment.md is absent.
+> - The trajectory extractor (`scripts/extract_trajectory.py`) already produces structured gnome data; the seed task picker should consume at minimum: task_success_rate, task_verification_rate, task_obsolete_count, and the top graph-pressure row.
+> - Keep the change minimal — add trajectory evidence injection to the seed task rendering path, not a whole new task selection system.
+
+Hmm, the current implementation only works if `--trajectory-file` is passed. But evolve.sh doesn't pass it. The code path at lines 2304-2324 is dead code if `--trajectory-file` is None.
+
+But the task says "The trajectory extractor (`scripts/extract_trajectory.py`) already produces structured gnome data" - so maybe the expectation is that the trajectory data should be available in a standard location (like `$SESSION_STAGING/trajectory.md`) and the preseed script should find it there without needing a CLI flag.
+
+Let me check if there's a standard trajectory output path.
+
+Actually, let me look at the flow more carefully:
+1. In evolve.sh, the trajectory is extracted and goes to `$SESSION_STAGING/trajectory.md`
+2. When assessment_missing.md is the source, the preseed could read trajectory from a standard location
+
+But the real issue might be simpler. Let me look at what the `choose_task` function already does with trajectory data (lines 1041-1096). The `numeric_metrics(assessment)` call extracts gnome-style metrics from the assessment text. But the assessment_missing.md text generated by evolve.sh (lines 1356-1376) doesn't contain any trajectory gnomes!
+
+So when `choose_task` is called with `assessment_was_missing=True`, it gets to the fallback path and tries to extract gnomes from the assessment text - but finds none because the guard text doesn't include them.
+
+The fix should be: when assessment is missing, preseed_session_plan.py should proactively seek out trajectory data, either:
+1. From a known path (like `$SESSION_STAGING/trajectory.md`)
+2. By running extract_trajectory.py itself
+
+But wait, the current code at lines 2300-2324 already tries to do this via `--trajectory-file`. The problem is that evolve.sh doesn't pass this flag.
+
+Let me think about what would be the minimal, self-contained fix:
+
+**The most self-contained approach**: When `assessment_missing.md` is detected (its name is "assessment_missing.md"), the script should attempt to find trajectory data in a standard location. Looking at the evolve.sh flow, the trajectory data is typically in `$SESSION_STAGING/trajectory.md`.
+
+But what would the standard path be? Let me check if there's a standard location...
+
+Actually, looking at the code again, I think the key insight is simpler. The `choose_task` function already has trajectory enrichment logic (lines 1041-1096). The problem is that the assessment text (assessment_missing.md) doesn't contain trajectory gnomes. 
+
+The fix could be: modify the code so that when `assessment_missing.md` is the source, it attempts to find trajectory.md from standard locations, reads it, and injects the gnomes into the assessment text before passing it to `choose_task`. This way, the existing enrichment logic in `choose_task` will work.
+
+Let me think about the standard locations:
+- `$SESSION_STAGING/trajectory.md` - the main trajectory output
+- Maybe also `session_plan/trajectory.md`
+
+Actually, looking at evolve.sh more carefully... Let me check where the trajectory extractor writes its output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'trajectory\.md' in scripts/evolve.sh  ▶ search 'trajectory\.md|output' in scripts/extract_trajectory.py ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the trajectory data is consumed. Maybe it's consumed through the `$YOYO_CONTEXT` or something else.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'trajectory' in scripts/evolve.sh ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the trajectory data is in `$SESSION_STAGING/trajectory.md`, and it's injected into the prompt via `$YOYO_TRAJECTORY`. When the planning agent runs directly (Phase A2), it gets the trajectory block in its prompt.
+
+But the preseed_session_plan.py runs BEFORE the planning agent, and it only gets the assessment file (or assessment_missing.md). It doesn't get the trajectory data directly.
+
+Now I see the bigger picture. The code at lines 2300-2324 was designed to receive trajectory data via `--trajectory-file`, but evolve.sh never passes it. Since we can't modify evolve.sh, we need another way.
+
+Options:
+1. Have preseed_session_plan.py read trajectory from a well-known path (like `$SESSION_STAGING/trajectory.md`)
+2. Have preseed_session_plan.py run extract_trajectory.py itself
+3. Have preseed_session_plan.py look for trajectory.md in the session_plan directory
+
+But actually, wait. Let me re-read what the current state does more carefully:
+
+When assessment_missing.md is passed, `choose_task` at line 1042 calls `numeric_metrics(assessment)` where assessment is the content of assessment_missing.md. The guard text written by evolve.sh doesn't contain trajectory gnomes.
+
+But what if the assessment file was already augmented with trajectory gnomes before `choose_task` is called? That's what lines 2300-2324 try to do. But they require `--trajectory-file`.
+
+**Key insight**: Instead of relying on `--trajectory-file` from evolve.sh, the script should LOOK for trajectory data in standard locations. The standard location is `$SESSION_STAGING/trajectory.md`. But `$SESSION_STAGING` is an env var set in evolve.sh. 
+
+Alternatively, we could look for the trajectory output in a location relative to the assessment file, or in a known standard path.
+
+Actually, let me re-check. The `session_plan/` directory is the output directory. The trajectory.md might also be in the session staging area. But we can't count on env vars.
+
+Another approach: instead of relying on an external file, we can run `extract_trajectory.py` directly from preseed_session_plan.py as a subprocess when assessment is missing. But that's heavy.
+
+The simplest approach that doesn't change evolve.sh: modify preseed_session_plan.py to look for trajectory.md in a well-known relative path. Looking at the evolve.sh code:
+- `TRAJECTORY_FILE="$SESSION_STAGING/trajectory.md"` (line 493)
+- The trajectory is also available through `$YOYO_TRAJECTORY` env var
+
+But the simplest and most robust approach: when `--trajectory-file` is not provided but assessment is `assessment_missing.md`, try to find trajectory data from these fallback locations:
+1. `$SESSION_STAGING/trajectory.md` (env var)
+2. `./session_plan/trajectory.md` (relative path)
+3. Or just run `python3 scripts/extract_trajectory.py` ourselves
+
+Actually wait, let me re-examine. I think the simplest fix is: instead of requiring `--trajectory-file`, have the script try to find the trajectory automatically when assessment is missing. It can look at:
+- A standard path derived from the assessment file location
+- The environment variable `TRAJECTORY_FILE` or `SESSION_STAGING`
+
+Let me check what env vars are available from the harness perspective...
+
+Actually, I think the simplest and most self-contained approach is:
+
+When the assessment file is `assessment_missing.md` AND `--trajectory-file` is not provided, try to find trajectory data by:
+1. Checking if `$SESSION_STAGING/trajectory.md` exists (via env var or default path)
+2. Looking for trajectory.md in the same directory as the assessment file
+
+But actually, I realize there may be an even simpler approach. Let me re-read the task:
+
+> In preseed_session_plan.py, the `choose_task` function or the harness seed path should pull from available trajectory data when assessment.md is absent.
+
+> The trajectory extractor (`scripts/extract_trajectory.py`) already produces structured gnome data; the seed task picker should consume at minimum: task_success_rate, task_verification_rate, task_obsolete_count, and the top graph-pressure row.
+
+The key issue is: the assess_missing.md doesn't contain trajectory gnomes, so the fallback in `choose_task` doesn't have gnome data to work with.
+
+Looking at the current code, the trajectory enrichment inside `choose_task` (lines 1041-1096) extracts gnomes from the assessment text. But the assessment text (when it's assessment_missing.md) only has the guard fields, no gnomes.
+
+The solution: instead of relying on `--trajectory-file` being passed externally, the script should attempt to fetch trajectory data when assessment is missing and `--trajectory-file` is not explicitly provided. 
+
+Here's my plan:
+
+1. Add a function to find the trajectory file from standard locations:
+   - Check `os.environ.get("SESSION_STAGING")` + "/trajectory.md"
+   - Check `session_plan/trajectory.md`
+   - Check `<assessment_dir>/trajectory.md`
+
+2. In the main function, when assessment is missing and `--trajectory-file` is not provided, try to auto-detect the trajectory file.
+
+3. Also: add recently-landed work detection. The task asks for: "The seed task picker can detect recently-landed work (via git log) and avoid re-creating tasks that were already completed."
+
+Let me look at what "recently-landed work detection" means. The task says:
+> Day 141 (16:58) assessment phase: exit_code=0, no provider error, but assessment.md was not written
+> Trajectory shows task_obsolete_count=1 — the planner selected a task that was already completed
+> Day 141 (11:03) session: 1/2 tasks strict-verified, with one task obsolete_already_satisfied
+
+So the issue is: when the seed task picker selects a task, it doesn't check if that task was recently completed (e.g., via git log). The `check_task_contradiction` function should also check git log to see if the specific task title/objective was already addressed.
+
+Let me look at `check_task_contradiction`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:698..748 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me look at the functions that do the code-already-exists and fixture-already-exists checks, since those are related to the "recently-landed work" detection.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _check_code_already_exists|def _check_fixture_already_ex…' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These functions might be defined elsewhere in the file. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search '_check_code_already_exists' in scripts/preseed_session_plan.py  ▶ search '_check_fixture_already_exists' in scripts/preseed_session_plan.py  ▶ search '_line_shows_obsolete_or_reverted' in scripts/preseed_session_plan.py ✓ (19ms)
+ ✓ (20ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:520..610  ▶ read scripts/preseed_session_plan.py:614..674 ✓ (18ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I see that `_check_code_already_exists` already uses `git grep` to check if proposed code already exists. But the task wants "recently-landed work detection" via `git log`. This would be about checking if a task's objective was recently completed based on git history.
+
+Let me think about what specific changes are needed:
+
+1. **Trajectory gnome injection when assessment is missing**: The code already does this via `--trajectory-file`, but since evolve.sh doesn't pass it, we need the script to auto-detect the trajectory file. We can look for it in:
+   - `os.environ.get("SESSION_STAGING", "")` + "/trajectory.md"
+   - `os.path.join(args.output_dir.parent, "trajectory.md")` if output_dir is set
+   - `"session_plan/trajectory.md"` (standard relative path)
+
+2. **Recently-landed work detection**: The `check_task_contradiction` should also check `git log` to see if recent commits relate to the task's objective. This would help avoid creating tasks that were already completed.
+
+Actually, wait. Let me re-read the task requirements more carefully:
+
+> When assessment.md is missing, the seed task's Evidence section includes trajectory-derived gnome metrics (task_success_rate, task_verification_rate, task_obsolete_count, etc.).
+
+The `choose_task` function already does this when `assessment_was_missing=True` (lines 1041-1096) - it adds trajectory gnomes to evidence. But it only finds gnomes if they're present in the assessment text, which they aren't (assessment_missing.md doesn't contain them).
+
+So the fix is: ensure that when assessment is missing, trajectory gnomes end up in the assessment text BEFORE `choose_task` is called (or ensure `choose_task` can find them some other way).
+
+The current implementation (lines 2300-2324) tries to inject trajectory gnomes from `--trajectory-file` into the assessment text. But `--trajectory-file` is never passed.
+
+Let me now plan the specific changes:
+
+**Change 1**: Auto-detect trajectory file when `--trajectory-file` is not provided.
+- Add a helper function that looks for trajectory data in standard locations
+- Called from `main()` before the `choose_task` call
+
+**Change 2**: Add git-log-based recently-landed work detection.
+- Modify `check_task_contradiction` to also check `git log` for recent task completions
+- Or add a new check that looks at recent git commits for evidence that the task's objective was already implemented
+
+**Change 3**: Make the auto-detection work even when `--trajectory-file` is not passed.
+
+Let me now implement these. Let me first check if there are any existing functions that read git log.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.2s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:808..878 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a thorough understanding. Let me check the current state of the test suite (does `--test` pass with the existing code) and then plan my changes.
+
+Let me also look at the `_check_code_already_exists` function more to understand if adding a git-log check would fit naturally.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:669..699 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the existing tests to see if they pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (241ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a test failure. Let me look at line 1782 to understand what's going on.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770..1800 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is test 6 at line 1770-1787. It selects a task with key "search_regex_error" and expects it to be validated. But the test asserts that the task is validated_against_assessment=True, but it's returning False.
+
+Wait - let me look at this more carefully. Line 1780: `task = choose_task(assessment)`. And it expects the title "Reduce recurring search-tool friction before implementation". But the assertion fails saying validated_against_assessment is False.
+
+Let me trace through `choose_task` for this assessment:
+- The assessment contains "search_regex_error" which matches the SEARCH_FRICTION_TASK_TITLE task
+- The code at lines 960-962 activates the search friction task and adds it to candidates
+- But then at lines 974-978, `check_task_contradiction` is called
+
+In `check_task_contradiction`, the assessment has "Day 105 added regex-error recovery hint to search tool errors." in Recent Changes. Let me check if `_line_shows_resolution` would match this.
+
+Let me look at `_line_shows_resolution`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _line_shows_resolution' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `_line_shows_resolution`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:498..523 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me trace the issue:
+
+The assessment has: "Day 105 added regex-error recovery hint to search tool errors."
+
+The SEARCH_FRICTION_TASK_TITLE task has keys = `SEARCH_FRICTION_KEYS` which includes "search_regex_error".
+
+In `_line_shows_resolution`:
+1. `lower = "day 105 added regex-error recovery hint to search tool errors."`
+2. `"search_regex_error"` in lower? Let me check - the word is "search tool errors" not "search_regex_error". So `"search_regex_error"` is NOT in lower.
+3. But wait, one of the keys is "search_regex_error" but the assessment says "search tool errors" - so the key doesn't match.
+
+But we also need to check `_line_shows_obsolete_or_reverted`. The task keys for the search friction task are SEARCH_FRICTION_KEYS: ("search_regex_error", "search_binary_match", "search/grep error", "search/grep errors", "broken regex", "binary file matches").
+
+Let me check if any of these match:
+- `"search/grep error"` - not in "day 105 added regex-error recovery hint to search tool errors"
+- Actually wait, "search tool errors" contains "search" but not "search_regex_error" or any of the other keys.
+
+Hmm, but the test is failing. Let me check if there's a `_RESOLUTION_SIGNALS` variable being matched:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search '_RESOLUTION_SIGNALS' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check _RESOLUTION_SIGNALS.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:462..502 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `_line_shows_resolution` checks:
+1. First: does any key from `task_keys` appear in the line? If not, return False.
+2. If yes: does the line start with "day NNN"? If yes, return True.
+3. If no: does any _RESOLUTION_SIGNALS appear? If yes, return True.
+
+For the failing test:
+- The assessment has: "Day 105 added regex-error recovery hint to search tool errors."
+- The SEARCH_FRICTION_TASK has keys: ("search_regex_error", "search_binary_match", "search/grep error", "search/grep errors", "broken regex", "binary file matches")
+
+Does "search tool errors" contain any of these keys? No! "search_regex_error" is NOT a substring of "search tool errors". So `_line_shows_resolution` returns False.
+
+But then `_line_shows_title_resolution` is called in the code? Wait, let me re-read `check_task_contradiction`:
+
+Lines 722-725:
+```python
+recent_changes = extract_section(assessment, "recent changes")
+for line in recent_changes.splitlines():
+    if _line_shows_resolution(line, task_keys):
+        return True, ...
+```
+
+And lines 729-733:
+```python
+for line in recent_changes.splitlines():
+    if _line_shows_obsolete_or_reverted(line, task_keys, str(task.get("title", ""))):
+        return True, ...
+```
+
+Neither would match since the key isn't in the line.
+
+So the test SHOULD pass (validated_against_assessment should be True). But the assertion says it's False.
+
+Wait, let me look at this more carefully. The issue might be with `check_task_contradiction` returning True when it shouldn't. Let me check `_check_code_already_exists`:
+
+The SEARCH_FRICTION task's files are "scripts/build_evolution_dashboard.py, scripts/extract_trajectory.py, scripts/preseed_session_plan.py, src/tool_wrappers.rs" (need to confirm this).
+
+The keys are SEARCH_FRICTION_KEYS. `git grep` searches for e.g. "search_regex_error" in those files. If it finds a match, the task is contradicted.
+
+Actually, `search_regex_error` likely appears in those dashboard scripts. Let me check...
+
+Wait, actually the problem might be different. Let me re-run with a more verbose approach...
+
+Actually, I think the issue is with the test itself. Let me re-read the test at line 1780:
+
+```python
+assessment = """# Assessment
+...
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+...
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+assert task.get("validated_against_assessment") is True
+```
+
+Now, the question is: does `check_task_contradiction` return True for this task?
+
+Let me trace through the contradiction checks:
+
+1. `_check_fixture_already_exists(task)` - the search friction task title is "Reduce recurring search-tool friction before implementation"... no fixture numbers in it. Returns False.
+
+2. `_check_code_already_exists(task)` - checks if the task keys appear in the task's files via git grep. The search friction task has files that include build_evolution_dashboard.py and extract_trajectory.py which likely contain "search_regex_error" as a variable/string. If git grep finds it, it returns True!
+
+That's likely the issue! The `_check_code_already_exists` would find "search_regex_error" in the codebase (in the dashboard scripts), and incorrectly conclude the task is already done. This is a false positive.
+
+But wait, this was working before? Maybe something changed recently in the codebase...
+
+Actually, the test might be failing because the code ALREADY includes the fix for this (the recent changes). Let me check if `_check_code_already_exists` recently changed or if this test was recently added.
+
+Hmm, actually I think this test failure might be pre-existing and unrelated to the task at hand. Let me check by reverting the changes and running the test:
+
+Actually wait, let me just verify: is the task being contradicted, and if so, by what reason?
+
+Let me add some debug output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (22 lines) ✓ (57ms)
+
+

@@ -1,0 +1,115 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me inspect the situation. The task is to wire `_line_shows_title_resolution()` into `check_task_contradiction()` in `scripts/preseed_session_plan.py`. 
+
+The diff is empty (=== CHANGES MADE (git diff) === shows nothing). This means either:
+1. The changes haven't been made yet
+2. The diff wasn't captured
+
+Let me check the actual file to see if the wiring is already in place.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search '_line_shows_title_resolution' in scripts/preseed_session_plan.py ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The function is defined at line 549 and called at line 741. Let me check the context around line 741 to see if it's already wired into `check_task_contradiction()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:695..755 ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The third pass is already wired in at lines 735-742. The function `_line_shows_title_resolution` is called at line 741 inside `check_task_contradiction()`. This looks like the task has already been implemented.
+
+Now let me check if there are test cases for this. Let me run the verifier as specified.
+────────────────────────────────────────────────────────────────────────────────
+
+The wiring is already in place. Lines 735-742 show the third pass calling `_line_shows_title_resolution`. Let me verify the test passes:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (244ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is failing. Let me check the test case that's failing around line 1789. Let me look at what test cases exist and understand the failure.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770..1850 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The failing test is Test 5: "Normal case — task selected when assessment doesn't contradict." The assertion at line 1789 expects `validated_against_assessment` to be True when the task is selected. But it's getting False.
+
+This means the `_line_shows_title_resolution` call is generating false positives — it's matching the normal assessment text against the task title and wrongly flagging it as contradicted.
+
+Let me look at the task title for that test case and understand what `_line_shows_title_resolution` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:549..609 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the false positive. The test 5 uses:
+- Assessment: contains "Day 105 added regex-error recovery hint to search tool errors."
+- Task title: "Reduce recurring search-tool friction before implementation"
+
+The line "Day 105 added regex-error recovery hint to search tool errors." has a session prefix ("day 105"), and the title has words like "search" and "tool" and "friction". Let me check if any 2-word phrase from the title appears in the line's lowercased version.
+
+Title words: ["reduce", "recurring", "search-tool", "friction", "before", "implementation"]
+Title lower: "reduce recurring search-tool friction before implementation"
+
+Line lower: "day 105 added regex-error recovery hint to search tool errors."
+
+Does "search tool" appear in the line? Let's check:
+- phrase_len=3: "reduce recurring search-tool", "recurring search-tool friction", "search-tool friction before", "friction before implementation" — none in line
+- phrase_len=2: "reduce recurring", "recurring search-tool", "search-tool friction", "friction before", "before implementation" — "search-tool friction"... no, that's "search-tool friction" but the line has "search tool errors". The phrase doesn't match exactly.
+- Wait, the 2-word phrase is "search-tool friction" — does it appear in "day 105 added regex-error recovery hint to search tool errors."? No, "search-tool friction" vs "search tool errors" — different.
+
+Let me check more carefully. The title is "Reduce recurring search-tool friction before implementation". Let me look at what words actually match. The line is "Day 105 added regex-error recovery hint to search tool errors."
+
+The title words are: reduce, recurring, search-tool, friction, before, implementation. 
+
+Actually, let me check: is "search" matching via some substring? No, the function uses `phrase in lower` and checks phrases like "reduce recurring" etc. Let me trace more carefully.
+
+Actually, wait. Let me think about what `_line_shows_obsolete_or_reverted` does for this test case. The test says it should NOT be contradicted, meaning neither pass 1 nor pass 2 should match. Pass 2 calls `_line_shows_obsolete_or_reverted`.
+
+But the test is failing because `_line_shows_title_resolution` is returning True. Let me think about which phrase could match.
+
+Title words: ["reduce", "recurring", "search-tool", "friction", "before", "implementation"] 
+Two-word phrases: "reduce recurring", "recurring search-tool", "search-tool friction", "friction before", "before implementation"
+
+Line: "day 105 added regex-error recovery hint to search tool errors."
+
+Hmm, "search" is in the line, but "search-tool" (hyphenated) is not. The split would give "search-tool" as one word, and "search tool" (with space) would not match because "search" alone at position 2 and "tool" at position 3... No wait. `title_lower.split()` splits on whitespace, so "search-tool" stays as "search-tool". And the line has "search tool" (two words with space). So none of the 2-word or 3-word phrases should match.
+
+Hmm, but wait. Let me think about 1-word phrases. For phrase_len=1, we check each word. The condition is `len(phrase) > 7 and phrase in lower`. So "reduce" (6 chars) — no, too short. "recurring" (9 chars) — is "recurring" in the line? No. "search-tool" (with hyphen, 11 chars) — is it in the line? The line has "search tool" (with space), not "search-tool". So no. "friction" (8 chars) — not in the line. "before" (6 chars) — too short. "implementation" (14 chars) — not in the line.
+
+So `_line_shows_title_resolution` should return False for this case! Unless there's something I'm missing.
+
+Wait, let me re-read the function. It checks `phrase in lower` where phrase is from title_words and lower is the line. Let me check again...
+
+Actually wait, I need to check what `_line_shows_obsolete_or_reverted` returns for this case, and also check if maybe the task itself has different keys that are causing the contradiction.
+
+Let me look at the task definition for "Reduce recurring search-tool friction before implementation".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'Reduce recurring search-tool friction' in scripts/preseed_session_plan.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the SEARCH_FRICTION_KEYS to see if those keys match the assessment text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:10..40 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. In the

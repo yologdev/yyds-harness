@@ -1,0 +1,501 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. We're in Phase A2: PLANNING
+2. No assessment is available
+3. We need to create session_plan/task_*.md files
+4. We have trajectory evidence showing:
+   - task_success_rate=0.5, task_verification_rate=0.5
+   - Recent sessions have mostly partial success (1/2 tasks passed)
+   - Graph pressure: bash_tool_error=4, task_obsolete_count=1, model_call lifecycle gaps
+   - Recent CI: build OK, tests OK
+5. We have agent-self issues:
+   - #124: Task reverted (unbounded-command warning) — but marked obsolete, already landed by Task 1
+   - #121: Task reverted (success-rate-aware task scoping) — evaluator timed out
+   - #118: Task reverted (ModelCall lifecycle gap) — blocked, agent used all attempts without landing code
+   - #116: Planning-only session (Day 139)
+   - #105: Task reverted (cache metrics) — blocked, agent used all attempts
+6. Help-wanted: #90 — yoagent Usage struct needs cache fields, blocked on human
+
+Priority order:
+0. No CI failures — skip
+1. State evidence: bash_tool_error=4 is the most actionable, task_obsolete_count=1 is a planning quality issue
+2. Agent-self issues: #121 (success-rate-aware task scoping) was reverted by evaluator timeout, could try again smaller. #118 (ModelCall lifecycle) is very complex and agent already burned through all attempts — maybe too big. #124 is already done. #105 is blocked on upstream.
+
+Let me think about what to select:
+
+- The trajectory shows `failed_tool_summary.bash_tool_error=4` as a recurring pattern. But #124 says the unbounded-command warning was already implemented in Day 141 Task 1. So that's done.
+
+- `task_obsolete_count=1` — tasks are being selected that are already satisfied. This points to the contradiction detector in `preseed_session_plan.py`. This is related to #121 which was reverted.
+
+- `deepseek_model_call_unmatched_completed_count=24` — model lifecycle gaps. #118 tried this and the agent burned through all attempts without landing code. This is likely too complex for a 20-minute task.
+
+Let me focus on what's most actionable:
+
+1. The trajectory shows task_obsolete_count=1 and the seed task (#124 obsolescence) confirms the planner is re-creating already-done tasks. The contradiction detector could be improved. This relates to #121.
+
+2. The model lifecycle gap at 24 is smaller than the 357 from before (some janitor work helped), but #118 already failed. Might be too complex.
+
+Let me create task_01.md focusing on the most actionable pressure: the obsolete task selection. The seed task file should already exist from the harness. Let me check.
+
+Actually, let me first check if session_plan/task_01.md already exists, and then prioritize:
+
+For task_01: Focus on the contradiction detector improvement or the success-rate-aware task scoping. Both touch `scripts/preseed_session_plan.py`.
+
+For task_02: Maybe address the model lifecycle gap but with a much narrower scope than #118 attempted. Or pick up #121 (success-rate-aware scoping) if task_01 is about something else.
+
+Actually, looking more carefully:
+
+- The trajectory says `task_obsolete_count=1` — one task was selected that was already satisfied. Issue #124 documents this: the unbounded-command task was re-created even though Task 1 already implemented it.
+
+- This is a planning quality issue. The contradiction detector in preseed_session_plan.py needs improvement.
+
+- #121 (success-rate-aware task scoping) also touches preseed_session_plan.py and was reverted due to evaluator timeout, not because it was wrong.
+
+Let me plan:
+
+**Task 01**: Improve the stale-seed contradiction detector in `preseed_session_plan.py` to catch the pattern from #124 — where a task was already completed by a prior task in the same session. This directly addresses `task_obsolete_count=1` from the trajectory.
+
+**Task 02**: Add success-rate-aware task scoping to `preseed_session_plan.py` (#121, retry with smaller scope). The prior attempt was reverted by evaluator timeout, not because the code was wrong. Keep it minimal.
+
+Both tasks touch `scripts/preseed_session_plan.py` — I should be careful about conflicts. But they're independent changes.
+
+Let me first create the directory and check if a seed task exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ ✓ (648ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing seed task and assessment_missing.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.1s)
+ ✓ (693ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the harness already created a seed task_01.md about the assessment missing failure. But this task is about fixing the assessment pipeline itself, which is a meta-task. Let me evaluate whether this is the right task.
+
+The trajectory shows:
+- task_success_rate=0.5, task_verification_rate=0.5
+- bash_tool_error=4
+- task_obsolete_count=1
+- model lifecycle gaps
+
+The seed task (fixing assessment silent failure) is a meta-task about the harness pipeline. It's valid but may not be the highest-impact thing.
+
+However, the instruction says: "The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+The seed task is about fixing the assessment pipeline. It touches `scripts/preseed_session_plan.py`. But the assessment_missing.md says the assessment agent produced a transcript but didn't write the file. The cause could be in `evolve.sh` (how the assessment agent is dispatched) rather than in `preseed_session_plan.py`.
+
+Let me think about what's most impactful:
+
+1. The seed task_01: "Fix assessment silent failure" — this is about pipeline reliability. It's useful but might not directly improve coding capability.
+
+2. From trajectory: `task_obsolete_count=1` — the contradiction detector needs improvement. #124 documents the pattern: a task was re-created that was already done.
+
+3. From trajectory: `bash_tool_error=4` — but #124 says this was already fixed in Day 141 Task 1.
+
+4. From trajectory: model lifecycle gaps (24 unmatched) — #118 already failed with this, it's too complex.
+
+I think I should:
+- Keep the seed task_01.md as-is (it was created by the harness and has valid evidence)
+- Create task_02.md for the contradiction detector improvement (addresses task_obsolete_count=1, documented in #124)
+- Skip task_03.md since we have limited slots and the model lifecycle task is too complex
+
+But wait — both the seed task and my proposed task_02 touch `scripts/preseed_session_plan.py`. That might cause conflicts. Let me check if the seed task is really about preseed_session_plan.py or if that's a misattribution.
+
+The seed task says "Analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced." So the Files line says `scripts/preseed_session_plan.py` but the Objective mentions `evolve.sh`. That seems like a mismatch. But the task says to keep it scoped to the listed files.
+
+Actually, looking at the seed task more carefully - it says to analyze evolve.sh but the Files line is preseed_session_plan.py. This is inconsistent. The task might be mis-scoped. But I shouldn't delete it.
+
+Let me create task_02.md for the contradiction detector improvement, and task_03.md for something else.
+
+Actually, let me reconsider. The trajectory shows:
+- bash_tool_error=4 is the highest pressure - but #124 says this was already fixed in Task 1
+- task_obsolete_count=1 - this is about planning quality
+- model lifecycle - too complex for 20 min
+
+For task_02, the contradiction detector improvement is solid. Let me verify my ownership check with a quick git ls-files.
+
+For task_03, maybe I should address the success-rate-aware task scoping (#121) — it was reverted by evaluator timeout, not by code failure. I'll make it smaller this time.
+
+Let me proceed with:
+- task_01.md: keep the seed (assessment silent failure)
+- task_02.md: contradiction detector improvement (from #124 evidence)
+- task_03.md: success-rate-aware task scoping (#121 retry, smaller)
+
+But wait - all three touch `scripts/preseed_session_plan.py`. That's a problem. Tasks should be independent. Let me think...
+
+Actually, the seed task says it's about analyzing evolve.sh but listed preseed_session_plan.py. Maybe I should refine the seed task to be more accurate about its scope.
+
+Let me refine task_01 to be about the actual issue: the assessment agent didn't write assessment.md. The fix might be in evolve.sh or in how the assessment agent is configured. Let me keep the seed but narrow it.
+
+For task_02: contradiction detector improvement in preseed_session_plan.py
+For task_03: I'll skip if too many conflicts, or pick something that doesn't touch preseed_session_plan.py.
+
+Actually, let me just focus on writing 2 good tasks. The seed task_01, and a task_02 for the contradiction detector. That's enough for a session where assessment was missing.
+
+Let me write task_02.md now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 21.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (389ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now create task_02.md for the contradiction detector improvement, and then refine task_01.md. Let me also create issue_responses.md.
+
+First, let me verify the ownership of `scripts/preseed_session_plan.py` to make sure both tasks can touch it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (297ms)
+  ▶ todo ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me refine task_01.md first — the seed task has a mismatch between Files (preseed_session_plan.py) and Objective (evolve.sh). I should fix that. Then create task_02.md.
+
+For task_01: The assessment_missing.md says the assessment phase produced a transcript but didn't write assessment.md. The guard result shows exit code 0, no provider error. The likely issue is in how the assessment agent's output is collected — possibly in evolve.sh. But the Files line says preseed_session_plan.py. 
+
+Let me refine the seed task to fix the Files line to match the actual investigation target. The task says "Analyze the harness dispatching logic in evolve.sh" so Files should include evolve.sh (but wait, evolve.sh is protected!). Let me re-read the safety rules...
+
+From CLAUDE.md: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So evolve.sh is protected. But the task says to analyze it, not modify it. The Files line is for files to modify. So if the fix is in evolve.sh, we can't touch it. 
+
+Hmm, but the seed task was created by the harness itself. Let me think about what can actually be changed...
+
+Actually, looking at the seed task more carefully — it says "Analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced." The investigation is in evolve.sh (read-only), but the fix might be elsewhere. The Success Criteria mention "Fallback planning repair tasks avoid protected implementation files" — which suggests the fix is in the planning/preseeding pipeline, not evolve.sh itself.
+
+So maybe the Files line of `scripts/preseed_session_plan.py` is actually correct — the fix is to improve the fallback planning path when assessment is missing, which lives in preseed_session_plan.py. And the investigation of evolve.sh is just context-gathering, not modification.
+
+I'll keep the seed task as-is and refine it minimally. Let me update task_01.md to be more accurate and then create task_02.md.
+
+Actually, let me just refine task_01.md slightly to make the Files line more explicit about what's being modified vs. investigated, and then create task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.1s (2 ✓)
+
+Let me refine the seed task to fix the Files/Objective mismatch, then create task_02.md.
+  - Title: Fix assessment silent failure: write assessment_missing.md with trajectory evidence
+  + Title: Improve fallback planning when assessment is missing — surface trajectory gnomes in seed tasks
+    Files: scripts/preseed_session_plan.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: harness-seed (refined by planner)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - Day 141 (16:58) assessment phase: exit_code=0, no provider error, but assessment.md was not written (see session_plan/assessment_missing.md).
+  + - Trajectory shows task_obsolete_count=1 — the planner selected a task that was already completed, indicating the seed task picker doesn't cross-reference against recently landed work.
+  + - Day 141 (11:03) session: 1/2 tasks strict-verified, with one task obsolete_already_satisfied — the seed task picker re-created a task (#124 unbounded-command) that Task 1 had already landed.
+    
+    Edit Surface:
+  - - scripts/preseed_session_plan.py
+  + - scripts/preseed_session_plan.py (the fallback task seeding logic that runs when assessment.md is absent)
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (44 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (44 lines) ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create task_02.md for the contradiction detector improvement, based on evidence from issue #124 and the trajectory.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (251ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now create task_02.md. The evidence is from:
+- Trajectory: task_obsolete_count=1
+- Issue #124: The unbounded-command task was re-created even though Task 1 already implemented it
+- The contradiction detector in preseed_session_plan.py uses a fixed vocabulary that doesn't catch informal completion language
+
+I need to make this task SMALLER than the previous attempt. #121 tried to add success-rate-aware scoping and was reverted by evaluator timeout. This task should be even more focused — just improve the contradiction detection vocabulary.
+
+Let me also verify what's already in preseed_session_plan.py regarding contradiction detection.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me do a quick ownership check before writing task_02.md:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'contradiction\|obsolete\|already_satisfied\|stale.*seed\|resolution.*si… ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the contradiction detector exists in `preseed_session_plan.py`. Let me look at the specific functions to understand what's there and what needs improvement.
+
+The key functions are:
+- `_line_shows_resolved` (line ~465-499): checks if a line shows a task is resolved
+- `_line_shows_obsolete_or_reverted` (line ~520-530): checks for obsolete/reverted markers
+- `check_task_contradiction` (line ~698): main entry point
+
+The evidence from #124 says:
+- Assessment text used "made landable" and "given enough standalone weight" — these are in the vocabulary already (line 485: "made landable")
+- But the specific pattern from #124 was: the assessment used session-date prefixes and qualitative phrases
+
+Let me read the actual contradiction detection code to understand the gap better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:460..540 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see the rest of the function and `check_task_contradiction`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:539..619 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the contradiction detector. Let me read `check_task_contradiction` to understand the full flow:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:698..798 ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the contradiction detection flow. The issue from #124 is that `check_task_contradiction` scans the assessment's "Recent Changes" section for resolution signals. But the evidence from #124 shows that the assessment text used phrases like "Day 114 made this landable" and "given enough standalone weight" — which should be caught by line 485 "made landable" and line 486 "given enough standalone" in `_RESOLUTION_SIGNALS`.
+
+Wait, but the issue #124 says the task WAS re-created. So the contradiction detector didn't catch it. Let me think about why...
+
+The issue says: "the assessment said 'Task 1 marked obsolete, criteria already satisfied' in prose, but the task picker was looking for metric keys like 'reverted_no_edit' and 'task_analysis_only_attempt_count' — numeric codes that don't appear in the sentence."
+
+So the problem was that the task's `keys` field contained metric names (`reverted_no_edit`, `task_analysis_only_attempt_count`) that didn't appear in the assessment prose. The `_line_shows_resolution` function at line 501 checks `if not any(key in lower for key in task_keys): return False` — so if none of the task keys appear in the line, it returns False immediately without checking resolution signals.
+
+But looking at the code, there's a second pass at line 729: `_line_shows_obsolete_or_reverted` which has a fallback to match via task title words. And there's `_line_shows_title_resolution` at line 549.
+
+Wait, `_line_shows_title_resolution` is defined but I don't see it called in `check_task_contradiction`. It's only called in the test path. Let me verify...
+
+Actually, looking at the task_01.md seed task from the earlier session (which was the "Add unbounded-command warning" task re-created as stale), the issue is specifically about the contradiction detector not catching that Task 1 already landed the unbounded-command work.
+
+Let me think about what to improve. The `_line_shows_title_resolution` function exists but isn't wired into `check_task_contradiction`. That's the fix — wire it in as a third-pass fallback.
+
+But wait, I should keep the task small. Let me focus on:
+1. Wiring `_line_shows_title_resolution` into `check_task_contradiction` as a semantic fallback
+2. Adding the pattern from #124: when a task title contains a phrase and the assessment says "already landed by Task 1" or similar
+
+Actually, let me re-read the evidence from #124 more carefully. The obsolete note says:
+```
+## Evidence of prior completion
+Task 1 (Day 141, 02:47 session), commit `460a1e03`, landed 142 lines in `src/safety.rs`:
+```
+
+The contradiction detector scans the assessment, not the issue body. So the question is: what was in the assessment that should have triggered the contradiction?
+
+The task body says: "The planner likely didn't detect that Task 1 already implemented this."
+
+Looking at the current contradiction detection:
+1. It checks `_RESOLUTION_SIGNALS` against lines containing task keys
+2. It has a second pass for obsolete/reverted markers
+3. But the semantic fallback `_line_shows_title_resolution` is NOT wired into `check_task_contradiction`
+
+The fix is clear: wire `_line_shows_title_resolution` as a third pass in `check_task_contradiction`. This way, even when task keys don't appear verbatim, the detector can match resolution language against significant words from the task title.
+
+Let me now create task_02.md with this focused improvement.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write task_02.md. The key insight: `_line_shows_title_resolution` (line 549) is defined but never called in `check_task_contradiction`. Wiring it in as a third-pass semantic fallback would catch cases where the assessment describes resolution in prose but the task keys don't appear verbatim.
+
+Let me also look at the test path to make sure tests exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_line_shows_title_resolution\|def test.*contradiction\|def test.*resolu… ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`_line_shows_title_resolution` is defined at line 549 but never called anywhere. Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_line_shows_title_resolution' scripts/preseed_session_plan.py ✓ (744ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: `_line_shows_title_resolution` is only defined at line 549, never called anywhere else. This is dead code. The fix: wire it into `check_task_contradiction` as a third-pass semantic fallback (after the first pass for resolution + task keys, and second pass for obsolete/reverted markers). Combined with adding `_line_shows_title_resolution` into a test in the --test path.
+
+Now I have a clean, focused task. Let me write task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Wire semantic title-resolution fallback into contradiction detector
+  + Files: scripts/preseed_session_plan.py
+  + Issue: #124
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Trajectory (Day 141): `task_obsolete_count=1` — one task was selected that was already completed.
+  + - Issue #124 documents the exact pattern: the unbounded-command task was re-created by the planner even though Task 1 (commit 460a1e03) had already landed 142 lines implementing it in src/safety.rs. The assessment text described completion with informal language that the contradiction detector missed.
+  + - `_line_shows_title_resolution()` (line 549) is defined in preseed_session_plan.py but NEVER called — it's dead code. It was added as a semantic fallback for exactly this case (Day 118 lesson: "shared evidence is not shared understanding when subsystems parse through different dictionaries") but was never wired into `check_task_contradiction()`.
+  + - `check_task_contradiction()` (line 698) has two passes: (1) `_line_shows_resolution` which requires task keys to appear verbatim in the line, (2) `_line_shows_obsolete_or_reverted` which matches obsolete/reverted markers. There is no third pass that uses title-word matching — the gap where `_line_shows_title_resolution` belongs.
+  + - The gap: when assessment prose says "Task 1 already landed this" or "criteria already satisfied by prior work" but the task's `keys` are metric names like `bash_tool_error` that don't appear in those sentences, both existing passes fail and the task gets served as fresh.
+  + 
+  + Edit Surface:
+  + - scripts/preseed_session_plan.py (wire `_line_shows_title_resolution` into `check_task_contradiction`; add test case)
+  + 
+  + Verifier:
+  + - python3 scripts/preseed_session_plan.py --test
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (54 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (54 lines) ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me create issue_responses.md. Let me go through each issue:
+
+**Help-wanted #90**: yoagent Usage struct needs cache fields. Still blocked — no human reply since Day 140. I should note that I'm still waiting, no new action to take.
+
+**Agent-self issues:**
+
+**#124**: Task reverted: unbounded-command warning. Already completed by Task 1 (commit 460a1e03). The issue itself documents this. I'll note it as "already resolved — completed by Day 141 Task 1" and close it.
+
+**#121**: Task reverted: success-rate-aware task scoping. Reverted by evaluator timeout. I should note this as deferred — not picking up this session, but the contradiction detector improvement (task_02) is a prerequisite that will make future attempts at this task safer.
+
+**#118**: Task reverted: ModelCall lifecycle gap. Blocked — agent used all attempts without landing code. The scope was too broad. I'll note this as deferred — needs a narrower approach.
+
+**#116**: Planning-only session Day 139. This is an observation, not an actionable issue. I'll note it as informational.
+
+**#105**: Task reverted: cache metrics. Blocked on upstream yoagent issue #90. I'll note it as blocked.
+
+Let me also check if there are any trusted owner issues in ISSUES_TODAY.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (409ms)
+  ▶ todo ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ test -f ISSUES_TODAY.md && wc -l ISSUES_TODAY.md || echo "ISSUES_TODAY.md not fo… ✓ (745ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only 1 line, probably empty or just a header. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read ISSUES_TODAY.md ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No trusted owner issues. Now let me write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 141 (16:58)
+  + 
+  + ## Help-Wanted
+  + 
+  + ### #90 — Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + **Status:** Still blocked. No human reply since Day 140.
+  + **Action:** Keep waiting. The fix is two fields in yoagent's `Usage` struct. I'll check again next session. No new action to take — the diagnostic paths (`stream-check`, `fim-complete`) prove the data is there.
+  + 
+  + ## Agent-Self Issues
+  + 
+  + ### #124 — Task reverted: Add unbounded-command warning to bash safety analysis
+  + **Status:** Already resolved — close.
+  + **Action:** This task was completed by Day 141 Task 1 (commit `460a1e03`), which landed 142 lines in `src/safety.rs` implementing `check_unbounded_command()` with 55 passing tests. The issue documents its own obsolescence — the task was re-created because the contradiction detector didn't recognize the completion. Task 2 this session (wiring `_line_shows_title_resolution` into the contradiction detector) addresses the root cause.
+  + 
+  + ### #121 — Task reverted: Add success-rate-aware task scoping
+  + **Status:** Defer.
+  + **Action:** Reverted by evaluator timeout, not by code failure. The contradiction detector improvement (task_02 this session) is a prerequisite — once we stop re-creating already-done tasks, success-rate-aware scoping becomes more valuable. I'll pick this up in a future session with a smaller scope.
+  + 
+  + ### #118 — Task reverted: Close forward-case ModelCall lifecycle gap
+  + **Status:** Defer — needs narrower scope.
+  ... (9 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (29 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (29 lines) ✓ (399ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify all files exist and look reasonable:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (411ms)
+  ▶ $ ls -la session_plan/ && echo "---" && wc -l session_plan/*.md ✓ (744ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three files are in place. Let me verify the task files are valid by checking their structure quickly.
+
+Let me also verify the task verification gate won't reject them — I should check if the Files entries actually exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/preseed_session_plan.py && echo "---" && head -3 session_pl… ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both task files reference `scripts/preseed_session_plan.py` which exists in git. The Files entries are correct.
+
+Let me do a final summary of what was produced:
+
+1. **session_plan/task_01.md** — "Improve fallback planning when assessment is missing — surface trajectory gnomes in seed tasks"
+   - Refined from the harness seed. Makes the seed task picker include trajectory evidence when assessment.md is absent.
+   - Files: scripts/preseed_session_plan.py
+
+2. **session_plan/task_02.md** — "Wire semantic title-resolution fallback into contradiction detector"
+   - Wires the already-defined but never-called `_line_shows_title_resolution()` into `check_task_contradiction()`.
+   - Directly addresses `task_obsolete_count=1` from trajectory and issue #124.
+   - Files: scripts/preseed_session_plan.py
+
+3. **session_plan/issue_responses.md** — Issue responses for all open issues.
+
+Both tasks touch the same file (`scripts/preseed_session_plan.py`), but they're independent changes (different functions, different call sites). The implementation agent should handle them.
+
+I skipped a task_03 because:
+- The model lifecycle gap (#118) is too complex for a 20-minute task (prior attempt burned 24 turns without landing code)
+- The success-rate-aware scoping (#121) was reverted and I want to see if the contradiction detector fix lands first
+- The cache metrics (#105) is blocked on upstream
+
+The planning is complete. I should STOP now as instructed.
+────────────────────────────────────────────────────────────────────────────────
+
+Planning complete. Here's what's in `session_plan/`:
+
+| File | Purpose |
+|------|---------|
+| task_01.md | Improve fallback planning when assessment is missing — surface trajectory gnomes in seed task evidence |
+| task_02.md | Wire _line_shows_title_resolution() (dead code since Day 118) into check_task_contradiction() — directly addresses task_obsolete_count=1 |
+| issue_responses.md | Close #124 (already done), defer #121/#118, block #105 on #90 |
+
+**Why these two tasks:**
+
+• **Task 01** (refined seed): The assessment phase produced no `assessment.md` despite exit code 0. The seed task picker should include trajectory gnome evidence so the planner can select higher-impact work during fallback, rather than generic "fix the pipeline" tasks.
+
+• **Task 02** (contradiction detector): `_line_shows_title_resolution()` was written during Day 118 to fix the "different dictionaries" problem, but was never called — dead code. Wiring it in closes the gap documented in #124 where the planner re-created an already-completed task. One call site, one test case, minimal risk.
+
+**What I skipped:**
+• Model lifecycle gap (#118): Prior attempt burned 24 turns without landing code — too broad for 20 min. Gap count is down to 24 from 357 (janitor is working).
+• Success-rate-aware scoping (#121): Deferred until contradiction detector proves stable.
+• Cache metrics (#105): Blocked on upstream yoagent #90.
+
+

@@ -1,0 +1,290 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is asking me to evaluate whether a task was implemented correctly. Let me start by examining the current state of the diff, the build status, and the preseed_session_plan.py file.
+
+The task description says:
+- Changes were made to `scripts/preseed_session_plan.py`
+- The diff section is empty (no changes shown)
+- Build: PASS, Tests: PASS
+
+Wait, the diff section says "=== CHANGES MADE (git diff) ===" and then is empty. This could mean:
+1. No changes were actually made
+2. The diff wasn't provided
+
+Also the verifier says: `python3 scripts/preseed_session_plan.py --test`
+
+Let me first check if there are any actual changes and run the verifier.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD~1 2>/dev/…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -3 ✓ (11ms)
+ ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes to `scripts/preseed_session_plan.py` - 27 insertions. Let me see the diff and run the verifier.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- scripts/pre…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (22ms)
+ ✓ (222ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failed. Let me look at the full diff and understand what's happening. The assertion is failing because `validated_against_assessment` is `False` when it expected `True`. Let me see the full diff to understand what was added.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- scripts/pre… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me read the actual file to see the changes around lines 2297-2330.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:2290..2350  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:1770..1800 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the test failure. The test at line 1780-1784 is:
+```python
+task = choose_task(assessment)
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+assert task.get("validated_against_assessment") is True
+```
+
+The test is using the assessment text starting from line 1771:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+And it expects `validated_against_assessment` to be `True` for the task "Reduce recurring search-tool friction before implementation", but it's getting `False`.
+
+The issue might be related to the new code that checks for `assessment_missing.md` path. But wait, this test doesn't pass `--trajectory-file` so that path shouldn't affect it.
+
+Actually wait - let me re-read the code. The `choose_task` now accepts `assessment_was_missing` kwarg at line 2333-2335. But in the test at line 1780, it's called without that argument: `task = choose_task(assessment)`.
+
+But that shouldn't cause an issue because the kwarg is optional. Let me look at the `choose_task` function signature.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def choose_task' scri…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def check_task_contra… ✓ (22ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the logic. Let me read `choose_task` and `check_task_contradiction` more carefully to see what `validated_against_assessment` means and how `assessment_was_missing` affects the flow.
+
+Let me look at lines 970-985 and around 1000-1020 of choose_task.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:965..1045  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:1010..1070 ✓ (17ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. Let me look at the original (pre-change) code for the test at line 1780. The test is in `--test` mode, using a hardcoded assessment that contains:
+
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+...
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+The `choose_task` function first tries to match candidates from `SEARCH_FRICTION_KEYS` etc. It goes through candidates (line 974-978) and checks for contradiction. The first non-contradicted candidate gets `validated_against_assessment = True`.
+
+The question is: why is the test now failing? The test at line 1780 calls `choose_task(assessment)` without `assessment_was_missing`. So `assessment_was_missing` defaults to `False`. The `assessment_was_missing` path (lines 1017+) shouldn't trigger.
+
+But wait - maybe something else changed. Let me look at the original code vs the new code more carefully to spot the difference.
+
+Actually, looking at the diff again, the changes are:
+1. Lines 1362-1363: Added `--trajectory-file` argument
+2. Lines 2297-2324: Added trajectory gnome injection when assessment is missing
+
+The `choose_task` function signature changed from `def choose_task(assessment: str)` to `def choose_task(assessment: str, assessment_was_missing: bool = False)`. But looking at the test at line 1780, it calls `choose_task(assessment)` without the new parameter.
+
+Wait, but the test at line 2085 and others DO use `assessment_was_missing=True`. So the signature change should be backward-compatible.
+
+Hmm, but the test at line 1780 is failing. Let me look more carefully at what happens in `choose_task` when `SEARCH_FRICTION_KEYS` matching happens.
+
+Let me look at the search friction test assessment more carefully. The test assessment at line 1771-1779 has:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+And the bug being tested is `search_regex_error`. The `check_task_contradiction` function checks if the recent changes already mention the fix. Let me look at `check_task_contradiction` to see what changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:698..818 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `_line_shows_resolution` to understand what's happening. The test assessment has:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+The task keys for "Reduce recurring search-tool friction before implementation" might include `search_regex_error`. Let me check if `_line_shows_resolution` has been modified.
+
+Wait, the diff only showed changes to two areas: the `--trajectory-file` argument and the trajectory gnome injection. But the test at line 1780 calls `choose_task(assessment)` without `assessment_was_missing=True`, so the new code path shouldn't be triggered.
+
+Let me look at the actual test more carefully. The test is at lines 1765-1787. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:1760..1800 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test assessment is:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+The task title is "Reduce recurring search-tool friction before implementation" and the assessment mentions `search_regex_error`. 
+
+The function `check_task_contradiction` checks if the recent changes show the task's problem is already resolved. Let me look at `_line_shows_resolution` and `_line_shows_obsolete_or_reverted`.
+
+Wait, I think the issue might be in lines 727-733 — the new `_line_shows_obsolete_or_reverted` check. Let me see if that function was added/modified. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '_line_shows_obsolete_… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `_line_shows_resolution` and `_line_shows_obsolete_or_reverted`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:498..578 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `_RESOLUTION_SIGNALS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '_RESOLUTION_SIGNALS' … ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:462..497 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the test failure. The test uses:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+The task is "Reduce recurring search-tool friction before implementation". Let me find the task's keys. Let me look at SEARCH_FRICTION_KEYS.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'SEARCH_FRICTION_KEYS'… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check line 23 and around 349 to see the task definition for search friction:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:23..48  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:330..380 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the test. The test assessment at line 1769 has:
+```
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+This line starts with "Day 105" - which matches `re.match(r"day\s+\d+", lower)` in `_line_shows_resolution` (line 504). AND it contains `search_regex_error` via `search tool errors` and `regex-error`. 
+
+Wait - the task keys are `SEARCH_FRICTION_KEYS` which include `search_regex_error`. The line says "regex-error recovery hint to search tool errors" - does this contain "search_regex_error"? No, it says "regex-error" and "search tool errors" - the exact string `search_regex_error` is not there. But the check at line 501 is `if not any(key in lower for key in task_keys)` — so it checks if any of the keys appears as a substring of the line. The line is "day 105 added regex-error recovery hint to search tool errors" — does `search_regex_error` appear as a substring? No, because it's "regex-error" not "regex_error" and "search tool errors" not "search_regex_error".
+
+So `_line_shows_resolution` should return False for this line since `search_regex_error` isn't a substring. And then `_line_shows_obsolete_or_reverted` checks:
+
+The line is: "day 105 added regex-error recovery hint to search tool errors"
+- Contains "marked obsolete"? No
+- Contains "obsolete_already_satisfied"? No
+- Contains "reverted_no_edit"? No
+- etc. None of those markers are there.
+
+So `_line_shows_obsolete_or_reverted` should also return False.
+
+So why is `validated_against_assessment` False now? Let me look at what changed that could affect this.
+
+Wait — the diff only shows additions. No existing code was modified except the new `--trajectory-file` argument and the trajectory injection. But the test failure is at line 1782-1783. This test doesn't use `--trajectory-file`, so the new code path shouldn't be triggered.
+
+Let me check if maybe the implementation changed something else that I'm missing. Let me look at the current `choose_task` function more carefully — specifically the flow when `assessment_was_missing` is False (the default).
+
+Actually, wait. Let me re-read the diff more carefully. The diff showed 27 insertions but maybe there are also edits I missed. Let me look at the full git diff again.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.6s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- scripts/pre… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is getting truncated. Let me get the actual full diff from the file directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- scripts/pre… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+45 lines total in the diff. But the display is getting truncated... Let me try viewing it differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show HEAD -- scripts/prese… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That returned nothing. Let me try a different approach to see the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~1 -- scripts/pre… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated by the tool output, but based on what I've seen from reading the file directly, the changes are:
+1. Added `--trajectory-file` argument (lines 1362-1363)
+2. Added trajectory gnome injection code (lines 2300-2324)
+
+Now the crucial question: why does the test at line 1780 fail? The test calls `choose_task(assessment)` without `assessment_was_missing`. Let me trace through the logic.
+
+Looking at the

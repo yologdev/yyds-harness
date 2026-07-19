@@ -1,0 +1,520 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then understand the task requirements. I need to make surgical changes to `scripts/preseed_session_plan.py` to add trajectory gnome evidence to seed tasks when assessment.md is missing.
+
+Let me follow the evolve skill rules carefully. The previous attempt had 22 turns and made no file progress. I need to be decisive - by my 3rd tool turn I need to either write a test, edit a file, or write an obsolete/blocked note.
+
+Let me:
+1. Read the evolve skill
+2. Read the current preseed_session_plan.py to understand the structure
+3. Make a targeted edit
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py ✓ (1.2s)
+ ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the flow now. The preseed script has:
+
+1. A `choose_task` function that picks from predefined TASKS based on assessment text
+2. A `render_task` function that renders the task
+3. A `main()` function that detects missing assessment and writes `planning_failure.md`
+
+The key issue: when assessment is missing, the script writes `planning_failure.md` and returns 0 at lines 2286-2293. It doesn't try to render a task. But the task description says we should surface trajectory gnomes in the seed task.
+
+Wait, let me look more carefully. The code at lines 2286-2293 handles the case where assessment file is missing entirely. But the task description mentions `assessment_missing.md` - this is a special filename used in the assessment phase when assessment fails.
+
+Looking at line 2306-2308:
+```python
+task = choose_task(assessment, assessment_was_missing=(
+    args.assessment is not None and args.assessment.name == "assessment_missing.md"
+))
+```
+
+So when `assessment_missing.md` is the assessment file, it goes through `choose_task` with `assessment_was_missing=True`. But when assessment is `None` or doesn't exist, it writes `planning_failure.md`.
+
+Now let me look at what happens in `choose_task` with `assessment_was_missing=True`.
+
+The task description says:
+- "Day 141 (16:58) assessment phase: exit_code=0, no provider error, but assessment.md was not written (see session_plan/assessment_missing.md)."
+- "Trajectory shows task_obsolete_count=1 — the planner selected a task that was already completed"
+- "Day 141 (11:03) session: 1/2 tasks strict-verified, with one task obsolete_already_satisfied"
+
+So there are two issues:
+1. When assessment is missing, the seed task doesn't include trajectory gnomes
+2. The seed task picker doesn't detect recently-landed work
+
+Let me look at `choose_task` and `render_task` to understand the current flow, and where to inject trajectory evidence.
+
+Let me read the key functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.1s (2 ✓)
+
+Let me read the key functions in the script.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def choose_task' in scripts/preseed_session_plan.py  ▶ search 'def render_task' in scripts/preseed_session_plan.py  ▶ search 'assessment_was_missing' in scripts/preseed_session_plan.py ✓ (1.2s)
+ ✓ (1.1s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `choose_task` function and `render_task` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:927..1127  ▶ read scripts/preseed_session_plan.py:1302..1502 ✓ (352ms)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The code at lines 1041-1096 already has trajectory gnome enrichment for the `assessment_was_missing` path! It parses gnome metrics from the assessment text and biases Files toward src/*.rs.
+
+But the problem is: when assessment.md is missing, the assessment text is empty - it's reading from `assessment_missing.md` which has generic content (like "assessment exit code 0, no provider error"), not actual trajectory gnomes. The `numeric_metrics` function is parsing the assessment text for gnome metrics, but there are none there.
+
+The task says:
+> The trajectory extractor (`scripts/extract_trajectory.py`) already produces structured gnome data; the seed task picker should consume at minimum: task_success_rate, task_verification_rate, task_obsolete_count, and the top graph-pressure row.
+
+So the fix is: when assessment is missing, instead of parsing gnomes from the (empty) assessment text, read from the trajectory file (`$SESSION_STAGING/trajectory.md`) which is produced by the trajectory extractor before the preseed script runs.
+
+Let me now check how the trajectory is extracted and what the trajectory.md looks like. I also need to add a `--trajectory-file` argument.
+
+But wait - the CHECKPOINT says this is the final attempt, and I need to produce actual file edits by turn 3. Let me focus on the minimal viable change.
+
+Looking at the code flow:
+1. Lines 1042: `trajectory_gnomes = numeric_metrics(assessment)` - parses assessment text for gnomes
+2. When assessment is missing, the assessment text has no gnomes
+3. The trajectory.md file at `$SESSION_STAGING/trajectory.md` has gnome data
+
+I need to:
+1. Add `--trajectory-file` argument
+2. When available, parse trajectory.md for gnome metrics
+3. Use those instead of assessment-text gnomes
+
+Let me also check if there's a `_parse_assessment_missing_fields` function to understand the structure better.
+
+Actually wait - let me re-read the task constraints more carefully:
+
+> Keep the change minimal — add trajectory evidence injection to the seed task rendering path, not a whole new task selection system.
+
+So the change is in the code path that already exists (lines 1041-1096). The problem is that `numeric_metrics(assessment)` produces empty results when assessment is missing. I need to make it read from the trajectory file instead.
+
+Let me look at the main function to see how args are parsed, then add the trajectory-file arg, then modify the assessment_was_missing block to read from the trajectory file.
+
+Let me also check how the trajectory.md looks to know what format to parse.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1126..1156  ▶ search '_parse_assessment_missing' in scripts/preseed_session_plan.py  ▶ search 'def numeric_metrics' in scripts/preseed_session_plan.py ✓ (756ms)
+ ✓ (1.5s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the `numeric_metrics` function and `_parse_assessment_missing_fields` to understand the parsing.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.1s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:742..842  ▶ read scripts/preseed_session_plan.py:911..931  ▶ read scripts/preseed_session_plan.py:1155..1305 ✓ (351ms)
+ ✓ (2.3s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The code already has a trajectory gnome enrichment path in the `assessment_was_missing` block (lines 1041-1096). The problem is that `trajectory_gnomes = numeric_metrics(assessment)` at line 1042 parses from the assessment text, which when assessment is missing, has no gnomes - it's just the assessment_missing.md content which has fields like "assessment_exit_code=0" but no trajectory gnome data.
+
+The fix: when assessment is missing, read from the trajectory file (produced by `scripts/extract_trajectory.py`) instead of from the assessment text.
+
+Let me also check: where is the trajectory file stored? Looking at the evolve.sh flow, it's at `$SESSION_STAGING/trajectory.md`. The preseed script likely doesn't have access to this env var, so I need to add a `--trajectory-file` argument.
+
+But wait - let me check what args are passed to the preseed script from evolve.sh.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.4s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'preseed_session_plan' in scripts/evolve.sh ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the context around line 1386 in evolve.sh.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1375..1405 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the preseed is called with:
+```
+python3 scripts/preseed_session_plan.py \
+    --assessment "$PRESEED_SOURCE" \
+    --output-dir session_plan \
+    --day "$DAY" \
+    --session-time "$SESSION_TIME"
+```
+
+So the trajectory file isn't passed yet. Let me check where the trajectory file is. The task says the trajectory extractor produces data and the seed task picker should consume it.
+
+Let me check the trajectory extractor output location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:505..535 ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where TRAJECTORY_FILE is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TRAJECTORY_FILE' in scripts/evolve.sh ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the trajectory is at `$SESSION_STAGING/trajectory.md` which is typically `.yoyo/session_staging/trajectory.md`. 
+
+Now let me plan the minimal change:
+
+1. Add `--trajectory-file` argument to `main()` in preseed_session_plan.py
+2. In `choose_task`, when `assessment_was_missing=True`, try to read gnomes from the trajectory file instead of from the assessment text
+3. Also add git log detection for recently-landed work
+
+Actually, looking at the code more carefully, the preseed script is also called from evolve.sh at line 1386, but the trajectory file path isn't passed. I should NOT modify evolve.sh (it's protected). But I CAN make the preseed script accept the argument and fall back gracefully if it's not provided.
+
+Actually wait - the task says "Do NOT modify evolve.sh or protected workflow files." So I can only modify preseed_session_plan.py and add the trajectory-file argument there. The evolve.sh caller won't pass it initially, but the preseed script can try to find it at a default location.
+
+Let me now figure out the approach:
+
+1. Add `--trajectory-file` argument to preseed_session_plan.py
+2. When not provided, try default location: `.yoyo/session_staging/trajectory.md`
+3. In the `assessment_was_missing` block, when assessment text has no gnomes, try parsing from trajectory file
+4. Parse the trajectory file for gnome metrics
+
+But wait, the tests in the `--test` path need to work too. Let me check what the test looks like and if there's an existing test for the assessment_missing path.
+
+Let me now look at the existing test for assessment_missing in the test section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_missing' in scripts/preseed_session_plan.py ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the test section to understand what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:905..920 ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the test section to find existing tests for assessment_missing scenarios.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_missing_note' in scripts/preseed_session_plan.py ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the test section more carefully to find existing tests for the assessment_missing path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_was_missing=True' in scripts/preseed_session_plan.py ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the tests around line 2083 to understand what they test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2070..2170 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The existing tests have gnomes injected directly into the assessment_missing.md text (like `task_no_edit_revert_count=2`). The code at line 1042 uses `numeric_metrics(assessment)` to parse those gnomes from the assessment text.
+
+In production, the assessment_missing.md file is generated by the assessment phase guard (in evolve.sh), and it may NOT include trajectory gnomes. The gnomes are available in `$SESSION_STAGING/trajectory.md`.
+
+So the fix is:
+1. Add a `--trajectory-file` argument to `main()`
+2. When `assessment_was_missing=True`, read the trajectory file and parse gnomes from it
+3. If the trajectory file gnomes provide more data than the assessment-text gnomes, use them
+
+But actually, looking at the tests at lines 2101-2114, the test injects gnomes into the assessment text. If I change the logic to read from trajectory file, the tests need to be updated or the trajectory file needs to be present.
+
+Actually, a simpler approach: the current code parses gnomes from assessment text. If assessment text has gnomes (like in tests), those work fine. The problem is when assessment text doesn't have gnomes. So I should add a fallback: if `trajectory_gnomes` is empty/insufficient, try reading from the trajectory file.
+
+Let me think about the cleanest way:
+
+1. Add `--trajectory-file` argument to `main()`
+2. Pass it through to `choose_task` or process it in `main()` 
+3. In the `assessment_was_missing` block, when gnomes from assessment text are empty, try reading from trajectory file
+
+Actually, looking at this more carefully, I think the cleanest approach is:
+
+1. Add `--trajectory-file` to main()
+2. In `main()`, if trajectory file exists and assessment is missing, augment the assessment text with the trajectory content so `numeric_metrics(assessment)` picks up the gnomes
+
+OR:
+
+1. Add `--trajectory-file` to main()
+2. In the `assessment_was_missing` code block, read trajectory gnomes from the file and merge with assessment-text gnomes
+
+Let me go with approach 2 since it's more surgical. Let me also add a helper function `_parse_trajectory_gnomes` that reads from the trajectory file.
+
+But wait, I need to check: the CHECKPOINT says "By your third tool turn in this retry, do exactly one of: write or edit a focused regression test... edit one listed task-scope source file... write session_plan/task_01_obsolete.md... write session_plan/task_01_blocked.md"
+
+I'm already at turn 2 (first two reads). Let me now make the edit.
+
+Let me plan the minimal change:
+
+1. Add `--trajectory-file` argument to `main()`
+2. When `assessment_was_missing=True` and trajectory file is provided, parse trajectory gnomes from it
+3. Merge those gnomes into the `trajectory_gnomes` dict (trajectory file gnomes supplement assessment-text gnomes)
+
+Let me also add a `_parse_trajectory_gnomes` helper function that parses the trajectory.md file (which is markdown but has `key=value` patterns in it).
+
+OK let me now implement:
+
+1. Add `_parse_trajectory_md` function near `numeric_metrics` that reads trajectory.md and extracts gnome metrics
+2. Modify `main()` to accept `--trajectory-file` and pass it through
+3. In `choose_task`, use trajectory file gnomes as a fallback when assessment text gnomes are insufficient
+
+Actually, the simplest approach that minimizes changes:
+
+In `main()`, when `assessment_was_missing` and trajectory file is provided, read the trajectory file and append gnome data to the assessment text before calling `choose_task`. This way `numeric_metrics(assessment)` automatically picks up the trajectory gnomes.
+
+Wait, but that changes `choose_task` behavior for the entire assessment, not just the assessment_missing path. Let me think...
+
+Actually the cleanest approach: 
+- In `main()`, when we detect assessment_missing.md AND trajectory file exists, read the trajectory file, extract gnomes, and create an augmented assessment string that includes trajectory gnomes
+- Then pass that augmented string to `choose_task`
+
+But that changes the `assessment_was_missing` detection since it's based on filename... Let me look at lines 2306-2307 again.
+
+Actually, looking at the structure: `choose_task` receives the assessment text and a boolean `assessment_was_missing`. The boolean is derived from filename. The assessment text is parsed for gnomes. 
+
+The simplest fix: in `choose_task`, add a parameter for trajectory gnomes, or have the caller pre-augment the assessment text.
+
+Let me go with: add `--trajectory-file` to `main()`, read it there, and if assessment is missing and trajectory has gnomes, append them to the assessment text before calling `choose_task`.
+
+Let me implement this now.
+
+Here's my plan:
+1. Add `--trajectory-file` argument to main()
+2. In main(), if trajectory file exists and assessment is from assessment_missing.md, read and extract gnome lines from it
+3. Append those gnome lines to the assessment text before calling choose_task
+
+For extracting gnomes from trajectory.md, I can reuse `numeric_metrics()` - just read the file and parse it.
+
+Let me code this up.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the code. The trajectory gnome enrichment at lines 1041-1096 already exists but parses gnomes from the assessment text — which is empty when assessment_missing.md has no gnome data. The fix: read gnomes from the trajectory file (`.yoyo/session_staging/trajectory.md`) when the assessment text lacks them.
+
+Let me implement the change now.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (395ms)
+  ▶ todo ✓ (409ms)
+  ▶ todo ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first read the main() function more carefully around lines 2286-2313 to understand the exact flow.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 1.9s (3 ✓)
+
+Let me read the precise area of main() where I need to inject:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2279..2339 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to:
+
+1. Add `--trajectory-file` to the argument parser
+2. After reading the assessment, if assessment is from assessment_missing.md AND trajectory file exists, read it and extract gnomes
+3. Append those gnomes to the assessment text
+
+The key insight: the existing code at lines 1041-1096 already does the right thing when gnomes are present in the assessment text. The problem is just that gnomes aren't there. So I just need to prepend gnome lines from the trajectory file to the assessment text.
+
+Let me implement:
+
+1. Add `--trajectory-file` argument (optional Path)
+2. After line 2297 (assessment is read), add logic to augment with trajectory gnomes
+
+Here's the augmentation logic:
+```python
+if args.trajectory_file and args.trajectory_file.exists() and \
+   args.assessment.name == "assessment_missing.md":
+    try:
+        traj_text = args.trajectory_file.read_text(encoding="utf-8", errors="replace")
+        traj_gnomes = numeric_metrics(traj_text)
+        # Only augment if trajectory has gnomes not already in assessment
+        assess_gnomes = numeric_metrics(assessment)
+        missing_gnomes = {k: v for k, v in traj_gnomes.items() 
+                         if k not in assess_gnomes}
+        if missing_gnomes:
+            gnome_lines = "\n".join(f"{k}={v}" for k, v in missing_gnomes.items())
+            assessment = f"## Trajectory Gnomes (from trajectory.md)\n{gnome_lines}\n\n{assessment}"
+    except OSError:
+        pass
+```
+
+This way, the existing `numeric_metrics(assessment)` call at line 1042 will pick up the trajectory gnomes, and all the existing logic at lines 1041-1096 will work unchanged.
+
+Let me also look at the test to make sure it still passes. The test at line 2101-2114 uses assessment text with gnomes directly in it, so `numeric_metrics(assessment)` will still find them. The trajectory file augmentation only triggers when trajectory-file is provided AND the assessment is from assessment_missing.md. In the test path (--test), no trajectory file is provided.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+First, add the `--trajectory-file` argument:
+        parser.add_argument("--assessment", type=Path)
+        parser.add_argument("--output-dir", type=Path)
+  +     parser.add_argument("--trajectory-file", type=Path, default=None,
+  +                         help="Path to trajectory.md for gnome metrics fallback")
+        parser.add_argument("--day", default="")
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 5 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (3 → 5 lines)
+        parser.add_argument("--assessment", type=Path)
+        parser.add_argument("--output-dir", type=Path)
+  +     parser.add_argument("--trajectory-file", type=Path, default=None,
+  +                         help="Path to trajectory.md for gnome metrics fallback")
+        parser.add_argument("--day", default="")
+ ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the trajectory gnome augmentation logic after the assessment is read (after line 2297). Let me re-read to get exact context:
+────────────────────────────────────────────────────────────────────────────────
+
+Now add trajectory gnome augmentation after the assessment is read:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2296..2316 ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add trajectory gnome augmentation between the assessment read and the `choose_task` call. Let me insert it after the empty-assessment check (after line 2300's `return 0`) and before line 2308.
+
+Actually, I should insert it right after the try/except block (after line 2299) and before the empty check. Let me do it more carefully.
+
+The logic:
+1. Read assessment text
+2. If assessment is from assessment_missing.md and trajectory file exists, augment with gnomes
+3. Then continue with empty check and choose_task
+
+Let me insert after line 2299:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            assessment = ""
+  +     # When assessment is missing, augment with trajectory gnomes from
+  +     # extract_trajectory.py output so the seed task picker sees live
+  +     # pressure metrics (task_success_rate, task_obsolete_count, etc.)
+  +     # instead of selecting generic repairs.
+  +     if args.trajectory_file and args.trajectory_file.exists() and \
+  +        args.assessment is not None and args.assessment.name == "assessment_missing.md":
+  +         try:
+  +             traj_text = args.trajectory_file.read_text(encoding="utf-8", errors="replace")
+  +             traj_gnomes = numeric_metrics(traj_text)
+  +             assess_gnomes = numeric_metrics(assessment)
+  +             # Only add gnomes not already in assessment text (avoid duplication)
+  +             missing_gnomes = {
+  +                 k: v for k, v in traj_gnomes.items()
+  +                 if k not in assess_gnomes
+  +             }
+  +             if missing_gnomes:
+  +                 gnome_lines = "\n".join(
+  ... (8 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 29 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 29 lines)
+            assessment = args.assessment.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            assessment = ""
+  +     # When assessment is missing, augment with trajectory gnomes from
+  +     # extract_trajectory.py output so the seed task picker sees live
+  +     # pressure metrics (task_success_rate, task_obsolete_count, etc.)
+  +     # instead of selecting generic repairs.
+  +     if args.trajectory_file and args.trajectory_file.exists() and \
+  +        args.assessment is not None and args.assessment.name == "assessment_missing.md":
+  +         try:
+  +             traj_text = args.trajectory_file.read_text(encoding="utf-8", errors="replace")
+  +             traj_gnomes = numeric_metrics(traj_text)
+  +             assess_gnomes = numeric_metrics(assessment)
+  +             # Only add gnomes not already in assessment text (avoid duplication)
+  +             missing_gnomes = {
+  +                 k: v for k, v in traj_gnomes.items()
+  +                 if k not in assess_gnomes
+  +             }
+  +             if missing_gnomes:
+  +                 gnome_lines = "\n".join(
+  ... (8 more lines)
+ ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also add detection of recently-landed work via git log. The task says:
+> The seed task picker can detect recently-landed work (via git log) and avoid re-creating tasks that were already completed.
+
+Let me add this. I can check the git log for recent task commit messages and add that information to the Evidence section. But this is more complex and might require changes to `choose_task` or `render_task`.
+
+Actually, looking at the task more carefully:
+> The seed task picker can detect recently-landed work (via git log) and avoid re-creating tasks that were already completed.
+
+This is about the `choose_task` function. When assessment is missing, it goes to the fallback path. But one of the success criteria is that the task picker should check if tasks were already completed recently.
+
+Looking at the code flow: when assessment_was_missing=True, we always go to the fallback task (lines 1017-1193). The fallback task is always "Repair evidence-backed planning after no-task sessions" (or its gnome-aware variant). 
+
+The recently-landed work detection would need to check: "has the fallback task been completed recently via git log?" If so, pick a different task.
+
+But this is more complex. Let me focus on the gnome enrichment first, which is the primary deliverable.
+
+Actually, thinking more carefully about the task:
+
+> The seed task picker can detect recently-landed work (via git log) and avoid re-creating tasks that were already completed.
+
+This actually might be satisfied by the trajectory gnome enrichment. If the trajectory shows `task_obsolete_count=1` and `task_success_rate` etc., the seed task picker can select a more appropriate task (like fixing trajectory-flagged code issues instead of "repair assessment pipeline").
+
+The existing code at lines 1137-1148 already does this: when `_src_gnome_actionable` is true (which includes `task_obsolete_count > 0`), it produces a task targeting src/*.rs instead of the generic "fix assessment pipeline" task.
+
+So the gnome enrichment is the key enabler. Let me also add a `--trajectory-file` to the `--test` path? No, the test path doesn't need it since tests inject gnomes directly into the assessment text.
+
+Now let me also add a test for the trajectory file augmentation. Let me look at the test structure to add one.
+
+Actually, let me first run the existing tests to make sure they pass, then I can add a focused test.
+
+But the checkpoint says I need to produce output by turn 3. I'm at turn 4 now (2 reads + edit). Let me run the test quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (392ms)
+  ▶ todo ✓ (393ms)
+  ▶ todo ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (760ms)
+
+
