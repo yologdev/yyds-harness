@@ -1,0 +1,311 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The issue is about fixing SQLite projection rebuild to skip unknown event types instead of failing. Let me start by understanding the current code and then implementing the fix.
+
+Let me first read the evolve skill, then the relevant code file, and then implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'rebuild_sqlite_projection' (*.rs) ✓ (710ms)
+ ✓ (649ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the specific function and the ProjectionReport struct to understand what needs to change.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant parts of state.rs - the ProjectionReport struct and the rebuild_sqlite_projection function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:830..950  ▶ search 'struct ProjectionReport' (*.rs) ✓ (506ms)
+ ✓ (649ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the ProjectionReport struct, the parse_event_type_label function, and the EventType enum.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:810..835  ▶ search 'enum EventType' in src (*.rs) ✓ (715ms)
+ ✓ (647ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the EventType enum to understand where the parse fails.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:122..182  ▶ search 'fn parse_event_type_label' in src (*.rs) ✓ (649ms)
+ ✓ (808ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the parse_event_type_label function to understand how unknown events are handled currently.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3145..3195 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `parse_event_type_label` at line 3145 matches known event types, and for anything else (the `other` arm), it tries `serde_json::from_value(Value::String(other.to_string()))`. If this fails (e.g., for "TestEvent" which isn't in the EventType enum), it returns an error.
+
+2. `rebuild_sqlite_projection` at line 869 calls `parse_state_event_line` for each line, and on error it uses `.map_err()` which propagates the error (fail-fast), stopping the rebuild entirely.
+
+The fix:
+1. Add `skipped_unknown: usize` to `ProjectionReport`
+2. Change the loop in `rebuild_sqlite_projection` from `.map_err()?` to a `match` with `warn+skip+continue`
+3. All the existing test calls to `rebuild_sqlite_projection` will still work because `ProjectionReport::default()` will initialize `skipped_unknown` to 0
+
+Let me also check how the doctor displays the report so I know the field will be displayed.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how the doctor command displays the report and how `commands_state.rs` references the report fields:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'rebuild_sqlite_projection' in src (*.rs) ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the doctor displays the projection report in commands_state.rs to understand if `skipped_unknown` will be displayed.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see how the doctor command and the rebuild command use the report:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:595..645 ✓ (361ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a complete picture:
+
+1. `ProjectionReport` struct at line 818-828 — needs a `skipped_unknown` field
+2. `rebuild_sqlite_projection` at line 869-893 — needs the loop changed from `.map_err()?` to `match` with skip+continue
+3. `handle_project` in `commands_state.rs` at line 599-622 — should display the new field
+
+Let me now also check how the doctor shows the projection count, so I know if the skipped_unknown field will be surfaced there.
+
+Let me also check how `state doctor` reads the projection.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement. First, add `skipped_unknown` to `ProjectionReport`:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (393ms)
+  ▶ todo ✓ (393ms)
+  ▶ todo ✓ (395ms)
+  ▶ todo ✓ (442ms)
+  ▶ todo ✓ (187ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edits. The ProjectionReport uses `#[derive(Default)]`, so adding a `usize` field will default to 0 automatically. Perfect.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.2s (5 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        pub decisions: usize,
+        pub cache_metrics: usize,
+        pub relations: usize,
+  +     pub skipped_unknown: usize,
+    }
+  ✓ Auto-approved: edit: src/state.rs (11 → 12 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (11 → 12 lines)
+        pub decisions: usize,
+        pub cache_metrics: usize,
+        pub relations: usize,
+  +     pub skipped_unknown: usize,
+    }
+ ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me change the rebuild loop from fail-fast to skip+continue. I need to verify the exact lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (407ms)
+  ▶ todo ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the current loop before editing:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:884..899 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the lines are exactly as expected. Now let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        let mut report = ProjectionReport::default();
+        for (idx, line) in raw.lines().enumerate() {
+  -         let event = parse_state_event_line(line)
+  -             .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+  +         let event = match parse_state_event_line(line) {
+  +             Ok(event) => event,
+  +             Err(e) => {
+  +                 eprintln!("warning: skipping event line {}: {e}", idx + 1);
+  +                 report.skipped_unknown += 1;
+  +                 continue;
+  +             }
+  +         };
+            project_event_with_conn(&tx, &event, &mut report)?;
+        }
+  ✓ Auto-approved: edit: src/state.rs (6 → 12 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 12 lines)
+        let mut report = ProjectionReport::default();
+        for (idx, line) in raw.lines().enumerate() {
+  -         let event = parse_state_event_line(line)
+  -             .map_err(|e| format!("parse event line {}: {e}", idx + 1))?;
+  +         let event = match parse_state_event_line(line) {
+  +             Ok(event) => event,
+  +             Err(e) => {
+  +                 eprintln!("warning: skipping event line {}: {e}", idx + 1);
+  +                 report.skipped_unknown += 1;
+  +                 continue;
+  +             }
+  +         };
+            project_event_with_conn(&tx, &event, &mut report)?;
+        }
+ ✓ (600ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the `skipped_unknown` display to `handle_project` in `commands_state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the display in `handle_project`:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (394ms)
+  ▶ todo ✓ (250ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+                println!("  relations:     {}", report.relations);
+  +             if report.skipped_unknown > 0 {
+  +                 println!("  skipped:       {} (unknown event types)", report.skipped_unknown);
+  +             }
+                println!("  sqlite:        {}", sqlite_path.display());
+  ✓ Auto-approved: edit: src/commands_state.rs (2 → 5 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (2 → 5 lines)
+                println!("  relations:     {}", report.relations);
+  +             if report.skipped_unknown > 0 {
+  +                 println!("  skipped:       {} (unknown event types)", report.skipped_unknown);
+  +             }
+                println!("  sqlite:        {}", sqlite_path.display());
+ ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me check the doctor path to see how the projection count is displayed there. The doctor shows "Projection: N events — stale!" — I should check that path to see if skipped_unknown is relevant.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check if the doctor (state doctor) output also needs updating:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Projection:' in src (*.rs) ✓ (358ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the doctor (in commands_state.rs) shows the projection count:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:310..340 ✓ (549ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The doctor section uses `count_projection_events` which does a `SELECT COUNT(*) FROM state_events` — that's independent of the `skipped_unknown` field. The skipped events won't be in the projection, so the count will still show fewer events than raw. But the point is that the rebuild succeeds instead of failing entirely. The `skipped_unknown` field is displayed in the rebuild output via `handle_project`. Good.
+
+Now let me run cargo fmt, then cargo build, then cargo test state.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. The doctor uses `count_projection_events()` which queries SQLite directly — that's separate from the `skipped_unknown` field. The key is that the rebuild no longer fails when encountering unknown event types.
+
+Now let me verify by building and testing:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (391ms)
+  ▶ todo ✓ (303ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first run cargo fmt -- --check, then cargo build, then cargo test state.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Need to fix formatting. Let me just run cargo fmt.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the formatting is clean now:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (16.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build succeeded. Now run the state tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the state tests:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (1m 29s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 318 state tests pass + 2 integration tests pass. Now let me check if I can also do a quick smoke test with the actual `state project --rebuild` command to verify it works with the real events.jsonl.
+────────────────────────────────────────────────────────────────────────────────
+
+All 318 state tests pass. Let me verify the real events.jsonl path and do a quick smoke test:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_events_path' in src (*.rs) ✓ (343ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the default events path is, and whether the actual events.jsonl exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:12..27 ✓ (394ms)
+
+
