@@ -154,6 +154,11 @@ pub fn analyze_bash_command(command: &str) -> Option<String> {
         return Some(reason);
     }
 
+    // 27. Unbounded recursive commands that may timeout
+    if let Some(reason) = check_unbounded_command(cmd) {
+        return Some(reason);
+    }
+
     None
 }
 
@@ -1159,6 +1164,85 @@ fn check_systemctl_mask(cmd_lower: &str) -> Option<String> {
     None
 }
 
+/// Check if a path argument points to the entire root or home directory.
+fn is_root_or_home(s: &str) -> bool {
+    matches!(
+        s,
+        "/" | "~" | "~/" | "$HOME" | "$HOME/" | "${HOME}" | "${HOME}/"
+    )
+}
+
+/// Check for unbounded recursive commands that may timeout.
+/// Detects `find /` without `-maxdepth`, `grep -r /`, `rg /`.
+fn check_unbounded_command(cmd: &str) -> Option<String> {
+    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    match tokens[0] {
+        "find" => {
+            // Find the first non-flag path argument; check for -maxdepth
+            let mut path: Option<&str> = None;
+            let mut has_maxdepth = false;
+            for t in &tokens[1..] {
+                if *t == "-maxdepth" || t.starts_with("-maxdepth=") {
+                    has_maxdepth = true;
+                } else if !t.starts_with('-') && path.is_none() {
+                    path = Some(t);
+                }
+            }
+            if !has_maxdepth {
+                if let Some(p) = path {
+                    if is_root_or_home(p) {
+                        return Some(format!(
+                            "Unbounded command: 'find {p}' without -maxdepth may scan the entire filesystem and timeout. Add '-maxdepth N' or narrow the path."
+                        ));
+                    }
+                }
+            }
+        }
+        "grep" => {
+            let is_recursive = tokens[1..].iter().any(|t| {
+                *t == "-r"
+                    || *t == "-R"
+                    || *t == "--recursive"
+                    || (t.starts_with("-r") && !t.starts_with("--") && t.contains('r'))
+            });
+            if is_recursive {
+                for t in &tokens[2..] {
+                    if !t.starts_with('-') && is_root_or_home(t) {
+                        return Some(format!(
+                            "Unbounded command: 'grep -r {t}' may scan the entire filesystem and timeout. Add '--max-depth N' or narrow the path."
+                        ));
+                    }
+                }
+            }
+        }
+        "rg" => {
+            // First non-flag token after rg is the pattern; remaining non-flag tokens are paths.
+            let mut seen_pattern = false;
+            for t in &tokens[1..] {
+                if t.starts_with('-') {
+                    continue;
+                }
+                if !seen_pattern {
+                    seen_pattern = true;
+                    continue;
+                }
+                if is_root_or_home(t) {
+                    return Some(format!(
+                        "Unbounded command: 'rg ... {t}' may scan the entire filesystem and timeout. Add '--max-depth N' or narrow the path."
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1603,5 +1687,63 @@ mod tests {
         assert!(analyze_bash_command("systemctl unmask nginx").is_none());
         // Safe: systemctl status (read-only)
         assert!(analyze_bash_command("systemctl status nginx").is_none());
+    }
+
+    #[test]
+    fn test_analyze_unbounded_find() {
+        // Unbounded: find / or find ~ without -maxdepth
+        assert!(analyze_bash_command("find / -name '*.rs'").is_some());
+        assert!(analyze_bash_command("find / -type f -name '*.log'").is_some());
+        assert!(analyze_bash_command("find ~ -name '*.rs'").is_some());
+        assert!(analyze_bash_command("find ~/ -type d").is_some());
+        assert!(analyze_bash_command("find $HOME -name '*.txt'").is_some());
+        assert!(analyze_bash_command("find $HOME/ -type f").is_some());
+        assert!(analyze_bash_command("find ${HOME} -name '*.rs'").is_some());
+        assert!(analyze_bash_command("find ${HOME}/ -type d").is_some());
+        // Bounded: find with -maxdepth
+        assert!(analyze_bash_command("find / -maxdepth 1 -name '*.rs'").is_none());
+        assert!(analyze_bash_command("find / -maxdepth=3 -type f").is_none());
+        assert!(analyze_bash_command("find ~ -maxdepth 2 -name '*.txt'").is_none());
+        // Safe: find on subdirectories
+        assert!(analyze_bash_command("find src/ -name '*.rs'").is_none());
+        assert!(analyze_bash_command("find . -type f").is_none());
+        assert!(analyze_bash_command("find ./src -name '*.rs'").is_none());
+    }
+
+    #[test]
+    fn test_analyze_unbounded_grep_recursive() {
+        // Unbounded: grep -r from root/home
+        assert!(analyze_bash_command("grep -r pattern /").is_some());
+        assert!(analyze_bash_command("grep -R pattern /").is_some());
+        assert!(analyze_bash_command("grep --recursive pattern /").is_some());
+        assert!(analyze_bash_command("grep -r pattern ~").is_some());
+        assert!(analyze_bash_command("grep -r pattern $HOME").is_some());
+        assert!(analyze_bash_command("grep -ri pattern /").is_some());
+        assert!(analyze_bash_command("grep -rn pattern /").is_some());
+        // Bounded: grep -r on subdirectories
+        assert!(analyze_bash_command("grep -r pattern src/").is_none());
+        assert!(analyze_bash_command("grep -r pattern ./src").is_none());
+        assert!(analyze_bash_command("grep -r pattern .").is_none());
+        // Safe: grep without -r
+        assert!(analyze_bash_command("grep pattern /etc/hosts").is_none());
+        assert!(analyze_bash_command("grep pattern file.txt").is_none());
+    }
+
+    #[test]
+    fn test_analyze_unbounded_ripgrep() {
+        // Unbounded: rg with root/home as path
+        assert!(analyze_bash_command("rg pattern /").is_some());
+        assert!(analyze_bash_command("rg pattern ~").is_some());
+        assert!(analyze_bash_command("rg pattern $HOME").is_some());
+        assert!(analyze_bash_command("rg --type rust pattern /").is_some());
+        // Safe: rg with subdirectory paths
+        assert!(analyze_bash_command("rg pattern src/").is_none());
+        assert!(analyze_bash_command("rg pattern ./src").is_none());
+        assert!(analyze_bash_command("rg pattern .").is_none());
+        // Safe: rg without path (searches cwd)
+        assert!(analyze_bash_command("rg pattern").is_none());
+        assert!(analyze_bash_command("rg --type rust pattern").is_none());
+        // Safe: rg with first arg as / (treated as pattern, not path — searches cwd)
+        assert!(analyze_bash_command("rg /").is_none());
     }
 }
