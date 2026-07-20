@@ -483,18 +483,7 @@ impl AgentTool for StreamingBashTool {
         // by the last command's exit code.
         let guarded_command = format!("set -o pipefail; {}", effective_command);
 
-        let mut cmd = tokio::process::Command::new("bash");
-        cmd.arg("-c").arg(&guarded_command);
-
-        if let Some(ref cwd) = self.cwd {
-            cmd.current_dir(cwd);
-        }
-
-        // Pipe stdout/stderr for line-by-line reading
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
-
-        let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+        let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
             Duration::from_secs(t.clamp(1, 600))
         } else {
             self.timeout
@@ -503,146 +492,193 @@ impl AgentTool for StreamingBashTool {
         let update_interval = self.update_interval;
         let lines_per_update = self.lines_per_update;
 
-        let mut child = cmd.spawn().map_err(|e| {
-            crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
-            ToolError::Failed(format!("Failed to spawn: {e}"))
-        })?;
+        let mut current_timeout = base_timeout;
+        let mut retry_remaining = true;
+        let mut accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let mut truncated = Arc::new(AtomicBool::new(false));
 
-        // Take stdout/stderr handles
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
+        let exit_status = loop {
+            let mut cmd = tokio::process::Command::new("bash");
+            cmd.arg("-c").arg(&guarded_command);
 
-        let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
-        let truncated = Arc::new(AtomicBool::new(false));
+            if let Some(ref cwd) = self.cwd {
+                cmd.current_dir(cwd);
+            }
 
-        // Spawn a task to read stdout + stderr lines and accumulate them
-        let acc_clone = Arc::clone(&accumulated);
-        let trunc_clone = Arc::clone(&truncated);
-        let cancel_clone = cancel.clone();
-        let ctx_clone = ctx.clone();
-        let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+            // Pipe stdout/stderr for line-by-line reading
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
 
-        let reader_handle = tokio::spawn(async move {
-            let stdout_reader = stdout.map(tokio::io::BufReader::new);
-            let stderr_reader = stderr.map(tokio::io::BufReader::new);
+            let mut child = cmd.spawn().map_err(|e| {
+                crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+                ToolError::Failed(format!("Failed to spawn: {e}"))
+            })?;
 
-            let mut stdout_lines = stdout_reader.map(|r| r.lines());
-            let mut stderr_lines = stderr_reader.map(|r| r.lines());
+            // Take stdout/stderr handles
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
 
-            let mut lines_since_update: usize = 0;
-            let mut last_update = tokio::time::Instant::now();
-            let mut stdout_done = stdout_lines.is_none();
-            let mut stderr_done = stderr_lines.is_none();
+            accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+            truncated = Arc::new(AtomicBool::new(false));
 
-            loop {
-                if cancel_clone.is_cancelled() {
-                    break;
+            // Spawn a task to read stdout + stderr lines and accumulate them
+            let acc_clone = Arc::clone(&accumulated);
+            let trunc_clone = Arc::clone(&truncated);
+            let cancel_clone = cancel.clone();
+            let ctx_clone = ctx.clone();
+            let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+            let reader_handle = tokio::spawn(async move {
+                let stdout_reader = stdout.map(tokio::io::BufReader::new);
+                let stderr_reader = stderr.map(tokio::io::BufReader::new);
+
+                let mut stdout_lines = stdout_reader.map(|r| r.lines());
+                let mut stderr_lines = stderr_reader.map(|r| r.lines());
+
+                let mut lines_since_update: usize = 0;
+                let mut last_update = tokio::time::Instant::now();
+                let mut stdout_done = stdout_lines.is_none();
+                let mut stderr_done = stderr_lines.is_none();
+
+                loop {
+                    if cancel_clone.is_cancelled() {
+                        break;
+                    }
+                    if stdout_done && stderr_done {
+                        break;
+                    }
+
+                    // Read one line from whichever stream has data, tracking its source
+                    let line_info: Option<(String, bool)> = tokio::select! {
+                        biased;
+                        result = async {
+                            match stdout_lines.as_mut() {
+                                Some(lines) => lines.next_line().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if !stdout_done => {
+                            match result {
+                                Ok(Some(line)) => Some((line, false)),
+                                Ok(None) => { stdout_done = true; None }
+                                Err(_) => { stdout_done = true; None }
+                            }
+                        }
+                        result = async {
+                            match stderr_lines.as_mut() {
+                                Some(lines) => lines.next_line().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if !stderr_done => {
+                            match result {
+                                Ok(Some(line)) => Some((line, true)),
+                                Ok(None) => { stderr_done = true; None }
+                                Err(_) => { stderr_done = true; None }
+                            }
+                        }
+                    };
+
+                    if let Some((line, is_stderr)) = line_info {
+                        let mut acc = acc_clone.lock().await;
+                        if acc.len() < max_bytes {
+                            if !acc.is_empty() {
+                                acc.push('\n');
+                            }
+                            acc.push_str(&line);
+                            if acc.len() > max_bytes {
+                                let safe_len = crate::format::safe_truncate(&acc, max_bytes).len();
+                                acc.truncate(safe_len);
+                                acc.push_str("\n... (output truncated)");
+                                trunc_clone.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        lines_since_update += 1;
+                        drop(acc);
+
+                        // Emit real-time progress for each line (interactive mode only)
+                        if emit_progress {
+                            if let Some(ref on_progress) = ctx_clone.on_progress {
+                                let progress_text = if is_stderr {
+                                    format!("stderr: {line}")
+                                } else {
+                                    line.clone()
+                                };
+                                on_progress(progress_text);
+                            }
+                        }
+
+                        // Emit update if interval elapsed or enough lines accumulated
+                        let elapsed = last_update.elapsed();
+                        if elapsed >= update_interval || lines_since_update >= lines_per_update {
+                            let snapshot = acc_clone.lock().await.clone();
+                            emit_update(&ctx_clone, &snapshot);
+                            lines_since_update = 0;
+                            last_update = tokio::time::Instant::now();
+                        }
+                    }
                 }
-                if stdout_done && stderr_done {
-                    break;
+            });
+
+            // Wait for the process with timeout and cancellation
+            let mut timed_out = false;
+            let result = tokio::select! {
+                _ = cancel.cancelled() => {
+                    // Kill the child process on cancellation
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    return Err(yoagent::types::ToolError::Cancelled);
                 }
-
-                // Read one line from whichever stream has data, tracking its source
-                let line_info: Option<(String, bool)> = tokio::select! {
-                    biased;
-                    result = async {
-                        match stdout_lines.as_mut() {
-                            Some(lines) => lines.next_line().await,
-                            None => std::future::pending().await,
+                result = tokio::time::timeout(current_timeout, child.wait()) => {
+                    match result {
+                        Ok(Ok(status)) => {
+                            // Wait for the reader to finish consuming remaining buffered output
+                            let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                            Ok(Some(status))
                         }
-                    }, if !stdout_done => {
-                        match result {
-                            Ok(Some(line)) => Some((line, false)),
-                            Ok(None) => { stdout_done = true; None }
-                            Err(_) => { stdout_done = true; None }
+                        Ok(Err(e)) => {
+                            reader_handle.abort();
+                            crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                            Err(ToolError::Failed(format!("Failed to wait: {e}")))
                         }
-                    }
-                    result = async {
-                        match stderr_lines.as_mut() {
-                            Some(lines) => lines.next_line().await,
-                            None => std::future::pending().await,
-                        }
-                    }, if !stderr_done => {
-                        match result {
-                            Ok(Some(line)) => Some((line, true)),
-                            Ok(None) => { stderr_done = true; None }
-                            Err(_) => { stderr_done = true; None }
-                        }
-                    }
-                };
-
-                if let Some((line, is_stderr)) = line_info {
-                    let mut acc = acc_clone.lock().await;
-                    if acc.len() < max_bytes {
-                        if !acc.is_empty() {
-                            acc.push('\n');
-                        }
-                        acc.push_str(&line);
-                        if acc.len() > max_bytes {
-                            let safe_len = crate::format::safe_truncate(&acc, max_bytes).len();
-                            acc.truncate(safe_len);
-                            acc.push_str("\n... (output truncated)");
-                            trunc_clone.store(true, Ordering::Relaxed);
-                        }
-                    }
-                    lines_since_update += 1;
-                    drop(acc);
-
-                    // Emit real-time progress for each line (interactive mode only)
-                    if emit_progress {
-                        if let Some(ref on_progress) = ctx_clone.on_progress {
-                            let progress_text = if is_stderr {
-                                format!("stderr: {line}")
+                        Err(_elapsed) => {
+                            let _ = child.kill().await;
+                            reader_handle.abort();
+                            if retry_remaining && current_timeout < Duration::from_secs(600) {
+                                retry_remaining = false;
+                                current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout (retrying): {} after {}s, retry with {}s",
+                                    command,
+                                    base_timeout.as_secs(),
+                                    current_timeout.as_secs()
+                                ));
+                                timed_out = true;
+                                Ok(None)
                             } else {
-                                line.clone()
-                            };
-                            on_progress(progress_text);
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout: {} after {}s",
+                                    command,
+                                    current_timeout.as_secs()
+                                ));
+                                Err(ToolError::Failed(format!(
+                                    "Command timed out after {}s",
+                                    current_timeout.as_secs()
+                                )))
+                            }
                         }
                     }
-
-                    // Emit update if interval elapsed or enough lines accumulated
-                    let elapsed = last_update.elapsed();
-                    if elapsed >= update_interval || lines_since_update >= lines_per_update {
-                        let snapshot = acc_clone.lock().await.clone();
-                        emit_update(&ctx_clone, &snapshot);
-                        lines_since_update = 0;
-                        last_update = tokio::time::Instant::now();
-                    }
                 }
-            }
-        });
+            };
 
-        // Wait for the process with timeout and cancellation
-        let exit_status = tokio::select! {
-            _ = cancel.cancelled() => {
-                // Kill the child process on cancellation
-                let _ = child.kill().await;
-                reader_handle.abort();
-                return Err(yoagent::types::ToolError::Cancelled);
+            if timed_out {
+                continue;
             }
-            _ = tokio::time::sleep(timeout) => {
-                let _ = child.kill().await;
-                reader_handle.abort();
-                crate::state::stash_diagnostic_error(&format!(
-                    "bash timeout: {} after {}s",
-                    command,
-                    timeout.as_secs()
-                ));
-                return Err(ToolError::Failed(format!(
-                    "Command timed out after {}s",
-                    timeout.as_secs()
-                )));
-            }
-            status = child.wait() => {
-                status.map_err(|e| {
-                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
-                    ToolError::Failed(format!("Failed to wait: {e}"))
-                })?
+
+            match result {
+                Ok(Some(status)) => break status,
+                Ok(None) => unreachable!("timed_out handled above"),
+                Err(e) => return Err(e),
             }
         };
-
-        // Wait for the reader to finish consuming remaining buffered output
-        let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
 
         let exit_code = exit_status.code().unwrap_or(-1);
         let output = accumulated.lock().await.clone();
