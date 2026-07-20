@@ -759,6 +759,7 @@ impl PromptEventState {
 
 /// Shared event-handling loop for prompt execution.
 /// Processes all events from the agent's streaming channel and returns the result.
+#[allow(unused_assignments)]
 async fn handle_prompt_events(
     agent: &mut Agent,
     mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
@@ -768,6 +769,7 @@ async fn handle_prompt_events(
     let mut state = PromptEventState::new();
     let mut model_call_terminal_recorded = false;
     let mut model_calls_completed: u64 = 0;
+    let mut model_call_started = false;
     let model_call_id = format!(
         "mc-{:x}",
         std::time::SystemTime::now()
@@ -780,6 +782,7 @@ async fn handle_prompt_events(
         crate::state::Actor::Yoyo,
         serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
     );
+    model_call_started = true;
 
     loop {
         tokio::select! {
@@ -939,6 +942,14 @@ async fn handle_prompt_events(
                     }
                     AgentEvent::AgentEnd { messages } => {
                         state.handle_agent_end(messages, model);
+                        if !model_call_started {
+                            crate::state::record(
+                                crate::state::EventType::ModelCallStarted,
+                                crate::state::Actor::Yoyo,
+                                serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+                            );
+                            model_call_started = true;
+                        }
                         crate::state::record(
                             crate::state::EventType::ModelCallCompleted,
                             crate::state::Actor::Yoyo,
@@ -1012,6 +1023,14 @@ async fn handle_prompt_events(
                 if let Some(s) = state.spinner.take() { s.stop(); }
                 agent.abort();
                 if !model_call_terminal_recorded {
+                    if !model_call_started {
+                        crate::state::record(
+                            crate::state::EventType::ModelCallStarted,
+                            crate::state::Actor::Yoyo,
+                            serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+                        );
+                        model_call_started = true;
+                    }
                     crate::state::record(
                         crate::state::EventType::ModelCallCompleted,
                         crate::state::Actor::Yoyo,
@@ -1064,6 +1083,14 @@ async fn handle_prompt_events(
     }
 
     if !model_call_terminal_recorded {
+        if !model_call_started {
+            crate::state::record(
+                crate::state::EventType::ModelCallStarted,
+                crate::state::Actor::Yoyo,
+                serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+            );
+            model_call_started = true;
+        }
         crate::state::record(
             crate::state::EventType::ModelCallCompleted,
             crate::state::Actor::Yoyo,
