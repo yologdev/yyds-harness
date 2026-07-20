@@ -494,8 +494,8 @@ impl AgentTool for StreamingBashTool {
 
         let mut current_timeout = base_timeout;
         let mut retry_remaining = true;
-        let mut accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
-        let mut truncated = Arc::new(AtomicBool::new(false));
+        let mut accumulated: Arc<tokio::sync::Mutex<String>>;
+        let mut truncated: Arc<AtomicBool>;
 
         let exit_status = loop {
             let mut cmd = tokio::process::Command::new("bash");
