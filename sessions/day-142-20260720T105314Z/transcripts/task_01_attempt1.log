@@ -1,0 +1,1491 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source file to understand the current implementation and plan my change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tools.rs:480..650 ✓ (1.9s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the file to see the full context of the StreamingBashTool struct and its invoke method from the beginning.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:440..485  ▶ read src/tools.rs:649..679 ✓ (2.5s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the current code. Let me plan the change:
+
+The `StreamingBashTool::invoke` method at lines ~440-666 needs to:
+1. Wrap the process spawning+waiting in a retry loop (max 2 attempts)
+2. On first timeout, double the timeout (capped at 600s), stash a "bash timeout (retrying)" diagnostic, and retry
+3. On final timeout, stash "bash timeout" diagnostic and return error
+
+The key section to modify is lines ~486-642. The challenge is that this is a relatively complex section with many moving parts (spawn, reader handle, select loop). I need to be surgical.
+
+Let me think about the refactoring:
+
+Current flow:
+1. Build command string
+2. Spawn child
+3. Take stdout/stderr
+4. Set up reader_handle (tokio::spawn)
+5. tokio::select! between cancel, sleep(timeout), child.wait()
+6. On timeout: kill, abort reader, stash error, return Err
+7. On success: wait for reader, return output
+
+Target flow:
+1. Build command string
+2. Loop (max 2 attempts):
+   a. Spawn child
+   b. Take stdout/stderr
+   c. Set up reader_handle
+   d. tokio::select! between cancel, timeout(current_timeout, child.wait()), child.wait()
+   e. On timeout: if first attempt and current_timeout < 600s, kill, abort reader, double timeout, continue loop
+   f. On timeout (final): kill, abort reader, stash error, return Err
+   g. On success: wait for reader, break with exit_status
+
+I need to wrap lines 486-642 in a `loop` with a retry count. The tricky part is that the `cancel` branch still returns immediately.
+
+Let me think about the implementation more carefully. I'll need to:
+
+1. Move the `guarded_command` construction before the loop (it stays the same).
+2. Move `timeout` declaration before the loop (it gets doubled on retry).
+3. Wrap spawn+wait in a loop:
+   ```rust
+   let mut retry_remaining = true;
+   let mut current_timeout = timeout;
+   loop {
+       // spawn child, take stdout/stderr, set up accumulated/truncated
+       // spawn reader_handle
+       // tokio::select! {
+       //     cancel => return Cancelled
+       //     result = tokio::time::timeout(current_timeout, child.wait()) => {
+       //         match result {
+       //             Ok(Ok(status)) => exit_status = status; break;
+       //             Ok(Err(e)) => return wait error
+       //             Err(_elapsed) => {
+       //                 // timeout
+       //                 if retry_remaining && current_timeout < Duration::from_secs(600) {
+       //                     kill child, abort reader
+       //                     current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+       //                     retry_remaining = false;
+       //                     stash "bash timeout (retrying)" diagnostic
+       //                     continue;
+       //                 } else {
+       //                     kill child, abort reader
+       //                     stash "bash timeout" diagnostic
+       //                     return Err(...)
+       //                 }
+       //             }
+       //         }
+       //     }
+       // }
+   }
+   ```
+
+Let me also check the exact lines again. The code from line 486 to 642:
+
+Actually wait, I need to be more careful. Looking at the code:
+
+Line 486-496: cmd setup
+Line 497-501: timeout calculation
+Line 502-504: max_bytes, update_interval, lines_per_update
+Line 506-509: child spawn
+Line 511-513: take stdout/stderr
+Line 515-516: accumulated, truncated
+Line 518-523: clone for reader task, emit_progress
+Line 525-613: reader_handle spawn
+Line 615-642: tokio::select! for waiting
+
+So the loop needs to wrap from line 506 (child spawn) through line 642 (end of select). But `cancel` branch still returns immediately.
+
+Let me think about what stays outside the loop:
+- Line 484: `guarded_command` (same for both attempts)
+- Line 486-496: `cmd` setup (same for both)
+- Line 497-501: `timeout` - this is the BASE timeout, we need current_timeout for the loop
+- Line 502-504: `max_bytes`, `update_interval`, `lines_per_update` (same)
+
+What goes inside the loop:
+- Line 506-509: `cmd.spawn()`
+- Line 511-513: take stdout/stderr
+- Line 515-516: accumulated, truncated (fresh Arc per attempt)
+- Line 518-613: reader_handle spawn (fresh per attempt)
+- Line 615-642: tokio::select!
+
+Let me now write the exact edit. I need to be careful about preserving the same structure.
+
+Here's my plan for the edit:
+
+OLD (lines 497-642):
+```rust
+        let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut child = cmd.spawn().map_err(|e| {
+            crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+            ToolError::Failed(format!("Failed to spawn: {e}"))
+        })?;
+
+        // Take stdout/stderr handles
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let truncated = Arc::new(AtomicBool::new(false));
+
+        // Spawn a task to read stdout + stderr lines and accumulate them
+        let acc_clone = Arc::clone(&accumulated);
+        let trunc_clone = Arc::clone(&truncated);
+        let cancel_clone = cancel.clone();
+        let ctx_clone = ctx.clone();
+        let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+        let reader_handle = tokio::spawn(async move {
+            ... reader code ...
+        });
+
+        // Wait for the process with timeout and cancellation
+        let exit_status = tokio::select! {
+            _ = cancel.cancelled() => {
+                let _ = child.kill().await;
+                reader_handle.abort();
+                return Err(yoagent::types::ToolError::Cancelled);
+            }
+            _ = tokio::time::sleep(timeout) => {
+                let _ = child.kill().await;
+                reader_handle.abort();
+                crate::state::stash_diagnostic_error(&format!(
+                    "bash timeout: {} after {}s",
+                    command,
+                    timeout.as_secs()
+                ));
+                return Err(ToolError::Failed(format!(
+                    "Command timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            status = child.wait() => {
+                status.map_err(|e| {
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    ToolError::Failed(format!("Failed to wait: {e}"))
+                })?
+            }
+        };
+
+        // Wait for the reader to finish consuming remaining buffered output
+        let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+```
+
+This is the section I need to modify. Let me write the new version carefully.
+
+Actually, let me reconsider the approach. The task description says to use `tokio::time::timeout()` instead of `tokio::time::sleep()` in the select. That's cleaner. Let me structure it:
+
+```rust
+        let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut current_timeout = base_timeout;
+        let mut retry_remaining = true;
+
+        let exit_status = loop {
+            let mut child = cmd.spawn().map_err(|e| {
+                crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+                ToolError::Failed(format!("Failed to spawn: {e}"))
+            })?;
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+            let truncated = Arc::new(AtomicBool::new(false));
+
+            let acc_clone = Arc::clone(&accumulated);
+            let trunc_clone = Arc::clone(&truncated);
+            let cancel_clone = cancel.clone();
+            let ctx_clone = ctx.clone();
+            let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+            let reader_handle = tokio::spawn(async move {
+                ... reader code ...
+            });
+
+            // Wait for the process with timeout and cancellation
+            break tokio::select! {
+                _ = cancel.cancelled() => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    return Err(yoagent::types::ToolError::Cancelled);
+                }
+                result = tokio::time::timeout(current_timeout, child.wait()) => {
+                    match result {
+                        Ok(Ok(status)) => {
+                            // Wait for the reader to finish
+                            let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                            status
+                        }
+                        Ok(Err(e)) => {
+                            reader_handle.abort();
+                            crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                            return Err(ToolError::Failed(format!("Failed to wait: {e}")));
+                        }
+                        Err(_elapsed) => {
+                            // Timeout
+                            let _ = child.kill().await;
+                            reader_handle.abort();
+                            if retry_remaining && current_timeout < Duration::from_secs(600) {
+                                retry_remaining = false;
+                                current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout (retrying): {} after {}s, retry with {}s",
+                                    command,
+                                    base_timeout.as_secs(),
+                                    current_timeout.as_secs()
+                                ));
+                                continue;
+                            }
+                            crate::state::stash_diagnostic_error(&format!(
+                                "bash timeout: {} after {}s",
+                                command,
+                                current_timeout.as_secs()
+                            ));
+                            return Err(ToolError::Failed(format!(
+                                "Command timed out after {}s",
+                                current_timeout.as_secs()
+                            )));
+                        }
+                    }
+                }
+            };
+        };
+```
+
+Wait, but there's a problem with the `cancel.cancelled()` branch inside a `loop`. When `cancel.cancelled()` fires and returns, it returns from the outer function, which is correct. The `continue` in the timeout branch goes back to the top of the `loop`. The `break` with `status` exits the loop. That all works.
+
+But I need to be careful with the reader_handle. In the success path, I need to await the reader_handle. In the timeout path, I abort it. The reader code itself doesn't change.
+
+Actually, I need to double-check: can I use `continue` inside a `tokio::select!` macro? Let me think... Yes, the `tokio::select!` macro's branch bodies are just regular code blocks, so `continue` and `break` work normally as long as the surrounding context is a loop. But wait, `continue` would continue the loop that contains the select, which is what I want.
+
+Hmm, but there's a subtlety. The `tokio::select!` returns the value that is assigned. If I `continue` inside a branch, the code won't actually execute `break tokio::select! { ... }`. It will just continue the loop instead of reaching the `break`. That's actually what I want!
+
+Actually wait, let me reconsider. The `continue` will skip the `break` assignment but will loop back to the top. That's exactly what I want for the retry case. And for the success case, `break tokio::select! { ... }` will break out and assign the status. For the cancel case, it returns early. For the timeout-final case, it returns early. For the timeout-retry case, `continue` goes back to re-spawn.
+
+But I realize `continue` inside `tokio::select!` might not work correctly because of how the macro expands. Let me think about this differently.
+
+The `tokio::select!` macro generates a `poll()` function. Inside it, `continue` refers to the loop from the *outer* context, not within the generated poll function. Actually, no - `continue` in a branch of `tokio::select!` should work because the branch bodies are inserted directly into the generated code, and if there's an outer loop, `continue` will reference that. Let me check...
+
+Actually, looking at tokio::select! macro expansion, branches become match arms inside a poll function. `continue` inside a match arm in a function doesn't make sense - it needs to be in a loop. So if I wrap the select in a `loop`, `continue` inside a branch should continue the outer loop.
+
+Hmm, actually I'm not 100% sure about this. Let me use a different approach to be safe:
+
+Instead of `continue`, I can use a flag variable:
+
+```rust
+let mut should_retry = false;
+let exit_status = loop {
+    // ... spawn child, set up reader ...
+    break tokio::select! {
+        _ = cancel.cancelled() => { ... return ... }
+        result = tokio::time::timeout(current_timeout, child.wait()) => {
+            match result {
+                Ok(Ok(status)) => { ... status }
+                Ok(Err(e)) => { ... return ... }
+                Err(_elapsed) => {
+                    if retry_remaining && ... {
+                        should_retry = true;
+                        // don't return, just let the loop continue
+                        // but we need a value... we could use a dummy
+                    }
+                }
+            }
+        }
+    };
+};
+if should_retry { continue; }
+// else use exit_status
+```
+
+This is getting messy. The cleanest approach is probably to separate the select into its own block and not try to mix `break`/`continue` with it:
+
+```rust
+let mut current_timeout = base_timeout;
+let mut retry_remaining = true;
+
+let exit_status = loop {
+    // spawn, set up reader...
+    
+    // Run the select; on retry, continue; otherwise assign exit_status and break
+    let (status, timed_out) = tokio::select! {
+        _ = cancel.cancelled() => {
+            let _ = child.kill().await;
+            reader_handle.abort();
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+        result = tokio::time::timeout(current_timeout, child.wait()) => {
+            match result {
+                Ok(Ok(s)) => (Some(s), false),
+                Ok(Err(e)) => {
+                    reader_handle.abort();
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    return Err(ToolError::Failed(format!("Failed to wait: {e}")));
+                }
+                Err(_elapsed) => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    if retry_remaining && current_timeout < Duration::from_secs(600) {
+                        retry_remaining = false;
+                        current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout (retrying): {} after {}s, retry with {}s",
+                            command,
+                            base_timeout.as_secs(),
+                            current_timeout.as_secs()
+                        ));
+                        // We need to continue the outer loop
+                        (None, true)
+                    } else {
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout: {} after {}s",
+                            command,
+                            current_timeout.as_secs()
+                        ));
+                        return Err(ToolError::Failed(format!(
+                            "Command timed out after {}s",
+                            current_timeout.as_secs()
+                        )));
+                    }
+                }
+            }
+        }
+    };
+    
+    if timed_out {
+        continue;
+    }
+    break status.unwrap();
+};
+```
+
+Wait, but in the `cancel.cancelled()` branch we return from the outer function, not from the select. And in the `Ok(Err(e))` branch, we also return. So `status` is never None when we reach `break status.unwrap()`. Good.
+
+But wait, will `continue` work correctly inside a `tokio::select!` branch? Let me think again more carefully.
+
+Actually, in Rust, `continue` applies to the innermost loop. The `tokio::select!` macro generates a `Future::poll()` method. Inside, each branch becomes something like:
+
+```rust
+if this_branch_is_ready {
+    return Poll::Ready(branch_body);
+}
+```
+
+The `continue` inside `branch_body` would be a bare `continue` inside a function, which is a compile error. So `continue` inside a `tokio::select!` branch won't work.
+
+I need to use a flag variable approach. Let me restructure:
+
+```rust
+let mut current_timeout = base_timeout;
+let mut retry_remaining = true;
+
+let exit_status = loop {
+    // spawn child, set up reader...
+
+    let mut timed_out_flag = false;
+    
+    let exit = tokio::select! {
+        _ = cancel.cancelled() => {
+            let _ = child.kill().await;
+            reader_handle.abort();
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+        result = tokio::time::timeout(current_timeout, child.wait()) => {
+            match result {
+                Ok(Ok(status)) => {
+                    // Wait for the reader to finish
+                    let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                    status
+                }
+                Ok(Err(e)) => {
+                    reader_handle.abort();
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    return Err(ToolError::Failed(format!("Failed to wait: {e}")));
+                }
+                Err(_elapsed) => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    if retry_remaining && current_timeout < Duration::from_secs(600) {
+                        retry_remaining = false;
+                        current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout (retrying): {} after {}s, retry with {}s",
+                            command,
+                            base_timeout.as_secs(),
+                            current_timeout.as_secs()
+                        ));
+                        timed_out_flag = true;
+                        // return a dummy exit status, we'll ignore it
+                        std::process::ExitStatus::from_raw(0)
+                    } else {
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout: {} after {}s",
+                            command,
+                            current_timeout.as_secs()
+                        ));
+                        return Err(ToolError::Failed(format!(
+                            "Command timed out after {}s",
+                            current_timeout.as_secs()
+                        )));
+                    }
+                }
+            }
+        }
+    };
+    
+    if timed_out_flag {
+        continue;
+    }
+    break exit;
+};
+```
+
+Hmm, but `ExitStatus::from_raw` is platform-specific and might not exist on all platforms. Let me check... Actually `std::process::ExitStatus` doesn't have `from_raw` in stable Rust. There is `ExitStatusExt` trait on Unix with `from_raw(i32)`. But I don't need a real exit status - I just need a dummy value because the branch is never taken after `timed_out_flag` is set to true.
+
+Wait, actually the problem is that `tokio::select!` requires all branches to return the same type. If the `cancel` branch returns via `return Err(...)`, and the `Ok(Err(e))` branch also returns via `return Err(...)`, and the timeout branch in the non-retry case returns via `return Err(...)`, then only the success case and the retry case need to produce a value.
+
+But in the retry case, I need to produce a dummy `ExitStatus` that I'll never use. This is ugly but workable.
+
+Actually, a better approach: I can factor the select into a function or use a more creative approach. But let me keep it simple and use the dummy approach. Actually, I realize I can use `std::process::exit(0)` which... no, that exits the process.
+
+Let me use another approach. What if I use `Option<ExitStatus>` and wrap the select to return `Option<ExitStatus>`?
+
+The simplest clean approach: use a `retry_flag` variable that I check AFTER the select, not inside it. The select always produces some kind of result, and I check the flag after:
+
+```rust
+let exit_status = loop {
+    let mut child = cmd.spawn()...;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    
+    let accumulated = Arc::new(...);
+    let truncated = Arc::new(...);
+    
+    let reader_handle = tokio::spawn(async move { ... });
+    
+    let mut timed_out = false;
+    
+    let result: Result<Option<std::process::ExitStatus>, ToolError> = tokio::select! {
+        _ = cancel.cancelled() => {
+            let _ = child.kill().await;
+            reader_handle.abort();
+            return Err(yoagent::types::ToolError::Cancelled);
+        }
+        result = tokio::time::timeout(current_timeout, child.wait()) => {
+            match result {
+                Ok(Ok(status)) => {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                    Ok(Some(status))
+                }
+                Ok(Err(e)) => {
+                    reader_handle.abort();
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    Err(ToolError::Failed(format!("Failed to wait: {e}")))
+                }
+                Err(_elapsed) => {
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    if retry_remaining && current_timeout < Duration::from_secs(600) {
+                        retry_remaining = false;
+                        current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout (retrying): {} after {}s, retry with {}s",
+                            command,
+                            base_timeout.as_secs(),
+                            current_timeout.as_secs()
+                        ));
+                        timed_out = true;
+                        Ok(None)
+                    } else {
+                        crate::state::stash_diagnostic_error(&format!(
+                            "bash timeout: {} after {}s",
+                            command,
+                            current_timeout.as_secs()
+                        ));
+                        Err(ToolError::Failed(format!(
+                            "Command timed out after {}s",
+                            current_timeout.as_secs()
+                        )))
+                    }
+                }
+            }
+        }
+    };
+    
+    if timed_out {
+        continue;
+    }
+    
+    match result {
+        Ok(Some(status)) => break status,
+        Ok(None) => unreachable!("timed_out checked above"),
+        Err(e) => return Err(e),
+    }
+};
+```
+
+Wait, but `cancel` branch returns `!` (never type) from the outer function, and the `Err` cases return `!`. So the only "normal" return values are `Ok(Some(status))` and `Ok(None)`. The type of the `tokio::select!` would be... hmm. When some branches diverge (return `!`), Rust should be able to unify. But `Result<Option<ExitStatus>, ToolError>` might conflict if one branch returns `Ok(None)` and the diverging branches don't type-check.
+
+Actually, the `cancel.cancelled()` branch returns `Err(yoagent::types::ToolError::Cancelled)` which is `Err(ToolError::Cancelled)`, so `Result<Option<ExitStatus>, yoagent::types::ToolError>`. The `Ok(Err(e))` branch returns `Err(ToolError::Failed(...))`. Same type. The final timeout branch returns `Err(ToolError::Failed(...))`. So all branches CAN return `Result<Option<ExitStatus>, ToolError>`. But the diverging branches use `return`, which means they don't contribute to the expression type. So the select! expression just needs all non-diverging branches to have the same type. `Ok(Some(status))`, `Ok(None)`, and... wait, `cancel.cancelled()` branch has `return Err(...)` which diverges. `Ok(Err(e))` branch has `return Err(...)` which diverges. The timeout-non-retry branch has `return Err(...)` which diverges. So the only branches that actually produce a value are `Ok(Some(status))` and `Ok(None)`. Both are `Result<Option<ExitStatus>, ToolError>`. Good!
+
+But wait, `err` branch uses `return` so it shouldn't count for type checking. Let me re-check the `Err` branches... In my code, the `Ok(Err(e))` branch does `return Err(ToolError::Failed(...))` and the final-timeout branch also does `return Err(ToolError::Failed(...))`. These diverge.
+
+But wait, the `Err(_elapsed)` branch has an if/else. The `if` branch returns `Ok(None)` (doesn't return early), the `else` branch does `return Err(...)`. So the `else` diverges but `if` doesn't. Good.
+
+I think this will work. Let me also check that `tokio::time::timeout` returns `Result<T, tokio::time::error::Elapsed>`. Yes.
+
+Now let me construct the exact edit. I need to find the exact old text and new text.
+
+The old text is lines 497 through 645 (approximately):
+
+Actually let me re-read the exact lines very carefully.
+
+Line 497: `        let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {`
+...
+Line 645: `        let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;`
+
+I need to replace from line 497 to line 645 inclusive.
+
+Actually, I also need to be careful about the `cmd` variable. Currently `cmd` is declared at line 486:
+```rust
+        let mut cmd = tokio::process::Command::new("bash");
+        cmd.arg("-c").arg(&guarded_command);
+```
+
+This creates a `tokio::process::Command`. Can I call `.spawn()` on it multiple times? Let me think... Actually, looking at the tokio docs, `Command::spawn()` consumes the command (`self`), so I can't reuse it. I need to rebuild the command each iteration of the loop.
+
+So I need to move the cmd building INSIDE the loop as well:
+
+```rust
+let guarded_command = format!("set -o pipefail; {}", effective_command);
+
+let base_timeout = ...;
+...
+let mut current_timeout = base_timeout;
+let mut retry_remaining = true;
+
+let exit_status = loop {
+    let mut cmd = tokio::process::Command::new("bash");
+    cmd.arg("-c").arg(&guarded_command);
+    if let Some(ref cwd) = self.cwd {
+        cmd.current_dir(cwd);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    
+    let mut child = cmd.spawn()...;
+    ...
+};
+```
+
+Wait, but `guarded_command` uses `&effective_command` which borrows `effective_command` (a String). If I move the cmd building inside the loop, `guarded_command` needs to be defined before the loop and referenced inside. That should be fine since `guarded_command` is a String and we use `&guarded_command` inside the loop.
+
+Now, for the full edit. Let me re-read lines 486-496 and 497-645 to get the exact text.
+
+Actually I already have lines 486-642 and 644-649. Let me trace through to find the exact boundaries.
+
+From line 486 to line 645, the full section:
+
+```
+486:         let mut cmd = tokio::process::Command::new("bash");
+487:         cmd.arg("-c").arg(&guarded_command);
+488: 
+489:         if let Some(ref cwd) = self.cwd {
+490:             cmd.current_dir(cwd);
+491:         }
+492: 
+493:         // Pipe stdout/stderr for line-by-line reading
+494:         cmd.stdout(std::process::Stdio::piped());
+495:         cmd.stderr(std::process::Stdio::piped());
+496: 
+497:         let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+498:             Duration::from_secs(t.clamp(1, 600))
+499:         } else {
+500:             self.timeout
+501:         };
+502:         let max_bytes = self.max_output_bytes;
+503:         let update_interval = self.update_interval;
+504:         let lines_per_update = self.lines_per_update;
+505: 
+506:         let mut child = cmd.spawn().map_err(|e| {
+507:             crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+508:             ToolError::Failed(format!("Failed to spawn: {e}"))
+509:         })?;
+...
+```
+
+So I need to replace line 497 through line 645. Let me construct this carefully.
+
+Actually, the cleanest edit will be to replace from line 497 to line 645 (the old select block and reader await). The new code will have the loop wrapper, the retry logic, and the new select using `tokio::time::timeout`.
+
+Let me finalize the new code now.
+
+Actually, one more thought. I need to make sure I handle the `cmd` variable correctly. `tokio::process::Command::spawn()` takes `self` (consumes), so I can't reuse it. I need to construct a new `Command` each loop iteration. But the `guarded_command` and `cwd` are the same, so this is fine.
+
+Let me now read the rest of the invoke method after line 645 to see if there's anything that references `timeout` or other variables I'm changing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1m 30s (2 ✓)
+
+Let me also check for any existing tests related to bash timeout and get the full context of the method signature.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_streaming_bash_timeout' in src/tools.rs  ▶ read src/tools.rs:400..430 ✓ (629ms)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at the existing timeout test to understand what it tests:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2069..2129 ✓ (659ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also check the test for progress with timeout:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_streaming_bash_progress_with_timeout' in src/tools.rs ✓ (636ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that test too:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:2262..2302 ✓ (622ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a good understanding of the current code. Let me plan my edit:
+
+1. The timeout test at line 2069 uses `timeout: Duration::from_millis(200)` and `sleep 30`. With my retry, the first attempt times out at 200ms, then retry doubles to 400ms. Since `sleep 30` runs for 30 seconds, the retry at 400ms will also time out. So the test should still pass - the command still errors with "timed out".
+
+2. The progress with timeout test at line 2262 is similar.
+
+Now let me craft the exact edit. I'll use `edit_file` to replace lines 497-645.
+
+Let me re-read the exact text again to make sure I get the edit right.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me also verify the exact line range I'll be editing:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:495..499  ▶ read src/tools.rs:640..650 ✓ (1.9s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the exact boundaries. The old text from line 497 to line 645:
+
+```
+        let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut child = cmd.spawn().map_err(|e| {
+            crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+            ToolError::Failed(format!("Failed to spawn: {e}"))
+        })?;
+
+        // Take stdout/stderr handles
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let truncated = Arc::new(AtomicBool::new(false));
+
+        // Spawn a task to read stdout + stderr lines and accumulate them
+        let acc_clone = Arc::clone(&accumulated);
+        let trunc_clone = Arc::clone(&truncated);
+        let cancel_clone = cancel.clone();
+        let ctx_clone = ctx.clone();
+        let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+        let reader_handle = tokio::spawn(async move {
+            let stdout_reader = stdout.map(tokio::io::BufReader::new);
+            let stderr_reader = stderr.map(tokio::io::BufReader::new);
+
+            let mut stdout_lines = stdout_reader.map(|r| r.lines());
+            let mut stderr_lines = stderr_reader.map(|r| r.lines());
+
+            let mut lines_since_update: usize = 0;
+            let mut last_update = tokio::time::Instant::now();
+            let mut stdout_done = stdout_lines.is_none();
+            let mut stderr_done = stderr_lines.is_none();
+
+            loop {
+                if cancel_clone.is_cancelled() {
+                    break;
+                }
+                if stdout_done && stderr_done {
+                    break;
+                }
+
+                // Read one line from whichever stream has data, tracking its source
+                let line_info: Option<(String, bool)> = tokio::select! {
+                    biased;
+                    result = async {
+                        match stdout_lines.as_mut() {
+                            Some(lines) => lines.next_line().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if !stdout_done => {
+                        match result {
+                            Ok(Some(line)) => Some((line, false)),
+                            Ok(None) => { stdout_done = true; None }
+                            Err(_) => { stdout_done = true; None }
+                        }
+                    }
+                    result = async {
+                        match stderr_lines.as_mut() {
+                            Some(lines) => lines.next_line().await,
+                            None => std::future::pending().await,
+                        }
+                    }, if !stderr_done => {
+                        match result {
+                            Ok(Some(line)) => Some((line, true)),
+                            Ok(None) => { stderr_done = true; None }
+                            Err(_) => { stderr_done = true; None }
+                        }
+                    }
+                };
+
+                if let Some((line, is_stderr)) = line_info {
+                    let mut acc = acc_clone.lock().await;
+                    if acc.len() < max_bytes {
+                        if !acc.is_empty() {
+                            acc.push('\n');
+                        }
+                        acc.push_str(&line);
+                        if acc.len() > max_bytes {
+                            let safe_len = crate::format::safe_truncate(&acc, max_bytes).len();
+                            acc.truncate(safe_len);
+                            acc.push_str("\n... (output truncated)");
+                            trunc_clone.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    lines_since_update += 1;
+                    drop(acc);
+
+                    // Emit real-time progress for each line (interactive mode only)
+                    if emit_progress {
+                        if let Some(ref on_progress) = ctx_clone.on_progress {
+                            let progress_text = if is_stderr {
+                                format!("stderr: {line}")
+                            } else {
+                                line.clone()
+                            };
+                            on_progress(progress_text);
+                        }
+                    }
+
+                    // Emit update if interval elapsed or enough lines accumulated
+                    let elapsed = last_update.elapsed();
+                    if elapsed >= update_interval || lines_since_update >= lines_per_update {
+                        let snapshot = acc_clone.lock().await.clone();
+                        emit_update(&ctx_clone, &snapshot);
+                        lines_since_update = 0;
+                        last_update = tokio::time::Instant::now();
+                    }
+                }
+            }
+        });
+
+        // Wait for the process with timeout and cancellation
+        let exit_status = tokio::select! {
+            _ = cancel.cancelled() => {
+                // Kill the child process on cancellation
+                let _ = child.kill().await;
+                reader_handle.abort();
+                return Err(yoagent::types::ToolError::Cancelled);
+            }
+            _ = tokio::time::sleep(timeout) => {
+                let _ = child.kill().await;
+                reader_handle.abort();
+                crate::state::stash_diagnostic_error(&format!(
+                    "bash timeout: {} after {}s",
+                    command,
+                    timeout.as_secs()
+                ));
+                return Err(ToolError::Failed(format!(
+                    "Command timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            status = child.wait() => {
+                status.map_err(|e| {
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    ToolError::Failed(format!("Failed to wait: {e}"))
+                })?
+            }
+        };
+
+        // Wait for the reader to finish consuming remaining buffered output
+        let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+```
+
+Now here's the new text:
+
+```
+        let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let concurrency_limit = self.concurrency_limit;
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut current_timeout = base_timeout;
+        let mut retry_remaining = true;
+
+        let exit_status = loop {
+            let mut cmd = tokio::process::Command::new("bash");
+            cmd.arg("-c").arg(&guarded_command);
+
+            if let Some(ref cwd) = self.cwd {
+                cmd.current_dir(cwd);
+            }
+
+            // Pipe stdout/stderr for line-by-line reading
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+
+            let mut child = cmd.spawn().map_err(|e| {
+                crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+                ToolError::Failed(format!("Failed to spawn: {e}"))
+            })?;
+
+            // Take stdout/stderr handles
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+            let truncated = Arc::new(AtomicBool::new(false));
+
+            // Spawn a task to read stdout + stderr lines and accumulate them
+            let acc_clone = Arc::clone(&accumulated);
+            let trunc_clone = Arc::clone(&truncated);
+            let cancel_clone = cancel.clone();
+            let ctx_clone = ctx.clone();
+            let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+            let reader_handle = tokio::spawn(async move {
+                let stdout_reader = stdout.map(tokio::io::BufReader::new);
+                let stderr_reader = stderr.map(tokio::io::BufReader::new);
+
+                let mut stdout_lines = stdout_reader.map(|r| r.lines());
+                let mut stderr_lines = stderr_reader.map(|r| r.lines());
+
+                let mut lines_since_update: usize = 0;
+                let mut last_update = tokio::time::Instant::now();
+                let mut stdout_done = stdout_lines.is_none();
+                let mut stderr_done = stderr_lines.is_none();
+
+                loop {
+                    if cancel_clone.is_cancelled() {
+                        break;
+                    }
+                    if stdout_done && stderr_done {
+                        break;
+                    }
+
+                    // Read one line from whichever stream has data, tracking its source
+                    let line_info: Option<(String, bool)> = tokio::select! {
+                        biased;
+                        result = async {
+                            match stdout_lines.as_mut() {
+                                Some(lines) => lines.next_line().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if !stdout_done => {
+                            match result {
+                                Ok(Some(line)) => Some((line, false)),
+                                Ok(None) => { stdout_done = true; None }
+                                Err(_) => { stdout_done = true; None }
+                            }
+                        }
+                        result = async {
+                            match stderr_lines.as_mut() {
+                                Some(lines) => lines.next_line().await,
+                                None => std::future::pending().await,
+                            }
+                        }, if !stderr_done => {
+                            match result {
+                                Ok(Some(line)) => Some((line, true)),
+                                Ok(None) => { stderr_done = true; None }
+                                Err(_) => { stderr_done = true; None }
+                            }
+                        }
+                    };
+
+                    if let Some((line, is_stderr)) = line_info {
+                        let mut acc = acc_clone.lock().await;
+                        if acc.len() < max_bytes {
+                            if !acc.is_empty() {
+                                acc.push('\n');
+                            }
+                            acc.push_str(&line);
+                            if acc.len() > max_bytes {
+                                let safe_len = crate::format::safe_truncate(&acc, max_bytes).len();
+                                acc.truncate(safe_len);
+                                acc.push_str("\n... (output truncated)");
+                                trunc_clone.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        lines_since_update += 1;
+                        drop(acc);
+
+                        // Emit real-time progress for each line (interactive mode only)
+                        if emit_progress {
+                            if let Some(ref on_progress) = ctx_clone.on_progress {
+                                let progress_text = if is_stderr {
+                                    format!("stderr: {line}")
+                                } else {
+                                    line.clone()
+                                };
+                                on_progress(progress_text);
+                            }
+                        }
+
+                        // Emit update if interval elapsed or enough lines accumulated
+                        let elapsed = last_update.elapsed();
+                        if elapsed >= update_interval || lines_since_update >= lines_per_update {
+                            let snapshot = acc_clone.lock().await.clone();
+                            emit_update(&ctx_clone, &snapshot);
+                            lines_since_update = 0;
+                            last_update = tokio::time::Instant::now();
+                        }
+                    }
+                }
+            });
+
+            // Wait for the process with timeout and cancellation
+            let mut timed_out = false;
+            let result = tokio::select! {
+                _ = cancel.cancelled() => {
+                    // Kill the child process on cancellation
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    return Err(yoagent::types::ToolError::Cancelled);
+                }
+                result = tokio::time::timeout(current_timeout, child.wait()) => {
+                    match result {
+                        Ok(Ok(status)) => {
+                            // Wait for the reader to finish consuming remaining buffered output
+                            let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                            Ok(Some(status))
+                        }
+                        Ok(Err(e)) => {
+                            reader_handle.abort();
+                            crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                            Err(ToolError::Failed(format!("Failed to wait: {e}")))
+                        }
+                        Err(_elapsed) => {
+                            let _ = child.kill().await;
+                            reader_handle.abort();
+                            if retry_remaining && current_timeout < Duration::from_secs(600) {
+                                retry_remaining = false;
+                                current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout (retrying): {} after {}s, retry with {}s",
+                                    command,
+                                    base_timeout.as_secs(),
+                                    current_timeout.as_secs()
+                                ));
+                                timed_out = true;
+                                Ok(None)
+                            } else {
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout: {} after {}s",
+                                    command,
+                                    current_timeout.as_secs()
+                                ));
+                                Err(ToolError::Failed(format!(
+                                    "Command timed out after {}s",
+                                    current_timeout.as_secs()
+                                )))
+                            }
+                        }
+                    }
+                }
+            };
+
+            if timed_out {
+                continue;
+            }
+
+            match result {
+                Ok(Some(status)) => break status,
+                Ok(None) => unreachable!("timed_out handled above"),
+                Err(e) => return Err(e),
+            }
+        };
+```
+
+Wait, I added `concurrency_limit` by accident. Let me remove that. Also, I need to double check: in the original code, lines 486-496 set up `cmd` before the timeout calculation. In my new code, I move the `cmd` setup inside the loop. But `guarded_command` is defined at line 484 which is before line 486. So the `guarded_command` is defined before the loop, and used inside the loop via `&guarded_command`. That's fine.
+
+Actually, I realized I need to also handle `effecive_command` and `guarded_command` correctly. Looking at line 478-484:
+```rust
+        let effective_command = maybe_prefix_rtk(command);
+        let guarded_command = format!("set -o pipefail; {}", effective_command);
+```
+
+These are before the loop, so they're fine. The loop can reference `guarded_command`.
+
+But wait, I need to also handle the `cmd` construction that was at lines 486-496. Those lines build the `cmd` and are currently OUTSIDE my edit (lines 497+). My new code moves the cmd construction INSIDE the loop. So I need to extend the edit range to include lines 486-496 as well.
+
+Let me re-think: I should replace from line 486 to line 645 (the whole spawn+wait block).
+
+The old text (lines 486-645):
+```
+        let mut cmd = tokio::process::Command::new("bash");
+        cmd.arg("-c").arg(&guarded_command);
+
+        if let Some(ref cwd) = self.cwd {
+            cmd.current_dir(cwd);
+        }
+
+        // Pipe stdout/stderr for line-by-line reading
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut child = cmd.spawn().map_err(|e| {
+            crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+            ToolError::Failed(format!("Failed to spawn: {e}"))
+        })?;
+
+        // Take stdout/stderr handles
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+        let truncated = Arc::new(AtomicBool::new(false));
+
+        // Spawn a task to read stdout + stderr lines and accumulate them
+        let acc_clone = Arc::clone(&accumulated);
+        let trunc_clone = Arc::clone(&truncated);
+        let cancel_clone = cancel.clone();
+        let ctx_clone = ctx.clone();
+        let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+        let reader_handle = tokio::spawn(async move {
+            ...
+        });
+
+        // Wait for the process with timeout and cancellation
+        let exit_status = tokio::select! {
+            _ = cancel.cancelled() => {
+                // Kill the child process on cancellation
+                let _ = child.kill().await;
+                reader_handle.abort();
+                return Err(yoagent::types::ToolError::Cancelled);
+            }
+            _ = tokio::time::sleep(timeout) => {
+                let _ = child.kill().await;
+                reader_handle.abort();
+                crate::state::stash_diagnostic_error(&format!(
+                    "bash timeout: {} after {}s",
+                    command,
+                    timeout.as_secs()
+                ));
+                return Err(ToolError::Failed(format!(
+                    "Command timed out after {}s",
+                    timeout.as_secs()
+                )));
+            }
+            status = child.wait() => {
+                status.map_err(|e| {
+                    crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                    ToolError::Failed(format!("Failed to wait: {e}"))
+                })?
+            }
+        };
+
+        // Wait for the reader to finish consuming remaining buffered output
+        let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+```
+
+The new text:
+```
+        let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+            Duration::from_secs(t.clamp(1, 600))
+        } else {
+            self.timeout
+        };
+        let max_bytes = self.max_output_bytes;
+        let update_interval = self.update_interval;
+        let lines_per_update = self.lines_per_update;
+
+        let mut current_timeout = base_timeout;
+        let mut retry_remaining = true;
+
+        let exit_status = loop {
+            let mut cmd = tokio::process::Command::new("bash");
+            cmd.arg("-c").arg(&guarded_command);
+
+            if let Some(ref cwd) = self.cwd {
+                cmd.current_dir(cwd);
+            }
+
+            // Pipe stdout/stderr for line-by-line reading
+            cmd.stdout(std::process::Stdio::piped());
+            cmd.stderr(std::process::Stdio::piped());
+
+            let mut child = cmd.spawn().map_err(|e| {
+                crate::state::stash_diagnostic_error(&format!("bash spawn failed: {e}"));
+                ToolError::Failed(format!("Failed to spawn: {e}"))
+            })?;
+
+            // Take stdout/stderr handles
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+            let truncated = Arc::new(AtomicBool::new(false));
+
+            // Spawn a task to read stdout + stderr lines and accumulate them
+            let acc_clone = Arc::clone(&accumulated);
+            let trunc_clone = Arc::clone(&truncated);
+            let cancel_clone = cancel.clone();
+            let ctx_clone = ctx.clone();
+            let emit_progress = !self.progress_requires_tty || crate::format::stderr_is_terminal();
+
+            let reader_handle = tokio::spawn(async move {
+                ...
+            });
+
+            // Wait for the process with timeout and cancellation
+            let mut timed_out = false;
+            let result = tokio::select! {
+                _ = cancel.cancelled() => {
+                    // Kill the child process on cancellation
+                    let _ = child.kill().await;
+                    reader_handle.abort();
+                    return Err(yoagent::types::ToolError::Cancelled);
+                }
+                result = tokio::time::timeout(current_timeout, child.wait()) => {
+                    match result {
+                        Ok(Ok(status)) => {
+                            // Wait for the reader to finish consuming remaining buffered output
+                            let _ = tokio::time::timeout(Duration::from_secs(2), reader_handle).await;
+                            Ok(Some(status))
+                        }
+                        Ok(Err(e)) => {
+                            reader_handle.abort();
+                            crate::state::stash_diagnostic_error(&format!("bash wait failed: {e}"));
+                            Err(ToolError::Failed(format!("Failed to wait: {e}")))
+                        }
+                        Err(_elapsed) => {
+                            let _ = child.kill().await;
+                            reader_handle.abort();
+                            if retry_remaining && current_timeout < Duration::from_secs(600) {
+                                retry_remaining = false;
+                                current_timeout = (current_timeout * 2).min(Duration::from_secs(600));
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout (retrying): {} after {}s, retry with {}s",
+                                    command,
+                                    base_timeout.as_secs(),
+                                    current_timeout.as_secs()
+                                ));
+                                timed_out = true;
+                                Ok(None)
+                            } else {
+                                crate::state::stash_diagnostic_error(&format!(
+                                    "bash timeout: {} after {}s",
+                                    command,
+                                    current_timeout.as_secs()
+                                ));
+                                Err(ToolError::Failed(format!(
+                                    "Command timed out after {}s",
+                                    current_timeout.as_secs()
+                                )))
+                            }
+                        }
+                    }
+                }
+            };
+
+            if timed_out {
+                continue;
+            }
+
+            match result {
+                Ok(Some(status)) => break status,
+                Ok(None) => unreachable!("timed_out handled above"),
+                Err(e) => return Err(e),
+            }
+        };
+```
+
+OK, this is looking good. The key thing is the edit needs the exact text matches. The old text is lines 486-645. Let me now write this edit. But I need to be very careful with the reader_handle closure body - it's large and needs exact match.
+
+Actually, looking at this more carefully, the reader_handle closure body is lines 525-613, which is unchanged. So my edit will have that body exactly the same in both old_text and new_text. The edit should work.
+
+But wait, there's a subtle issue. The `edit_file` tool uses exact string matching. The reader closure body is ~90 lines of code. Any whitespace difference will cause the match to fail. Let me use the exact text from the file.
+
+Let me read lines 525 through 613 to get the exact closure body.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 50.7s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:525..620 ✓ (620ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me construct the edit. The old_text spans from line 486 to line 645. I need to read those exact lines one more time to make sure I match perfectly.
+
+Actually, let me just read lines 486-645 to get the exact text I need to match:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:486..647 ✓ (801ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the exact old text. Let me construct the edit. The old text spans lines 486-645 inclusive. I'll replace it with the new code that wraps the spawn+wait in a retry loop.
+
+Let me construct the new text carefully. The reader closure body (lines 525-613) is identical - I just wrap it in a loop.
+
+Now let me be very careful about the edit. The old_text must match exactly. Let me use the edit_file tool.
+
+Wait, I realize there's a subtlety. When the `cancel.cancelled()` branch fires inside the loop, it does `return Err(ToolError::Cancelled)` which returns from the outer function - correct. When the timeout branch with retry fires, it uses `timed_out = true` and returns `Ok(None)`, then after the select, `if timed_out { continue; }` goes back to the top of the loop. When the timeout branch without retry fires, it returns `Err(...)` which gets propagated. When the success branch fires, it returns `Ok(Some(status))`.
+
+Let me also think about whether `continue` will work. If `timed_out` is set inside one branch of the `tokio::select!`, and after the select we check `if timed_out { continue; }`, that should work fine because `continue` is outside the select.
+
+OK, let me write the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (748ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. I need to replace lines 486-645 with the retry loop version.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (623ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me apply the edit. I need to be very precise with the old_text matching. Let me construct the exact edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         let mut cmd = tokio::process::Command::new("bash");
+  -         cmd.arg("-c").arg(&guarded_command);
+  - 
+  -         if let Some(ref cwd) = self.cwd {
+  -             cmd.current_dir(cwd);
+  -         }
+  - 
+  -         // Pipe stdout/stderr for line-by-line reading
+  -         cmd.stdout(std::process::Stdio::piped());
+  -         cmd.stderr(std::process::Stdio::piped());
+  - 
+  -         let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+  +         let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+                Duration::from_secs(t.clamp(1, 600))
+            } else {
+                self.timeout
+  ···
+            let update_interval = self.update_interval;
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tools.rs (160 → 194 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (160 → 194 lines)
+  -         let mut cmd = tokio::process::Command::new("bash");
+  -         cmd.arg("-c").arg(&guarded_command);
+  - 
+  -         if let Some(ref cwd) = self.cwd {
+  -             cmd.current_dir(cwd);
+  -         }
+  - 
+  -         // Pipe stdout/stderr for line-by-line reading
+  -         cmd.stdout(std::process::Stdio::piped());
+  -         cmd.stderr(std::process::Stdio::piped());
+  - 
+  -         let timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+  +         let base_timeout = if let Some(t) = params.get("timeout").and_then(|v| v.as_u64()) {
+                Duration::from_secs(t.clamp(1, 600))
+            } else {
+                self.timeout
+  ···
+            let update_interval = self.update_interval;
+            let lines_per_update = self.lines_per_update;
+    
+  ... (301 more lines)
+ ✓ (822ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit succeeded. Now let me run cargo fmt and cargo check to verify the change compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, edit applied. Let me verify the build and run the tools tests.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | he… ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Let me now run cargo check to verify compilation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (6.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `accumulated` variable is defined inside the loop but used after the loop at line 682. I need to also bring `accumulated` out of the loop, or restructure how output is captured.
+
+Looking at the original code:
+- `accumulated` is created before the `reader_handle` spawn, outside the select block.
+- After the select, at line 648: `let output = accumulated.lock().await.clone();`
+
+But now with the loop, `accumulated` is inside the loop body. On success, we break out of the loop with the exit_status, but `accumulated` goes out of scope.
+
+I need to capture the accumulated output before breaking out of the loop. The cleanest approach is to declare `accumulated` and `truncated` outside the loop and reassign them each iteration.
+
+Let me read the code after the edit to see the current state:
+────────────────────────────────────────────────────────────────────────────────
+
+`accumulated` is scoped inside the loop now. I need to hoist it outside so it's accessible after the loop. Let me read the current state and fix.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:670..695  ▶ read src/tools.rs:505..520 ✓ (2.5s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to move `accumulated` and `truncated` outside the loop. They're at lines 519-520. I'll change them to be declared before the loop and then reassigned inside.
+
+Actually, the cleanest fix: declare `accumulated` and `truncated` before the loop as `let accumulated; let truncated;` (without initialization), then assign them inside the loop. But that won't work with `Arc::clone` later.
+
+Better approach: declare them outside as `let accumulated = Arc::new(...); let truncated = Arc::new(...);` and then just reassign them inside the loop. Then `accumulated` is always available after the loop.
+
+Wait, but that would mean the Arc is shared across loop iterations... no, if I reassign, the old Arc is dropped and a new one is created. The reader_handle task holds a clone, so the old Arc lives as long as the reader task needs it. That's fine.
+
+But actually, I can just do:
+```rust
+let mut accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+let mut truncated = Arc::new(AtomicBool::new(false));
+```
+before the loop, then inside the loop:
+```rust
+accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+truncated = Arc::new(AtomicBool::new(false));
+```
+
+This is cleaner. Let me apply this fix.
+
+Actually, I need to look at where the current `accumulated` and `truncated` are declared vs where the reader_handle clones them. The `acc_clone` and `trunc_clone` are created at lines 521-522 (now offset by the added lines). So I need to move lines 519-520 before the loop and change them to `let mut`, then inside the loop reassign them.
+
+Let me read the exact current state:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.9s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:518..528 ✓ (810ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to:
+1. Move `accumulated` and `truncated` before the loop
+2. Inside the loop, reassign them instead of declaring them
+
+Let me also check where the loop starts (the `loop {`) to make sure I know the exact line.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:494..500 ✓ (885ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add `accumulated` and `truncated` declarations before the loop (right after line 496), and change lines 519-520 inside the loop from `let` to assignments.
+
+Let me first add the declarations before the loop:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            let mut current_timeout = base_timeout;
+            let mut retry_remaining = true;
+  +         let mut accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  +         let mut truncated = Arc::new(AtomicBool::new(false));
+    
+            let exit_status = loop {
+  ✓ Auto-approved: edit: src/tools.rs (4 → 6 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (4 → 6 lines)
+            let mut current_timeout = base_timeout;
+            let mut retry_remaining = true;
+  +         let mut accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  +         let mut truncated = Arc::new(AtomicBool::new(false));
+    
+            let exit_status = loop {
+ ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now change lines 519-520 (they shifted by 2 lines) to reassignments:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -             let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  -             let truncated = Arc::new(AtomicBool::new(false));
+  +             accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  +             truncated = Arc::new(AtomicBool::new(false));
+  ✓ Auto-approved: edit: src/tools.rs (2 → 2 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tools.rs (2 → 2 lines)
+  -             let accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  -             let truncated = Arc::new(AtomicBool::new(false));
+  +             accumulated = Arc::new(tokio::sync::Mutex::new(String::new()));
+  +             truncated = Arc::new(AtomicBool::new(false));
+ ✓ (884ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run cargo check again to see if it compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (5.6s)
+
+
