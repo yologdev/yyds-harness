@@ -2903,6 +2903,116 @@ def run_self_tests() -> int:
         check("timed-out verdict is not strict verified", artifacts["task_strict_verified_count"] == 0, artifacts)
         check("timed-out verdict is evaluator-unverified", artifacts["evaluator_unverified_count"] == 1, artifacts)
 
+        # --- unit tests for _cargo_build_passed, _cargo_test_passed,
+        #     _implementation_passed_build_and_test ---
+        check(
+            "_cargo_build_passed: true for Finished + no error",
+            _cargo_build_passed("cargo build\n   Compiling yyds v0.1.0\n    Finished dev [unoptimized] target(s) in 2.34s"),
+        )
+        check(
+            "_cargo_build_passed: false when error[: line present",
+            not _cargo_build_passed("cargo build\n   Compiling yyds v0.1.0\nerror[E0308]: type mismatch\n    Finished dev target(s) in 2.34s"),
+        )
+        check(
+            "_cargo_build_passed: false for no cargo build text",
+            not _cargo_build_passed("some random output\nno build here\n"),
+        )
+        check(
+            "_cargo_build_passed: true for cargo check",
+            _cargo_build_passed("cargo check\n    Checking yyds v0.1.0\n    Finished dev [unoptimized] target(s) in 1.20s"),
+        )
+        check(
+            "_cargo_build_passed: false for build with error on next line",
+            not _cargo_build_passed("cargo build\nerror: could not compile yyds\n"),
+        )
+        check(
+            "_cargo_test_passed: true for test result ok",
+            _cargo_test_passed("cargo test\nrunning 42 tests\ntest result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"),
+        )
+        check(
+            "_cargo_test_passed: false for test result failed",
+            not _cargo_test_passed("cargo test\nrunning 42 tests\ntest result: FAILED. 41 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n"),
+        )
+        check(
+            "_cargo_test_passed: false for no cargo test text",
+            not _cargo_test_passed("some random output\nno test here\n"),
+        )
+        check(
+            "_implementation_passed_build_and_test: true when both pass",
+            _implementation_passed_build_and_test(
+                "cargo build\n    Finished dev target(s) in 2.34s\ncargo test\ntest result: ok. 42 passed\n"
+            ),
+        )
+        check(
+            "_implementation_passed_build_and_test: false when only build passes",
+            not _implementation_passed_build_and_test(
+                "cargo build\n    Finished dev target(s) in 2.34s\n"
+            ),
+        )
+        check(
+            "_implementation_passed_build_and_test: false for empty string",
+            not _implementation_passed_build_and_test(""),
+        )
+        check(
+            "_implementation_passed_build_and_test: false when build passes but test fails",
+            not _implementation_passed_build_and_test(
+                "cargo build\n    Finished dev target(s) in 2.34s\ncargo test\ntest result: FAILED\n"
+            ),
+        )
+
+        # --- integration test: evaluator timeout with passing impl evidence ---
+        task_dir_02 = session / "tasks" / "task_02"
+        task_dir_02.mkdir(parents=True)
+        (task_dir_02 / "outcome.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_02",
+                    "status": "reverted",
+                    "source_files": ["src/state.rs"],
+                    "commit_shas": ["def456"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (task_dir_02 / "eval_attempt_1.json").write_text(
+            json.dumps(
+                {
+                    "task_id": "task_02",
+                    "exit_code": 124,
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Write a transcript showing passing cargo build + cargo test
+        (transcript_dir / "task_02_attempt1.log").write_text(
+            "╭─ Turn 5 ─╮\n▶ cargo build\n    Finished dev [unoptimized] target(s) in 2.34s\n"
+            "╭─ Turn 8 ─╮\n▶ cargo test\ntest result: ok. 42 passed\n",
+            encoding="utf-8",
+        )
+        (session / "tasks" / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "planner": {"task_count": 2, "selected_task_count": 2},
+                    "selected_tasks": [{}, {}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        passing_impl_artifacts = task_artifact_metrics(session, attempted=2)
+        check(
+            "evaluator timeout with passing impl counted",
+            passing_impl_artifacts["evaluator_timeout_with_passing_impl_count"] == 1,
+            passing_impl_artifacts,
+        )
+        check(
+            "evaluator timeout with passing impl is still evaluator-unverified",
+            passing_impl_artifacts["evaluator_unverified_count"] >= 1,
+            passing_impl_artifacts,
+        )
+        # Clean up task_02 so it doesn't affect later tests
+        import shutil
+        shutil.rmtree(task_dir_02)
+
         (task_dir / "eval_attempt_1.json").unlink()
         (task_dir / "outcome.json").write_text(
             json.dumps(
