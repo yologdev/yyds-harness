@@ -11,6 +11,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, Once};
 
@@ -359,8 +360,10 @@ fn close_orphaned_run_if_needed(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if event_type == "RunCompleted" {
-            // Most recent lifecycle event is a RunCompleted — run is closed
-            return Ok(());
+            // Most recent lifecycle event is a RunCompleted — most recent
+            // run is closed. Fall through to the second pass below to catch
+            // any earlier orphaned FailureObserved runs (issue #129).
+            break;
         }
         if event_type == "RunStarted" || event_type == "SessionStarted" {
             let rid = event
@@ -378,7 +381,7 @@ fn close_orphaned_run_if_needed(
                 et == "RunCompleted" && r == rid
             });
             if has_completed {
-                return Ok(());
+                break;
             }
             orphan_run_id = Some(rid.clone());
             break;
@@ -400,6 +403,60 @@ fn close_orphaned_run_if_needed(
             payload: run_completed_payload(
                 "error",
                 Some("previous run did not complete (orphaned)"),
+                None,
+            ),
+        };
+        append_event_with_projection(events_path, store_path, &event)?;
+    }
+
+    // Second pass: find all runs with FailureObserved but no RunCompleted.
+    // The backward scan above only catches the most recent dangling RunStarted
+    // or SessionStarted. If a completed run (RunCompleted present) follows an
+    // orphaned FailureObserved run, the backward scan stops at the completed
+    // run and misses the earlier orphan (issue #129).
+    let mut failure_runs: HashSet<String> = HashSet::new();
+    let mut completed_runs: HashSet<String> = HashSet::new();
+    for event in &events {
+        let et = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let rid = event
+            .get("run_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if rid.is_empty() {
+            continue;
+        }
+        if et == "FailureObserved" {
+            failure_runs.insert(rid.clone());
+        }
+        if et == "RunCompleted" {
+            completed_runs.insert(rid);
+        }
+    }
+    for rid in &failure_runs {
+        if completed_runs.contains(rid) {
+            continue; // already has a RunCompleted
+        }
+        // Skip if already handled by the backward scan above
+        if orphan_run_id.as_deref() == Some(rid) {
+            continue;
+        }
+        let event = StateEvent {
+            event_id: format!("evt-orphan-failure-{}", now_ms()),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: now_ms(),
+            actor: Actor::Harness,
+            run_id: Some(rid.clone()),
+            session_id: None,
+            trace_id: format!("trace-orphan-failure-{}", rid),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload(
+                "error",
+                Some("auto-closed: orphaned after FailureObserved"),
                 None,
             ),
         };
@@ -7634,6 +7691,209 @@ mod tests {
             rc_after, 1,
             "RunCompleted count should not increase when already closed: {raw_after}"
         );
+    }
+
+    #[test]
+    fn close_orphaned_run_failureobserved_behind_completed_run() {
+        // Regression test for #129: if run-A fails (FailureObserved but no
+        // RunCompleted) and later run-B completes normally (RunCompleted present),
+        // the backward scan stops at run-B's RunCompleted and misses run-A.
+        // A second forward pass must find all FailureObserved runs and close
+        // any that lack a matching RunCompleted.
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        // --- Run A: started, failed, never completed ---
+        let orphan_run_a = "run-orphan-failure-a";
+        let started_a = StateEvent {
+            event_id: "evt-fo-a-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 1,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_a.into()),
+            session_id: None,
+            trace_id: "trace-fo-a".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started_a).unwrap();
+
+        let failure_a = StateEvent {
+            event_id: "evt-fo-a-failure".into(),
+            event_type: EventType::FailureObserved,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 2,
+            actor: Actor::Harness,
+            run_id: Some(orphan_run_a.into()),
+            session_id: None,
+            trace_id: "trace-fo-a".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"error": "panic", "location": "src/main.rs:42"}),
+        };
+        append_event(&events_path, &failure_a).unwrap();
+
+        // --- Run B: started and completed normally ---
+        let run_b = "run-ok-b";
+        let started_b = StateEvent {
+            event_id: "evt-fo-b-start".into(),
+            event_type: EventType::RunStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 10,
+            actor: Actor::Harness,
+            run_id: Some(run_b.into()),
+            session_id: None,
+            trace_id: "trace-fo-b".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"started": true}),
+        };
+        append_event(&events_path, &started_b).unwrap();
+
+        let mid_b = StateEvent {
+            event_id: "evt-fo-b-mid".into(),
+            event_type: EventType::ModelCallStarted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 11,
+            actor: Actor::Yoyo,
+            run_id: Some(run_b.into()),
+            session_id: None,
+            trace_id: "trace-fo-b".into(),
+            parent_event_ids: Vec::new(),
+            payload: json!({"model": "deepseek-v4"}),
+        };
+        append_event(&events_path, &mid_b).unwrap();
+
+        let completed_b = StateEvent {
+            event_id: "evt-fo-b-end".into(),
+            event_type: EventType::RunCompleted,
+            schema_version: STATE_SQLITE_SCHEMA_VERSION,
+            timestamp_ms: 12,
+            actor: Actor::Harness,
+            run_id: Some(run_b.into()),
+            session_id: None,
+            trace_id: "trace-fo-b".into(),
+            parent_event_ids: Vec::new(),
+            payload: run_completed_payload("completed", None, None),
+        };
+        append_event(&events_path, &completed_b).unwrap();
+
+        // Pre-condition: only run-B has a RunCompleted
+        let raw_before = std::fs::read_to_string(&events_path).unwrap();
+        let rc_before = raw_before
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_before, 1,
+            "only run-B should have RunCompleted before fix"
+        );
+
+        // Act
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        // Assert
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        let rc_after = raw_after
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_after, 2,
+            "should have 2 RunCompleted (original for run-B + retroactive for run-A): {raw_after}"
+        );
+
+        // run-A must have a RunCompleted
+        assert!(
+            raw_after.contains(&format!("\"run_id\":\"{orphan_run_a}\"")),
+            "retroactive RunCompleted should reference orphan run-A '{orphan_run_a}': {raw_after}"
+        );
+
+        // The retroactive closure must have error status
+        assert!(
+            raw_after.contains("\"status\":\"error\""),
+            "orphan closure should report error status: {raw_after}"
+        );
+
+        // Idempotent: calling again must not add duplicates
+        let rc_before_second = raw_after
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+        let raw_third = std::fs::read_to_string(&events_path).unwrap();
+        let rc_after_second = raw_third
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_after_second, rc_before_second,
+            "second call must not add duplicate RunCompleted: {raw_third}"
+        );
+    }
+
+    #[test]
+    fn close_orphaned_run_multiple_failureobserved_orphans() {
+        // Three runs, each with FailureObserved, none with RunCompleted.
+        // All three should get retroactive RunCompleted closures.
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+
+        let orphans: Vec<&str> = vec!["run-fo-1", "run-fo-2", "run-fo-3"];
+        for (i, rid) in orphans.iter().enumerate() {
+            let t = (i * 10) as u128;
+            let started = StateEvent {
+                event_id: format!("evt-mfo-{i}-start"),
+                event_type: EventType::RunStarted,
+                schema_version: STATE_SQLITE_SCHEMA_VERSION,
+                timestamp_ms: t + 1,
+                actor: Actor::Harness,
+                run_id: Some(rid.to_string()),
+                session_id: None,
+                trace_id: format!("trace-mfo-{i}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"started": true}),
+            };
+            append_event(&events_path, &started).unwrap();
+
+            let failure = StateEvent {
+                event_id: format!("evt-mfo-{i}-failure"),
+                event_type: EventType::FailureObserved,
+                schema_version: STATE_SQLITE_SCHEMA_VERSION,
+                timestamp_ms: t + 2,
+                actor: Actor::Harness,
+                run_id: Some(rid.to_string()),
+                session_id: None,
+                trace_id: format!("trace-mfo-{i}"),
+                parent_event_ids: Vec::new(),
+                payload: json!({"error": format!("crash-{i}")}),
+            };
+            append_event(&events_path, &failure).unwrap();
+        }
+
+        // Pre-condition: no RunCompleted at all
+        let raw_before = std::fs::read_to_string(&events_path).unwrap();
+        assert!(!raw_before.contains("\"kind\":\"RunCompleted\""));
+
+        // Act
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+
+        // Assert
+        let raw_after = std::fs::read_to_string(&events_path).unwrap();
+        let rc_count = raw_after
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"RunCompleted\""))
+            .count();
+        assert_eq!(
+            rc_count, 3,
+            "all 3 orphaned runs should get retroactive RunCompleted: {raw_after}"
+        );
+
+        for rid in &orphans {
+            assert!(
+                raw_after.contains(&format!("\"run_id\":\"{rid}\"")),
+                "retroactive RunCompleted should reference orphan '{rid}': {raw_after}"
+            );
+        }
     }
 
     // ── read_events_bounded ──────────────────────────────────────────
