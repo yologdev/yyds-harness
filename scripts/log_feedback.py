@@ -239,6 +239,7 @@ GNOME_KEYS = [
     "state_replay_integrity_rate",
     "evaluator_unverified_count",
     "evaluator_timeout_with_verdict_count",
+    "evaluator_timeout_with_passing_impl_count",
     "task_obsolete_count",
     "task_seed_contradiction_count",
     "task_no_edit_revert_count",
@@ -294,6 +295,7 @@ SCORE_FAILURE_WEIGHTS = {
     "task_scope_mismatch_count": 2.0,
     "evaluator_unverified_count": 1.0,
     "evaluator_timeout_with_verdict_count": 2.0,
+    "evaluator_timeout_with_passing_impl_count": 1.0,
     "task_unlanded_source_count": 2.0,
     "task_incomplete_terminal_count": 2.0,
     "task_terminal_marker_missing_attempt_count": 0.5,
@@ -327,6 +329,56 @@ def eval_timed_out_after_verdict(row: dict[str, Any]) -> bool:
         or explicit_fail(row.get("verdict"))
         or bool(row.get("verdict_file"))
     )
+
+
+_CARGO_BUILD_RE = re.compile(r"\bcargo\s+(build|check)\b", re.IGNORECASE)
+_CARGO_TEST_RE = re.compile(r"\bcargo\s+test\b", re.IGNORECASE)
+_CARGO_CMD_RE = re.compile(r"\bcargo\b", re.IGNORECASE)
+_BUILD_FINISHED_RE = re.compile(r"\bFinished\s+\w+\s+", re.IGNORECASE)
+_BUILD_ERROR_RE = re.compile(r"^\s*error(\[|:)", re.IGNORECASE | re.MULTILINE)
+_TEST_OK_RE = re.compile(r"test result:\s*ok", re.IGNORECASE)
+
+
+def _cargo_build_passed(text: str) -> bool:
+    """Check whether at least one cargo build/check command in the text succeeded.
+
+    Scans for ``cargo build`` or ``cargo check`` invocations; for each, looks at
+    the output window (up to the next ``cargo`` command or 1200 chars) for a
+    ``Finished ...`` line without an intervening ``error[:`` line.
+    """
+    for match in _CARGO_BUILD_RE.finditer(text):
+        start = match.start()
+        window = text[start : start + 1200]
+        next_cargo = _CARGO_CMD_RE.search(window, match.end() - match.start() + 1)
+        end = next_cargo.start() if next_cargo else len(window)
+        segment = window[:end]
+        if _BUILD_FINISHED_RE.search(segment) and not _BUILD_ERROR_RE.search(segment):
+            return True
+    return False
+
+
+def _cargo_test_passed(text: str) -> bool:
+    """Check whether at least one cargo test command in the text succeeded.
+
+    Scans for ``cargo test`` invocations; for each, looks at the output window
+    (up to the next ``cargo`` command or 2000 chars) for ``test result: ok``.
+    """
+    for match in _CARGO_TEST_RE.finditer(text):
+        start = match.start()
+        window = text[start : start + 2000]
+        next_cargo = _CARGO_CMD_RE.search(window, match.end() - match.start() + 1)
+        end = next_cargo.start() if next_cargo else len(window)
+        segment = window[:end]
+        if _TEST_OK_RE.search(segment):
+            return True
+    return False
+
+
+def _implementation_passed_build_and_test(transcript_text: str) -> bool:
+    """Return True when the implementation transcript shows passing cargo build AND cargo test."""
+    if not transcript_text:
+        return False
+    return _cargo_build_passed(transcript_text) and _cargo_test_passed(transcript_text)
 
 
 def parse_count(text: str) -> int:
@@ -1390,6 +1442,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
     mechanical_verified = 0
     evaluator_unverified = 0
     evaluator_timeout_with_verdict = 0
+    evaluator_timeout_with_passing_impl = 0
     obsolete_count = 0
     api_error_count = 0
     protected_file_revert_count = 0
@@ -1424,6 +1477,23 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         evals = [row for row in evals if row]
         has_pass = any(clean_eval_pass(row) for row in evals)
         has_timeout_with_verdict = any(eval_timed_out_after_verdict(row) for row in evals)
+        has_timeout_no_verdict = any(
+            int(row.get("exit_code") or 0) == 124
+            and not eval_timed_out_after_verdict(row)
+            for row in evals
+        )
+        if has_timeout_no_verdict:
+            # Read implementation transcript for this task and check for
+            # evidence of passing build + test.
+            impl_transcripts: list[str] = []
+            transcript_dir = session_dir / "transcripts"
+            if transcript_dir.is_dir():
+                for tpath in sorted(transcript_dir.glob(f"{task_key}_attempt*.log")):
+                    impl_transcripts.append(read_text(tpath))
+            if impl_transcripts and _implementation_passed_build_and_test(
+                "\n".join(impl_transcripts)
+            ):
+                evaluator_timeout_with_passing_impl += 1
         obsolete_note_path = task_dir / "obsolete.md"
         stale_seed_note = stale_seed_obsolete_note(
             tasks_by_id.get(task_key, {}),
@@ -1533,6 +1603,7 @@ def task_artifact_metrics(session_dir: Path, attempted: int) -> dict[str, Any]:
         "task_mechanical_verified_count": mechanical_verified,
         "evaluator_unverified_count": evaluator_unverified,
         "evaluator_timeout_with_verdict_count": evaluator_timeout_with_verdict,
+        "evaluator_timeout_with_passing_impl_count": evaluator_timeout_with_passing_impl,
         "task_obsolete_count": obsolete_count,
         "task_stale_seed_obsolete_note_count": stale_seed_obsolete_note_count,
         "task_manifest_seed_contradiction_count": manifest_seed_contradictions,
