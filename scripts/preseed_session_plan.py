@@ -971,6 +971,12 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         # Stable sort: preserve relative order, src-file tasks first
         candidates.sort(key=lambda c: not _has_src_files(c))
 
+    # When recent sessions landed nothing (task_success_rate=0), prefer
+    # single-file candidates to reduce reverted_no_edit risk from broad tasks.
+    success_rate = metrics.get("task_success_rate", 1)
+    if success_rate == 0:
+        candidates.sort(key=lambda c: _task_file_count(c))
+
     for candidate in candidates:
         contradicted, reason = check_task_contradiction(candidate, assessment)
         if not contradicted:
@@ -1946,6 +1952,38 @@ no-edit revert pressure from prior session.
         assert task.get("files"), (
             f"Expected task with files, got {task}"
         )
+        # --- Success-rate-aware candidate selection test ---
+        # When task_success_rate=0.0 in assessment, choose_task should prefer
+        # candidates with fewer files (single-file over multi-file).
+        low_success_assessment = """# Assessment - Day 143 (10:26)
+
+## Graph-derived Next-Task Pressure
+reverted_no_edit=2
+task_success_rate=0
+task_verification_rate=0
+planner_no_task_count=1
+session_success_rate=0
+"""
+        task_low_success = choose_task(low_success_assessment)
+        files_low = task_low_success.get("files", "")
+        file_count_low = len([f for f in files_low.split(",") if f.strip()])
+        assert file_count_low <= 2, (
+            f"Low success rate should select candidate with <=2 files, "
+            f"got {file_count_low} files: {files_low}"
+        )
+
+        # When task_success_rate is absent or >=0.5, existing behavior is unchanged.
+        # Verify a normal assessment selects a task (no crash, non-empty files).
+        normal_assessment = """# Assessment - Day 143 (10:26)
+
+## Graph-derived Next-Task Pressure
+bash_tool_error=3
+"""
+        task_normal = choose_task(normal_assessment)
+        assert task_normal.get("files"), (
+            f"Normal assessment should select a task with files, got: {task_normal}"
+        )
+
         # --- Fixture existence contradiction tests ---
         # Test: a task referencing an existing fixture (e.g., #369) is contradicted
         fixture_task = {
