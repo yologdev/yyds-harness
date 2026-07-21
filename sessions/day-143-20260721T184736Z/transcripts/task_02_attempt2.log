@@ -1,0 +1,353 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. There are harness-internal `ModelCallCompleted` events (with `evt-harness-*` prefix, zero tokens, actor "harness") that lack matching `ModelCallStarted` events
+2. These inflate the `deepseek_model_call_unmatched_completed_count` metric
+3. I need to fix this in `src/state.rs`
+
+Let me start by reading the evolve skill and then investigating the source code.
+
+The previous attempt's transcript shows they found:
+- Events with `payload.retroactive: true` and `payload.terminal_reason: "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found"`
+- This is in `close_orphaned_run_if_needed` or similar
+
+Let me search for where these events are created in `src/state.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'ModelCallCompleted' in src (*.rs) ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the key places where `ModelCallCompleted` events are emitted in `src/state.rs`. The task says the harness-internal events come from `evt-harness-*` prefix with zero tokens.
+
+The key locations to investigate:
+1. Line 4210: where `ModelCallCompleted` event is created
+2. Line 128: the enum variant
+3. The `close_orphaned_run_if_needed` function
+
+Let me read the relevant sections.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4190..4270  ▶ search 'close_orphaned_run' in src (*.rs) ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `close_orphaned_run_if_needed` to see where harness-internal `ModelCallCompleted` events are generated.
+
+Also, let me check what happens in `init_global` - that seems to be where `close_orphaned_run_if_needed` is called during state recorder initialization.
+
+Let me read the key functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:324..484  ▶ search 'retroactive' in src (*.rs) ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where the harness-internal `ModelCallCompleted` events (with zero tokens, `evt-harness-*` prefix and actor `harness`) are being emitted. The `close_orphaned_run_if_needed` doesn't emit `ModelCallCompleted` - it emits `RunCompleted`. 
+
+Let me look at the other location where there might be harness-internal events. The task description mentions:
+- `evt-harness-*` prefix with zero tokens
+- `ModelCallCompleted` with `tokens=in:0 out:0 cache_read:0 cache_write:0`
+
+Let me search for where these zero-token events could be emitted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ensur..run.started' in src (*.rs)  ▶ read src/state.rs:500..620 ✓ (5ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where `ModelCallCompleted` could be emitted by the harness. The `StateRecorder::append` method is where events actually get written. Let me also look at `prompt.rs` to understand the full picture, since Day 142 added a guard there.
+
+The key question is: where do the `evt-harness-*` `ModelCallCompleted` events with zero tokens come from? Let me search for all places where `ModelCallCompleted` is passed as an argument.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::ModelCallCompleted' in src (*.rs) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The key locations where `ModelCallCompleted` events are emitted via `state::record()`:
+
+1. `src/prompt.rs` lines 954, 1035, 1095 — these are agent-code-path events
+2. `src/commands_eval.rs` lines 4360, 6606 — eval command code path
+3. `src/commands_state.rs` lines 19502, 21902 — state command code path
+
+Now, the task says the `evt-harness-*` events with zero tokens come from the harness itself. Let me look at the `StateRecorder::append` method more carefully and see if something there generates `ModelCallCompleted` events.
+
+Wait, actually let me re-read the evidence more carefully:
+
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+The `evt-harness-*` prefix means the `Actor` is `Harness`. So these are `ModelCallCompleted` events with `Actor::Harness`. Let me search for where these are emitted with `Actor::Harness`.
+
+Let me look at the `StateRecorder::append` method itself and any other harness code that emits `ModelCallCompleted`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted.*Harness|Harness.*ModelCallCompleted' in src/state.rs (*.rs)  ▶ read src/state.rs:200..300 ✓ (5ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how the `record` function works. The `record` function always calls `ensure_run_started()` first, and then `recorder.append()`. The `append` method converts the event through yoagent_state.
+
+Wait, I notice that the `event_id` prefix comes from `Actor` — the `evt-harness-*` prefix means the `actor` field is `Actor::Harness`. But looking at `record()`, the events are emitted with explicit `Actor` — there's no implicit conversion.
+
+So `ModelCallCompleted` with `Actor::Harness` would have `evt-harness-*` prefix. But looking at the code, there's no explicit `ModelCallCompleted` with `Actor::Harness` in `src/state.rs`. These events must come from somewhere else.
+
+Let me check `prompt.rs` since the task says "Day 142 added a structural guard in src/prompt.rs for agent-code-path ModelCallStarted→ModelCallCompleted pairing."
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:930..1030 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. In `prompt.rs` line 1025-1035, there's a Ctrl-C handler that emits `ModelCallCompleted` with `terminal_reason: "interrupted"`. Let me see more of that section.
+
+And the task mentions `evt-harness-*` prefix — but the events I'm seeing in prompt.rs use `Actor::Yoyo`, not `Actor::Harness`. Let me check where non-yoyo `ModelCallCompleted` events could be produced.
+
+Let me look at what the `model_call_terminal_payload` function does - maybe the harness-internal path is when `terminal_reason` is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1025..1095  ▶ search 'model_call_terminal_payload' in src (*.rs) ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `model_call_terminal_payload` to understand the terminal reason field:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..92 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so all the `ModelCallCompleted` events in `prompt.rs` use `Actor::Yoyo`, not `Actor::Harness`. The harness-internal ones with `evt-harness-*` would have been produced with `Actor::Harness`.
+
+Let me re-read the evidence more carefully. The trajectory says:
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+Wait, `evt-harness-*` prefix could also come from... let me check how the event_id is generated. In `StateRecorder::append`:
+
+```rust
+let foundation_event = yoagent_state::Event::new(actor_ref(&actor), event_type_label(&event_type), payload);
+let event = StateEvent {
+    event_id: foundation_event.id.to_string(),
+    ...
+};
+```
+
+The `event_id` comes from `yoagent_state::Event::new(actor_ref(&actor), ...)`. So if `actor` is `Actor::Harness`, the event_id would be `evt-harness-...`. This makes sense — when prompt.rs calls `record(EventType::ModelCallCompleted, Actor::Yoyo, ...)`, the event_id would be `evt-yoyo-...`. When something calls `record(EventType::ModelCallCompleted, Actor::Harness, ...)`, it would be `evt-harness-...`.
+
+But I can't find any place in `src/state.rs` that directly calls `record(EventType::ModelCallCompleted, Actor::Harness, ...)`.
+
+Wait — let me re-read the state tail output. These events say `tokens=in:0 out:0 cache_read:0 cache_write:0`. They have zero tokens. They also have `model=deepseek-v4-pro`.
+
+Let me check what happens when the state recorder's `record_cache_metrics` or other harness-level functions are invoked. Actually, wait — the `model_call_terminal_payload` has `usage.input`, `usage.output`, etc. If those are all zero, it means there was no actual model call. Zero-token `ModelCallCompleted` events...
+
+Let me search for where `ModelCallCompleted` might be emitted with zero tokens specifically.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1090..1120  ▶ search 'ModelCallCompleted.*terminal|terminal.*ModelCallCompleted' in src (*.rs) ✓ (11ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so all `ModelCallCompleted` events in `prompt.rs` use `Actor::Yoyo`. But the evidence shows events with `evt-harness-*` prefix. The event_id prefix maps to the actor — `evt-harness-*` means `Actor::Harness`. 
+
+Let me check `commands_eval.rs` and `commands_state.rs` to see if they emit `ModelCallCompleted` with `Actor::Harness`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:4350..4380  ▶ read src/commands_eval.rs:6596..6626 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the evt-harness ModelCallCompleted events in test lines 4358-4368 are test fixtures, not actual code paths.
+
+Let me now think about this differently. The task evidence says the `evt-harness-* ModelCallCompleted` events exist in the actual state tail. These events have `actor: "harness"`, zero tokens, and model `deepseek-v4-pro`.
+
+Where might these be coming from? Let me look at the `record_cache_metrics` function and `cache_metrics_payload`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:617..667 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me step back and think about this differently. The task evidence says these are zero-token `ModelCallCompleted` events with `evt-harness-*` prefix. But I can't find anywhere in the code where `ModelCallCompleted` is emitted with `Actor::Harness` in production code (apart from tests).
+
+Wait — could the zero-token `ModelCallCompleted` events actually be from `Actor::Yoyo` with the `evt-yoyo-*` prefix, just being misidentified? Let me re-read the evidence:
+
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+The evidence clearly shows `evt-harness-*` prefix. But in the search of the code, there's NO place where production code emits `ModelCallCompleted` with `Actor::Harness`.
+
+Hmm, actually wait. Let me look at the `record` function more carefully. When `close_orphaned_run_if_needed` emits events, it uses `Actor::Harness` but those are `RunCompleted`, not `ModelCallCompleted`.
+
+What about `mark_run_completed_with_error`? That emits `RunCompleted` with `Actor::Harness`.
+
+Wait — is it possible the `ModelCallCompleted` events with zero tokens are actually being generated by the `yoagent_state` foundation layer? Let me check...
+
+Actually, wait. Let me re-read the evidence statement more carefully:
+
+> Day 142 added a structural guard in src/prompt.rs for agent-code-path ModelCallStarted→ModelCallCompleted pairing
+
+OK so Day 142 added the `model_call_started` flag tracking in prompt.rs. Before that, the code would emit `ModelCallCompleted` without an explicit matching `ModelCallStarted` in some paths. But those would still be `Actor::Yoyo`.
+
+Now what about the specific `evt-harness-*` events? Let me verify they exist by checking the actual state file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/events.jsonl 2>/dev/null && echo "EXISTS" || echo "NO FILE" ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check actual events for the harness-internal ModelCallCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -F 'ModelCallCompleted' .yoyo/state/events.jsonl | grep -F 'evt-harness' | … ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact events. Let me parse this:
+
+1. `evt-harness-d1875f2eaf3059b6` — actually this is `DecisionRecorded`, not `ModelCallCompleted`. It just showed up because the grep matched the payload text.
+
+2. Actual harness-internal `ModelCallCompleted` events:
+   - `evt-harness-9946c7d53d9665ec`: `ModelCallCompleted` with `retroactive: true`, `terminal_reason: "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found"`
+   - `evt-harness-1d9720c208f29749`: Same pattern, `retroactive: true`
+   - `evt-harness-f810d164bad470fd`: Same pattern, `retroactive: true`, referencing `model_call_id: "mc-18c464605dab4d35"`
+
+3. `evt-harness-10ebb5e0f7bf6d06`: This has `actor: "yoyo"` but `event_id: "evt-harness-*"` — that's a bug where the actor and event_id prefix don't match. This event has `terminal_reason: "completion_file_matched"`, `status: "stopped_after_completion_file"`.
+
+Wait, that third one is interesting — `actor: "yoyo"` but `event_id: "evt-harness-*"`. Let me check the yoagent_state `actor_ref` function. The event_id prefix is derived from the actor through `yoagent_state`. But wait, the saved raw JSON has `actor: "yoyo"` and `event_id: "evt-harness-*"`. That seems like a discrepancy...
+
+Actually wait, looking more carefully at the raw events: the `evt-harness-10ebb5e0f7bf6d06` event has `actor: "yoyo"`. But the `event_id` prefix is `evt-harness`. That's a bug in the yoagent_state library or in how we construct the event.
+
+Let me now focus on the actual issue. The harness-internal `ModelCallCompleted` events with `retroactive: true` and `terminal_reason: "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found"` — where are these generated?
+
+Let me search for this text in the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -R -F -- "ModelCallStarted orphaned" src/ 2>/dev/null || echo "NOT FOUND IN…  ▶ $ grep -R -F -- "retroactive: ModelCallStarted" . 2>/dev/null | head -20 ✓ (20ms)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The events are generated by `scripts/append_terminal_state_events.py` - a Python script! Let me read that script to understand what it does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now this is clear. The `scripts/append_terminal_state_events.py` script is the source of the harness-internal `ModelCallCompleted` events with `retroactive: true`. Let me look at the key part — where it creates these retroactive completions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive\|ModelCallCompleted\|orphaned_model' scripts/append_termina… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. There are two directions:
+
+1. **Orphaned ModelCallCompleted without ModelCallStarted** (lines 630-645): The script finds `ModelCallCompleted` entries whose run_id has no prior `ModelCallStarted`, and emits retroactive `ModelCallStarted` events. But the task is about the reverse — `ModelCallCompleted` without `ModelCallStarted`.
+
+Wait, let me re-read line 631: "Find ModelCallCompleted entries whose run_id has no prior ModelCallStarted. Emit retroactive ModelCallStarted events."
+
+So this code handles the reverse case. But the task says the problem is `ModelCallCompleted` without corresponding `ModelCallStarted` events being emitted by the harness.
+
+Let me re-read what the evidence shows:
+- `evt-harness-9946c7d53d9665ec` has `retroactive: true`, `model_call_id: "retroactive-run-..."`, `terminal_reason: "retroactive: ModelCallStarted orphaned — no ModelCallCompleted found"`
+
+This is the OTHER direction — this is a retroactive `ModelCallCompleted` for orphaned `ModelCallStarted` events. It's closing the gap where `ModelCallStarted` exists but no `ModelCallCompleted` was found.
+
+But the task says the metric `deepseek_model_call_unmatched_completed_count` is inflated. Let me understand what "unmatched completed" means — it probably means `ModelCallCompleted` events that have NO matching `ModelCallStarted`.
+
+Let me check how the unmatched count is calculated in the scripts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unmatched.*completed\|completed.*unmatched\|find_unmatched_model\|model… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `deepseek_model_call_unmatched_completed_count` is calculated:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1720..1750 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is just the rendering. Let me look at how the count is actually computed. Let me check `summarize_state_gnomes.py`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unmatched_completed\|find_unmatched' scripts/summarize_state_gnomes.py … ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the exact logic at line 394:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:370..430 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The `model_unmatched_completed_ids` (line 394) finds `model_call_completed_runs` (runs that have ModelCallCompleted events) that don't have `model_call_started_runs` (runs that have ModelCallStarted events).
+
+So the issue is: the harness-internal `ModelCallCompleted` events with `evt-harness-*` prefix are being counted as unmatched because they exist in runs that don't have a matching `ModelCallStarted` from the agent code path.
+
+But wait — the retroactive `ModelCallCompleted` events that the script `append_terminal_state_events.py` emits already have `retroactive: true` in them. Could the count be counting these? Let me check if the counting logic filters them out.
+
+Let me look at how `model_call_completed_runs` is computed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'model_call_completed_runs\|model_call_started_runs' scripts/summarize_s… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full lifecycle function to understand the counting:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:310..380 ✓ (6ms)
+
+

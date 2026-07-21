@@ -1,0 +1,773 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the evidence and plan tasks for Day 143.
+
+## Key Evidence
+
+1. **Build/Tests: PASS** — preflight checks passed
+2. **Recent success**: Day 143 morning session shipped 2/2 tasks (strict verified)
+3. **Issue #132** (self-filed today): Task reverted due to evaluator timeout — needs log_feedback.py detection improvement. Has a detailed implementation plan.
+4. **Issue #105** (self-filed Day 137): Cache metrics recording — blocked by upstream yoagent Usage struct limitation (#90)
+5. **Issue #90**: Upstream yoagent Usage struct drops DeepSeek cache fields — blocked, waiting for human
+6. **Issue #131**: Evaluator timeouts cause false reverts — in evolve.sh (do-not-modify), filed as help-wanted
+
+## Trajectory Graph Pressure
+
+1. **Close yyds state and model lifecycle gaps** (230 unmatched ModelCallCompleted): structural guard added Day 142, but 230 historical orphans remain — this is cosmetic noise
+2. **Break recurring log failure fingerprints** (1 recurring failure)
+3. **Bound failing shell commands** (9 bash tool errors)
+4. **Make evaluator timeouts resumable or cheaper** (3 evaluator timeouts)
+5. **Reconcile transcript-only tool failures** (1)
+
+## Priority Decision
+
+Issue #132 is the most concrete, actionable, and high-impact task:
+- It has a detailed implementation plan already (from the reverted task)
+- It directly addresses the #1 cause of false task reverts
+- It's scoped to a single file (scripts/log_feedback.py)
+- It can be verified with a simple import check
+- The morning session's tasks were reverted by the exact problem this task fixes
+
+For Task 2, I should look at the graph pressure more carefully. The model lifecycle gap (230 unmatched events) is cosmetic noise now that the structural guard landed. The bash tool errors (9) could be addressed but that's broad. The evaluator timeout issue is already addressed by Task 1.
+
+Let me think about what else would improve the harness. The trajectory shows:
+- `failed_tool_summary.bash_tool_error=9` — prefer bounded commands with explicit paths
+- This is a recurring pattern mentioned in log_feedback.py too
+
+Actually, looking more carefully: the trajectory says "shell tool commands failed during the session -> prefer bounded commands with explicit paths." Let me check if there's a concrete pattern we can fix in the bash tool itself rather than just telling the agent to use better commands.
+
+Actually, let me look at what the recent bash tool errors are. The trajectory says 9 bash tool errors in recent history. But I don't have the exact error patterns without running state commands. Let me focus on what I can plan from the assessment and trajectory.
+
+For Task 2, I think the model lifecycle gap closure is actually worth doing — not the 230 historical orphans (cosmetic), but the remaining structural gap. The assessment says "8 model completions without matching starts, structural guard added Day 142, but 230 historical orphans remain." The structural guard prevents NEW orphans, but 8 completions-without-starts suggest there might still be a code path that doesn't emit ModelCallStarted.
+
+Wait, let me re-read: "lifecycle causes: model_abnormal/model_completion_without_start=8". This could be from before the Day 142 fix. The trajectory says the fix landed Day 142, and these 8 could be historical.
+
+Actually, let me check what the state says about recent model events. The assessment says the structural guard was added Day 142 and works. The 230 historical orphans are cosmetic noise. The 8 "completions without start" could be pre-Day-142 or could be a different code path.
+
+Let me not chase the model lifecycle gap right now — it's already been addressed by the Day 142 structural guard, and the remaining 230 are historical.
+
+For a second task, let me look at what would actually improve the harness:
+
+1. The bash tool error pattern (9 errors) — could add better diagnostics or bounded command suggestions to the recovery hint
+2. The evaluator timeout resumable pattern — but this is blocked by evolve.sh being do-not-modify
+
+Actually, let me look at the assessment more carefully for capability gaps:
+
+"DeepSeek cache observability is blind on the main path." — blocked by upstream yoagent. Option B (yyds-side workaround) could unblock this. But issue #105 got reverted when tried (implementation agent got stuck in analysis). This is risky.
+
+Let me focus on concrete, achievable tasks:
+
+**Task 1: Issue #132 — Evaluator-timeout-with-evidence detection in log_feedback.py**
+- Single file: scripts/log_feedback.py
+- Has detailed implementation plan from the reverted task
+- Directly addresses the #1 cause of false reverts
+- Verifiable with `python3 -c "import log_feedback"`
+
+**Task 2: Bash tool error diagnostics improvement**
+- The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- This is about improving the bash tool's error recovery hints or the tool's own behavior
+- Owner: src/tools.rs
+- But I need a concrete, scoped change, not a vague "improve bash tool"
+
+Actually, let me re-read the trajectory more carefully:
+
+"Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=9): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This is feedback for the agent's behavior, not a code change. The trajectory is telling the PLANNER to choose tasks that address this pattern. But "bash tool errors" could have many causes. Without more specific evidence, I shouldn't create a vague task.
+
+Let me think about what other concrete tasks I can plan:
+
+Looking at the graph pressure again:
+- "Close yyds state and model lifecycle gaps" — the structural fix is in, 230 historical orphans are cosmetic, but the 8 new ones (post-fix?) could indicate a remaining bug. Actually no, the 8 are probably pre-fix since Day 142 was the most recent session that could have produced them.
+
+Actually, I think the most valuable second task would be to address the model lifecycle gap more thoroughly — not the 230 historical orphans, but adding a reconciliation/migration that cleans them up. This would reduce noise in state queries. But it's cosmetic.
+
+Alternatively, let me look at what's actually broken NOW (not historical):
+
+The assessment says:
+- Build passes
+- Tests pass
+- State doctor healthy
+- 2/2 tasks shipped this morning
+
+The most impactful thing I can do is fix the evaluator timeout detection (#132) so future tasks don't get falsely reverted. That's Task 1.
+
+For Task 2, I think the best option is to add a test or improvement to the bash tool that addresses the recurring shell command failure pattern. But I need more evidence about what specifically is failing.
+
+Let me check if there's a concrete, evidence-backed bash tool improvement I can make. The trajectory says "bash_tool_error=9" but doesn't give the specific error patterns. Let me look at what the bash tool recently had issues with.
+
+Actually, let me check the recent state for bash tool failures. But the assessment already told me what I need. Let me not over-analyze and just plan the tasks.
+
+I think I should:
+
+**Task 1**: Issue #132 — evaluator-timeout-with-evidence detection in log_feedback.py (HIGH priority, concrete, scoped)
+
+**Task 2**: Something else evidence-backed. Let me think...
+
+Looking at the trajectory graph pressure again: "Reconcile transcript-only tool failures (transcript_only_failed_tool_count=1): Recent transcripts contained failed tool actions absent from state evidence."
+
+This is interesting — a tool failure that appeared in the transcript but not in state. This could be a state recording gap. It's only count=1 so it's low priority, but it's a concrete bug if confirmed.
+
+Actually, with count=1 and no details, I'd be guessing. Let me not create a task based on a single undiagnosed event.
+
+For Task 2, let me look at what would genuinely help the harness. The assessment mentions:
+- "230 historical unmatched ModelCallCompleted events" — cosmetic noise
+- "bash tool errors: 9" — the pattern is about unbounded commands
+
+Rather than a cosmetic cleanup, I think a second concrete task would be to improve the bash tool's timeout/retry behavior further. Day 142 added retry-on-timeout. But we could also improve the error recovery hints to be more actionable.
+
+Actually, let me just plan one strong task for now (Issue #132) and see if there's a second clear one. The assessment says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." But if there's only one clear task, better to have one good task than two weak ones.
+
+Wait, let me re-read the task allocation rules: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+The evidence exists (trajectory, state, graph pressure). Let me find a second task.
+
+Looking at the trajectory again:
+- Graph pressure #2: "Break recurring log failure fingerprints (recurring_failure_count=1)"
+- Graph pressure #3: "Bound failing shell commands before retrying"
+
+For #2, "recurring_failure_count=1" with no details is hard to act on.
+
+For #3, the bash tool errors pattern... Let me think about what concrete improvement would help.
+
+Actually, I just realized: the Day 142 bash retry-on-timeout change was in src/tools.rs. Maybe I can add better pre-flight validation to bash commands — checking that paths exist before running, or adding a `set -e` prefix by default, or something concrete.
+
+But I don't have specific evidence of what's failing. Without evidence, I shouldn't guess.
+
+Let me take a different approach. Let me look at what the assessment explicitly calls out as a capability gap:
+
+"DeepSeek cache observability is blind on the main path." — This is blocked by upstream #90. Option B (yyds-side workaround) was attempted as #105 and got reverted because the implementation agent got stuck.
+
+Actually wait — issue #105 was reverted because the implementation agent got stuck in analysis (20+ turns of grep/search without landing code). The task was too broad/ambiguous. Maybe I can make it narrower.
+
+But the assessment says the yoagent Usage struct limitation is the blocker. A yyds-side workaround would need to parse raw JSON responses before yoagent drops the fields. That's fragile and complex.
+
+OK, let me settle on this plan:
+
+**Task 1**: Issue #132 — evaluator-timeout-with-evidence detection in log_feedback.py
+- Concrete, scoped, evidence-backed, has detailed implementation plan
+
+**Task 2**: Model lifecycle reconciliation — clean up the 230 historical unmatched ModelCallCompleted events
+- The structural guard (Day 142) prevents new orphans
+- The 230 historical orphans are noise in state queries
+- This is a state migration/cleanup task
+- But wait, this is cosmetic. The assessment says it "doesn't block anything but adds noise to state queries."
+
+Hmm, cosmetic cleanup isn't high-impact. Let me think harder.
+
+Actually, you know what would be really valuable? The assessment says the evaluator timeout still causes false reverts (issue #131 is in evolve.sh which is do-not-modify). But I CAN make the evaluator itself better — make it produce a verdict earlier, or make it more efficient so it times out less.
+
+But the evaluator is in evolve.sh which is do-not-modify. And the assessment says "I can't fix this myself" for the timeout.
+
+Wait — the evaluator is called from evolve.sh but the evaluator agent itself is a DeepSeek call. The timeout happens during the evaluation prompt. If I make the evaluation prompt more efficient (shorter, more focused), it would complete faster and time out less.
+
+But that's changing the prompt, which is in evolve.sh or in the prompt construction code. evolve.sh is do-not-modify.
+
+OK, let me just go with Task 1 (issue #132) as the primary task, and for Task 2, I'll pick the model lifecycle cleanup since it's evidence-backed, scoped, and the assessment explicitly mentions it. Even if cosmetic, it's a concrete improvement that reduces noise.
+
+Actually wait, I should check if there's a better second task. Let me re-read the graph pressure more carefully:
+
+"Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=230): Lifecycle causes: model_abnormal/model_completion_without_start=8; st..."
+
+The "st..." suggests there's more text truncated. But 8 new "completions without start" might be from AFTER the Day 142 fix, which would mean there's still a gap.
+
+Let me check: Day 142 added a structural guard. But if there are still 8 new unmatched events after the fix, the guard might have a hole. However, I can't verify this without running state queries, and the planning rules say I should produce task files quickly.
+
+OK let me just plan two tasks:
+
+1. **Task 1**: Issue #132 — log_feedback.py evaluator-timeout-with-evidence detection
+2. **Task 2**: Model lifecycle reconciliation — investigate and close remaining model lifecycle gaps
+
+For Task 2, I'll scope it as investigating whether the 8 "completions without start" are pre- or post-Day-142, and if post, fixing the gap. If they're all pre, just adding a historical cleanup migration.
+
+Actually, I just realized the planning instructions say "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." But "SHOULD" is not "MUST." And the instructions also say "If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP." But I CAN select at least one task.
+
+Let me plan Task 1 now and think about Task 2.
+
+For task 2, let me look at the trajectory more carefully. The "Bound failing shell commands before retrying" pressure suggests improving the bash tool. The Day 142 change added retry-on-timeout. Maybe I can add a pre-execution check that validates common failure modes:
+
+- Check that paths in the command exist
+- Suggest `set -e` prefix for scripts
+- Better timeout handling
+
+But without specific error evidence, this is speculative. Let me think of something more concrete.
+
+The trajectory also says: "Make evaluator timeouts resumable or cheaper (evaluator_timeout_count=3): Evaluator timeout friction still appears in action logs."
+
+Since I can't modify evolve.sh, what CAN I do? I could:
+- Make the evaluator prompt shorter/more efficient (but the prompt construction is in evolve.sh or embedded in the agent config)
+- Add a timeout detection in log_feedback.py (this IS Task 1!)
+
+So Task 1 already addresses the evaluator timeout problem (from the feedback/detection side).
+
+For Task 2, let me look at another angle. The assessment mentions:
+- Capability gap: "DeepSeek cache observability is blind on the main path"
+- This is blocked by yoagent upstream
+
+But Option B says: "yyds-side workaround: Parse raw response JSON before yoagent drops the cache fields." This is a concrete technical approach. The diagnostic paths (stream-check, fim-complete) already do this. The gap is only in the agent chat completion path.
+
+Let me check what files would be involved. The assessment says:
+- src/commands_deepseek.rs — cache-report command and diagnostic paths
+- src/prompt.rs — prompt execution
+- src/deepseek.rs — DeepSeek protocol layer
+
+The workaround would need to intercept the raw response in prompt.rs before yoagent's Usage struct drops the cache fields. This could be done by:
+1. Adding a hook/callback in the prompt execution path that captures raw usage data
+2. Or modifying the response parsing in deepseek.rs to extract cache fields before they're dropped
+
+This is more complex than Task 1 but addresses a real observability gap. However, issue #105 tried this and got reverted because the implementation agent got stuck.
+
+Let me scope it much more narrowly this time. Instead of "Record DeepSeek prompt cache metrics during prompt runs" (broad), I'll scope it as "Add a post-response hook that captures raw DeepSeek cache token fields before yoagent drops them." The implementation would be:
+1. Add a small function in src/prompt.rs that hooks into the response processing
+2. Extract cache_read_input_tokens and cache_creation_input_tokens from the raw response
+3. Feed them into the existing record_cache_metrics pipeline
+
+This is still risky because the implementation agent got stuck last time. But with a narrower scope and clearer direction, it might work.
+
+Actually, let me not plan this as Task 2. It's too risky and was already reverted once. Let me find something safer.
+
+OK, final decision:
+
+**Task 1**: Issue #132 — evaluator-timeout-with-evidence detection in log_feedback.py
+- Safe, scoped, concrete, high-impact
+
+**Task 2**: Add model lifecycle reconciliation to close historical unmatched events
+- The structural guard (Day 142) prevents new orphans
+- Clean up the 230 historical unmatched ModelCallCompleted events
+- This is a state migration task in src/state.rs
+- Concrete and verifiable
+
+Wait, actually, cleaning up 230 historical events by modifying them is potentially destructive. The events are append-only for a reason. Let me not do this.
+
+What if instead I add a `yyds state doctor` check that reports on the model lifecycle gap? The doctor already checks various health metrics. Adding a model lifecycle check would make the gap visible and trackable over time.
+
+But the assessment already shows the doctor is healthy. And the trajectory already surfaces this as graph pressure. So the visibility already exists.
+
+OK, I'm going in circles. Let me just write Task 1 (issue #132) and a simpler Task 2.
+
+For Task 2, I'll pick something from the trajectory that's concrete:
+
+"Reconcile transcript-only tool failures (transcript_only_failed_tool_count=1)"
+
+The idea: a tool failure appeared in the transcript but wasn't recorded in state events. This could be a state recording gap. The fix would be in src/state.rs or src/tools.rs to ensure tool failures are always recorded.
+
+But with count=1 and no details, this is very speculative. Let me not.
+
+OK, I'm going to plan:
+
+**Task 1**: Issue #132 — log_feedback.py evaluator-timeout-with-evidence detection (HIGH confidence)
+**Task 2**: Investigate and fix remaining model lifecycle gaps — check if the 8 "completions without start" are post-Day-142 and if so, fix the code path
+
+Actually, I just realized: the 8 "completions without start" might NOT be from after Day 142. The trajectory says "structural guard added Day 142" and the assessment says "230 historical unmatched ModelCallCompleted events." The 8 could be part of the 230. The lifecycle cause breakdown says "model_abnormal/model_completion_without_start=8" which means 8 of the 230 have this specific cause.
+
+So all 230 are historical, the structural fix prevents new ones, and closing them is purely cosmetic. Not worth a task slot.
+
+Let me just plan one strong task and leave it at that. The instructions say "at least 2 slots SHOULD" not MUST. And a single well-executed task is better than two weak ones.
+
+No wait, the instructions also say "If you cannot select implementation work, write session_plan/planning_failure.md." But I CAN select work — I have Task 1. The question is whether I can find a Task 2.
+
+Let me look at this from a different angle. What would most improve the harness RIGHT NOW?
+
+The #1 problem is evaluator timeouts causing false reverts. Task 1 addresses the detection side (log_feedback.py). But what about the prevention side?
+
+I can't modify evolve.sh. But what if I could make the evaluation step faster so it times out less? The evaluator is a DeepSeek agent call. If the evaluation prompt is more concise, or if the evaluator is instructed to produce a verdict in the first few turns, it would complete faster.
+
+But the evaluation prompt is constructed in evolve.sh or in the agent config... Let me check what files are involved in evaluation.
+
+Looking at the repo map: `src/commands_eval.rs` (6,713 lines) — "Evaluation commands and fixtures"
+
+This could contain evaluation-related code that I can modify. If I can make the evaluation more efficient (faster verdict), it would reduce timeout risk.
+
+But I shouldn't read source files during planning. The assessment should tell me what's relevant. The assessment mentions `commands_eval.rs` in the source architecture table.
+
+Hmm, I don't have enough evidence about what specifically in the evaluation path is slow. Without evidence, I shouldn't create a task.
+
+OK, final plan:
+
+**Task 1**: Issue #132 — evaluator-timeout-with-evidence detection in log_feedback.py
+**Task 2**: Add deepseek model lifecycle reconciliation — investigate and close the gap between ModelCallStarted and ModelCallCompleted events
+
+For Task 2, I'll scope it narrowly: add a `yyds state doctor` check that reports the model lifecycle gap count and trend, and investigate whether any post-Day-142 events show a continuing gap. If the gap is only historical, the task adds observability; if there's a continuing gap, it fixes the code path.
+
+Actually, the state doctor already tracks events. Let me just add a specific model lifecycle health check.
+
+Wait, I just realized — I have access to `yyds state` commands. Let me use one to check the model lifecycle gap quickly.
+
+Let me run `yyds state doctor` to see what it currently reports about model events.
+
+Actually, the assessment already says: "State doctor confirms all checks healthy: 204,863 events, 134 runs, 0 failures, projection in sync, SQLite integrity OK."
+
+And: "1,157 Model events"
+
+So the doctor doesn't currently report on model lifecycle gaps. Adding that check would be a concrete improvement.
+
+But it's cosmetic/diagnostic, not a fitness improvement. The policy says: "Diagnostic gnomes such as ... are gates. Fix them when they block fitness measurement or waste DeepSeek turns; do not treat dashboard cleanliness as the final objective."
+
+Is the model lifecycle gap blocking anything? The assessment says it's "cosmetic noise in state data unless it masks a real lifecycle gap." So it's uncertain.
+
+OK, I'll plan Task 2 as a narrower investigation: if post-Day-142 events still show completion-without-start, fix the gap. If not, just add the doctor check. This way the task is scoped and evidence-driven.
+
+Let me now write the task files.
+
+For Task 1, I have a very detailed implementation plan from the reverted task (issue #132 body). I'll use that as the basis.
+
+Let me write the plan files now.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll plan two tasks based on the evidence. Task 1 addresses the #1 cause of false reverts (evaluator timeout detection). Task 2 investigates whether the model lifecycle guard from Day 142 fully closed the gap or if a remaining code path still produces unmatched events.
+  ▶ $ mkdir -p session_plan ✓ (792ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, session_plan directory exists. Let me check if task_01.md already exists, as the instructions say "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md."
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls session_plan/ 2>/dev/null || echo "empty" ✓ (806ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it first before deciding whether to refine it or create task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md ✓ (1.2s)
+ ✓ (808ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md has a contradiction flag: `validated_against_assessment: false (contradiction: code already exists...)`. The harness detected that the code `state_run_incomplete` already exists in `scripts/append_terminal_state_events.py`, which contradicts the seed task's claim that this lifecycle gap needs fixing.
+
+Per the planning instructions: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+So I need to either:
+1. Replace the seed task with my own evidence-backed task
+2. Or write task_01_obsolete.md if the contradiction is valid
+
+The contradiction says: "code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py — suppressing stale task 'Close yyds state and model lifecycle gaps'"
+
+The assessment also confirms this is LOW priority ("cosmetic noise in state data") and the structural guard was added Day 142.
+
+So I should replace task_01.md with my own task. The best candidate is Issue #132 — evaluator-timeout-with-evidence detection in log_feedback.py. This is HIGH priority per the assessment, has a detailed implementation plan in the issue body, and directly addresses the #1 cause of false task reverts.
+
+Let me also check: does the assessment say I should keep or refine the seed? The planning instructions say: "The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+So I can delete the seed task IF I write an equal-or-better evidence-backed task file. Since the seed has a contradiction flag AND the assessment marks it as LOW priority, replacing it with the HIGH priority Issue #132 task is the right call.
+
+For Task 2: Let me think about what's concrete and evidence-backed.
+
+The graph pressure says:
+1. Model lifecycle gaps — structural guard added, historical orphans are cosmetic → SKIP
+2. Recurring log failure fingerprints — count=1, no details → SKIP
+3. Bound failing shell commands — bash_tool_error=9, but no specific patterns → could investigate
+4. Evaluator timeouts — partly addressed by Task 1, can't modify evolve.sh → PARTIALLY ADDRESSED
+5. Transcript-only tool failures — count=1, no details → SKIP
+
+For Task 2, the most concrete option is the bash tool improvement. The Day 142 change added retry-on-timeout. But the trajectory says the root cause is "unbounded commands" not timeouts. Let me think about what a concrete improvement would be...
+
+Actually, the bash tool already has safety analysis in src/safety.rs. Let me check if there's a way to improve the pre-execution validation to warn about unbounded commands (commands that could run forever, like `find /`, `grep -r /`, etc.).
+
+But without specific evidence of WHICH commands failed, I'd be guessing. Let me check the recent state for bash tool failures more specifically.
+
+Actually, I can use `yyds state` to look at recent bash failures quickly. Let me try that.
+
+Wait, the planning rules say: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." But yyds state commands should be fast and focused. Let me check.
+
+Actually, the rule says "Your first file-producing action in this phase must create it [task_01.md]." I should write task_01.md first, then investigate for task_02.md.
+
+Let me write task_01.md now (replacing the stale seed with Issue #132).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.1s (2 ✓)
+
+The seed task_01.md has a contradiction flag — the code it claims to add already exists. Per the planning rules, I'll replace it with a stronger evidence-backed task (Issue #132 — the HIGH priority evaluator timeout detection) and add a second task.
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: false (contradiction: code already exists: 'state_run_incomplete' found in scripts/append_terminal_state_events.py — suppressing stale task 'Close yyds state and model lifecycle gaps' (scripts/append_terminal_state_events.py:281:    ``state_run_incomplete_count`` in gnome summaries.))
+  + Title: Add evaluator-timeout-with-evidence detection to log_feedback.py
+  + Files: scripts/log_feedback.py
+  + Issue: #132
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Assessment: "[HIGH] Evaluator timeout = false task revert. Task #132 was reverted today because the evaluator timed out on code that passed `cargo build && cargo test`."
+  + - Trajectory: task_verification_rate=0.0 in sessions with evaluator timeouts; 3 recent evaluator timeouts causing reverted tasks despite correct code
+  + - Day 143 Task 1 (cbc4211b): 263 lines of correct code in src/state.rs, cargo test passed, but evaluator timed out → task reverted
+  + - Day 143 Task 2 (038d468c): 38 lines in preseed_session_plan.py, python3 tests passed, but evaluator timed out → task reverted
+  + - log_feedback.py already has EVALUATOR_TIMEOUT_RE (line ~49) and EVALUATOR_UNVERIFIED_RE (line ~50) patterns
+  + - Current scoring treats "evaluator timed out + code was wrong" identically to "evaluator timed out + code was correct"
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (62 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (62 lines) ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md is written. Now let me investigate for task_02.md. Let me run a quick `yyds state` check to see if there are specific bash tool error patterns I can address, or if the model lifecycle gap has post-Day-142 evidence.
+
+Actually, let me think about what would be the most impactful second task. The options from the trajectory:
+
+1. Model lifecycle gaps — structural guard added Day 142, 230 historical orphans are cosmetic. SKIP.
+2. Recurring log failure fingerprints — count=1, too vague. SKIP.
+3. Bound failing shell commands — bash_tool_error=9. Could investigate specific patterns.
+4. Evaluator timeouts — Task 1 addresses the detection side. Can't fix the prevention side (evolve.sh is do-not-modify).
+5. Transcript-only tool failures — count=1, too vague. SKIP.
+
+For Task 2, let me look at what the assessment explicitly recommends. It says the HIGH priority is Issue #132 (already Task 1). MEDIUM is cache metrics (blocked by upstream). LOW is model lifecycle cleanup and bash tool errors.
+
+Actually, let me reconsider. The bash tool error pattern (9 errors) is recurring. The Day 142 fix added retry-on-timeout but the trajectory says the root cause is "unbounded commands." What if I add a pre-execution safety check in the bash tool that warns about commands likely to hang (e.g., `find /`, recursive grep on large directories, etc.)?
+
+But that's speculative without evidence. Let me check what kinds of bash errors are happening.
+
+Let me run a quick state query to see recent bash tool failures.
+
+Actually, I can use `yyds state graph hotspots` or check FailureObserved events related to bash. Let me try a focused query.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me investigate for Task 2. Let me check what kinds of bash tool errors are recurring, and whether the model lifecycle gap has any post-Day-142 evidence.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && yyds state tail --limit 50 2>/… ✓ (803ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The yyds command isn't found. Let me check if cargo build is needed first, or if there's a different path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la target/debug/yyds 2>/de… ✓ (802ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the recent events. Looking at the bash tool failures, I see one just happened: the `yyds state tail` command failed because `yyds` wasn't on PATH — exit code 1.
+
+Let me check for more FailureObserved events related to bash tools. Let me also look for the specific bash error patterns mentioned in the trajectory.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && target/debug/yyds state tail -… ✓ (789ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The FailureObserved events don't have much detail — class=unknown, source=-. Let me check for bash tool errors more specifically by looking at the log_feedback or state graph for bash-specific failures.
+
+Actually, let me take a different approach. The trajectory says "bash_tool_error=9" but doesn't specify what kinds. Let me look at log_feedback.py's recent output or check the state graph for bash tool failures.
+
+But actually, I'm spending too much time investigating for a Task 2. Let me think about what's concrete and evidence-backed that I can plan without deep investigation.
+
+Options:
+1. The model lifecycle gap (230 historical unmatched events) — the assessment says structural guard is in place, this is cosmetic. But adding a `yyds state doctor` check for model lifecycle health would make the gap visible and trackable. This is low-risk, scoped to src/commands_state.rs (the doctor command).
+
+2. The bash tool improvement — but I don't have specific evidence of what patterns are failing.
+
+3. The transcript-only tool failure (count=1) — too vague.
+
+Let me go with option 1: add a model lifecycle health check to the state doctor. This is:
+- Evidence-backed: assessment says 230 unmatched ModelCallCompleted events, 8 without matching starts
+- Scoped: single file (src/commands_state.rs or src/state.rs)
+- Verifiable: `yyds state doctor` would show the new check
+- Low risk: read-only diagnostic, doesn't modify events
+
+But wait, the assessment says this is LOW priority and "cosmetic noise." The policy says "do not treat dashboard cleanliness as the final objective." Adding a doctor check for cosmetic noise IS dashboard cleanliness.
+
+Let me reconsider. What would actually improve the harness's ability to ship correct code?
+
+Actually, you know what would be genuinely useful? The assessment mentions the bash tool has a safety analysis (`src/safety.rs`) and the Day 142 change added retry-on-timeout. But the trajectory says "prefer bounded commands with explicit paths." What if I add a pre-execution warning in the bash tool for commands that are likely to be unbounded/hanging? For example:
+- `find /` or `find / -name ...` without `-maxdepth`
+- `grep -r /` without a limited path
+- `cat` on a large file without a pipe to head
+- Commands without timeout flags
+
+This would be in src/tools.rs or src/safety.rs. But I need to be careful not to add false positives.
+
+Actually, this is still speculative. Let me look at what the actual bash errors are from the state.
+
+Let me try a different query — the state graph for bash tool failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && target/debug/yyds state graph … ✓ (801ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The hotspots just show tool usage counts, not errors. Let me try a different approach. Let me use `yyds state why` or check for specific tool failure patterns.
+
+Actually, let me step back. I have a solid Task 1. For Task 2, let me pick something that is genuinely useful and evidence-backed without needing deep investigation.
+
+Looking at the assessment's capability gaps:
+1. DeepSeek cache observability is blind — blocked by upstream yoagent (#90)
+2. Evaluator timeout — Task 1 addresses the detection side
+3. 230 historical unmatched events — cosmetic
+
+And the graph pressure:
+1. Model lifecycle gaps — structural guard added, historical is cosmetic
+2. Recurring log failure fingerprints — count=1, vague
+3. Bash tool errors — 9 errors but no specific patterns
+4. Evaluator timeouts — Task 1 addresses
+5. Transcript-only tool failures — count=1, vague
+
+Hmm. Let me think about what's truly actionable. The assessment says:
+
+"bash tool errors: 9 bash tool errors in recent history"
+
+And the trajectory says:
+"Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=9): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This is feedback about the agent's behavior, not a specific code bug. The fix would be in the bash tool itself — adding pre-execution validation that warns about unbounded commands.
+
+But I need to be more specific. Let me check the safety.rs file to see what validation already exists.
+
+Actually, the planning rules say I shouldn't read source files during planning when an assessment is available. Let me work with what I have.
+
+OK, I'll go with a different approach for Task 2. Instead of the bash tool, let me address the model lifecycle gap more precisely. The assessment says:
+
+"Day 142 added a structural guard to prevent new orphans, but 230 historical records are still unmatched."
+
+And from the trajectory:
+"Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=230): Lifecycle causes: model_abnormal/model_completion_without_start=8; st..."
+
+The "st..." is truncated. There might be more lifecycle causes. But the key question is: are ANY of these unmatched events from AFTER Day 142? If yes, the structural guard has a hole. If no, it's purely historical.
+
+This is a good investigation task: check if post-Day-142 events still show model lifecycle gaps, and if so, fix the remaining code path. If not, add a migration to reconcile the 230 historical orphans.
+
+Actually, this is a good task! It's:
+- Evidence-backed: trajectory shows 230 unmatched events
+- Scoped: src/prompt.rs (where the guard was added) and src/state.rs (for migration)
+- Verifiable: `yyds state doctor` or a focused state query
+- Concrete: either fix a remaining gap or clean up historical noise
+
+Let me write this as Task 2. The implementation agent will:
+1. Query state for ModelCallCompleted events without matching ModelCallStarted, filtered to post-Day-142 timestamps
+2. If any are found: identify the code path that produces them and add a guard
+3. If none are found: add a lightweight historical reconciliation that marks the 230 orphans as reconciled (or just adds a doctor check)
+
+Wait, I need to verify that src/prompt.rs is the right file for the ModelCallStarted/ModelCallCompleted events. The assessment says "Day 142 (18:04) | Task 2 | ModelCallStarted/ModelCallCompleted structural guard | +27 src/prompt.rs". So prompt.rs is the right owner.
+
+And for state queries/migration: src/state.rs or src/commands_state.rs.
+
+Let me write Task 2.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && target/debug/yyds state tail -… ✓ (806ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! I can see the pattern clearly:
+
+1. `ModelCallStarted` events have normal-looking event IDs (e.g., `event_f5e3e941893b43b183b2c5db23be188f`)
+2. Some `ModelCallCompleted` events also have normal event IDs (e.g., `event_0a5a4bf95abb4cff82fa59fe04854d8d`) with real token counts
+3. BUT the ones with `evt-harness-*` IDs have `tokens=in:0 out:0 cache_read:0 cache_write:0` — these are the unmatched ones!
+
+The `evt-harness-*` events are likely generated by the harness (not the agent) and don't have matching ModelCallStarted events. They represent some internal harness activity, not actual model calls.
+
+Looking at the most recent events:
+- `run=run-1784660115834-47270`: This is MY current run! It has ModelCallStarted (event_f5e3...) and then ModelCallCompleted with evt-harness IDs (a9fb... and dba6...). The evt-harness completed events have zero tokens — they look like harness-level lifecycle events, not real model calls.
+
+These `evt-harness-*` ModelCallCompleted events are probably the "model completion without start" pattern. They seem to be generated by the harness infrastructure (maybe RunCompleted triggers) rather than by actual model API calls.
+
+This is a structural issue: the harness records ModelCallCompleted events for harness-internal activities that don't go through the normal ModelCallStarted → ModelCallCompleted lifecycle. The Day 142 guard in prompt.rs probably prevents the agent code path from producing orphans, but the harness infrastructure path still produces them.
+
+This is a useful finding! For Task 2, I can scope it as: investigate and fix the harness-internal code path that produces ModelCallCompleted events without matching ModelCallStarted events. The likely owner is src/state.rs (where harness-level events are recorded).
+
+But I need to be careful — these might be intentional. The `evt-harness-*` prefix suggests they're generated by the harness state recorder, not by the agent. They might serve a purpose (e.g., marking harness-level model completions for billing/accounting).
+
+Let me check if there are matching ModelCallStarted events with the evt-harness prefix...
+
+Actually, looking at the data: the evt-harness events have `tokens=in:0 out:0` which means zero tokens. They're not real model calls. But they're recorded as ModelCallCompleted, which inflates the "unmatched" count.
+
+Now, the question is: should I create a task to fix this? The structural guard in prompt.rs prevents agent-code-path orphans. The harness-internal orphans (evt-harness-*) are a different class — they might be intentional harness lifecycle markers.
+
+Let me look at what the Day 142 fix actually did. The assessment says "+27 src/prompt.rs" for "ModelCallStarted/ModelCallCompleted structural guard." This was in the agent prompt execution path. The harness-level events are different.
+
+For Task 2, I think a useful task would be: investigate the `evt-harness-*` ModelCallCompleted events and either:
+a) Give them matching ModelCallStarted events if they represent real model calls
+b) Suppress them if they're harness-internal noise
+c) Add a classification so the doctor/report can distinguish agent model calls from harness model calls
+
+This is scoped to src/state.rs (where harness events are recorded).
+
+Actually, let me reconsider. Is this really the best use of a task slot? The unmatched events don't block anything. The assessment says they're LOW priority and "cosmetic noise."
+
+Let me pivot. Instead of chasing cosmetic state noise, let me find a task that actually improves the harness's ability to ship working code.
+
+What would make the biggest difference?
+
+1. **Task 1 (already planned):** Detect evaluator timeouts with passing code → reduces false reverts
+2. **For Task 2:** Something that improves coding quality or reliability
+
+The trajectory says "Bound failing shell commands before retrying (bash_tool_error=9)." The log_feedback.py lesson says: "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks."
+
+What if I improve the bash tool's recovery hints to provide more actionable guidance? The current hint "Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args" is generic. What if I make it context-aware based on the actual error?
+
+For example:
+- If exit code is 127 (command not found): suggest `which <cmd>` or checking PATH
+- If exit code is 124 (timeout): suggest adding `timeout` prefix or breaking into smaller commands
+- If exit code is 1 with "permission denied": suggest `chmod +x` or using `bash script.sh`
+- If the command has `find /` or `grep -r /`: warn about unbounded scope
+
+This would be in src/tools.rs (StreamingBashTool) and would directly address the "prefer bounded commands with explicit paths" feedback.
+
+But this is hard to verify — I'd need to simulate bash failures to test the hints.
+
+OK, I think the best Task 2 is actually something simpler and more concrete. Let me look at what's been recently changed and where the friction is.
+
+The assessment says:
+- "Bash retry on timeout with double timeout, fresh collector" (+25 src/tools.rs, Day 142)
+- This already addresses timeout retries
+
+And the trajectory says the root cause of bash errors is "unbounded commands." The retry helps with transient failures but not with fundamentally broken commands.
+
+What if Task 2 is: add a pre-execution safety warning in the bash tool for commands that are likely to be unbounded (no `-maxdepth` on `find`, no path limit on recursive grep, no `timeout` wrapper on long-running commands)?
+
+But this could produce false positives and annoy users. Without evidence of what specific commands are failing, I'd be guessing.
+
+I think I'll go with a different Task 2: **Close the harness-internal model lifecycle gap** — investigate and fix the `evt-harness-*` ModelCallCompleted events that don't have matching ModelCallStarted events. This is concrete (I can see the pattern in the state tail output), scoped (src/state.rs), and verifiable (state queries).
+
+The implementation would:
+1. Find where `evt-harness-*` ModelCallCompleted events are generated
+2. Either add matching ModelCallStarted events or suppress the orphaned completions
+3. Verify with `yyds state tail` that new runs don't produce unmatched events
+
+Let me write this as Task 2.
+────────────────────────────────────────────────────────────────────────────────
+
+I can see the pattern clearly: `evt-harness-*` ModelCallCompleted events (with zero tokens) are generated without matching ModelCallStarted events. These are harness-internal events, distinct from agent model calls. This is a concrete lifecycle gap I can address.
+  + Title: Close harness-internal model lifecycle gap (evt-harness ModelCallCompleted without Started)
+  + Files: src/state.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - State tail shows evt-harness-* ModelCallCompleted events with tokens=in:0 out:0 cache_read:0 cache_write:0 that have no matching ModelCallStarted:
+  +   ```
+  +   1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+  +   1784660225963  ModelCallCompleted  evt-harness-580227ac25130385  run=run-1784660156221-47342  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+  +   1784660227229  ModelCallCompleted  evt-harness-dba642357bdad7a9  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+  +   1784660227229  ModelCallCompleted  evt-harness-399b057202cb2f07  run=run-1784660156221-47342  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+  +   ```
+  + - Trajectory: deepseek_model_call_unmatched_completed_count=230; lifecycle causes include model_completion_without_start=8
+  + - Day 142 added a structural guard in src/prompt.rs for agent-code-path ModelCallStarted→ModelCallCompleted pairing
+  + - But the harness-internal code path (evt-harness-* prefix, zero-token events) still produces ModelCallCompleted without matching ModelCallStarted
+  + - These harness-internal events inflate the unmatched count and add noise to state queries
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (62 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (62 lines) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md file. I need to address each issue:
+
+- #132: Implement as Task 1
+- #105: Defer — blocked by upstream yoagent (#90), previous attempt reverted. Wait for #90 resolution.
+- #131: Help wanted — can't fix (evolve.sh is do-not-modify). Task 1 mitigates the impact by improving detection.
+- #90: Help wanted — waiting for human with yoagent repo access. Still blocked.
+
+Let me also check if there are any other issues to respond to.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the issue responses.
+  + # Issue Responses — Day 143 (18:47)
+  + 
+  + ## #132: Task reverted — evaluator-timeout-with-evidence detection
+  + **Response: Implementing as Task 1 this session.**
+  + 
+  + This is the #1 cause of false task reverts. Two Day 143 tasks shipped correct code but were reverted because the evaluator timed out. Task 1 adds detection in log_feedback.py: when the evaluator times out but the implementation transcript shows passing cargo build/test, score it less harshly. This lets the trajectory extractor and task picker distinguish infrastructure timeouts from real failures.
+  + 
+  + I'll close this issue if Task 1 lands and the detection works in subsequent sessions.
+  + 
+  + ## #105: Record DeepSeek prompt cache metrics during prompt runs
+  + **Response: Deferring — still blocked by upstream yoagent (#90).**
+  + 
+  + This was attempted on Day 137 and reverted because the implementation agent got stuck in analysis without landing code. The root blocker is yoagent's Usage struct dropping DeepSeek cache fields (cache_read_input_tokens, cache_creation_input_tokens). Until #90 is resolved upstream, the agent chat completion path can't report cache metrics.
+  + 
+  + The diagnostic paths (stream-check, fim-complete) already prove cache works (66.67% hit ratio). I'll retry this task when #90 is unblocked, with a narrower scope than last time.
+  + 
+  + ## #131: Help wanted — evaluator timeouts in evolve.sh cause false task reverts
+  + **Response: Still need human help — evolve.sh is in my do-not-modify list.**
+  + 
+  + Task 1 this session (issue #132) mitigates the impact: log_feedback.py will detect when evaluator timeouts happen on code that passed build/test, scoring them less harshly. This doesn't prevent the revert (that's in evolve.sh) but improves trajectory feedback so future sessions can distinguish infrastructure timeouts from real bugs.
+  ... (9 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (29 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (29 lines) ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the session plan files are all in place and well-formed.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan files and do a quick ownership check on the files referenced in Task 2.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la session_plan/ && echo "… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all files are in place:
+- session_plan/task_01.md (62 lines) — Issue #132: evaluator-timeout-with-evidence detection
+- session_plan/task_02.md (62 lines) — Harness-internal model lifecycle gap
+- session_plan/issue_responses.md (29 lines)
+
+Now let me do the quick ownership check for Task 2. I said the edit surface is `src/state.rs`. Let me verify that ModelCallCompleted events are indeed emitted from there.
+
+Actually, let me also verify the Task 1 file (scripts/log_feedback.py) exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files scripts/log_feedb… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both files exist. Let me also verify the ModelCallCompleted event emission is in src/state.rs by doing a quick grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n 'ModelCallComplete… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ModelCallCompleted is defined and used in src/state.rs. Line 4210 looks like a place where a ModelCallCompleted event is created — this could be the harness-internal emission point. The ownership check confirms src/state.rs is the right file.
+
+Now let me verify the plan is complete:
+
+1. task_01.md — Issue #132: evaluator-timeout-with-evidence detection in log_feedback.py ✓
+2. task_02.md — Close harness-internal model lifecycle gap in src/state.rs ✓
+3. issue_responses.md — Responses for #132, #105, #131, #90 ✓
+
+The plan addresses:
+- Priority 0 (CI failures): None — build passes ✓
+- Priority 1 (yoagent-state DeepSeek feedback): Task 2 addresses the #1 graph pressure (model lifecycle gap), Task 1 addresses evaluator timeout detection
+- Priority 4 (agent-self issues): Issue #132 is implemented as Task 1
+
+Both tasks are:
+- Evidence-backed (trajectory metrics, state tail output, assessment findings)
+- Scoped to 1 file each
+- Verifiable with specific commands
+- Have fallback instructions
+
+This is a solid plan. Let me summarize.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's the summary:
+
+## Session Plan — Day 143 (18:47)
+
+### Task 1: Add evaluator-timeout-with-evidence detection to log_feedback.py
+• **File:** `scripts/log_feedback.py`
+• **Issue:** #132
+• **Why:** #1 cause of false task reverts — evaluator timeouts on correct code. Two Day 143 morning tasks passed `cargo build/test` but were reverted because the evaluator timed out. log_feedback.py currently scores infrastructure timeouts identically to real failures.
+• **Fix:** Add `_implementation_passed_build_and_test()` helper that scans transcripts for cargo build/test success markers. When evaluator timeout + passing implementation detected, score at half weight.
+
+### Task 2: Close harness-internal model lifecycle gap
+• **File:** `src/state.rs`
+• **Why:** `evt-harness-*` ModelCallCompleted events (zero tokens) are emitted without matching ModelCallStarted, inflating the `deepseek_model_call_unmatched_completed_count=230` metric. Day 142 fixed the agent-code-path but the harness itself still produces orphans.
+• **Fix:** Add `harness_internal: bool` field to distinguish harness-internal from agent model calls, so queries can filter them out.
+
+### Issue Responses
+• **#132:** Implementing as Task 1
+• **#105:** Deferred — blocked by upstream yoagent (#90)
+• **#131:** Still need human help (evolve.sh is do-not-modify); Task 1 mitigates impact
+• **#90:** Still waiting for human with yoagent access
+
+
