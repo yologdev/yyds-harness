@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation extends `close_orphaned_run_if_needed` with a second forward pass that collects all FailureObserved runs and emits retroactive RunCompleted for any lacking one, while preserving the existing backward-scan behavior. Two focused tests verify the behind-completed-run scenario and multiple-orphan scenario, both with idempotency checks. All 7 tests pass, cargo check is clean.

@@ -1,0 +1,475 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to extend `close_orphaned_run_if_needed` in `src/state.rs` so that ALL runs with FailureObserved but no RunCompleted are auto-closed, not just the most recent dangling one.
+
+Let me first read the evolve skill, then the relevant source code, and then implement the fix.
+
+Let me start by reading the relevant code and understanding the current behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:310..430 ✓ (1.1s)
+ ✓ (756ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the current code. Let me also look at the existing test and understand the full structure better. Let me read more context around the function and the test.
+
+The current `close_orphaned_run_if_needed` function scans backward from the end of the events file. It stops at the first lifecycle event encountered:
+- If it's `RunCompleted` → return Ok (run is already closed)
+- If it's `RunStarted` or `SessionStarted` → check if there's a matching RunCompleted anywhere in the file; if not, close it as orphaned
+
+The gap is: if run-A had FailureObserved but no RunCompleted, and then run-B ran successfully with RunCompleted, the backward scan finds RunCompleted for run-B and returns Ok — missing run-A entirely.
+
+Now I need to add a second pass that finds ALL runs with FailureObserved but no RunCompleted. Let me also find the existing test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'close_orphaned_run_if_needed' in src/state.rs  ▶ search 'init_global_closes_orphaned_run' in src/state.rs ✓ (596ms)
+ ✓ (791ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing tests to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7400..7520  ▶ read src/state.rs:7200..7280 ✓ (1.2s)
+ ✓ (806ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of that test and understand more about the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7279..7359  ▶ read src/state.rs:7520..7620 ✓ (1.2s)
+ ✓ (855ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see the end of that last test and the rest of the test area. Let me also look at how FailureObserved is used in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7619..7659  ▶ search 'FailureObserved' in src/state.rs ✓ (647ms)
+ ✓ (999ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me also check what `append_event_with_projection` looks like, and what imports are available. Let me also look at the `run_completed_payload` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+Let me check some helper functions and understand the full picture before writing the test and implementation.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append_event_with_projection' in src/state.rs  ▶ search 'fn run_completed_payload' in src/state.rs  ▶ search 'fn now_ms' in src/state.rs ✓ (1.1s)
+ ✓ (1.0s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check if `HashSet` is already imported in `state.rs`, and check the `append_event_with_projection` function signature.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'use std::collections' in src/state.rs  ▶ read src/state.rs:530..560  ▶ read src/state.rs:640..670 ✓ (1.1s)
+ ✓ (854ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `HashSet` import. I'll need to add `use std::collections::HashSet;` or use a different approach. Let me check the imports section of the file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1..51 ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I need to add `use std::collections::HashSet;` to the imports. Now let me plan the implementation.
+
+Current behavior of `close_orphaned_run_if_needed`:
+1. Reads all events
+2. Scans backward for first lifecycle event (RunCompleted, RunStarted, SessionStarted)
+3. If RunCompleted → return Ok (all good)
+4. If RunStarted/SessionStarted → check if RunCompleted exists for that run_id anywhere; if not, close it
+
+The gap: If run-A has FailureObserved but its RunCompleted is missing, and run-B (later) has RunCompleted, the backward scan sees RunCompleted for run-B and returns Ok — missing run-A.
+
+My plan:
+1. After the existing backward scan and orphan closure block, add a second pass that:
+   - Collects all run_ids with FailureObserved events
+   - Collects all run_ids with RunCompleted events (not just the one we already handled)
+   - For each FailureObserved run_id that doesn't have a RunCompleted and isn't the already-handled orphan_run_id, emit a retroactive RunCompleted
+
+Let me write the test first, then the implementation.
+
+The test should:
+- Create events: FailureObserved for run-A (no RunCompleted for run-A)
+- Then RunStarted + RunCompleted for run-B (properly closed)
+- Call close_orphaned_run_if_needed
+- Assert: run-A gets RunCompleted, run-B does not get a duplicate
+- Assert: the RunCompleted for run-A references the right run_id and has error status
+
+Let me write the code now.
+
+I'll add:
+1. A test function `close_orphaned_run_with_failureobserved_behind_completed_run`
+2. The implementation in `close_orphaned_run_if_needed` after the existing block
+
+For the implementation, let me add a second pass after line 407 (after `append_event_with_projection` for the first orphan). The second pass scans forward through ALL events, finding FailureObserved and RunCompleted events, then closing any FailureObserved runs that don't have a matching RunCompleted and aren't the already-handled one.
+
+Actually, let me re-read the suggestion more carefully. The preferred approach is: after the existing backward scan block (after the `if let Some(ref rid) = orphan_run_id` block closes at line 407), add a second pass.
+
+Let me also check: does the existing `close_orphaned_run_if_needed` handle FailureObserved at all? Looking at the backward scan, it only looks for RunCompleted, RunStarted, and SessionStarted — not FailureObserved. If a run had FailureObserved but no RunStarted (e.g., a panic happened before RunStarted was recorded), the backward scan wouldn't catch it either. But the typical case is: RunStarted → FailureObserved → no RunCompleted.
+
+Wait, actually let's think about this more carefully. The backward scan looks for the MOST RECENT lifecycle event. If the most recent lifecycle event is RunCompleted for run-B, it returns Ok. It doesn't look at FailureObserved at all. The scenario is:
+
+```
+RunStarted run-A
+FailureObserved run-A
+(no RunCompleted for run-A)
+...
+RunStarted run-B
+... intermediate events ...
+RunCompleted run-B
+```
+
+When scanning backward, it finds RunCompleted for run-B → returns Ok. run-A's orphan goes undetected.
+
+So my fix is correct: after the backward scan, add a forward pass to find all FailureObserved events and check if they have matching RunCompleted.
+
+Now, one concern: FailureObserved events may not have run_ids. The panic hook records FailureObserved but may not always have a run_id. Let me check...
+
+Looking at the panic hook code (install_panic_hook), it calls `record(EventType::FailureObserved, Actor::Harness, payload);`. The `record` function uses the global recorder which should have the run_id from the session.
+
+But actually, the specific scenario mentioned in the task is:
+- Trajectory shows `open_after_FailureObserved=3` — three runs have FailureObserved events but no matching RunCompleted
+
+So in practice, these runs exist. Let me check what `record` does vs `append` for the run_id.
+
+Actually, looking at line 59: 
+```rust
+record(EventType::FailureObserved, Actor::Harness, payload);
+```
+
+This uses the global recorder which should add the proper run_id. In the test scenarios, I'll construct events with run_ids set.
+
+OK, let me now write the implementation. I'll:
+
+1. Add `use std::collections::HashSet;` to imports (or I could use Vec with dedup, but HashSet is cleaner).
+2. Add the second pass after the existing orphan closure block.
+3. Add a test.
+
+Let me write the test first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a comprehensive understanding of the code. Let me write the test first, then implement the fix.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (391ms)
+  ▶ todo ✓ (392ms)
+  ▶ todo ✓ (252ms)
+  ▶ todo ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first write the test. I'll add it right before the `write_test_events` helper function (before line 7640).
+
+The test scenario:
+1. RunStarted + FailureObserved for "run-orphan-A" (no RunCompleted)
+2. RunStarted + ModelCallStarted + RunCompleted for "run-ok-B" (properly closed)
+3. Call close_orphaned_run_if_needed
+4. Assert: run-A gets RunCompleted (error status)
+5. Assert: only 2 RunCompleted events total (1 for run-B original + 1 for run-A retroactive)
+6. Assert: the retroactive RunCompleted references run-A's run_id
+
+Let me write it.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.0s (4 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (343ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test. I'll add it right after the last test for `close_orphaned_run_already_closed_runcompleted_last` (line 7637) and before the `write_test_events` helper.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(
+                rc_after, 1,
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_failureobserved_behind_completed_run() {
+  +         // Regression test for #129: if run-A fails (FailureObserved but no
+  +         // RunCompleted) and later run-B completes normally (RunCompleted present),
+  +         // the backward scan stops at run-B's RunCompleted and misses run-A.
+  +         // A second forward pass must find all FailureObserved runs and close
+  +         // any that lack a matching RunCompleted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         // --- Run A: started, failed, never completed ---
+  +         let orphan_run_a = "run-orphan-failure-a";
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (8 → 208 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (8 → 208 lines)
+            assert_eq!(
+                rc_after, 1,
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_failureobserved_behind_completed_run() {
+  +         // Regression test for #129: if run-A fails (FailureObserved but no
+  +         // RunCompleted) and later run-B completes normally (RunCompleted present),
+  +         // the backward scan stops at run-B's RunCompleted and misses run-A.
+  +         // A second forward pass must find all FailureObserved runs and close
+  +         // any that lack a matching RunCompleted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         // --- Run A: started, failed, never completed ---
+  +         let orphan_run_a = "run-orphan-failure-a";
+  +         let started_a = StateEvent {
+  +             event_id: "evt-fo-a-start".into(),
+  ... (187 more lines)
+ ✗ (949ms)
+    │ old_text not found in src/state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The match failed because my old_text didn't include the exact whitespace. Let me re-read the exact lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7633..7643 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — there's an empty line at 7639, then the comment at 7641. Let me get the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(
+                rc_after, 1,
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_failureobserved_behind_completed_run() {
+  +         // Regression test for #129: if run-A fails (FailureObserved but no
+  +         // RunCompleted) and later run-B completes normally (RunCompleted present),
+  +         // the backward scan stops at run-B's RunCompleted and misses run-A.
+  +         // A second forward pass must find all FailureObserved runs and close
+  +         // any that lack a matching RunCompleted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         // --- Run A: started, failed, never completed ---
+  +         let orphan_run_a = "run-orphan-failure-a";
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (8 → 208 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (8 → 208 lines)
+            assert_eq!(
+                rc_after, 1,
+                "RunCompleted count should not increase when already closed: {raw_after}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_run_failureobserved_behind_completed_run() {
+  +         // Regression test for #129: if run-A fails (FailureObserved but no
+  +         // RunCompleted) and later run-B completes normally (RunCompleted present),
+  +         // the backward scan stops at run-B's RunCompleted and misses run-A.
+  +         // A second forward pass must find all FailureObserved runs and close
+  +         // any that lack a matching RunCompleted.
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         // --- Run A: started, failed, never completed ---
+  +         let orphan_run_a = "run-orphan-failure-a";
+  +         let started_a = StateEvent {
+  +             event_id: "evt-fo-a-start".into(),
+  ... (187 more lines)
+ ✗ (791ms)
+    │ old_text not found in src/state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tool is having trouble matching whitespace. Let me just read the exact bytes around line 7637-7641.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '7633,7641p' src/state.rs | cat -A ✓ (754ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see! The file uses multi-byte UTF-8 characters (Chinese characters: "读读" = "read read") as a comment separator. That's line 7639 — a comment in Chinese before the helper. Let me read that more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '7638,7642p' src/state.rs ✓ (740ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So lines 7638-7642:
+- 7638: empty line
+- 7639: (some unicode comment that got swallowed by my terminal)
+- 7640: empty line
+- 7641: `    /// Helper: write `count` events to a temp file via `append_event`,`
+- 7642: `    /// returning the tempdir (keeps the file alive) and its path.`
+
+Let me check what's on line 7639 exactly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '7639p' src/state.rs | xxd | head -5 ✓ (760ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So line 7639 is a comment with a bunch of Unicode characters: `    // ┄┄ read_events_bounded ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+
+OK this won't work easily with edit_file. Let me use bash to insert the test code. I'll use sed or a Python script to insert the tests right before the helper comment.
+
+Actually, let me try a different approach — use write_file for the whole file? No, that's too large (8000+ lines). Instead, let me use bash to do the insertion.
+
+Let me insert at line 7638, which is the blank line before the unicode comment. I'll use sed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cat > /tmp/insert_tests.rs << 'HEREDOC_END' (210 lines) ✓ (647ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests inserted. Let me verify they look correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7635..7655 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests look good. Now let me implement the second pass in `close_orphaned_run_if_needed`. Let me first re-read the current function to make sure I have the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the fix. I'll add the second pass after the existing orphan closure block.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (409ms)
+  ▶ todo ✓ (488ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the second pass after line 407 (the `append_event_with_projection` call for the existing orphan). Let me re-read the exact code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:385..415 ✓ (536ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the second pass. I'll insert it after line 407 (the closing `}` of the `if let Some(ref rid) = orphan_run_id` block) and before the `Ok(())`.
+
+The second pass will:
+1. Iterate forward through all events
+2. Collect run_ids with FailureObserved events
+3. Collect run_ids with RunCompleted events
+4. For each FailureObserved run_id that doesn't have a RunCompleted and isn't the already-handled orphan_run_id, emit a retroactive RunCompleted
+
+I need to add `use std::collections::HashSet;` to the imports.
+
+Let me do both edits.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    use serde::{Deserialize, Serialize};
+    use serde_json::{json, Value};
+    use std::cell::Cell;
+  + use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex, Once};
+  ✓ Auto-approved: edit: src/state.rs (6 → 7 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 7 lines)
+    use serde::{Deserialize, Serialize};
+    use serde_json::{json, Value};
+    use std::cell::Cell;
+  + use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::{LazyLock, Mutex, Once};
+ ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now add the second pass after the existing orphan closure block.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the second pass after the existing orphan closure block:
+  +         append_event_with_projection(events_path, store_path, &event)?;
+  +     }
+  + 
+  +     // Second pass: find all runs with FailureObserved but no RunCompleted.
+  +     // The backward scan above only catches the most recent dangling RunStarted
+  +     // or SessionStarted. If a completed run (RunCompleted present) follows an
+  +     // orphaned FailureObserved run, the backward scan stops at the completed
+  +     // run and misses the earlier orphan (issue #129).
+  +     let mut failure_runs: HashSet<String> = HashSet::new();
+  +     let mut completed_runs: HashSet<String> = HashSet::new();
+  +     for event in &events {
+  +         let et = event
+  +             .get("event_type")
+  +             .and_then(|v| v.as_str())
+  +             .unwrap_or("");
+  +         let rid = event
+  +             .get("run_id")
+  +             .and_then(|v| v.as_str())
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (5 → 59 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 59 lines)
+  +         append_event_with_projection(events_path, store_path, &event)?;
+  +     }
+  + 
+  +     // Second pass: find all runs with FailureObserved but no RunCompleted.
+  +     // The backward scan above only catches the most recent dangling RunStarted
+  +     // or SessionStarted. If a completed run (RunCompleted present) follows an
+  +     // orphaned FailureObserved run, the backward scan stops at the completed
+  +     // run and misses the earlier orphan (issue #129).
+  +     let mut failure_runs: HashSet<String> = HashSet::new();
+  +     let mut completed_runs: HashSet<String> = HashSet::new();
+  +     for event in &events {
+  +         let et = event
+  +             .get("event_type")
+  +             .and_then(|v| v.as_str())
+  +             .unwrap_or("");
+  +         let rid = event
+  +             .get("run_id")
+  +             .and_then(|v| v.as_str())
+  +             .unwrap_or("")
+  +             .to_string();
+  ... (37 more lines)
+ ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run `cargo fmt -- --check` and `cargo build` to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (346ms)
+  ▶ todo ✓ (247ms)
+  2 tools completed in 942ms (2 ✓)
+
+

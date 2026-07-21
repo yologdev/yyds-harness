@@ -1,0 +1,248 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error is straightforward: `rid` is moved into `failure_runs.insert(rid)` on line 431, and then used again on line 434 for `completed_runs.insert(rid)`. The fix is to clone `rid` before inserting into the first set, or clone both uses. Let me look at the actual code to see the exact context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:415..450 ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fix is simple: clone `rid` before each `.insert()` call. The simplest fix: just clone on each insert.
+
+```
+failure_runs.insert(rid.clone());
+```
+and
+```
+completed_runs.insert(rid);
+```
+
+Since the second use also needs ownership, we can either clone on both or clone on the first and move on the second. But the cleanest fix given the code is to use `rid.clone()` for BOTH inserts so they're symmetric, OR use `rid.clone()` on the first and move on the second:
+
+```
+if et == "FailureObserved" {
+    failure_runs.insert(rid.clone());
+}
+if et == "RunCompleted" {
+    completed_runs.insert(rid);
+}
+```
+
+This is minimal, since `rid` is moved into `completed_runs.insert` on the second (and last) use. Let me do this.
+────────────────────────────────────────────────────────────────────────────────
+
+One-character fix: `rid` is moved into the first `insert`, so the second use fails. Clone on the first insert, move on the second.
+            if et == "FailureObserved" {
+  -             failure_runs.insert(rid);
+  +             failure_runs.insert(rid.clone());
+            }
+            if et == "RunCompleted" {
+                completed_runs.insert(rid);
+  ✓ Auto-approved: edit: src/state.rs (6 → 6 lines)
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 6 lines)
+            if et == "FailureObserved" {
+  -             failure_runs.insert(rid);
+  +             failure_runs.insert(rid.clone());
+            }
+            if et == "RunCompleted" {
+                completed_runs.insert(rid);
+ ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run cargo fmt -- --check and cargo build to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The build succeeded but fmt check failed. I need to format the file. Let me run cargo fmt and then re-check.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes, but fmt needs fixing. Let me auto-format.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 && cargo fmt --… ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both passed (no output means clean). Let me also run the state-specific tests to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+Clean. Now run the state tests to verify correctness.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state -- --test-thr… ✓ (1m 34s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is failing. The test expects 2 RunCompleted events after the fix (1 original for run-B + 1 retroactive for run-A), but only gets 1. This means the second pass isn't working — the retroactive RunCompleted for run-A isn't being emitted.
+
+Let me look at the full `close_orphaned_run_if_needed` function to understand what's happening. The issue might be that the function returns early from the first pass before reaching the second pass.
+────────────────────────────────────────────────────────────────────────────────
+
+The test shows the retroactive RunCompleted isn't being emitted. Let me inspect the full function to see the control flow.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:323.. ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the problem. The backward scan (lines 356-387) finds the most recent lifecycle event. In the test case, the events are:
+
+1. RunStarted for run-A (run-orphan-failure-a)
+2. FailureObserved for run-A
+3. RunStarted for run-B (run-ok-b)
+4. ModelCallStarted for run-B
+5. RunCompleted for run-B
+
+The backward scan starts from the end. The last event is RunCompleted for run-B, so at line 362-365, it matches `"RunCompleted"` and returns `Ok(())` immediately — never reaching the second pass at line 410.
+
+The fix: instead of returning early when a RunCompleted is found, just skip that run and continue looking. But wait — the purpose of the backward scan is to find the MOST RECENT run that might be orphaned. If the most recent lifecycle event is RunCompleted, then the most recent run is closed and we should move on.
+
+But the second pass needs to happen regardless! The issue is that the `return Ok(())` at line 364 exits the function before the second pass. The fix is to move the early return or restructure: we should NOT return early when RunCompleted is found — we should let the backward scan continue (or fall through) so the second pass can run.
+
+Looking more carefully: the backward scan checks if the *most recent* run is orphaned. If it finds RunCompleted as the most recent lifecycle event, it returns early — meaning the most recent run is properly closed. But this misses orphaned runs that came before.
+
+The simplest fix: remove the early return at line 364, and let the backward scan fall through to the second pass. If the backward scan finds a RunCompleted, it means the most recent run is closed — no orphan_run_id to deal with in the first pass. That's fine, we just skip the first-pass emit (since orphan_run_id is None) and proceed to the second pass.
+
+Wait, but the backward scan loops from end to start looking for the FIRST lifecycle event. If that first event is RunCompleted, the run is closed and there's nothing more to do for the backward scan. We should just fall through (don't return early) and let the second pass handle the FailureObserved orphans.
+
+Let me change `return Ok(());` at line 364 to just `break;` — this exits the backward scan loop without setting orphan_run_id, and falls through to the second pass.
+
+Actually, let me re-read the backward scan logic more carefully:
+
+```
+for event in events.iter().rev() {
+    if event_type == "RunCompleted" {
+        return Ok(());  // THIS BLOCKS THE SECOND PASS
+    }
+    if event_type == "RunStarted" || event_type == "SessionStarted" {
+        // check if this run has RunCompleted somewhere
+        // if yes, return Ok(())
+        // otherwise set orphan_run_id and break
+    }
+}
+```
+
+If the most recent lifecycle event is RunCompleted: return early (this is the bug — we should fall through for the second pass).
+
+If the most recent lifecycle event is RunStarted/SessionStarted:
+- If there's a RunCompleted for it somewhere in the file: return early (this is ALSO wrong for the same reason — should fall through)
+- Otherwise: set orphan_run_id and break out of the loop
+
+The fix: change BOTH `return Ok(())` to `break` — the backward scan determines if the MOST RECENT run needs closing (orphan_run_id), and then we always proceed to the second pass.
+
+Let me also check: in the second pass, there's a dedup check:
+```
+if orphan_run_id.as_deref() == Some(rid) { continue; }
+```
+This prevents double-closing the most recent orphan. Good.
+
+So the fix is:
+1. Change `return Ok(());` on line 364 to `break;`
+2. Change `return Ok(());` on line 382 to `break;`
+
+These both happen inside the `for event in events.iter().rev()` loop. When we break out of that loop, orphan_run_id stays None, and we fall through to the first-pass emit (skipped since None) and then the second pass.
+
+Let me verify by tracing through the failing test:
+
+Events:
+1. RunStarted run-A
+2. FailureObserved run-A
+3. RunStarted run-B
+4. ModelCallStarted
+5. RunCompleted run-B
+
+Backward scan (new behavior):
+- Event 5: RunCompleted → break (orphan_run_id stays None)
+- Falls through to first pass: orphan_run_id is None, skip
+- Second pass:
+  - Event 1: RunStarted, not FailureObserved, not RunCompleted → nothing
+  - Event 2: FailureObserved run-A → failure_runs.insert("run-orphan-failure-a")
+  - Event 3: RunStarted, not relevant
+  - Event 4: ModelCallStarted, not relevant
+  - Event 5: RunCompleted run-B → completed_runs.insert("run-ok-b")
+- Then: for rid in failure_runs:
+  - "run-orphan-failure-a": completed_runs doesn't contain it, orphan_run_id is None → emit RunCompleted!
+
+This should work. Let me make the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+Found the root cause. The backward scan hits `RunCompleted` for run-B and does an early `return Ok(())` — never reaching the second pass. Need to change those early returns to `break` so the function falls through to the second pass.
+            if event_type == "RunCompleted" {
+  -             // Most recent lifecycle event is a RunCompleted — run is closed
+  -             return Ok(());
+  +             // Most recent lifecycle event is a RunCompleted — most recent
+  +             // run is closed. Fall through to the second pass below to catch
+  +             // any earlier orphaned FailureObserved runs (issue #129).
+  +             break;
+            }
+            if event_type == "RunStarted" || event_type == "SessionStarted" {
+                let rid = event
+  ···
+                    et == "RunCompleted" && r == rid
+                });
+                if has_completed {
+  -                 return Ok(());
+  +                 break;
+                }
+                orphan_run_id = Some(rid.clone());
+                break;
+  ✓ Auto-approved: edit: src/state.rs (25 → 27 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (25 → 27 lines)
+            if event_type == "RunCompleted" {
+  -             // Most recent lifecycle event is a RunCompleted — run is closed
+  -             return Ok(());
+  +             // Most recent lifecycle event is a RunCompleted — most recent
+  +             // run is closed. Fall through to the second pass below to catch
+  +             // any earlier orphaned FailureObserved runs (issue #129).
+  +             break;
+            }
+            if event_type == "RunStarted" || event_type == "SessionStarted" {
+                let rid = event
+  ···
+                    et == "RunCompleted" && r == rid
+                });
+                if has_completed {
+  -                 return Ok(());
+  +                 break;
+                }
+                orphan_run_id = Some(rid.clone());
+                break;
+ ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now run fmt, build, and the state test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now format, build, and test:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 && cargo build … ✓ (1m 49s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 320 state tests pass, including the new test `close_orphaned_run_failureobserved_behind_completed_run` and the existing `init_global_closes_orphaned_run_from_previous_session`. Build is clean, fmt is clean.
+
+Let me also run `cargo fmt -- --check` explicitly to confirm.
+────────────────────────────────────────────────────────────────────────────────
+
+All 320 state tests pass, build is clean. Let me do a final fmt check:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean — no output means fmt is happy.
+────────────────────────────────────────────────────────────────────────────────
+
+All clean. Here's what was wrong and what fixed it:
+
+**Root cause:** The backward scan in `close_orphaned_run_if_needed` returned `Ok(())` early whenever it found a `RunCompleted` (line 364) or a `RunStarted` that already had a `RunCompleted` (line 382). This meant the second pass (the new FailureObserved sweep) was never reached when a healthy completed run followed an orphaned one.
+
+**Fix:** Changed both early `return Ok(())` to `break` — the backward scan now exits its loop without returning, falling through to the second pass which sweeps all FailureObserved runs. The dedup check (`orphan_run_id.as_deref() == Some(rid)`) prevents the two passes from double-closing the same run.
+
+• `cargo fmt -- --check`: clean
+• `cargo build`: clean
+• `cargo test state -- --test-threads=1`: 320 passed, 0 failed (includes both `close_orphaned_run_failureobserved_behind_completed_run` and `init_global_closes_orphaned_run_from_previous_session`)
+
+

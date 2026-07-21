@@ -1,0 +1,397 @@
+warning: skipping corrupted event at line 50729 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 247
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the codebase before making any changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:880..980 ✓ (357ms)
+ ✓ (255ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the file to understand the full choose_task function and the test section.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:979..  ▶ search 'def test_choose_task' in scripts/preseed_session_plan.py ✓ (233ms)
+ ✓ (300ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find the test functions. Let me search for test-related patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def test_' in scripts/preseed_session_plan.py  ▶ search 'numeric_metrics' in scripts/preseed_session_plan.py ✓ (101ms)
+ ✓ (217ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no `def test_` functions, but the file has a `--test` flag and self-tests. Let me look at the main function and the test handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2120.. ✓ (50ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `--test` argument handling and the test function entry point. I see the self-tests are in the `main()` function, starting around line 2078. Let me read from there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2025..  ▶ read scripts/preseed_session_plan.py:740.. ✓ (398ms)
+ ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me look at the test entry in main() to see where the tests start (what's the `--test` handling).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1910.. ✓ (87ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where the `--test` flag is handled. Let me find the arg parsing and the `if args.test:` block.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'args.test' in scripts/preseed_session_plan.py ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `_has_analysis_only_pressure` function to understand the pattern for accessing metrics.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_has_analysis_only_pressure` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862.. ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me look at the `numeric_metrics` function more carefully. It uses regex `r"`?([a-z][a-z0-9_]+)`?\s*[=:]\s*(-?\d+)"` which matches patterns like `task_success_rate=0` or `task_success_rate: 0`. But the task description says `success_rate == 0.0` — note that it's a float in the task description but `numeric_metrics` returns `int`. So `task_success_rate=0.0` would not match the regex because `0.0` has a decimal point.
+
+Wait, let me look at the regex more carefully: `(-?\d+)` only matches integers. So `task_success_rate: 0.0` would NOT be captured by `numeric_metrics`. But `task_success_rate=0` (without decimal) WOULD be captured.
+
+Looking at the assessment text examples in the tests (like line 2110-2113), they use `task_success_rate=0` (integer). And in line 2210: `task_success_rate = 0`.
+
+So `numeric_metrics` will capture `task_success_rate` as `0` (integer). The `success_rate == 0.0` check in the task spec should actually just check `== 0` since `numeric_metrics` returns int.
+
+Wait, but `metrics.get("task_success_rate")` returns `int | None`. The task says:
+```python
+success_rate = metrics.get("task_success_rate", 1.0)
+if success_rate == 0.0:
+```
+
+Since `metrics.get` returns `int | None`, using `1.0` as default would make it a `float`, and `success_rate == 0.0` would work when the metric value is `0` (int) because `0 == 0.0` is True in Python. But using `1.0` as the default for a dict that stores `int` values is a bit unusual. Let me use a cleaner approach.
+
+Actually, let me reconsider: the `numeric_metrics` function returns `dict[str, int]` so the values are all `int`. Using `metrics.get("task_success_rate", 1)` as default would keep it as `int`, and `success_rate == 0` would work. But the task spec says `0.0` and `1.0`. I think they want me to use float comparison. Let me just follow the spec exactly since that's what was requested.
+
+Wait, actually the spec says `metrics.get("task_success_rate", 1.0)` but `metrics` is `dict[str, int]` so this would be a type mismatch. Let me just use `metrics.get("task_success_rate") is not None and metrics.get("task_success_rate", 1) == 0` to be safe.
+
+Actually, the simplest approach: `metrics.get("task_success_rate", 1) == 0`. This will be True when the metric is present and equals 0, False when it's 1 (default) or any other non-zero value. That's safe and correct.
+
+Now let me plan the two changes:
+
+1. Add the sort block after the `analysis_only_active` sort block (around line 972):
+```python
+    success_rate = metrics.get("task_success_rate", 1)
+    if success_rate == 0:
+        # When recent sessions landed nothing, prefer single-file candidates
+        candidates.sort(key=lambda c: _task_file_count(c))
+```
+
+2. Add a test case. The tests are inline in the `main()` function, inside the `if args.test:` block. Let me look at where the analysis-only pressure escape-hatch test ends (around line 1948) and add the test right after.
+
+Let me now look at line 1948 more carefully to know exactly where to add the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me check the `numeric_metrics` return type to ensure my comparison is correct, then make both changes: the sort block and a test.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1931.. ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the information I need. Let me plan the two changes:
+
+1. **Sort block in `choose_task`** (after line 972): Add a success-rate-aware sort that prefers single-file candidates when `task_success_rate == 0`.
+
+2. **Test case** (before line 1949, after the analysis-only pressure escape-hatch test): Add a test that verifies low-success-rate assessment selects candidates with fewer files.
+
+Let me now make both changes. I'll use `edit_file` for each.
+
+For the sort block, I need to insert after the `analysis_only_active` block at lines 970-972. Let me look at the exact text:
+
+```python
+    if analysis_only_active:
+        # Stable sort: preserve relative order, src-file tasks first
+        candidates.sort(key=lambda c: not _has_src_files(c))
+```
+
+This is at lines 970-972. I'll add the success-rate block right after it.
+
+For the test, I'll add it right before line 1949 (`# --- Fixture existence contradiction tests ---`).
+
+Now, about the `numeric_metrics` return type: it returns `dict[str, int]`. So `metrics.get("task_success_rate", 1)` returns an `int`. The comparison `== 0` is correct.
+
+Note: the task spec says `metrics.get("task_success_rate", 1.0)` and `success_rate == 0.0` but since `numeric_metrics` returns `int` values, I should use `int` defaults. Using `1.0` would still work because `0 == 0.0` is True, but it's cleaner to use `int`. Let me follow the spec as close as reasonable but keep it correct for the types.
+
+Actually, let me just use `metrics.get("task_success_rate", 1)` and `== 0`. This is simpler and type-correct.
+
+Let me make the edits now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding. Let me make both changes:
+
+1. Add the success-rate sort block to `choose_task` (after line 972)
+2. Add a test case (before the fixture contradiction tests at line 1949)
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When recent sessions landed nothing (task_success_rate=0), prefer
+  +     # single-file candidates to reduce reverted_no_edit risk from broad tasks.
+  +     success_rate = metrics.get("task_success_rate", 1)
+  +     if success_rate == 0:
+  +         candidates.sort(key=lambda c: _task_file_count(c))
+    
+        for candidate in candidates:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 11 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 11 lines)
+        if analysis_only_active:
+            # Stable sort: preserve relative order, src-file tasks first
+            candidates.sort(key=lambda c: not _has_src_files(c))
+  + 
+  +     # When recent sessions landed nothing (task_success_rate=0), prefer
+  +     # single-file candidates to reduce reverted_no_edit risk from broad tasks.
+  +     success_rate = metrics.get("task_success_rate", 1)
+  +     if success_rate == 0:
+  +         candidates.sort(key=lambda c: _task_file_count(c))
+    
+        for candidate in candidates:
+ ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the sort block is added. Now let me add the test case. Let me add it right before the fixture contradiction tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test case:
+  +         # --- Success-rate-aware candidate selection test ---
+  +         # When task_success_rate=0.0 in assessment, choose_task should prefer
+  +         # candidates with fewer files (single-file over multi-file).
+  +         low_success_assessment = """# Assessment - Day 143 (10:26)
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + reverted_no_edit=2
+  + task_success_rate=0
+  + task_verification_rate=0
+  + planner_no_task_count=1
+  + session_success_rate=0
+  + """
+  +         task_low_success = choose_task(low_success_assessment)
+  +         files_low = task_low_success.get("files", "")
+  +         file_count_low = len([f for f in files_low.split(",") if f.strip()])
+  +         assert file_count_low <= 2, (
+  +             f"Low success rate should select candidate with <=2 files, "
+  +             f"got {file_count_low} files: {files_low}"
+  +         )
+  + 
+  ... (13 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (1 → 33 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (1 → 33 lines)
+  +         # --- Success-rate-aware candidate selection test ---
+  +         # When task_success_rate=0.0 in assessment, choose_task should prefer
+  +         # candidates with fewer files (single-file over multi-file).
+  +         low_success_assessment = """# Assessment - Day 143 (10:26)
+  + 
+  + ## Graph-derived Next-Task Pressure
+  + reverted_no_edit=2
+  + task_success_rate=0
+  + task_verification_rate=0
+  + planner_no_task_count=1
+  + session_success_rate=0
+  + """
+  +         task_low_success = choose_task(low_success_assessment)
+  +         files_low = task_low_success.get("files", "")
+  +         file_count_low = len([f for f in files_low.split(",") if f.strip()])
+  +         assert file_count_low <= 2, (
+  +             f"Low success rate should select candidate with <=2 files, "
+  +             f"got {file_count_low} files: {files_low}"
+  +         )
+  + 
+  ... (13 more lines)
+ ✓ (159ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify everything works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (273ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failure is at line 1786, not in my new tests. This is an existing test. Let me look at what's happening at line 1786:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770.. ✓ (76ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failure is at line 1786 in "Test 5" - a pre-existing test that checks that the assessment with `search_regex_error` selects the "Reduce recurring search-tool friction before implementation" task with `validated_against_assessment=True`.
+
+Wait, the test is an existing test. Let me check if my new test is affecting the behavior. The issue might be that my `low_success_assessment` test runs first and changes some global state — but that seems unlikely since `choose_task` is functional.
+
+Actually wait, let me re-read the error. The error says:
+```
+File "/home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py", line 1786, in main
+    assert task.get("validated_against_assessment") is True, (
+AssertionError: Expected validated_against_assessment=true, got False
+```
+
+Line 1786 is the assertion in Test 5. The assessment text at line 1773 contains `Day 105 added regex-error recovery hint to search tool errors.` — which has "Day 105" that matches the `_RESOLUTION_DAY_RE = re.compile(r'(?:^|\b)(?:day\s*)?(\d{1,4})\s+(?:made\s+landable|adjusted|fixed|resolved|shipped|added|landed|completed|finished|implemented|gave\b|given\b|strengthened|hardened|taught|switched|changed|taught|decided|converted|renamed|deduped|deduplicated|delete\b|deleted|removed|removed\b|disable\b|disabled)\b')` pattern.
+
+Wait, that's the search friction task. Let me look at lines around 1773 and check what's happening. "Day 105 added regex-error recovery hint" — this has "Day 105 added" and the task probably has keys related to `search_regex_error`. The assessment also mentions `search_regex_error`. So the `check_task_contradiction` function might be detecting that this is a resolved task.
+
+But this was working before my change. My change only adds a sort block after the candidates are collected. Let me look at line 1784-1788 more carefully...
+
+Actually wait, line numbers have shifted! My edits added lines to the file. The error traceback shows line 1786 in main, but that's the old line numbering from before my edits. Let me check what the actual line is now.
+
+Actually, `edit_file` might return old line numbers in the traceback if there's a cache. Let me re-run the test with the new file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (258ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The line numbers haven't changed? That's odd. Let me look at line 1786 in the current file to understand the test that's failing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1780.. ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error is at line 1786. Let me look at what assessment text this test is using. The assessment at line 1773:
+```
+Day 105 added regex-error recovery hint to search tool errors.
+```
+This contains "Day 105 added" which matches `_RESOLUTION_DAY_RE` and the task keys probably include `search_regex_error`. The contradiction check is detecting the task is already resolved.
+
+But wait, this test was passing before my change. My change only adds a sort block AFTER the candidates are gathered. The sort block shouldn't affect contradiction checking...
+
+Unless... my change is somehow shifting line numbers in the file and the test at line 1786 is now a DIFFERENT test than before. Let me count lines. The error says line 1786, and looking at the output, line 1786 is:
+```
+        assert task.get("validated_against_assessment") is True, (
+```
+
+That's in the Test 5 block. But wait - the line numbers in the error traceback show 1786, which is consistent with what I see in the file. The test failure is in an existing test that was working before.
+
+Let me check: did my change actually shift content or cause this test to fail? Let me look at my new test more carefully. My new test has:
+```python
+        low_success_assessment = """# Assessment - Day 143 (10:26)
+
+## Graph-derived Next-Task Pressure
+reverted_no_edit=2
+task_success_rate=0
+task_verification_rate=0
+planner_no_task_count=1
+session_success_rate=0
+"""
+```
+
+This assessment has `reverted_no_edit=2` which might match task keys for some task, and `planner_no_task_count=1` which might also match keys.
+
+Wait, the problem is that `reverted_no_edit=2` in the assessment gets matched by `numeric_metrics` which captures the integer `2`. And this metric might affect subsequent `choose_task` calls.
+
+Hmm, actually `choose_task` is a pure function - it doesn't modify global state. Each call is independent.
+
+Let me think about this differently. Maybe the test failure at line 1786 is actually pre-existing - it was failing before my change too. Let me verify by stashing my changes and running the test:
+
+Actually, let me first check whether this test was passing before my changes by reverting and running:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if this test failure is pre-existing:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 scripts/p… ✓ (334ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test failure was pre-existing — it fails even without my changes. This is not my fault. Let me look at the test to understand what's going on. The test at line 1780 in the original file (before my changes) had:
+
+Assessment: "Day 105 added regex-error recovery hint to search tool errors."
+
+The `search_regex_error` key is in the assessment, but `Day 105 added` might be triggering the contradiction detector. Let me look at the `check_task_contradiction` function to understand why.
+
+But since this is a pre-existing failure, I should note it and move on. My task is to add the success-rate-aware filtering. The test failure is about contradiction detection for the search-friction task, not about my changes.
+
+Let me verify my new test passes by running it in isolation:
+────────────────────────────────────────────────────────────────────────────────
+
+The test failure is pre-existing (fails without my changes too). Let me verify my new code is correct by running just the relevant test logic:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (33 lines) ✓ (204ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The issue is that when `task_success_rate=0`, the `planner_no_task_count=1` key matches the fallback task "Repair evidence-backed planning after no-task sessions" which has 3 files. And the success-rate sort prefers it by file count, but the fallback task has 3 files - that's the fewest among all matched candidates.
+
+Wait, but there are other candidates that should match. Let me look at what candidates match the `reverted_no_edit`, `task_success_rate`, etc. keys.
+
+Actually, looking more carefully: the assessment has `planner_no_task_count=1` which probably matches the fallback task keys. But there aren't any other tasks that match `task_success_rate` or `session_success_rate` since those aren't task keys — they're metrics that only affect sorting.
+
+The issue is: when `task_success_rate=0`, the sort prefers candidates with fewer files, but if the only matching candidates have 3+ files, the sort can't do better than the minimum.
+
+But wait, `reverted_no_edit=2` should match some task. Let me check what TASKS have keys matching these words. Let me look at the TASKS list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'reverted_no_edit' in scripts/preseed_session_plan.py ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+"reverted_no_edit" appears many times in the TASKS list. Let me check if it's a key or part of the analysis_only pressure metrics. Let me search for `_ANALYSIS_ONLY_METRICS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855.. ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `_ANALYSIS_ONLY_METRICS` includes `reverted_no_edit`, so when my test assessment has `reverted_no_edit=2`, `analysis_only_active` becomes True. And when `analysis_only_active` is True, `_task_file_count(task) > 3` is filtered (line 950-951). The fallback task has 3 files, so it passes.
+
+But the fallback task gets selected because: its keys match the assessment text (`planner_no_task_count=1` matches something), and `analysis_only_active` filters out large tasks (>3 files), but the fallback has exactly 3. The sort then ranks by file count, and the fallback is the smallest.
+
+The problem is my test: the assessment text doesn't have keys that match any non-fallback task. Let me adjust the test to use an assessment that triggers a wider set of candidates. I need to include keys that match actual task entries.
+
+Let me look at the TASKS list to find tasks with few files:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search '"title": ' in scripts/preseed_session_plan.py ✓ (40ms)
+
+
