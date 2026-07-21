@@ -1,0 +1,375 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then examining the state.rs file to understand the current structure before implementing the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs (100 lines) ✓ (1.1s)
+ ✓ (797ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading state.rs to understand the event types, the StateRecorder, and the patterns used for reading and writing events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (408ms)
+  ▶ todo ✓ (347ms)
+  ▶ todo ✓ (391ms)
+  ▶ todo ✓ (351ms)
+  ▶ todo ✓ (404ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of state.rs to understand EventType, StateRecorder, and event reading patterns.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.8s (5 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'enum EventType' in src/state.rs  ▶ search 'struct StateRecorder' in src/state.rs  ▶ search 'fn read_events' in src/state.rs  ▶ search 'global_state_recorder' in src/state.rs ✓ (1.5s)
+ ✓ (1.5s)
+ ✓ (1.6s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the EventType enum, StateRecorder struct, and the read event functions.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.3s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:100..300  ▶ read src/state.rs:269..389  ▶ read src/state.rs:3325..3405 ✓ (1.9s)
+ ✓ (1.5s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of `close_orphaned_run_if_needed` and see how it's called. Also, let me look at the `record()` function to understand how events are recorded without a StateRecorder.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:388..468  ▶ search 'fn record(' in src/state.rs  ▶ search 'close_orphaned_run' in src/state.rs ✓ (756ms)
+ ✓ (1.5s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. There's already a `close_orphaned_run_if_needed` function that handles the case where a RunStarted exists without a RunCompleted. But the task is about FailureObserved without RunCompleted. 
+
+The existing function scans backward and handles RunStarted/SessionStarted without RunCompleted. It doesn't handle the case where a run has a RunStarted, RunCompleted (normal close), but also has a FailureObserved from a different run_id that never got a RunCompleted.
+
+Wait, let me re-read the task. The trajectory shows `open_after_FailureObserved=3` — three runs have FailureObserved events but no matching RunCompleted. This is different from the RunStarted-without-RunCompleted case.
+
+The existing `close_orphaned_run_if_needed` handles the backward-scan case (most recent lifecycle event is RunStarted not RunCompleted). But the FailureObserved case is different: a run could have been interrupted by SIGTERM/SIGKILL where the panic hook didn't fire (so we have FailureObserved from a different mechanism but no RunCompleted for that run_id).
+
+Actually, looking more carefully at the code, `install_panic_hook` now emits both FailureObserved and RunCompleted. So the remaining orphans are from pre-Day-142 where the panic hook didn't emit RunCompleted, or from external kills (SIGKILL) where no hook fires at all.
+
+The task says: "Scan the event store for runs with FailureObserved but no RunCompleted on the same run_id."
+
+Let me also look at `append_event_with_projection` and `append_state_event_checked` to understand the event writing patterns.
+
+Let me now look at the `run_completed_payload` function and `append_event_with_projection` to understand how to construct the payload and append events.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.9s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn run_completed_payload' in src/state.rs  ▶ search 'fn append_event_with_projection' in src/state.rs ✓ (790ms)
+ ✓ (765ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `run_completed_payload` and `append_event_with_projection` functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:538..648  ▶ read src/state.rs:646..676 ✓ (1.1s)
+ ✓ (787ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the infrastructure. Let me also look at the existing tests for close_orphaned_run_if_needed to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7365..7565 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also look at the `kind` vs `event_type` naming in the JSONL files. The tests use `"kind":"RunCompleted"` and `"kind":"RunStarted"` etc. Let me check what `yoagent_state` uses for the field name.
+
+Let me also check the end of the file for the test module structure.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I need to check what the actual event field name is in the JSONL - the tests search for `"kind":"RunCompleted"` but StateEvent uses `event_type`. Let me check:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_type_label' in src/state.rs  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (802ms)
+ ✓ (737ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `event_type_label` function to understand the naming convention, and also the `compatibility_event_json_line` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3113..3243 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the pattern. The JSONL file uses `kind` field (from yoagent_state), not `event_type`. So the tests search for `"kind":"RunCompleted"`. Let me confirm by looking at `compatibility_event_json_line`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3241..3321 ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture fully. Let me also look at the end of the file to find the test module start, so I know where to add tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in src/state.rs ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test module might use `#[cfg(test)]` with a newline between the `cfg` and `test`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/state.rs ✓ (388ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the end of the file to see where tests end.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7990..8020 ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check the `close_orphaned_run_if_needed` function more carefully to understand how it reads events. It uses a raw line-by-line JSON parse, not the `compatibility_event_json_line` path. Important to note that in JSONL, events use `kind` (from yoagent_state), not `event_type`.
+
+Now let me plan:
+
+1. The existing `close_orphaned_run_if_needed` handles the case where a RunStarted is found without RunCompleted at file end. It works by scanning backward.
+
+2. The new function `close_orphaned_failure_runs` needs to handle a different case: runs that have a FailureObserved event but no RunCompleted for the same run_id. This is for runs that were killed externally (SIGKILL, GH Actions cancellation) where the panic hook never fired. Also, the existing `install_panic_hook` used to NOT emit RunCompleted before Day 142, so old runs may also be orphaned.
+
+The pattern in the existing code for scanning events uses raw line-by-line parsing with `serde_json::from_str::<Value>`. The compatibility layer is `compatibility_event_json_line` which uses `parse_state_event_line` which can handle both yoagent_state format and legacy formats.
+
+Let me now write the implementation. The approach:
+
+1. Add a public function `close_orphaned_failure_runs(events_path: &Path, store_path: Option<&Path>) -> Result<usize, String>` that:
+   - Reads the events file
+   - Tracks run_ids that have a FailureObserved event
+   - Checks whether each such run_id also has a RunCompleted
+   - For each orphaned run_id, emits a retroactive RunCompleted with status "error"
+   - Returns the count of runs closed
+   - Is idempotent
+
+2. Add a test:
+   - Record a FailureObserved for some run_id
+   - Call the function, verify RunCompleted was written
+   - Call again, verify no duplicates
+
+Let me also check how the JSONL events look for FailureObserved to make sure I'm searching for the right field.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (405ms)
+  ▶ todo ✓ (406ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first look at the parse_state_event_line function to understand how events are parsed from JSONL.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn parse_state_event_line' in src/state.rs ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function briefly to understand how the JSONL parsing works, particularly what field name is used for event type.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:909..989 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The events in JSONL can have either `kind` or `event_type` field. The existing `close_orphaned_run_if_needed` searches for `"event_type"` field in the raw JSON. But the test code checks for `"kind":"RunCompleted"` in the raw file. This is because `to_yoagent_state_event` serializes with `kind` field (from yoagent_state::Event).
+
+Now I have all the information I need. Let me write the implementation.
+
+Key design:
+1. A public function `close_orphaned_failure_runs` that scans all events for FailureObserved with no matching RunCompleted
+2. Uses the same raw-line JSON reading pattern as `close_orphaned_run_if_needed`
+3. Returns `usize` count of runs closed
+4. Idempotent
+
+Let me write the function and test. Let me place the function right after `close_orphaned_run_if_needed` (after line 410).
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a thorough understanding of the codebase patterns. Let me write the test first, then the implementation.
+
+First, let me find where the last test ends to add a new test:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8005..8020 ✓ (407ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the test first, then the implementation. I'll add the test right before the closing `}` of the test module, and the implementation right after `close_orphaned_run_if_needed`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test at the end of the test module:
+            assert!(
+                raw.contains(r#""had_tool_errors":false"#),
+                "should contain had_tool_errors: {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_failure_runs_closes_orphan() {
+  +         // FailureObserved for run_id "orphan-A" with no RunCompleted -> orphan closure
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "orphan-A";
+  + 
+  +         // Write a FailureObserved without a matching RunCompleted
+  +         let failure = StateEvent {
+  +             event_id: "evt-fail-A".into(),
+  +             event_type: EventType::FailureObserved,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (6 → 218 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 218 lines)
+            assert!(
+                raw.contains(r#""had_tool_errors":false"#),
+                "should contain had_tool_errors: {raw}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn close_orphaned_failure_runs_closes_orphan() {
+  +         // FailureObserved for run_id "orphan-A" with no RunCompleted -> orphan closure
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  + 
+  +         let orphan_run_id = "orphan-A";
+  + 
+  +         // Write a FailureObserved without a matching RunCompleted
+  +         let failure = StateEvent {
+  +             event_id: "evt-fail-A".into(),
+  +             event_type: EventType::FailureObserved,
+  +             schema_version: STATE_SQLITE_SCHEMA_VERSION,
+  +             timestamp_ms: 1,
+  ... (198 more lines)
+ ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the implementation function. I'll place it right after `close_orphaned_run_if_needed` (after line 410):
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the implementation function right after `close_orphaned_run_if_needed`:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:408..413 ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+    
+        Ok(())
+  + }
+  + 
+  + /// Scan the event store for runs that have a FailureObserved event but no
+  + /// matching RunCompleted on the same `run_id`. For each orphaned run, emit a
+  + /// retroactive RunCompleted with status "error" and an auto-close note.
+  + ///
+  + /// Returns the number of runs closed. Idempotent — running twice produces no
+  + /// new events on the second run.
+  + ///
+  + /// This covers runs that were interrupted externally (GH Actions cancellation,
+  + /// SIGTERM, SIGKILL) where the panic hook never fired, as well as pre-Day-142
+  + /// runs where the panic hook did not emit RunCompleted.
+  + pub fn close_orphaned_failure_runs(
+  +     events_path: &Path,
+  +     store_path: Option<&Path>,
+  + ) -> Result<usize, String> {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (5 → 93 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (5 → 93 lines)
+    
+        Ok(())
+  + }
+  + 
+  + /// Scan the event store for runs that have a FailureObserved event but no
+  + /// matching RunCompleted on the same `run_id`. For each orphaned run, emit a
+  + /// retroactive RunCompleted with status "error" and an auto-close note.
+  + ///
+  + /// Returns the number of runs closed. Idempotent — running twice produces no
+  + /// new events on the second run.
+  + ///
+  + /// This covers runs that were interrupted externally (GH Actions cancellation,
+  + /// SIGTERM, SIGKILL) where the panic hook never fired, as well as pre-Day-142
+  + /// runs where the panic hook did not emit RunCompleted.
+  + pub fn close_orphaned_failure_runs(
+  +     events_path: &Path,
+  +     store_path: Option<&Path>,
+  + ) -> Result<usize, String> {
+  +     if !events_path.is_file() {
+  +         return Ok(0);
+  ... (73 more lines)
+ ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also update `init_global` to call `close_orphaned_failure_runs` at startup, similar to how it calls `close_orphaned_run_if_needed`. Let me read the current init_global:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `init_global` to call the new function after the existing orphan check:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:500..535 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the call to `close_orphaned_failure_runs` right after the existing orphan check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        if let Err(e) = close_orphaned_run_if_needed(&config.events_path, config.store_path.as_deref())
+        {
+            eprintln!("warning: could not close orphaned run: {e}");
+  +     }
+  + 
+  +     // Close runs orphaned after FailureObserved (external kills, pre-Day-142 panics).
+  +     if let Err(e) =
+  +         close_orphaned_failure_runs(&config.events_path, config.store_path.as_deref())
+  +     {
+  +         eprintln!("warning: could not close failure-orphaned runs: {e}");
+        }
+  ✓ Auto-approved: edit: src/state.rs (6 → 13 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 13 lines)
+        if let Err(e) = close_orphaned_run_if_needed(&config.events_path, config.store_path.as_deref())
+        {
+            eprintln!("warning: could not close orphaned run: {e}");
+  +     }
+  + 
+  +     // Close runs orphaned after FailureObserved (external kills, pre-Day-142 panics).
+  +     if let Err(e) =
+  +         close_orphaned_failure_runs(&config.events_path, config.store_path.as_deref())
+  +     {
+  +         eprintln!("warning: could not close failure-orphaned runs: {e}");
+        }
+ ✓ (390ms)
+
+
