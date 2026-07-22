@@ -1,0 +1,730 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to modify `scripts/preseed_session_plan.py` to break a self-referential planning fallback
+2. When `choose_task()` has zero matching candidates AND `analysis_only_active` is True, use `_healthy_codebase_fallback()` instead of the hardcoded "Repair evidence-backed planning" task
+3. When `analysis_only_active` is False, preserve the existing behavior
+4. Update the self-test at line 1889
+5. Run `python3 scripts/preseed_session_plan.py --test` to verify
+
+Let me start by reading the evolve skill and the relevant sections of the script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant sections of `scripts/preseed_session_plan.py`. I need to see:
+1. The `choose_task()` function around lines 993-1022 (no-candidates fallback)
+2. The `_healthy_codebase_fallback()` function at line 1268
+3. The `_has_src_files` helper at line 897
+4. The self-test at line 1889
+5. How `analysis_only_active` is computed and used
+
+Let me read these in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:990..1070  ▶ read scripts/preseed_session_plan.py:1260..1310  ▶ read scripts/preseed_session_plan.py:890..940  ▶ read scripts/preseed_session_plan.py:1880..1980 ✓ (6.5s)
+ ✓ (5.5s)
+ ✓ (4.6s)
+ ✓ (3.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the structure:
+
+1. `choose_task()` at line 927 - gets assessment, computes `analysis_only_active`, builds candidates
+2. The no-candidates fallback at lines 993-1022 creates a hardcoded "Repair evidence-backed planning" task
+3. `_healthy_codebase_fallback()` at line 1269 returns a task targeting `src/state.rs`
+4. The self-test at line 1888 tests: `choose_task("No known current bug matched this assessment.")` - which has no analysis-only pressure, so it should still hit the healthy codebase fallback
+
+Wait, let me re-read the test at line 1888 more carefully:
+
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This tests that when no candidates match, it returns "Add a small verifiable improvement to src/". So actually, the test ALREADY expects the healthy codebase fallback for the no-candidates case... But wait, how? Let me look more carefully at the flow.
+
+I need to see how `choose_task()` decides when to use `_healthy_codebase_fallback()` vs the hardcoded fallback. Let me read the full `choose_task()` function.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 9.4s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:927..1027 ✓ (965ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow clearly:
+
+1. `choose_task()` iterates TASKS and builds candidates
+2. If candidates exist, it returns one (with contradiction handling)
+3. If NO candidates matched (lines 993+), it uses the hardcoded "Repair evidence-backed planning" fallback
+4. BUT if `assessment_was_missing` is True, it enriches that fallback with diagnostic info
+
+Now the test at line 1888:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+Wait, this test asserts that the fallback title is "Add a small verifiable improvement to src/" - which is the `_healthy_codebase_fallback()` title. But looking at the code, the no-candidates fallback at line 993 has title "Repair evidence-backed planning after no-task sessions". 
+
+How can this test pass? Let me check if there's some path where `_healthy_codebase_fallback()` would be called... Let me search for where it's called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_healthy_codebase_fallback' in scripts/preseed_session_plan.py ✓ (889ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's called at line 1202. Let me see the context around line 1202 to understand when `_healthy_codebase_fallback()` is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1180..1260 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The flow at the end of `choose_task()` (after the no-candidates case):
+
+```python
+# Line 1201-1203
+if _assessment_is_healthy_codebase(lower, current):
+    return _healthy_codebase_fallback()
+return fallback
+```
+
+So the healthy codebase check happens AFTER the no-candidates fallback is set up. If the assessment contains "no known current bug", the healthy codebase check fires and returns `_healthy_codebase_fallback()`. This explains why the test at line 1888 passes with `"No known current bug matched this assessment."` — it matches the "no known current bug" signal.
+
+Now the task is: when `analysis_only_active` is True AND zero candidates matched, use `_healthy_codebase_fallback()` instead of the hardcoded fallback. Currently, the `_healthy_codebase_fallback()` is only called when `_assessment_is_healthy_codebase()` is True.
+
+The issue is that when analysis-only pressure is active but the assessment doesn't contain a health signal, the system falls through to the self-referential "Repair evidence-backed planning" fallback.
+
+The fix should add a condition: after the no-candidates fallback is constructed (line 993-1022), and before the `assessment_was_missing` check, if `analysis_only_active` is True, return `_healthy_codebase_fallback()` instead.
+
+Wait, let me re-read the success criteria:
+> When `choose_task()` has zero matching candidates and `analysis_only_active` is True, it returns the `_healthy_codebase_fallback()` task
+> When `analysis_only_active` is False and zero candidates match, the existing self-referential fallback behavior is preserved
+
+So I need to check `analysis_only_active` in the no-candidates path. Let me now figure out where exactly to insert the condition.
+
+The current structure of lines 993-1203:
+1. Lines 993-1022: Create `fallback` (hardcoded "Repair evidence-backed planning")
+2. Lines 1023+: If `assessment_was_missing`, enrich and return
+3. Lines 1201-1202: If healthy codebase signal, return `_healthy_codebase_fallback()`
+4. Line 1203: Return `fallback`
+
+The fix: After line 992 (after the `if candidates:` block returns), add:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+This should go BEFORE the hardcoded fallback is constructed, because there's no need to construct it if we're returning the healthy fallback instead.
+
+Now for the test at line 1888:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This test uses "No known current bug matched this assessment." which matches the `_HEALTHY_CODEBASE_SIGNALS` (contains "no known current bug"). So this test already hits the healthy codebase path, not the no-candidates fallback. No change needed.
+
+But let me check what the task says about the self-test at line 1889:
+> The self-test at line 1889 (which asserts the old fallback title) is updated to match the new behavior when analysis-only pressure is active
+
+Wait, line 1889 IS the assertion:
+```python
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This already matches the healthy codebase fallback. So this test should still pass because the test input is "No known current bug matched this assessment." which has the health signal.
+
+Now I need to think about what test to add. The task says:
+> Update the self-test at line 1889 to account for the new behavior — the test that checks `assessment_was_missing` (lines 1958+) should still work because `analysis_only_active` would be False in that case
+
+Let me look at the `analysis_only_active` test that already exists (around line 1937):
+
+```python
+assessment = """# Assessment
+
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence.
+"""
+task = choose_task(assessment)
+assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+    f"analysis_only_active should skip analysis-only task, got {task['title']}"
+)
+```
+
+This test verifies that when `analysis_only_active` is True, the analysis-only task is skipped. But it doesn't test the no-candidates fallback path.
+
+I need to add a test that: when `analysis_only_active` is True and NO candidates match (i.e., the assessment has `task_analysis_only_attempt_count >= 1` but no task keys), the fallback is `_healthy_codebase_fallback()`.
+
+Let me think about what assessment text would trigger this. The assessment needs:
+1. `task_analysis_only_attempt_count=1` or more (to trigger `analysis_only_active`)
+2. No task keys matching any TASK entry (to get zero candidates)
+
+Actually wait, let me re-check what happens when `analysis_only_active` is True and candidates are zero. The existing analysis-only test at line 1937 uses assessment text that includes `task_analysis_only_attempt_count=1` but also might match some task keys. Let me check what keys it would match.
+
+Looking at the test assessment:
+```
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence.
+```
+
+This contains "task_analysis_only_attempt_count=1" which would trigger `_has_analysis_only_pressure`. But it might also contain other keys that match TASKS entries. The test just checks that the analysis-only task is skipped, and that the resulting task has files.
+
+For my new test, I need an assessment with `task_analysis_only_attempt_count >= 1` but no matching task keys at all, so that candidates is empty. Something like:
+
+```python
+assessment = """# Assessment
+## Graph-derived Next-Task Pressure
+- task_analysis_only_attempt_count=3
+No other specific issues found.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Add a small verifiable improvement to src/", (
+    f"analysis_only_active with no candidates should use healthy fallback, got {task['title']}"
+)
+```
+
+Wait, but I need to make sure the assessment doesn't accidentally match any task keys. Let me check what TASKS are and what their keys are.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me see the TASKS definitions and understand how keys matching works, and also check `_has_analysis_only_pressure`:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_has_analysis_only_pressure' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:720..780 ✓ (1.0s)
+ ✓ (3.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also see `_has_analysis_only_pressure`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..892 ✓ (890ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check `_ANALYSIS_ONLY_METRICS` and `ANALYSIS_ONLY_TASK_TITLE`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py  ▶ search 'ANALYSIS_ONLY_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (2.3s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see `_ANALYSIS_ONLY_METRICS`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..865 ✓ (885ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me look at all the TASKS definitions to understand what keys they use, so I can construct a test assessment that triggers `analysis_only_active` but matches no task keys.
+
+Let me also look at the TASKS list to understand their keys.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the TASKS keys to craft a test:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '"keys"' in scripts/preseed_session_plan.py ✓ (899ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the TASKS list to understand what keys each task uses. I'll look at the broader structure around line 40-300 where TASKS is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:40..310 ✓ (956ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me plan the implementation:
+
+1. In `choose_task()`, after the no-candidates line (line 992), add: if `analysis_only_active` is True, return `_healthy_codebase_fallback()` directly.
+2. Add a test case that verifies this behavior.
+
+The key insight: the "Make analysis-only task pressure landable" task has keys like `task_analysis_only_attempt_count`, `reverted_no_edit`, etc. So when `analysis_only_active` is True, the assessment almost certainly matches that task's keys. But we need the case where it matches NO task keys at all.
+
+Let me think about this more carefully. If `task_analysis_only_attempt_count=3` is in the assessment, it WILL match the "Make analysis-only task pressure landable" task's keys. So the candidates won't be empty.
+
+But wait - looking at the candidate loop:
+```python
+if task["title"] == ANALYSIS_ONLY_TASK_TITLE and (_analysis_only_seed_recently_blocked(lower) or analysis_only_active):
+    continue
+```
+
+When `analysis_only_active` is True, the analysis-only task is skipped. But other tasks might still match.
+
+The scenario from the evidence is: `task_analysis_only_attempt_count=3` and `planner_no_task_count=1` and last session had 0/0 tasks. So the assessment might contain these metrics but no other task keys. Let me think about what assessment text would trigger this.
+
+Actually, the task instructions say: "When the task picker finds zero matching candidates AND analysis-only pressure is active (task_analysis_only_attempt_count >= 1), use `_healthy_codebase_fallback()`"
+
+So the scenario is: the assessment has `task_analysis_only_attempt_count >= 1` but none of the other TASK keys. This can happen when the assessment is minimal or focused on trajectory/stats.
+
+For the test, I can craft an assessment like:
+```
+# Assessment
+task_analysis_only_attempt_count=3
+```
+
+But wait, does `task_analysis_only_attempt_count` match any task keys? Looking at TASKS:
+- "Make analysis-only task pressure landable" has `"task_analysis_only_attempt_count"` as a key
+- But that task is skipped when `analysis_only_active` is True (line 944)
+
+So yes, if I have:
+```
+task_analysis_only_attempt_count=3
+```
+The `analysis_only_active` flag would be True, and the analysis-only task would be skipped. But no OTHER task would match either (none of the other tasks have `task_analysis_only_attempt_count` in their keys). So candidates would be empty.
+
+Let me verify: looking at all task keys:
+1. sub-agent, sub agent, api_key_present, api key, worker agents
+2. cache metrics absent, cache-report returning no metrics, etc.
+3. no state event found
+4. run_completion_guard, test lifecycle error, flaky test, state::tests::run_completion_guard
+5. tool-path recovery, tool path recovery, targeted_recovery_hint, etc.
+6. task_analysis_only_attempt_count, analysis-only task attempts, etc. -- BUT this gets skipped
+7. state_run_incomplete, etc. -- lifecycle
+8. ...and the rest
+
+So an assessment with ONLY `task_analysis_only_attempt_count=3` would:
+- Set `analysis_only_active = True`
+- Skip the analysis-only task
+- Match no other task keys
+- Result in zero candidates
+
+This is exactly the scenario the task wants to fix.
+
+Now, the implementation plan:
+
+1. After line 992 (after `return candidates[0]`), add:
+```python
+    if analysis_only_active:
+        return _healthy_codebase_fallback()
+```
+
+Wait, but I need to make sure this doesn't interfere with the existing flow. Currently lines 993-1203:
+- 993-1022: Build fallback
+- 1023+: Handle `assessment_was_missing`
+- 1201-1202: Check `_assessment_is_healthy_codebase`
+- 1203: Return fallback
+
+My new check should go BEFORE line 993 (the fallback construction). When `analysis_only_active` is True and we have 0 candidates, immediately return `_healthy_codebase_fallback()`.
+
+2. Add a test case. Let me add it after the existing analysis-only test at line 1937.
+
+Now let me also verify the test at line 1888 still passes:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This assessment has:
+- `analysis_only_active` = False (no `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, or `reverted_no_edit`)
+- "no known current bug" matches `_HEALTHY_CODEBASE_SIGNALS`
+- So it hits the healthy codebase path at line 1201-1202
+
+This test should still pass because `analysis_only_active` is False, so my new check doesn't fire.
+
+Let me now implement this.
+
+Actually wait, let me also think about where exactly to insert the check. The current flow:
+
+```
+Line 980-984: for candidate in candidates: return first non-contradicted
+Line 986-991: if candidates: return first (contradicted)
+Line 992: end of candidates handling
+Line 993+: fallback construction starts
+```
+
+I should insert the check between line 991 and line 993. Like this:
+
+```python
+    # All candidates are contradicted — return the first with annotation
+    if candidates:
+        contradicted, reason = check_task_contradiction(candidates[0], assessment)
+        candidates[0]["validated_against_assessment"] = False
+        candidates[0]["contradiction_reason"] = reason
+        return candidates[0]
+
+    # No candidates matched. When analysis-only pressure is active, use
+    # the healthy-codebase fallback to produce a verifiable src/ task
+    # instead of a self-referential planning-pipeline repair.
+    if analysis_only_active:
+        return _healthy_codebase_fallback()
+
+    fallback = {
+        ...
+```
+
+This is clean and minimal - about 5 lines added, 1 blank line.
+
+Now for the test. I'll add it right after the existing analysis-only test (after line 1954):
+
+```python
+        # --- Analysis-only no-candidates fallback test ---
+        # When analysis_only_active is True and zero candidates match,
+        # the fallback should produce _healthy_codebase_fallback() (src/state.rs)
+        # instead of the self-referential "Repair evidence-backed planning" task.
+        analysis_only_no_candidates = """# Assessment
+## Graph-derived Next-Task Pressure
+- task_analysis_only_attempt_count=3
+"""
+        task = choose_task(analysis_only_no_candidates)
+        assert task["title"] == "Add a small verifiable improvement to src/", (
+            f"analysis_only_active with no candidates should use healthy fallback, got {task['title']}"
+        )
+        assert "src/" in str(task.get("files", "")), (
+            f"Expected src/ file in analysis-only fallback, got {task.get('files')}"
+        )
+```
+
+This assessment only has `task_analysis_only_attempt_count=3`, which:
+- Triggers `analysis_only_active` (>= 1)
+- Matches the analysis-only task's keys but that task is skipped
+- Matches no other task keys
+- So candidates is empty
+- My new check fires and returns `_healthy_codebase_fallback()`
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me implement the change. The fix goes in `choose_task()` between the candidates handling (line 991) and the hardcoded fallback (line 993): when `analysis_only_active` is True and zero candidates matched, return `_healthy_codebase_fallback()`.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (884ms)
+  ▶ todo ✓ (901ms)
+            return candidates[0]
+  + 
+  +     # No candidates matched. When analysis-only pressure is active, use
+  +     # the healthy-codebase fallback to produce a verifiable src/ task
+  +     # instead of a self-referential planning-pipeline repair.
+  +     if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+    
+        fallback = {
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (3 → 9 lines)
+  ▶ todo ✓ (2.7s)
+  ▶ todo ✓ (891ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the change. First, the code change in choose_task().
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 8.2s (4 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (902ms)
+  ▶ edit scripts/preseed_session_plan.py (3 → 9 lines)
+            return candidates[0]
+  + 
+  +     # No candidates matched. When analysis-only pressure is active, use
+  +     # the healthy-codebase fallback to produce a verifiable src/ task
+  +     # instead of a self-referential planning-pipeline repair.
+  +     if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+    
+        fallback = {
+ ✓ (913ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the test case. Let me add it after the existing analysis-only pressure escape-hatch test at line 1937 (now shifted due to my edit).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Now add the test case after the existing analysis-only escape-hatch test:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (907ms)
+  ▶ todo ✓ (904ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me first verify the current state of the file to find the exact location of the test to add after.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+            assert task.get("files"), (
+                f"Expected task with files, got {task}"
+  +         )
+  +         # --- Analysis-only no-candidates fallback test ---
+  +         # When analysis_only_active is True and zero candidates match,
+  +         # the fallback should produce _healthy_codebase_fallback() (src/state.rs)
+  +         # instead of the self-referential "Repair evidence-backed planning" task.
+  +         analysis_only_no_candidates = """# Assessment
+  + ## Graph-derived Next-Task Pressure
+  + - task_analysis_only_attempt_count=3
+  + """
+  +         task = choose_task(analysis_only_no_candidates)
+  +         assert task["title"] == "Add a small verifiable improvement to src/", (
+  +             f"analysis_only_active with no candidates should use healthy fallback, got {task['title']}"
+  +         )
+  +         assert "src/" in str(task.get("files", "")), (
+  +             f"Expected src/ file in analysis-only fallback, got {task.get('files')}"
+            )
+            # --- Success-rate-aware candidate selection test ---
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 19 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1950..1980 ✓ (912ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add the test after the analysis-only pressure escape-hatch test (after line 1960) and before the success-rate-aware test. Let me add it between those two sections.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 19 lines)
+            assert task.get("files"), (
+                f"Expected task with files, got {task}"
+  +         )
+  +         # --- Analysis-only no-candidates fallback test ---
+  +         # When analysis_only_active is True and zero candidates match,
+  +         # the fallback should produce _healthy_codebase_fallback() (src/state.rs)
+  +         # instead of the self-referential "Repair evidence-backed planning" task.
+  +         analysis_only_no_candidates = """# Assessment
+  + ## Graph-derived Next-Task Pressure
+  + - task_analysis_only_attempt_count=3
+  + """
+  +         task = choose_task(analysis_only_no_candidates)
+  +         assert task["title"] == "Add a small verifiable improvement to src/", (
+  +             f"analysis_only_active with no candidates should use healthy fallback, got {task['title']}"
+  +         )
+  +         assert "src/" in str(task.get("files", "")), (
+  +             f"Expected src/ file in analysis-only fallback, got {task.get('files')}"
+            )
+            # --- Success-rate-aware candidate selection test ---
+ ✓ (937ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (891ms)
+  ▶ todo ✓ (907ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's an assertion at line 1446 that checks for "scripts/" in task files. Let me look at that.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.3s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1430..1470 ✓ (906ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test at line 1434 creates an assessment with `task_analysis_only_attempt_count=2` AND `state_run_incomplete_count=2`. The `state_run_incomplete_count=2` matches the lifecycle task's keys. But wait, let me check...
+
+The lifecycle task has keys like `state_run_incomplete`, `state_run_unmatched_non_validation_completed`, etc. So `state_run_incomplete_count=2` would match `state_run_incomplete`.
+
+Let me re-read the lifecycle task:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:302..332 ✓ (947ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the lifecycle task has `"state_run_incomplete"` as a key. The test assessment at line 1434 has `state_run_incomplete_count=2`. The `numeric_metrics()` function would parse `state_run_incomplete_count=2` into `{"state_run_incomplete_count": 2}`. 
+
+Now, for key matching, the code does:
+```python
+if not any(key in lower for key in task["keys"]):
+    continue
+```
+
+So it checks if the key `"state_run_incomplete"` is in `lower`. And `lower` contains `state_run_incomplete_count=2`. Does `"state_run_incomplete"` match as a substring of `"state_run_incomplete_count"`?
+
+Yes! `"state_run_incomplete" in "state_run_incomplete_count=2"` is True because `"state_run_incomplete"` is a substring of `"state_run_incomplete_count"`.
+
+So the test assessment at line 1434:
+- Has `task_analysis_only_attempt_count=2` (triggers `analysis_only_active`)
+- Has `state_run_incomplete_count=2` (matches lifecycle task key)
+- The analysis-only task is skipped (because `analysis_only_active` is True)
+- But the lifecycle task candidate SHOULD match
+
+Wait, but let me look at lines 952-958:
+```python
+if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+    if analysis_only_active:
+        # Analysis-only pressure takes priority over lifecycle cleanup
+        continue
+```
+
+So when `analysis_only_active` is True and lifecycle metrics are present, the lifecycle task is SKIPPED. So the lifecycle task won't be a candidate either.
+
+So candidates would end up empty! And with my new code, it would return `_healthy_codebase_fallback()` (title: "Add a small verifiable improvement to src/", files: "src/state.rs").
+
+But the existing test at line 1446 asserts:
+```python
+assert "scripts/" in str(task["files"]), (
+    f"Expected landable task with script files, got {task.get('files')}"
+)
+```
+
+This expects a task with "scripts/" files, but `_healthy_codebase_fallback()` returns "src/state.rs", which doesn't contain "scripts/".
+
+So this test now fails because with my change, when `analysis_only_active` is True and no candidates match, we return the healthy fallback instead of... what was the previous behavior?
+
+Before my change: when no candidates matched, it fell through to the hardcoded "Repair evidence-backed planning" fallback which has `"files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py"`. That contains "scripts/", so the test passed.
+
+But the task itself says this is the EXACT behavior we want to change! The self-referential "Repair evidence-backed planning" fallback targeting `scripts/preseed_session_plan.py` is what we're trying to avoid.
+
+So this existing test needs to be updated to match the new behavior. The task instructions say:
+> The self-test at line 1889 (which asserts the old fallback title) is updated to match the new behavior when analysis-only pressure is active
+
+But actually line 1889 was the test for "No known current bug matched this assessment." which is already correct. The test that needs updating is at line 1446.
+
+Let me think about what this test should now assert. The assessment at line 1434 has:
+- `task_analysis_only_attempt_count=2` → analysis_only_active = True
+- `task_no_edit_revert_count=1` → also contributes to analysis_only_active
+- `state_run_incomplete_count=2` → lifecycle metrics present
+
+With my change, when analysis_only_active is True and candidates are empty, it returns `_healthy_codebase_fallback()` which targets `src/state.rs`.
+
+The test should now assert that the task is the healthy fallback:
+```python
+assert task["title"] == "Add a small verifiable improvement to src/", (
+    f"analysis_only_active with no landable candidates should use healthy fallback, got {task['title']}"
+)
+assert "src/" in str(task["files"]), (
+    f"Expected src/ task from healthy fallback, got {task.get('files')}"
+)
+```
+
+But wait, let me re-examine. The assessment at line 1434 also has `task_no_edit_revert_count=1` and the line "Force reverted tasks to leave concrete evidence". Let me check if that matches any other task keys...
+
+The "Make analysis-only task pressure landable" task has keys: `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`, etc. But this task is skipped when `analysis_only_active` is True (line 944).
+
+Let me check if "Force reverted tasks to leave concrete evidence" matches any other task keys. Looking at the TASKS... I don't think so. The other tasks have keys like "sub-agent", "cache metrics absent", "no state event found", etc.
+
+So the test assessment does lead to empty candidates with my change. I need to update the test assertion. Let me update it.
+
+Actually, wait. Let me also check if `state_run_incomplete_count=2` triggers `has_lifecycle_metrics`. Looking at the function:
+```python
+def has_lifecycle_metrics(metrics: dict[str, int]) -> bool:
+    return any(
+        key.startswith("state_run_") or key.startswith("deepseek_model_call_")
+        for key in metrics
+    )
+```
+
+`state_run_incomplete_count` starts with `state_run_`, so yes, `has_lifecycle_metrics` returns True. And then at line 952-958, when `analysis_only_active` is True, the lifecycle task is skipped. So candidates are empty.
+
+Let me update the test.
+────────────────────────────────────────────────────────────────────────────────
+
+The existing test at line 1434-1448 also triggers analysis-only pressure and now gets the healthy fallback. I need to update that assertion:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1441..1461 ✓ (909ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the flow for the assessment at line 1434:
+
+1. `task_analysis_only_attempt_count=2` → analysis_only_active=True
+2. `state_run_incomplete_count=2` → lifecycle_metrics_present=True
+3. The assessment also has "Force analysis-only attempts into action" which contains `task_analysis_only_attempt_count` - the analysis-only task key
+4. But the analysis-only task is skipped (analysis_only_active=True)
+5. The lifecycle task is skipped (analysis_only_active=True, lifecycle_metrics_present)
+6. Any other task? Let me check... `no_edit_revert_count=1` - this is in the analysis-only task's keys but the task is skipped
+7. "Force reverted tasks" - matches "reverted" but let me check all task keys...
+
+Actually, I need to be more careful. Let me look at what other tasks could match. The assessment says:
+```
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=2): Implementation ended without file progress or terminal evidence.
+- Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1): Implementation task reverted without touching files.
+- Close yyds state and model lifecycle gaps (state_run_incomplete_count=2): Lifecycle gnomes show unpaired terminal events.
+```
+
+Looking at task keys:
+- "Force analysis-only attempts into action" → analysis-only task keys (skipped)
+- "Force reverted tasks to leave concrete evidence" → `task_no_edit_revert_count`, `reverted_no_edit` → analysis-only task keys (skipped)
+- "Close yyds state and model lifecycle gaps" → `state_run_incomplete` → lifecycle task (skipped)
+
+Wait, does "reverted" match any NON-analysis-only task keys? Let me check...
+
+The tool-path task has: "tool-path recovery", "tool path recovery", etc. No "reverted".
+The cache task: "cache metrics absent", etc. No.
+The cold-start task: "no state event found". No.
+The run completion guard task: "run_completion_guard", etc. No.
+The sub-agent task: "sub-agent", etc. No.
+
+I don't think any non-analysis-only task matches. So candidates should be empty.
+
+Actually wait - let me be more precise. What about the lifecycle task? The assessment has `state_run_incomplete_count=2`. The lifecycle task has key `state_run_incomplete`. The `in` check is:
+```python
+"state_run_incomplete" in "state_run_incomplete_count=2"
+```
+This is True because "state_run_incomplete" is a substring of "state_run_incomplete_count".
+
+But the lifecycle task is at line 952:
+```python
+if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+    if analysis_only_active:
+        continue
+```
+
+So it's skipped. Candidates end up empty.
+
+With my change, we return `_healthy_codebase_fallback()` → `src/state.rs`.
+
+I need to update the test assertion. Let me change line 1446 to expect `src/` instead of `scripts/`.
+────────────────────────────────────────────────────────────────────────────────
+
+The existing test at line 1441-1448 now hits the new path. The assessment has `analysis_only_active` True and no non-skipped candidates, so it falls through to `_healthy_codebase_fallback()`. Let me update that assertion:
+            assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+                f"analysis_only_active should skip ANALYSIS_ONLY_TASK_TITLE, got {task['title']}"
+            )
+  -         # Task should be a landable task with source files, not analysis-only
+  -         assert "scripts/" in str(task["files"]), (
+  -             f"Expected landable task with script files, got {task.get('files')}"
+  +         # When analysis_only_active and no landable candidates match,
+  +         # the healthy-codebase fallback produces a src/ task.
+  +         assert "src/" in str(task["files"]), (
+  +             f"Expected src/ task from healthy fallback, got {task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (8 → 9 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (8 → 9 lines)
+            assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
+                f"analysis_only_active should skip ANALYSIS_ONLY_TASK_TITLE, got {task['title']}"
+            )
+  -         # Task should be a landable task with source files, not analysis-only
+  -         assert "scripts/" in str(task["files"]), (
+  -             f"Expected landable task with script files, got {task.get('files')}"
+  +         # When analysis_only_active and no landable candidates match,
+  +         # the healthy-codebase fallback produces a src/ task.
+  +         assert "src/" in str(task["files"]), (
+  +             f"Expected src/ task from healthy fallback, got {task.get('files')}"
+            )
+ ✓ (908ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's another test that's failing. Let me look at line 1793.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1775..1815 ✓ (953ms)
+
+
