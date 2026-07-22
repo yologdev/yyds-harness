@@ -1,0 +1,597 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The evaluator says I only added a test but didn't modify the actual `choose_task()` function. Let me read the relevant section of `scripts/preseed_session_plan.py` to understand what needs to change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py:985..1035  ▶ read scripts/preseed_session_plan.py:1260..1290 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check where `analysis_only_active` is computed and verify the full context around line 993.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:920..980 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `choose_task()` function:
+
+1. Computes `analysis_only_active` at line 932
+2. Iterates over TASKS to build candidates (lines 934-965)
+3. Sorts candidates when `analysis_only_active` is True (lines 970-972)
+4. At line 993, if there are no candidates, falls back to the self-referential "Repair evidence-backed planning" dict
+
+The fix: at line 993, before the hardcoded fallback, check if `analysis_only_active` is True and zero candidates matched — if so, return `_healthy_codebase_fallback()`.
+
+Let me also check the test that was added to understand what's expected:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1950..1980 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the issue clearly. The test at lines 1955-1972 expects that when `choose_task()` is called with `"ZZZMATCHNONE task_analysis_only_attempt_count=3"` (which will have `analysis_only_active=True` and no matching candidates), it returns `_healthy_codebase_fallback()` — but the actual function at line 993 still returns the self-referential fallback dict.
+
+The fix is simple: at line 993, before the hardcoded fallback dict, add a check: if `analysis_only_active` is True (and we have zero candidates), return `_healthy_codebase_fallback()`.
+
+Let me now implement this. I'll insert the conditional return right before the `fallback = {` line.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I can see both the test (line 1955-1972 expects `_healthy_codebase_fallback()` when no candidates + analysis-only) and the missing implementation (line 993 still returns the self-referential fallback). Let me add the conditional:
+  +     if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+  + 
+        fallback = {
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (1 → 4 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (1 → 4 lines)
+  +     if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+  + 
+        fallback = {
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the edit looks correct in context, then run the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit in context:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:990..1010 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit looks correct. The logic is:
+- If `analysis_only_active` is True and we have zero candidates (we fell through to line 993), return `_healthy_codebase_fallback()` 
+- If `analysis_only_active` is False, proceed to the existing self-referential fallback
+- The `assessment_was_missing` path (which modifies the fallback dict) still works for the non-analysis-only case
+
+Now let me run the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now run the test to verify:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `main()` function at line 1443 has an assertion that the selected task must have "scripts/" in its files. Since `_healthy_codebase_fallback()` returns `src/state.rs`, that assertion fails. Let me look at that assertion and understand the context.
+────────────────────────────────────────────────────────────────────────────────
+
+The `main()` function has an assertion that the task files must contain "scripts/". Let me check that context:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1430..1460 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assertion at line 1443 expects "scripts/" in the task files. This assertion was written when the only possible fallback was the self-referential one with script files. Now that `analysis_only_active=True` can return `_healthy_codebase_fallback()` with `src/state.rs`, this assertion is too strict.
+
+I need to update this assertion. When `analysis_only_active` is true and no candidates match, the selected task now has `src/state.rs` files — which is correct behavior. The assertion should check that the task has files (either scripts/ or src/), not just scripts/.
+
+Let me update the assertion to accept both script and src files.
+────────────────────────────────────────────────────────────────────────────────
+
+The `main()` assertion at line 1443 assumes the task always has `scripts/` files. Now that `analysis_only_active=True` with no candidates can return `_healthy_codebase_fallback()` (which has `src/state.rs`), this needs updating:
+  -         # Task should be a landable task with source files, not analysis-only
+  -         assert "scripts/" in str(task["files"]), (
+  -             f"Expected landable task with script files, got {task.get('files')}"
+  +         # Task should be a landable task with source files, not analysis-only.
+  +         # When analysis_only_active is true and no candidates match, the
+  +         # _healthy_codebase_fallback returns src/state.rs.
+  +         files_str = str(task.get("files", ""))
+  +         assert "scripts/" in files_str or "src/" in files_str, (
+  +             f"Expected landable task with script or src files, got {task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 7 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 7 lines)
+  -         # Task should be a landable task with source files, not analysis-only
+  -         assert "scripts/" in str(task["files"]), (
+  -             f"Expected landable task with script files, got {task.get('files')}"
+  +         # Task should be a landable task with source files, not analysis-only.
+  +         # When analysis_only_active is true and no candidates match, the
+  +         # _healthy_codebase_fallback returns src/state.rs.
+  +         files_str = str(task.get("files", ""))
+  +         assert "scripts/" in files_str or "src/" in files_str, (
+  +             f"Expected landable task with script or src files, got {task.get('files')}"
+            )
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (234ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now there's another assertion failing at line 1792. Let me check what's happening there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770..1810 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assertion at line 1792 expects the task title to be "Reduce recurring search-tool friction before implementation", and that it should have `validated_against_assessment=True`. But now the test is failing because the task is getting `validated_against_assessment=False`.
+
+Wait, this looks like the task being returned is now different. Let me think about what's happening...
+
+The assessment at line 1779 contains `search_regex_error` which should match the SEARCH_FRICTION_TASK_TITLE. But now with the `analysis_only_active` check at line 993, it might be returning `_healthy_codebase_fallback()` instead.
+
+Wait, no — the `analysis_only_active` check at line 993 only runs when there are zero candidates. If the search friction task key matches, there should be candidates. Let me check the assessment text more carefully.
+
+The assessment at line 1779 says:
+```
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This should match the SEARCH_FRICTION_TASK_TITLE keys. Let me check what keys that task has.
+
+Actually, wait — the issue is that the assertion at line 1792 is failing because the returned task has `validated_against_assessment=False`. This means the task returned is a contradicted fallback. But the assessment content should match the SEARCH_FRICTION_TASK_TITLE...
+
+Let me look at the SEARCH_FRICTION_TASK_TITLE to understand its keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the search friction task's keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:345..375 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check SEARCH_FRICTION_KEYS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_KEYS' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:23..43 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment text at line 1779 contains `search_regex_error` which should match `SEARCH_FRICTION_KEYS`. So the search friction task should be a candidate. Let me understand what's happening...
+
+Wait, let me re-read the test. It's at line 1774:
+```python
+task = choose_task(assessment)
+assert task["title"] != "Record DeepSeek prompt cache metrics during prompt runs"
+```
+
+This test is at line 1774, and the assertion at line 1792 is a different test case. Let me trace through the flow more carefully.
+
+Actually, the error is at line 1792 which is test 5. The assessment at line 1779:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This should match `search_regex_error` key. So the search friction task should be a candidate. But the assertion says `validated_against_assessment=False`. 
+
+Wait, let me check - does this assessment have any of the keys that match other tasks? Let me see if there are other tasks whose keys could match the assessment text.
+
+Actually, the problem might be different. Let me check `_has_analysis_only_pressure` — maybe the assessment text triggers `analysis_only_active` and then all candidates get filtered out. But there's no `task_analysis_only_attempt_count` in the assessment at line 1779...
+
+Let me look at what `_has_analysis_only_pressure` checks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..892 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..865 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see why the test at line 1792 fails. The assessment at line 1779 is:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This matches the SEARCH_FRICTION_TASK_TITLE keys (search_regex_error). So the search friction task should be a candidate. But let me check whether the assessment text also triggers `analysis_only_active`...
+
+The assessment doesn't contain any of `task_analysis_only_attempt_count`, `task_no_edit_revert_count`, or `reverted_no_edit`. So `analysis_only_active` should be False for this test case.
+
+But wait, the assertion is on line 1792 — `validated_against_assessment=True`. Let me think again about what's happening...
+
+Actually, wait — the error at line 1792 says "Expected validated_against_assessment=true, got False". So the search friction task IS being selected (title matches), but its `validated_against_assessment` is False. Let me check the contradiction check...
+
+Actually, let me think about this more carefully. The assessment text is:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This assessment has `search_regex_error` which triggers the search friction task. But wait — the search friction task also generates the analysis-only task? No, that's a different filter.
+
+Actually, let me trace through the code more carefully. The search friction task will be added to candidates. Then at line 987:
+```python
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+```
+
+So it checks whether the first candidate is contradicted. Let me check what `check_task_contradiction` does:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:698..778 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `check_task_contradiction` checks Recent Changes for resolution evidence, fixture file existence, etc. The assessment at line 1779 has "Day 105 added regex-error recovery hint to search tool errors" in Recent Changes. Let me check `_line_shows_resolution` to see whether that line counts as showing the search_regex_error problem is resolved:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _line_shows_resolution' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:498..528 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_line_shows_resolution` considers a line that starts with "Day NNN" AND contains a task key to be a resolution signal. The assessment at line 1779 has:
+
+```
+Day 105 added regex-error recovery hint to search tool errors.
+```
+
+This line contains "search" (one of the task keys is "search_regex_error"). Wait, does it contain a full task key? Let me check: SEARCH_FRICTION_KEYS are `"search_regex_error", "search_binary_match", "search/grep error", "search/grep errors", "broken regex", "binary file matches"`.
+
+The line "Day 105 added regex-error recovery hint to search tool errors" - does it contain `search_regex_error`? No, it says "search tool errors" not "search_regex_error". Does it contain any other key? `broken regex` — well "regex" is in `broken regex` but the check is substring: `"broken regex" in lower`. The line says "regex-error" not "broken regex". And `"search/grep error"` — the line says "search tool errors" not "search/grep error".
+
+Hmm, but the line does contain "regex" and "search" which are substrings of task keys. Wait, the check is `any(key in lower for key in task_keys)` — so `"search_regex_error" in "day 105 added regex-error recovery hint to search tool errors."`? No, "search_regex_error" is NOT a substring of that line.
+
+Actually wait, `"search_regex_error"` — the line says `regex-error` and `search tool errors`. No, `search_regex_error` is not a substring.
+
+Let me think again. The assessment at line 1779 definitely triggers the search friction task (since `search_regex_error` appears in the Bugs/Friction section). But the contradiction check at line 722-725 checks Recent Changes...
+
+The Recent Changes line is: "Day 105 added regex-error recovery hint to search tool errors."
+
+None of the SEARCH_FRICTION_KEYS appear in this line. So `_line_shows_resolution` returns False. Good.
+
+But then at line 729, `_line_shows_obsolete_or_reverted` runs. Let me check that.
+
+Actually wait, I think the issue might be something else. Let me look at the code flow more carefully.
+
+After building candidates, the code goes to line 986:
+```python
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+    candidates[0]["validated_against_assessment"] = False  # OH WAIT
+```
+
+Wait, line 989 sets `validated_against_assessment = False` unconditionally! Let me re-read:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:980..995 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the logic is:
+
+1. For each candidate, check if it's contradicted. If not contradicted, mark as `validated_against_assessment=True` and return it.
+2. If all candidates are contradicted, return the first with `validated_against_assessment=False`.
+3. If no candidates, check `analysis_only_active` and return `_healthy_codebase_fallback()`.
+
+The test at line 1792 expects `validated_against_assessment=True` — meaning the search friction task should NOT be contradicted and should be returned at line 983 with `validated_against_assessment=True`.
+
+But the error says it got `False`. That means the search friction task is being contradicted. Let me check why.
+
+The assessment at line 1779:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+The Recent Changes line: "Day 105 added regex-error recovery hint to search tool errors."
+
+This starts with "Day 105" (matches `re.match(r"day\s+\d+", lower)`) AND it contains a task key... but which one? Let me check again:
+
+SEARCH_FRICTION_KEYS = ("search_regex_error", "search_binary_match", "search/grep error", "search/grep errors", "broken regex", "binary file matches")
+
+The line is "day 105 added regex-error recovery hint to search tool errors."
+
+Which key appears in this line? Let me check character by character:
+- "search_regex_error" — does it appear? The line has "regex-error" which is different from "search_regex_error". But wait, the check is `"search_regex_error" in lower`. Does "search_regex_error" appear as a substring? No.
+- "search_binary_match" — No.
+- "search/grep error" — No, the line has "search tool errors" not "search/grep error".
+- "search/grep errors" — No.
+- "broken regex" — No, the line has "regex-error" not "broken regex".
+- "binary file matches" — No.
+
+Hmm, none of the keys appear in that line. So `_line_shows_resolution` returns False.
+
+Wait, but the issue is that `check_task_contradiction` returns `True`. Let me check the other checks:
+
+1. `_check_fixture_already_exists(task)` — this checks fixture files
+2. `_check_code_already_exists(task)` — this checks code already exists
+3. Recent Changes check
+4. Self-test check
+
+Let me check `_check_fixture_already_exists`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _check_fixture_already_exists' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:614..644 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The search friction task doesn't have fixture references. Let me check `_check_code_already_exists`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _check_code_already_exists' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:644..699 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_check_code_already_exists` runs `git grep -n -F -- <key> -- <file>` for each key in the task keys and each file in the task files. The search friction task has keys like `search_regex_error`, `search_binary_match`, etc. and files like `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py`.
+
+So it would run something like `git grep -n -F -- search_regex_error -- src/tools.rs`. If `search_regex_error` appears in `src/tools.rs`, it would return contradicted.
+
+Hmm, does `search_regex_error` appear in source files? Let me check... Actually, `search_regex_error` is a tool error label. It could reasonably appear in `src/tools.rs` or `scripts/log_feedback.py`.
+
+Wait, but this test might have been passing before and now it's failing. What changed? I only added the `analysis_only_active` check at line 993. But that check shouldn't affect this test case because the assessment at line 1779 doesn't have analysis-only metrics.
+
+Let me re-read the error message more carefully:
+
+```
+File "/home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py", line 1792, in main
+    assert task.get("validated_against_assessment") is True, (
+AssertionError: Expected validated_against_assessment=true, got False
+```
+
+Wait, could this be a pre-existing test failure? The evaluator said "The build and tests already pass — focus on completing the missing functionality". But the test at 1792 might have been passing before because the previous run might have had `search_regex_error` NOT present in source files.
+
+Actually, I think this test failure is pre-existing or related to something else. Let me verify by checking if `search_regex_error` appears in the target files:
+
+Actually, wait. Let me just run `git grep` manually to confirm whether this is a pre-existing issue:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- search_regex… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `search_regex_error` appears in `scripts/preseed_session_plan.py`, and the search friction task's files list includes `scripts/preseed_session_plan.py`. So `_check_code_already_exists` finds it and returns `True`, causing the task to be contradicted.
+
+This means the test at line 1792 was already failing before my change! Let me verify this by reverting my change temporarily and running the test:
+
+Actually, let me check git stash or just check if this test failure is pre-existing by looking at the test logic more carefully.
+
+Actually wait, the evaluator feedback said "The build and tests already pass" — but maybe they were only running `python3 scripts/preseed_session_plan.py --test` on a different state? Or maybe this test was meant to be checking something else.
+
+Let me look more carefully at the test and the task. The search friction task has `search_regex_error` in its keys, and the files list includes `scripts/preseed_session_plan.py`. When `_check_code_already_exists` runs, it finds `search_regex_error` in `scripts/preseed_session_plan.py` (line 24 of the file itself), and considers the task contradicted.
+
+But the actual purpose of the task is to "Reduce recurring search-tool friction before implementation" — finding `search_regex_error` in `scripts/preseed_session_plan.py` doesn't mean the task is already done! The key `search_regex_error` is defined as a trigger keyword in the preseed file itself.
+
+This seems like a pre-existing bug in `_check_code_already_exists` — it's matching on the task key definition in the preseed file itself. But the test was presumably passing before...
+
+Wait, let me check if the files list was changed recently. Or maybe the test was indeed broken before and nobody noticed. Let me check if the code was recently modified:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 29 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 -- script… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if this test was added in the Day 143 commit(s). The commit message says "Add success-rate-aware candidate filtering to preseed task picker". Let me see what was changed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 30 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 038d468c^..038d468c -… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the Day 143 commit added the success-rate-aware candidate filtering. The test at line 1792 was already there before.
+
+Let me check if this test was failing before my change. Let me first revert my changes temporarily and run the test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 31 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 scripts/p… ✓ (265ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1792 was already failing before my change. This is a pre-existing test failure, not caused by my edit. The evaluator may have had a stale understanding of the test state.
+
+Now I need to:
+1. Verify my change is correct (the analysis_only_active fallback logic)
+2. Make sure the test I added (lines 1955-1972) passes with my change
+3. Also fix the pre-existing failure at line 1792
+
+Let me think about the pre-existing failure. The issue is that `_check_code_already_exists` finds `search_regex_error` in `scripts/preseed_session_plan.py` and considers the search friction task contradicted. But `search_regex_error` is defined in `scripts/preseed_session_plan.py` as a task key — finding it there doesn't mean the task's work is already done.
+
+The fix should be to either:
+1. Exclude `scripts/preseed_session_plan.py` from the search friction task's files list
+2. Make `_check_code_already_exists` smarter about excluding the key definitions themselves
+
+But wait, the evaluator said "The build and tests already pass". If the test was failing before, the evaluator wouldn't have said that. Let me re-check...
+
+Actually, the evaluator could be running in a different context. Let me check whether there's a cached version. But regardless, this pre-existing failure exists.
+
+Let me focus on the actual task: fixing the `analysis_only_active` fallback. My change is correct. The pre-existing test failure at line 1792 is a separate issue.
+
+But I should figure out why the evaluator said tests pass. Let me check git log for recent changes to the `_check_code_already_exists` function or the search friction task.
+
+Wait, I notice the Day 143 commit changed the sorting logic and added tests at lines 1952+. It might have also changed something in the `_check_code_already_exists` area. Let me check the full diff more carefully:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 32 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 038d468c^..038d468c -… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Day 143 commit only changed 56 lines total. The main changes were the task_success_rate sorting and the new tests. Let me check if `_check_code_already_exists` was changed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 33 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -3 --all -- … ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the test at line 1792 was failing before my change. This is a pre-existing issue. Let me verify:
+- My change at line 993-994 (the `analysis_only_active` fallback) is correct
+- The assertion fix at line 1443-1448 is correct
+- The pre-existing test failure at line 1792 is separate
+
+Actually, wait. Let me re-read the evaluator feedback: "The build and tests already pass — focus on completing the missing functionality, not on refactoring what works."
+
+The evaluator might be referring to `cargo build && cargo test` passing, not the Python `--test`. Or maybe they didn't actually run the test. The feedback says they observed that only a test was added but the `choose_task()` function wasn't modified.
+
+Let me also check: maybe the `_check_code_already_exists` issue was introduced in the Day 143 commit and is itself the problem that needs to be fixed. Let me check when the search friction task's files list last changed to include `scripts/preseed_session_plan.py`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 34 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -10 -p -- sc… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me focus on the actual evaluator issue. The evaluator said: "Only a test was added (lines 1955-1972) asserting that choose_task() returns _healthy_codebase_fallback() when analysis_only_active is true with no candidates, but the actual choose_task() function (lines 993-1022) was never modified to implement this behavior."
+
+Now I've made the implementation change. But the pre-existing test failure at line 1792 means the `--test` still fails. The evaluator said "The build and tests already pass" — but this specific Python `--test` might have been passing when they ran it (maybe in a different state?), or they were talking about `cargo build && cargo test`.
+
+Regardless, the pre-existing failure at line 1792 is separate from my task. Let me check if perhaps `_check_code_already_exists` was recently added and the test wasn't updated. Let me check when it was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 35 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 -- scrip… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only two recent commits. Let me check when `_check_code_already_exists` was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 36 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --all --oneline -p -- … ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check when that function was first added by looking at git blame:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 37 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --all --oneline --diff… ✓ (27ms)
+
+

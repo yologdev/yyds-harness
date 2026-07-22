@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: Only a test was added (lines 1955-1972) asserting that `choose_task()` returns `_healthy_codebase_fallback()` when `analysis_only_active` is true with no candidates, but the actual `choose_task()` function (lines 993-1022) was never modified to implement this behavior. The `--test` verifier fails because the fallback still returns the self-referential "Repair evidence-backed planning" dict.

@@ -1,0 +1,526 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the current state before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/preseed_session_plan.py:925..1035 ✓ (1.2s)
+ ✓ (807ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_healthy_codebase_fallback` function and the `_has_analysis_only_pressure` function to understand them.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1260..1320  ▶ search '_healthy_codebase_fallback' in scripts/preseed_session_plan.py ✓ (794ms)
+ ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read line 1202 to understand the context where `_healthy_codebase_fallback` is already used. Let me also read `_has_analysis_only_pressure` since it's used at line 932.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1180..1250  ▶ search '_has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (807ms)
+ ✓ (790ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the `_has_analysis_only_pressure` function and the `_has_src_files` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..902 ✓ (412ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `choose_task()` function at lines 993-1022 has a fallback block that's hit when no candidates match. Currently it always returns the self-referential "Repair evidence-backed planning" task. But if `analysis_only_active` is True, we should return `_healthy_codebase_fallback()` instead.
+
+Let me also check: does the `_assessment_is_healthy_codebase` path (line 1201) already handle this? Looking at the code flow: `choose_task()`:
+
+1. Lines 934-965: iterate TASKS, build candidates
+2. Lines 970-978: sort candidates based on analysis_only and success_rate
+3. Lines 980-991: try each candidate, check contradiction; if all contradicted, return first with annotation
+4. Lines 993-1022: fallback block — no candidates matched at all
+5. Lines 1023+: assessment_was_missing path
+
+So line 1201 (`if _assessment_is_healthy_codebase(lower, current): return _healthy_codebase_fallback()`) is inside the assessment_was_missing path. It's not reachable from the no-candidates fallback block.
+
+The task says: When `choose_task()` finds zero matching candidates AND `analysis_only_active` is True, return the `_healthy_codebase_fallback()` task instead of the self-referential fallback.
+
+The fix is straightforward: at the top of the fallback block (around line 993), add a condition:
+
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+Let me check the test file to see what tests already exist.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check the existing tests related to `choose_task`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'choose_task' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:1860..1940 ✓ (397ms)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see at line 1888, there's already a test that checks:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This test passes because "No known current bug matched this assessment." hits the healthy codebase signal "no known current bug" which triggers the `_assessment_is_healthy_codebase` path at line 1201.
+
+But wait - is this inside the assessment_was_missing path? Let me check. Line 1201 is inside the `if assessment_was_missing:` block. Let me re-read the code more carefully.
+
+Line 1023: `if assessment_was_missing:` begins. Then lines 1023-1199 handle missing assessment. Then line 1199: `return fallback`. Then line 1201: `if _assessment_is_healthy_codebase(lower, current): return _healthy_codebase_fallback()`.
+
+Wait, no - let me re-read. Lines 1023 is inside the `if assessment_was_missing:` block. Line 1199 `return fallback` exits from that block early. So line 1201 is NOT inside the assessment_was_missing block. Let me verify...
+
+Actually looking at the indentation: Line 1023 starts with:
+```python
+    if assessment_was_missing:
+```
+
+Lines 1024-1199 are inside that block. Line 1199 `return fallback` exits. Then line 1200 is blank, line 1201 is:
+```python
+    if _assessment_is_healthy_codebase(lower, current):
+```
+
+This is at the same indentation level as `if assessment_was_missing:`, so it's OUTSIDE the assessment_was_missing block. That means when assessment_was_missing is False and we reach line 1201, the healthy codebase check kicks in. 
+
+So the test at line 1888 works because "No known current bug matched this assessment." triggers `_assessment_is_healthy_codebase` at line 1201.
+
+Now for the task: when `choose_task()` has zero candidates AND `analysis_only_active` is True, we need to return `_healthy_codebase_fallback()` earlier — at the top of the fallback block (line 993).
+
+Let me now write a test first, then make the change.
+
+Let me look at line 1937+ to see the analysis-only pressure tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1937..2017 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full understanding. The task is clear: add a condition at the fallback block (line 993) that checks `analysis_only_active`. When True, return `_healthy_codebase_fallback()`.
+
+Let me also check what the test for this behavior should look like. I need to:
+1. Create an assessment with `task_analysis_only_attempt_count > 0` but with keywords that match NO tasks
+2. Verify `choose_task()` returns the healthy codebase fallback, not the self-referential one
+
+Let me first make the code change, then add a test.
+
+Actually, wait - I should write the test first. Let me plan:
+
+1. First, add the test at around line 2016 (after the existing analysis-only test at 1946-1953)
+2. Then make the code change at line 993
+
+The test: create an assessment with `task_analysis_only_attempt_count=3` but no task-matching keywords. Then verify the fallback title is "Add a small verifiable improvement to src/" instead of "Repair evidence-backed planning after no-task sessions".
+
+Wait, but I need to be careful — having `task_analysis_only_attempt_count` as a keyword might itself match some task's `keys`. Let me check what TASKS look like.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TASKS =' in scripts/preseed_session_plan.py ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the task keys and the ANALYSIS_ONLY_METRICS constant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:62..92  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (790ms)
+ ✓ (804ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..865 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check all the task keys to find one that won't accidentally match my test assessment. Let me look at the TASKS list more comprehensively to find what keys are being used.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check all task keys to find a test input that won't match any task:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '"keys":' in scripts/preseed_session_plan.py ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me think about the test. I need an assessment that:
+1. Has `task_analysis_only_attempt_count=3` (or similar) so `analysis_only_active` is True
+2. Has no keywords that match any task
+
+Looking at the task keys, they include things like "sub-agent", "api_key_present", "trajectory", "no edit", "lifecycle", "run terminated", "search", "prompt", "fixture", etc.
+
+I can use a generic assessment like "No matches here. task_analysis_only_attempt_count=3" — as long as "no matches" or "analysis_only" isn't a task key. Let me check for "analysis_only" as a key...
+
+Actually, `task_analysis_only_attempt_count` contains "analysis_only" — let me check if "analysis_only" appears as a task key.
+
+Looking at line 855: `"task_analysis_only_attempt_count"` is a metric key, but I need to see if any TASK uses it as a match key. Let me look at the TASKS more.
+
+Actually, I can use a very specific assessment. Let me use something like: "Nothing actionable found. task_analysis_only_attempt_count=3"
+
+"Nothing actionable" - none of the task keys match this. Actually wait, "actionable" might appear... Let me check the reject_keys too. Let me just look at TASKS to be thorough.
+
+Let me look at all task titles and keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '"keys":\|"title":' sc… ✓ (792ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check more keys. I need to find keywords that won't match any task. Let me look at each task's keys:
+
+1. "sub-agent", "sub agent", "api_key_present", "api key", "worker agents"
+2. Lines 100+ - let me check
+3. "no state event found"
+4. Lines 187+
+5. Lines 220+
+6. Lines 261+
+7. Lines 303+
+8. Lines 348+
+9. Lines 377+
+
+I need to find a unique enough phrase. Let me use something like: "No matching task found. task_analysis_only_attempt_count=3" — but "no matching" might match the cold-start task ("no state event found")... Actually "no matching task" does NOT contain "no state event found" as a substring. And it doesn't match any other keys.
+
+Wait, let me re-check. The matching logic at line 935 is:
+```python
+if not any(key in lower for key in task["keys"]):
+    continue
+```
+
+So `any(key in lower for key in task["keys"])` checks if ANY of the task's keys appear as substrings in the assessment text. I need to ensure my test assessment doesn't contain any of these key substrings.
+
+The safest approach: use a very specific and unique assessment text that I can verify doesn't match.
+
+Let me use: "zzz_no_matching_task_found_zzz task_analysis_only_attempt_count=3" which is very unlikely to match any task key.
+
+Actually, simpler would be: "ZZZMATCHNONE task_analysis_only_attempt_count=3"
+
+Let me check if "ZZZMATCHNONE" appears in any key... No, it doesn't. And "task_analysis_only_attempt_count" itself - is it in any task key? Looking at the keys... No, it's an internal metric name, not a task key.
+
+So the test assessment can be: "ZZZMATCHNONE task_analysis_only_attempt_count=3"
+
+Wait, but we also need to verify the pre-condition: that analysis_only_active becomes True with this metric. Let me trace through:
+- `numeric_metrics(lower)` will extract `task_analysis_only_attempt_count=3` 
+- `_has_analysis_only_pressure(metrics)` will return `metrics.get("task_analysis_only_attempt_count", 0) > 0` → True
+- So `analysis_only_active` = True
+
+Then no candidates match (no keys match "ZZZMATCHNONE"), and we hit the fallback block at line 993.
+
+Now let me also check: does the healthy_codebase fallback path at line 1201 also trigger? Looking at the flow:
+- Lines 934-965: iterate TASKS, no matches → candidates is empty
+- Lines 970-978: sort empty list (no-op)  
+- Lines 980-991: nothing to iterate → skip
+- Lines 987-991: candidates is empty → skip
+- Line 993: enters fallback block
+- Lines 993-1022: constructs the self-referential fallback
+- Line 1023: `if assessment_was_missing:` → False (default)
+- Line 1201: `if _assessment_is_healthy_codebase(lower, current):`
+
+Hmm, with assessment "ZZZMATCHNONE task_analysis_only_attempt_count=3", `_assessment_is_healthy_codebase` checks for `_HEALTHY_CODEBASE_SIGNALS`. None of those signals are present, so it returns False. So line 1201 returns the self-referential fallback at line 1203.
+
+With my change, line 993 would instead be:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+And this would fire before the existing fallback is constructed, returning the healthy codebase task.
+
+Now let me write the test and make the code change.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear understanding. Let me write the test first, then make the code change. The task says to add a test first.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (412ms)
+  ▶ todo ✓ (391ms)
+  ▶ todo ✓ (393ms)
+  ▶ todo ✓ (440ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the existing test at line 1937-1953 to understand its structure, and add a new test after it. The existing test at 1946 shows that `choose_task()` with analysis_only assessment skips ANALYSIS_ONLY_TASK_TITLE. But the test input at line 1941-1944 DOES match some task keys (like "task_analysis_only_attempt_count" might not match any task key though... wait, "force" and "implementation" might match.
+
+Actually looking at the test more carefully: the assessment at lines 1941-1944 says:
+```
+## Graph-derived Next-Task Pressure
+- Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence.
+```
+
+The keys "force" or "implementation" might match some task. Let me check... Looking at the task keys:
+- "no state event found" — doesn't match "force" or "implementation"
+- Hmm, I'd need to check all keys. But the test works (it passes and selects some task), so there must be a match.
+
+Let me check if "Implementation" matches any key substring. Looking at task keys:
+- "prompt cache" — no
+- "sub-agent" — no
+
+Actually, I think this test might be matching the analysis-only task (ANALYSIS_ONLY_TASK_TITLE), which gets skipped at line 944, and then falls through to the fallback. Or it might match a different task.
+
+Actually wait, line 944 says:
+```python
+if task["title"] == ANALYSIS_ONLY_TASK_TITLE and (_analysis_only_seed_recently_blocked(lower) or analysis_only_active):
+    continue
+```
+
+So when analysis_only_active is True, the ANALYSIS_ONLY_TASK_TITLE task is skipped. But there may be other tasks that match keywords in the assessment.
+
+For my test, I want NO tasks to match. Let me use a really clean assessment that only contains the metric and nothing else that could match.
+
+Actually wait, let me re-check: the test at line 1946 verifies the task title is NOT ANALYSIS_ONLY_TASK_TITLE. It might actually hit the fallback block already! Let me trace:
+
+The assessment: "Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Implementation ended without file progress or terminal evidence."
+
+Check task keys:
+- "sub-agent", "sub agent", "api_key_present", "api key", "worker agents" → no match
+- Lines 100+ keys → let me check
+
+Let me read the remaining task keys more carefully.
+
+Actually, I think the analysis-only test might already be hitting the fallback! If no candidates match, it returns the self-referential "Repair evidence-backed planning" task. Let me verify by looking at what title is actually expected...
+
+Line 1947: `assert task["title"] != ANALYSIS_ONLY_TASK_TITLE` — this just asserts it's NOT the analysis-only task. It doesn't assert what it IS. So it could be the self-referential fallback.
+
+AND line 1952: `assert task.get("files")` — just asserts files are non-empty.
+
+So the test is verifying it's not the analysis-only task, which is the minimum requirement. It might indeed be hitting the fallback.
+
+But wait - the task says the assessment at 1941-1944 produces analysis_only_active=True and still produces some task with files. If it hits the fallback, the fallback has files. So the test passes either way.
+
+OK, for my new test, I'll use a similarly minimal assessment but with ZERO task keyword matches. Let me use something like:
+
+```python
+"ZZZMATCHNONE task_analysis_only_attempt_count=3"
+```
+
+This will set analysis_only_active=True, zero candidates will match, and we'll hit the fallback. With my fix, it should return `_healthy_codebase_fallback()`.
+
+Let me also verify: does the healthy_codebase check at line 1201 trigger for "ZZZMATCHNONE task_analysis_only_attempt_count=3"? No, because "ZZZMATCHNONE" and "task_analysis_only_attempt_count=3" don't contain any of the `_HEALTHY_CODEBASE_SIGNALS`.
+
+So my change at line 993 will be the only thing preventing the self-referential fallback.
+
+Now let me write the code. First the test:
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 15.5s (4 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (390ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the test right after the existing analysis-only pressure test (after line 1953). I'll add a new test that verifies: when analysis_only_active is True and zero candidates match, `_healthy_codebase_fallback()` is returned.
+
+Let me look at lines 1953-1955 for the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1952..1957 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test between lines 1954 and 1955. Now let me write the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test. I'll insert it after the existing analysis-only test:
+            assert task.get("files"), (
+                f"Expected task with files, got {task}"
+  +         )
+  +         # --- Analysis-only no-candidates fallback test ---
+  +         # When task_analysis_only_attempt_count sets analysis_only_active
+  +         # but no TASK keys match the assessment, choose_task must return
+  +         # the healthy-codebase fallback (src/*.rs) instead of the
+  +         # self-referential "Repair evidence-backed planning" fallback.
+  +         no_match_assessment = "ZZZMATCHNONE task_analysis_only_attempt_count=3"
+  +         fallback_task = choose_task(no_match_assessment)
+  +         assert fallback_task["title"] == "Add a small verifiable improvement to src/", (
+  +             f"Analysis-only no-candidates fallback should return healthy-codebase task, "
+  +             f"got '{fallback_task['title']}'"
+  +         )
+  +         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  +             f"Healthy-codebase fallback should target src/state.rs, "
+  +             f"got files: {fallback_task.get('files')}"
+  +         )
+  +         assert not _has_protected_files(fallback_task), (
+  +             "Healthy-codebase fallback must not include protected files"
+  ... (2 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 22 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 22 lines)
+            assert task.get("files"), (
+                f"Expected task with files, got {task}"
+  +         )
+  +         # --- Analysis-only no-candidates fallback test ---
+  +         # When task_analysis_only_attempt_count sets analysis_only_active
+  +         # but no TASK keys match the assessment, choose_task must return
+  +         # the healthy-codebase fallback (src/*.rs) instead of the
+  +         # self-referential "Repair evidence-backed planning" fallback.
+  +         no_match_assessment = "ZZZMATCHNONE task_analysis_only_attempt_count=3"
+  +         fallback_task = choose_task(no_match_assessment)
+  +         assert fallback_task["title"] == "Add a small verifiable improvement to src/", (
+  +             f"Analysis-only no-candidates fallback should return healthy-codebase task, "
+  +             f"got '{fallback_task['title']}'"
+  +         )
+  +         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  +             f"Healthy-codebase fallback should target src/state.rs, "
+  +             f"got files: {fallback_task.get('files')}"
+  +         )
+  +         assert not _has_protected_files(fallback_task), (
+  +             "Healthy-codebase fallback must not include protected files"
+  ... (2 more lines)
+ ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, test added. Now let me run it to confirm it fails before I make the code change (TDD-style).
+────────────────────────────────────────────────────────────────────────────────
+
+Good, test is in. Let me verify it fails as expected before making the code change:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the test failed earlier than my new test. Let me check the actual assertion in the test runner. Let me run just the self-tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (6 lines) ✓ (804ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how tests are run in this file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_self_tests|--test|self_test' in scripts/preseed_session_plan.py ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how tests are run. Let me look at the `main` function and the `--test` flag.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def main' in scripts/preseed_session_plan.py ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the main function to understand how --test works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1365..1445 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the `--test` flag runs all the inline assertions in `main()`. Now let me look at the error more carefully. The error was:
+
+```
+File "/home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py", line 1786, in main
+    assert task.get("validated_against_assessment") is True, (
+AssertionError: Expected validated_against_assessment=true, got False
+```
+
+This is at line 1786 in main(), which is in a different part of the `--test` code. Let me see what's at line 1786.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770..1800 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1784/1786 is for the search-friction task. Let me trace what happens with this assessment. The assessment contains:
+- "regex-error", "search_regex_error" (57), "search"
+
+Let me check the SEARCH_FRICTION_TASK_TITLE - let me see its keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the search friction task's keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:348..378 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see what SEARCH_FRICTION_KEYS are.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_KEYS' in scripts/preseed_session_plan.py ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1784 uses assessment containing "search_regex_error" and "search" which are likely in SEARCH_FRICTION_KEYS. But the error says `validated_against_assessment` is False. That means the candidate was categorized as contradicted. Let me check whether `check_task_contradiction` has some issue.
+
+Wait, the error is:
+```
+File ".../scripts/preseed_session_plan.py", line 1786, in main
+    assert task.get("validated_against_assessment") is True, (
+AssertionError: Expected validated_against_assessment=true, got False
+```
+
+This test was running BEFORE my change. So it must be a pre-existing issue or something related to a recent change. Wait, but earlier when I looked, the tests were all there already. Let me re-check: was this test already there, or did something change?
+
+Let me look at line 1786 more carefully... Actually, looking at the test flow again:
+
+Line 1388: `assert task["title"] == "Repair evidence-backed planning after no-task sessions"` — this test has an assessment that doesn't match any task and hits the fallback.
+
+Wait, but the error says line 1786, not 1388. Let me look at the test flow more carefully. The `--test` flag runs from line 1373 onward. It goes through ALL the tests. The error is at line 1786 which is TEST 5: the search friction test.
+
+But this test was already there and should have been passing. Let me run the tests again to see if it's still failing or it was a transient issue...
+
+Actually wait - I just edited the file. Let me check if my edit could have broken something. My edit was between the analysis-only test and the success-rate test. Let me check the line numbers now... 
+
+Actually, I only added lines, so the subsequent tests should still be fine. The error at line 1786 is from a pre-existing test. Let me check if it was already failing before my edit, or if it's a test that already existed and should be passing.
+
+Let me re-run to see if the error persists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what the assessment at line 1773-1783 looks like and why it's failing. The assessment is:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This should match the SEARCH_FRICTION_TASK. The key "search_regex_error" is in `SEARCH_FRICTION_KEYS`. Let me check what `SEARCH_FRICTION_KEYS` contains and whether `check_task_contradiction` is rejecting it.
+
+Actually, wait. Let me check if this test was passing before my edit. Let me stash my change and run the original.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if this failure pre-exists by reverting my edit and testing:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 scripts/p… ✓ (757ms)
+
+
