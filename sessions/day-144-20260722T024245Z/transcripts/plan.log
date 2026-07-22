@@ -1,0 +1,425 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment available - the assessment agent didn't produce output
+2. Trajectory shows: day-143 had mixed results, latest session had 1 reverted task
+3. Backlog has Issue #134 (reverted: ModelCallCompleted lifecycle gap) and Issue #105 (reverted: DeepSeek cache metrics)
+4. Graph-derived pressure shows: analysis-only attempts, low task success/verification rate, failing bash commands, model lifecycle gaps
+5. There's a seed task at session_plan/task_01.md - I need to check if it exists
+
+Let me start by:
+1. Creating session_plan directory
+2. Checking if seed task exists
+3. Then planning tasks from trajectory/state evidence
+
+The trajectory says:
+- deepseek_model_call_abnormal_completed_count=3 with lifecycle cause: model_abnormal/model_completion_without_start=3
+- failed_tool_summary.bash_tool_error=6
+- task_analysis_only_attempt_count=3
+- task_success_rate=0.5, task_verification_rate=0.5
+
+Issue #134 is about the ModelCallCompleted lifecycle gap - this was reverted but the graph pressure still shows it as an issue.
+
+Let me check if a seed task file already exists first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null || echo "empty or miss… ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a seed task_01.md and an assessment_missing.md. Let me read both to understand what's there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.2s)
+ ✓ (856ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md is about fixing the assessment silent failure - but I as the planner am told NOT to do assessment work. Let me re-read the instructions:
+
+"Your only valid deliverables in this phase are:
+- session_plan/task_01.md, session_plan/task_02.md, etc.
+- session_plan/issue_responses.md
+- session_plan/planning_failure.md only when concrete task selection is blocked."
+
+"The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+The seed task is about fixing assessment silent failures in preseed_session_plan.py. But looking at the trajectory, the graph-derived pressures are more actionable:
+1. `deepseek_model_call_abnormal_completed_count=3` - model lifecycle gaps
+2. `task_analysis_only_attempt_count=3` - analysis-only sessions
+3. `task_success_rate=0.5` / `task_verification_rate=0.5`
+4. `failed_tool_summary.bash_tool_error=6`
+
+And Issue #134 (reverted) is specifically about closing the harness-internal model lifecycle gap (evt-harness ModelCallCompleted without Started) - which directly addresses the graph pressure #1.
+
+But the seed task_01 is about assessment reliability, which IS a valid fitness blocker - if assessment can't produce output, planning suffers.
+
+Let me think about what tasks to create:
+
+1. The seed task_01 (assessment missing fix) - valid, addresses a real problem (assessment didn't produce output this session)
+2. Issue #134 (model lifecycle gap) - directly addresses graph pressure, was reverted before so needs to be smaller
+3. Something from the trajectory pressures
+
+The trajectory says:
+- deepseek_model_call_abnormal_completed_count=3 with model_completion_without_start=3
+- analysis-only attempts
+- bash errors
+
+For task_02: The model lifecycle gap from Issue #134 is the highest-priority graph pressure. But it was already reverted as too large. I need to make it smaller.
+
+Actually, wait - let me re-read the seed task more carefully. It says to modify scripts/preseed_session_plan.py. But assessment_missing.md already exists and says the assessment phase did produce a transcript but didn't write assessment.md. The seed task wants to improve preseed_session_plan.py to handle this case better.
+
+Let me think about what's most valuable:
+
+1. Seed task_01 is about making the assessment-missing case more robust in preseed_session_plan.py. This is a script-level change, not a Rust change, so it won't go through cargo build/test. But the instructions say to keep it as a valid seed unless I have better evidence.
+
+2. For task_02, the graph pressure about model lifecycle gaps is strong. Issue #134 was reverted because the implementation agent got lost in analysis. I should make it narrower.
+
+3. For task_03, I could address the analysis-only attempts or the evaluator timeout issue (#131).
+
+But wait - I should also consider that we DON'T redo assessment work. The seed task is about assessment reliability. Let me refine it with better evidence from this session, then add a task_02 for the model lifecycle gap (narrower than before), and potentially a task_03.
+
+Actually, let me re-read the task sizing rules:
+- Each task at most 3 files
+- Must be completable in 20 minutes
+- If previously reverted, make it SMALLER
+
+For Issue #134, the previous attempt was too broad - the agent went on a 24-turn analysis rabbit hole. I need to make it much narrower.
+
+Let me look at what specifically needs to change. The issue says:
+- evt-harness-* ModelCallCompleted events with zero tokens have no matching ModelCallStarted
+- These inflate the unmatched count
+- Options: (a) add matching Started, (b) suppress Completed without Started, (c) add harness_internal flag
+
+The simplest fix: add a matching ModelCallStarted event emission before each harness-internal ModelCallCompleted in src/state.rs. This is a small, focused change.
+
+But wait, I should first check where these events are emitted in src/state.rs to confirm the scope.
+
+Let me plan:
+
+1. Refine task_01 with better trajectory-based evidence (keep the seed's intent but make evidence concrete from this session)
+2. Create task_02 for the model lifecycle gap - narrowed to just adding ModelCallStarted before harness-internal ModelCallCompleted emissions
+3. Create task_03 for... maybe the bash tool error pattern? Or the evaluator timeout? Or the analysis-only pattern?
+
+Actually, looking at the trajectory more carefully:
+- `task_analysis_only_attempt_count=3` - this means 3 sessions had analysis-only attempts
+- The graph pressure says "Force analysis-only attempts into action"
+- But this is a harness-level change, likely in evolve.sh or preseed_session_plan.py, not in Rust
+
+Let me focus on tasks that touch Rust source files for hard verification via cargo build/test:
+
+1. task_01: Refine the seed - assessment missing handling in preseed_session_plan.py (this is a script task, but it's the seed)
+2. task_02: Model lifecycle gap - add ModelCallStarted before harness-internal ModelCallCompleted in src/state.rs
+3. task_03: Not sure yet
+
+Actually, I should also check if there are pending issue responses to write. Let me look at what issues need responses:
+
+- #134: This would be implemented as task_02, so respond accordingly
+- #105: Deferred (blocked on yoagent upstream #90)
+- #131: Evaluator timeout - this is in evolve.sh which is protected, so I can't fix it. Already have a help-wanted open.
+- #90: Already has help-wanted label, waiting on yoagent upstream
+
+Let me now refine the seed task_01 and create task_02 and task_03.
+
+For task_03, the trajectory mentions `failed_tool_summary.bash_tool_error=6`. This could be about improving bash error recovery hints in src/safety.rs or src/tools.rs. But that's quite generic.
+
+Actually, let me look at the trajectory more carefully for concrete, narrow tasks:
+
+From the graph pressure:
+- "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=6): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This is about improving the bash tool to give better recovery hints when commands fail. Could be in src/tools.rs or src/safety.rs.
+
+But also, there's the evaluator timeout problem (#131) which causes false reverts. The task_verification_rate=0.5 is partly due to this. But fixing it requires changes to evolve.sh which is protected.
+
+Let me focus on what's achievable:
+
+Task_01 (seed, refined): Fix assessment-missing fallback in preseed_session_plan.py to include trajectory evidence
+Task_02: Close harness-internal model lifecycle gap - narrow scope to just adding ModelCallStarted in src/state.rs
+Task_03: Improve bash error recovery hints in src/tools.rs or src/safety.rs
+
+Actually wait - for task_02, let me check which files are involved. The issue says:
+- Edit Surface: src/state.rs
+- Verifier: cargo test state
+
+That's already narrow. The problem last time was the implementation agent went on an analysis rabbit hole instead of making edits. I should make the task even more directive about what to change.
+
+Let me now write all three task files plus issue_responses.md.
+
+For task_01, I should refine it to be more concrete with this session's evidence. The assessment_missing.md has specific details: exit_code=0, no provider error, transcript exists at transcripts/assess.log.
+
+For task_02, I need to narrow the scope and give very specific implementation guidance to prevent another analysis rabbit hole.
+
+For task_03, let me pick the bash error recovery hints improvement. Looking at the trajectory: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks". This could be about improving the safety.rs recovery hints or the StreamingBashTool's error output.
+
+Actually, let me search for where the bash tool currently gives recovery hints to understand the scope.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'RecoveryHint' (*.rs)  ▶ search 'bash_tool_error' ✓ (739ms)
+ ✓ (755ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the RecoveryHintTool implementation in tool_wrappers.rs to understand the current recovery hints and where I can improve them.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:949..1029  ▶ read src/safety.rs:1..51 ✓ (1.3s)
+ ✓ (787ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the recovery hints to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1028..1148 ✓ (254ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase situation. Let me plan the three tasks:
+
+**Task 01 (seed refinement):** The seed task is about assessment_missing handling in preseed_session_plan.py. It's OK but I should refine it with concrete evidence from this session - the assessment_missing.md file exists with specific details (exit_code=0, no provider error, transcript at transcripts/assess.log). The task is about making the seed task picker produce better tasks when assessment is missing, using trajectory evidence.
+
+However, looking at the planning instructions again: "Do NOT read all source files. Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+The seed task is a valid starting point. It touches scripts/preseed_session_plan.py only. The problem is real - assessment was missing this session. Let me refine it to be more concrete.
+
+**Task 02:** Model lifecycle gap fix. The trajectory shows `deepseek_model_call_abnormal_completed_count=3` with `model_completion_without_start=3`. Issue #134 was reverted because the implementation agent went on an analysis rabbit hole. I need to make this much narrower and more directive.
+
+Looking at the issue details: evt-harness-* ModelCallCompleted events with zero tokens are emitted without matching ModelCallStarted. The fix options from the issue are:
+(a) Add matching ModelCallStarted
+(b) Suppress without Started
+(c) Add harness_internal flag
+
+The simplest and safest is (a) — just add a ModelCallStarted emission before each harness-internal ModelCallCompleted. This is a single-site change in src/state.rs.
+
+**Task 03:** The bash error recovery hints are already quite extensive. The trajectory says `bash_tool_error=6` and suggests "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." The existing hints already cover exit codes, timeouts, missing files, permission denied, command not found, argument list too long, broken pipe, and generic failures.
+
+But looking at the recovery hints, there might be a gap: the hints are good for the first failure but the `ToolFailureTracker` escalation mechanism (which counts consecutive failures and gives more aggressive hints) is defined but I need to check if it's actually wired up to escalate. Let me check.
+
+Actually, let me focus on what I can do now. I'll look at what the `RecoveryHintTool` actually does with the `ToolFailureTracker` to see if there's an escalation gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1147..1267 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `RecoveryHintTool` is already well-implemented with targeted recovery hints and escalation via `ToolFailureTracker`. The hints for bash are already comprehensive.
+
+Let me now focus on the three tasks. Looking at what's most impactful:
+
+1. **Task 01 (seed refinement):** The seed task is about assessment_missing handling. I should refine it with concrete evidence from this session. But honestly, this is a script-only task (no cargo build/test verification), and the trajectory shows `task_analysis_only_attempt_count=3` — script tasks don't help with that.
+
+2. **Task 02:** Model lifecycle gap — this is the #1 graph pressure and directly addresses `deepseek_model_call_abnormal_completed_count=3`. It touches src/state.rs and verifies via cargo test. This is a Rust task with hard verification gates.
+
+3. **Task 03:** The trajectory's bash_tool_error=6 pattern. But looking at the recovery hints code, it's already quite comprehensive. What could be improved? Let me think...
+
+Actually, looking at the `RecoveryHintTool`, I notice it's marked `#[allow(dead_code)]` with the comment "Public API — wired in a follow-up task". This means it might not be wired into the actual tool pipeline yet! Let me check.
+
+Actually looking at line 1154: `#[allow(dead_code)] // Public API — wired in a follow-up task` — this suggests the RecoveryHintTool struct has `#[allow(dead_code)]` but it might actually be used via the `with_recovery_hints` function. Let me check if `with_recovery_hints` is called anywhere.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'with_recovery_hints' (*.rs) ✓ (253ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — `with_recovery_hints` is already wired into the tool pipeline in `tools.rs` at multiple places. The recovery hints are active.
+
+Now let me think about what tasks to create:
+
+Given the trajectory evidence:
+1. `deepseek_model_call_abnormal_completed_count=3` — this is the strongest signal
+2. `task_analysis_only_attempt_count=3` — sessions doing analysis instead of coding
+3. `task_success_rate=0.5` / `task_verification_rate=0.5` — half of tasks failing verification
+
+The model lifecycle gap is the most concrete, fixable issue. The analysis-only pattern is a harness-level problem. The low verification rate might be related to evaluator timeouts (#131).
+
+Let me now create the task files. I'll:
+
+1. **Refine task_01.md** — Keep the seed but make it more concrete with this session's evidence. The problem is real: assessment produced a transcript but no assessment.md. The fix should make preseed_session_plan.py handle this case better.
+
+2. **task_02.md** — Close harness-internal model lifecycle gap. Narrow scope: find where evt-harness ModelCallCompleted events are emitted in src/state.rs and add a matching ModelCallStarted emission before each one.
+
+3. **task_03.md** — I need to decide on a third task. Options:
+   - Evaluator timeout detection (but this requires evolve.sh changes, protected)
+   - Bash error pattern improvement (but recovery hints are already extensive)
+   - Analysis-only session detection improvement in preseed_session_plan.py
+   
+Actually, looking at the graph pressure again: "Force analysis-only attempts into action (task_analysis_only_attempt_count=3)" — this could be a preseed_session_plan.py change to prefer Rust-source tasks when analysis-only pressure is high. But that's a script change without hard verification.
+
+Let me instead look at the trajectory's "recent tool failures" for a more concrete Rust fix. Actually, let me check if there are any easily fixable issues in the existing code.
+
+Wait, let me re-read the `RecoveryHintTool` code more carefully. Line 1154 says `#[allow(dead_code)] // Public API — wired in a follow-up task`. But `with_recovery_hints` is already being called in tools.rs. The `#[allow(dead_code)]` is on the struct itself, which might be unnecessary since it's constructed by `with_recovery_hints`. But this is a minor cleanup, not a high-impact task.
+
+Let me look for something more impactful. Let me check what the state doctor says about the model lifecycle gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs ✓ (358ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 4210 where ModelCallCompleted is emitted in state.rs, and also check where ModelCallStarted is emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4190..4270 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's test code at line 4190+. Let me find where ModelCallCompleted is actually emitted in production code. Let me search for where `record` or `append_event` or similar is called with ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs ✓ (388ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where these events are actually emitted in the production code. The test code at line 4210 is a test fixture. The harness-internal events likely come from `append_terminal_state_events.py` since the issue description mentions `retroactive: true`. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in scripts ✓ (298ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The ModelCallCompleted events are emitted from `scripts/append_terminal_state_events.py`. This confirms that the source of the harness-internal events is a Python script, not Rust code in src/state.rs.
+
+The issue #134 says to fix this in src/state.rs, but the actual source might be the Python script. Let me check the append_terminal_state_events.py to understand the flow.
+
+Actually, wait - the task description for Issue #134 says "Edit Surface: src/state.rs". But if the events come from a Python script, the fix might need to be there. Let me look at append_terminal_state_events.py to see where ModelCallCompleted events are emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in scripts/append_terminal_state_events.py ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 689 to understand the retroactive ModelCallCompleted emission.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:620..700 ✓ (401ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, now I understand the full picture. The retroactive events are emitted by `append_terminal_state_events.py`:
+- Lines 630-656: For unmatched ModelCallCompleted (those with no matching ModelCallStarted), it emits retroactive ModelCallStarted events with `retroactive: true`. This handles the case where a ModelCallCompleted exists without a matching ModelCallStarted.
+- Lines 658-695: For orphaned ModelCallStarted (those with no matching ModelCallCompleted), it emits retroactive ModelCallCompleted events with `retroactive: true`.
+
+So the script already handles BOTH directions. But the issue says the count is still inflated. Let me understand why.
+
+The issue says: `deepseek_model_call_unmatched_completed_count=230`. The counting logic in `summarize_state_gnomes.py` finds ModelCallCompleted events whose run has no ModelCallStarted. The script adds retroactive ModelCallStarted events, but:
+
+1. These retroactive events might not be counted properly because the counting runs BEFORE the retroactive fix is applied
+2. Or the retroactive events aren't being properly detected by the counting logic
+
+Wait, actually the retroactive events should fix the count. Let me re-read the issue #134 description more carefully:
+
+"the harness-internal code path (evt-harness-* prefix, zero-token events) still produces ModelCallCompleted without matching ModelCallStarted"
+
+So the issue is that there are harness-internal ModelCallCompleted events (evt-harness-* prefix) that don't have matching ModelCallStarted events. The retroactive script handles this by adding ModelCallStarted events, but maybe the counting runs before the retroactive fix.
+
+Wait, let me look at when `append_terminal_state_events.py` runs vs when `summarize_state_gnomes.py` runs. Let me check the pipeline.
+
+Actually, looking more carefully at the trajectory evidence: "State tail shows evt-harness-* ModelCallCompleted events with tokens=in:0 out:0 cache_read:0 cache_write:0 that have no matching ModelCallStarted."
+
+These are zero-token ModelCallCompleted events with the evt-harness prefix. They're emitted somewhere in the harness pipeline, not by the agent code path. Let me find where they come from.
+
+Let me search for where harness-internal ModelCallCompleted events are emitted in the Rust code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'record.*ModelCall|record_state.*ModelCall|append_event.*Mode…' in src ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where "harness" is used with event recording in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'harness' in src/state.rs ✓ (412ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 60 and 398 to understand the FailureObserved emission with Actor::Harness:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:40..90  ▶ read src/state.rs:380..460 ✓ (1.2s)
+ ✓ (696ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `close_orphaned_run_if_needed` in state.rs emits RunCompleted events with Actor::Harness. But I'm looking for where ModelCallCompleted events are emitted with Actor::Harness. Let me check the `merge_state_delta.py` script and also search for where `evt-harness` events come from.
+
+Actually, let me look at what append_terminal_state_events.py does and whether the count inflation comes from there. The key question is: are the `evt-harness-*` ModelCallCompleted events coming from Rust code or from the Python scripts?
+
+Let me search for where ModelCallCompleted is emitted in Rust code with Actor::Harness:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::ModelCall' in src ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the prompt.rs entries to see if ModelCallCompleted events are being emitted properly there. The Issue #134 evidence says that `evt-harness-*` ModelCallCompleted events have zero tokens and no matching ModelCallStarted. These are likely emitted by the state infrastructure itself, not the agent code path.
+
+Actually, let me look at lines 947-954 in prompt.rs to see how ModelCallStarted and ModelCallCompleted are emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:940..1000 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the ModelCallStarted (line 946-951) and ModelCallCompleted (line 953-966) are both emitted in the agent code path with Actor::Yoyo. But the issue is about ModelCallCompleted events with zero tokens that come from somewhere else.
+
+Let me look at what `append_terminal_state_events.py` emits. The retroactive ModelCallCompleted events at line 689 are emitted with `actor: "harness"`. But those are emitted for orphaned ModelCallStarted events (the reverse direction).
+
+Actually, let me re-read lines 630-656: the script finds ModelCallCompleted entries whose run_id has no prior ModelCallStarted, and emits retroactive ModelCallStarted events. This should fix the unmatched count, not create it.
+
+So where do the zero-token evt-harness ModelCallCompleted events come from? The trajectory evidence says "State tail shows evt-harness-* ModelCallCompleted events with tokens=in:0 out:0 cache_read:0 cache_write:0 that have no matching ModelCallStarted."
+
+These could be coming from somewhere else. Let me check the `run_completed_payload` and `mark_run_completed` functions for any ModelCallCompleted emission.
+
+Actually, I think I'm overanalyzing this. Let me focus on creating the task files now. I've spent enough time investigating. Let me create a narrower version of the model lifecycle task that focuses on just finding and fixing the source of zero-token harness-internal ModelCallCompleted events.
+
+But actually, I need to finish my investigation first. Let me search for where these evt-harness events might be created in Rust code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_terminal_payload' in src ✓ (437ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there's an `evt-harness` prefix generation somewhere in state.rs. The event IDs with `evt-harness-` prefix might come from `record()` or from the Python scripts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'evt-harness|event_id.*harness' in src ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `evt-harness-*` event IDs are generated by the `record()` function in state.rs which auto-generates event IDs. Let me look at the `record` function to understand the event ID format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record\(' in src/state.rs ✓ (407ms)
+
+
