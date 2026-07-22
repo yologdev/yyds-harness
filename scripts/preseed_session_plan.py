@@ -990,6 +990,9 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         candidates[0]["contradiction_reason"] = reason
         return candidates[0]
 
+    if analysis_only_active:
+        return _healthy_codebase_fallback()
+
     fallback = {
         "title": "Repair evidence-backed planning after no-task sessions",
         "files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py",
@@ -1436,9 +1439,12 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
         assert task["title"] != ANALYSIS_ONLY_TASK_TITLE, (
             f"analysis_only_active should skip ANALYSIS_ONLY_TASK_TITLE, got {task['title']}"
         )
-        # Task should be a landable task with source files, not analysis-only
-        assert "scripts/" in str(task["files"]), (
-            f"Expected landable task with script files, got {task.get('files')}"
+        # Task should be a landable task with source files, not analysis-only.
+        # When analysis_only_active is true and no candidates match, the
+        # _healthy_codebase_fallback returns src/state.rs.
+        files_str = str(task.get("files", ""))
+        assert "scripts/" in files_str or "src/" in files_str, (
+            f"Expected landable task with script or src files, got {task.get('files')}"
         )
         text = render_task(task, "107", "21:55")
         # Rendered output should contain the task title
@@ -1951,6 +1957,24 @@ no-edit revert pressure from prior session.
         # (not just scripts/evolve.sh or similar protected paths)
         assert task.get("files"), (
             f"Expected task with files, got {task}"
+        )
+        # --- Analysis-only no-candidates fallback test ---
+        # When task_analysis_only_attempt_count sets analysis_only_active
+        # but no TASK keys match the assessment, choose_task must return
+        # the healthy-codebase fallback (src/*.rs) instead of the
+        # self-referential "Repair evidence-backed planning" fallback.
+        no_match_assessment = "ZZZMATCHNONE task_analysis_only_attempt_count=3"
+        fallback_task = choose_task(no_match_assessment)
+        assert fallback_task["title"] == "Add a small verifiable improvement to src/", (
+            f"Analysis-only no-candidates fallback should return healthy-codebase task, "
+            f"got '{fallback_task['title']}'"
+        )
+        assert "src/state.rs" in str(fallback_task.get("files", "")), (
+            f"Healthy-codebase fallback should target src/state.rs, "
+            f"got files: {fallback_task.get('files')}"
+        )
+        assert not _has_protected_files(fallback_task), (
+            "Healthy-codebase fallback must not include protected files"
         )
         # --- Success-rate-aware candidate selection test ---
         # When task_success_rate=0.0 in assessment, choose_task should prefer
