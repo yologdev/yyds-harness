@@ -8272,4 +8272,100 @@ mod tests {
             "should contain had_tool_errors: {raw}"
         );
     }
+
+    #[test]
+    fn is_sensitive_key_detects_api_keys() {
+        let sensitive = [
+            "api_key",
+            "Authorization",
+            "password",
+            "accessKey",
+            "secret_key",
+            "bearer_token",
+            "private_key",
+            "sessionToken",
+            "refreshToken",
+            "authToken",
+            "passwd",
+            "credential",
+            "credentials",
+        ];
+        for key in &sensitive {
+            assert!(
+                is_sensitive_key(key),
+                "expected {key:?} to be sensitive but it was not"
+            );
+        }
+    }
+
+    #[test]
+    fn is_sensitive_key_handles_variations() {
+        assert!(is_sensitive_key("API_KEY"), "API_KEY should match");
+        assert!(is_sensitive_key("Api-Key"), "Api-Key should match");
+        assert!(
+            is_sensitive_key("AUTHORIZATION"),
+            "AUTHORIZATION should match"
+        );
+        assert!(is_sensitive_key("access_key"), "access_key should match");
+        assert!(
+            is_sensitive_key("my_secret_thing"),
+            "containing 'secret' should match"
+        );
+    }
+
+    #[test]
+    fn is_sensitive_key_rejects_non_sensitive() {
+        let non_sensitive = [
+            "model",
+            "model_name",
+            "run_id",
+            "event_type",
+            "tokens",
+            "cache_hit",
+            "max_tokens",
+        ];
+        for key in &non_sensitive {
+            assert!(
+                !is_sensitive_key(key),
+                "expected {key:?} NOT to be sensitive but it was"
+            );
+        }
+    }
+
+    #[test]
+    fn redact_state_payload_redacts_sensitive_keys() {
+        let input = json!({
+            "api_key": "sk-secret-123",
+            "model": "deepseek-v4",
+            "model_name": "deepseek-v4-pro",
+            "password": "hunter2",
+            "Authorization": "Bearer abc123",
+            "run_id": "run-001"
+        });
+        let redacted = redact_state_payload(&input);
+
+        assert_eq!(redacted["api_key"], "[redacted]");
+        assert_eq!(redacted["password"], "[redacted]");
+        assert_eq!(redacted["Authorization"], "[redacted]");
+        assert_eq!(redacted["model"], "deepseek-v4");
+        assert_eq!(redacted["model_name"], "deepseek-v4-pro");
+        assert_eq!(redacted["run_id"], "run-001");
+    }
+
+    #[test]
+    fn redact_state_payload_recurses_into_nested_objects() {
+        let input = json!({
+            "config": {
+                "secret_key": "nested-secret",
+                "timeout": 30
+            },
+            "model": "deepseek-v4"
+        });
+        let redacted = redact_state_payload(&input);
+
+        let config = &redacted["config"];
+        assert_eq!(config["secret_key"], "[redacted]");
+        assert_eq!(config["timeout"], 30);
+        assert_eq!(redacted["model"], "deepseek-v4");
+    }
 }
