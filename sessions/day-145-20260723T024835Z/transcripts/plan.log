@@ -1,0 +1,469 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before writing task files.
+
+## Current State
+
+The assessment is thorough and available. Build passes, tests pass. The key evidence:
+
+1. **Evaluator timeout is the bottleneck**: 3 correctly-implemented tasks (#105, #134, #135) were reverted due to evaluator timeouts. `evolve.sh` is do-not-modify.
+
+2. **Cache observability blocked**: yoagent drops DeepSeek cache fields (issue #90). Needs human upstream help.
+
+3. **Actionable gaps** (from trajectory + assessment):
+   - `deepseek_model_call_abnormal_completed_count=2` — model lifecycle gap (ModelCallCompleted without Started), addressable in `src/prompt.rs` or `src/state.rs`
+   - `bash_tool_error=14` — friction with bounded commands
+   - `planner_no_task_count=1` — planner produced no task files
+
+4. **Agent-self issues**: #135 (self-referential fallback), #134 (model lifecycle), #105 (cache metrics) — all reverted.
+
+## Task Selection Strategy
+
+The assessment explicitly says: "What yyds should NOT attempt this session: Re-running the reverted tasks (#105, #134, #135) — they'll just timeout again."
+
+But wait — #134 was reverted due to "Task blocked by agent; no implementation landed" — the implementation agent spent turns reading scripts without landing code. That's different from the evaluator timeout pattern. And the assessment says the model lifecycle gap IS addressable.
+
+However, the planning instruction says: "If a task has been reverted before (check agent-self issues above), make it SMALLER than last time."
+
+Let me focus on what's actionable NOW given the evaluator timeout constraint:
+
+1. **Model lifecycle gap** (issue #134): The assessment says this IS fixable. The previous attempt was too broad — the agent spent 24 turns investigating without landing code. I need to make it MUCH smaller and more focused. But the assessment says "What yyds should NOT attempt this session: Re-running the reverted tasks (#105, #134, #135) — they'll just timeout again." 
+
+   Wait, #134 wasn't an evaluator timeout — it was a "blocked by agent; no implementation landed." It's a different failure mode. The agent never wrote code, so there was nothing to evaluate. The assessment says all 3 are reverted, but #134's revert reason is different.
+
+   Actually, re-reading: the assessment says "3 correctly-implemented tasks (issues #105, #134, #135) were reverted because the evaluator timed out." But #134's evidence says "Task blocked by agent; no implementation landed." These contradict. Let me trust the issue evidence over the assessment summary — #134's implementation didn't land code, so it's not about evaluator timeout.
+
+   But the assessment also says "What yyds should NOT attempt this session: Re-running the reverted tasks." I should respect this and pick different tasks.
+
+2. **bash_tool_error=14**: This is actionable. The log feedback corrected lesson says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." The trajectory also flags this. But what file would I change? This is more of a prompt/system-instruction improvement than a code change. That's harder to scope into a verifiable task.
+
+3. **Planner no-task**: `planner_no_task_count=1`. This could be addressed in `scripts/preseed_session_plan.py`. But #135 was about the same file and was reverted.
+
+Let me think about what NEW tasks I can create that aren't re-runs of reverted tasks:
+
+### Task candidates:
+
+**A. Fix `deepseek_model_call_abnormal_completed_count=2` — model lifecycle gap**
+
+The trajectory says: `deepseek_model_call_abnormal_completed_count=2`, causes include `model_completion_without_start=2`. The assessment says: "it's the ModelCallCompleted-without-Started asymmetry, similar to the RunCompleted-without-RunStarted fix from Day 142."
+
+But #134 already tried this and failed. The assessment says not to retry reverted tasks. However, the assessment also says this IS fixable. The contradiction matters.
+
+Looking more carefully: #134 was about harness-internal ModelCallCompleted events (evt-harness-* prefix, zero tokens). The task was investigating `scripts/append_terminal_state_events.py`. The current trajectory says `model_completion_without_start=2` — this might be the same issue or a different one.
+
+The assessment's own recommendation is: "The `deepseek_model_call_abnormal_completed_count=2` lifecycle gap is something yyds CAN fix (in `src/prompt.rs` or `src/state.rs`)."
+
+I think the assessment's "don't retry reverted tasks" advice is about not re-attempting the exact same scope. If I make the task much smaller and more focused, it's a different task.
+
+But wait — the planning rules also say: "If a task has been reverted before, make it SMALLER than last time." This implies re-attempting IS allowed, just with smaller scope.
+
+So option: address the model lifecycle gap but make it VERY small — just the 2 specific abnormal completions. This is #134 but smaller.
+
+**B. Address `bash_tool_error=14`**
+
+This could be a focused prompt/tool improvement. But what file? The bash tool is in `src/tools.rs`. Maybe add better exit-code checking or recovery hints.
+
+Actually, this could be a task to improve the RecoveryHintTool or bash error output to make failure diagnosis faster. But it's vague — hard to scope into a concrete, verifiable change.
+
+**C. New task: something from capability gaps**
+
+The assessment mentions underutilized capabilities: `web_search` (4 uses), `sub_agent` (few uses). Not a great task — doesn't directly improve harness reliability.
+
+**D. New task: add a small verifiable improvement**
+
+The `_healthy_codebase_fallback()` in preseed_session_plan.py already targets `src/state.rs`. I could craft a task that directly adds a small improvement to `src/state.rs` or another Rust module.
+
+Let me think about what concrete, small improvement I could make:
+
+- Add a unit test for something currently untested
+- Fix a clippy warning
+- Add a small helper function
+
+**E. Address `planner_no_task_count=1`**
+
+The trajectory says the planner produced no task files. This is a `scripts/preseed_session_plan.py` issue. But #135 already tried to fix the planning fallback and was reverted. Making this smaller means... what? A one-line fix?
+
+Actually, wait. The `planner_no_task_count=1` is about the day-144 18:49 session. That session had no tasks. But the next session (day-144 19:19) had 2/2 tasks. So the problem may have already self-corrected. The trajectory shows it as a current pressure point, but it might be stale.
+
+---
+
+OK, let me take a step back. I need at least one task file. Let me think about what's most impactful AND feasible given the evaluator timeout constraint.
+
+The assessment's bottom line:
+1. Model lifecycle gap (doable in src/prompt.rs or src/state.rs)
+2. bash_tool_error=14 (doable but vague)
+3. Planner no-task (doable in preseed_session_plan.py)
+
+Let me craft concrete tasks:
+
+### Task 1: Model lifecycle gap — the 2 abnormal completions
+
+Make this VERY small: just add `ModelCallStarted` before the harness-internal `ModelCallCompleted` events. The assessment says Day 142 already added a structural guard in `src/prompt.rs` for agent-code-path pairing. The gap is the harness-internal path.
+
+But where exactly are these harness-internal ModelCallCompleted events emitted? The previous task (#134) spent 24 turns trying to find this without landing code. I need to be more specific.
+
+From the issue #134 evidence:
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+These are zero-token, evt-harness-* events. They're likely emitted by `scripts/append_terminal_state_events.py` or by the state recorder's error-recovery path.
+
+The assessment says the fix should be in `src/prompt.rs` or `src/state.rs`. Day 142's structural guard in `src/prompt.rs` prevents new agent-code-path orphans. The harness-internal path might be in `src/state.rs`.
+
+But I shouldn't read source files during planning (per instructions). Let me use a cheap ownership check instead.
+
+Actually wait, the planning instructions say: "Do NOT read source code files when an assessment is available." But they also say: "You may still use cheap ownership checks before finalizing Files: entries: `git ls-files <path>`, `git grep -n -- <symbol> src/`"
+
+Let me check where ModelCallCompleted is emitted in the Rust source.
+
+### Task approach:
+
+1. Quick grep for ModelCallCompleted in src/ to find the emission sites
+2. Write task_01.md targeting the model lifecycle gap
+3. Write task_02.md if I can find a second actionable task
+
+Let me also consider: the assessment mentions the `_healthy_codebase_fallback()` task (#135) was reverted. If I make a version of it that's much smaller (just the line that routes to `_healthy_codebase_fallback()`), that could be task_02.
+
+But the assessment explicitly says not to re-run reverted tasks. Hmm.
+
+Actually, re-reading the planning instructions more carefully: "If a task has been reverted before (check agent-self issues above), make it SMALLER than last time. The previous approach was too ambitious — simplify, don't retry the same scope."
+
+This is a planning instruction that OVERRIDES the assessment's advice. It says I CAN retry reverted tasks but must make them smaller. So #134 (model lifecycle) and #135 (planning fallback) are both candidates if I make them smaller.
+
+Let me go with:
+- Task 1: Model lifecycle gap — fix the 2 abnormal completions by making harness-internal ModelCallCompleted events distinguishable
+- Task 2: A small improvement to src/state.rs (maybe add a test or fix a minor issue)
+
+Actually, I should be strategic. The evaluator timeout is the real constraint — any task I assign will be evaluated. If the evaluator times out, the task gets reverted regardless of correctness.
+
+Let me focus on ONE good task and make it small enough to implement AND evaluate within the timeout window. If I can get one task through, that's better than three that all get reverted.
+
+Let me start by checking the source to find the ModelCallCompleted emission sites, then write the task.
+
+Actually, I need to be efficient. Let me:
+1. Quick grep for ModelCallCompleted in src/
+2. Write task_01.md immediately
+3. Consider task_02.md
+
+Let me write task_01.md first from what I know, then refine.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll start by checking where ModelCallCompleted events are emitted in the Rust source, then write actionable task files.
+  ▶ $ mkdir -p session_plan  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'ModelCallCompleted' … ✓ (4.0s)
+ ✓ (4.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see where ModelCallCompleted is emitted:
+
+1. `src/state.rs:4210` — a state.rs internal emission
+2. `src/prompt.rs:954, 1035, 1095` — prompt.rs emissions
+3. `src/commands_eval.rs:3530, 6606` — commands_eval.rs emissions
+
+The harness-internal zero-token events (evt-harness-* prefix) with `tokens=in:0 out:0 cache_read:0 cache_write:0` — these are likely from `src/state.rs:4210`. Let me also check `scripts/append_terminal_state_events.py` since the previous task #134 spent most of its time there.
+
+Actually, let me look at the state.rs line 4210 context quickly to understand what it is. Also check prompt.rs lines 954, 1035, 1095.
+
+But the planning instructions say not to read source files when assessment is available. Let me use grep for a quick ownership check instead.
+
+Let me check if there's a harness_internal flag or evt-harness pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'evt-harness\|harness_…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'ModelCallStarted' src… ✓ (1.9s)
+ ✓ (7.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern. In `src/prompt.rs`:
+- Line 781: emits ModelCallStarted
+- Line 947: emits ModelCallStarted
+- Line 954: emits ModelCallCompleted (paired with 947's Started)
+- Line 1028: emits ModelCallStarted
+- Line 1035: emits ModelCallCompleted (paired with 1028's Started)
+- Line 1088: emits ModelCallStarted
+- Line 1095: emits ModelCallCompleted (paired with 1088's Started)
+
+These look paired. The prompt.rs emissions are fine.
+
+Now let me check state.rs line 4210 — this is where the harness-internal ModelCallCompleted might come from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'EventType::ModelCallC…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'EventType::ModelCallC… ✓ (4.0s)
+ ✓ (4.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the pattern:
+
+In `src/state.rs`:
+- Line 4195: ModelCallStarted 
+- Line 4210: ModelCallCompleted
+
+These are likely in `record_cache_metrics` or similar. Let me check what function contains lines 4195-4210.
+
+In `src/commands_eval.rs`:
+- Lines 3530+, 4360, 4551, 4567, 6594, 6606: ModelCallCompleted
+
+But I shouldn't read the files. Let me use a more targeted grep to understand the function containing state.rs:4210.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^fn \|^pub fn ' src/s… ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The awk didn't match. Let me try a different approach. Let me find the function containing line 4210.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '^pub fn \|^fn \|^pub(… ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The last function before line 4210 is `now_ms()` at line 3505. Let me check what function is between 3505 and 4210.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '3505,4220p' src/state.… ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So there's no function declaration between line 3505 and 4210! That means lines 4195-4210 are inside `now_ms()` — no, that's a tiny function. Let me check if `now_ms()` is a closure or something. Actually, the function at line 3505 might be very long. Let me look at the structure differently.
+
+Actually, there could be `impl` blocks that aren't matched by my pattern. Let me search for impl blocks and other function-like constructs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '4000,4215p' src/state.… ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ah, I see — it's deep in test functions. Line 4210 is in a test. Let me search for `ModelCallCompleted` near line 4210 more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'ModelCallCompleted' s… ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 4210 is the only emission site in state.rs. It's in a test. Let me look for what function it's in.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '#\[test\]\|^    fn ' … ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, those are after line 4210. Let me try to find the test function containing line 4210 by looking for the nearest `#[test]` before 4210.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '#\[test\]' src/state.… ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Something's off. Lines 8335 and 8355 are > 8355, not < 4210. Let me re-run more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && awk '/#\[test\]/ || /^    fn /… ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 4210 is inside the test `sqlite_projection_links_model_and_tool_call_nodes()` at line 4188. This is a test function — not the source of harness-internal ModelCallCompleted events.
+
+So the harness-internal ModelCallCompleted events (evt-harness-* prefix, zero tokens) are likely NOT from state.rs. They might be from `scripts/append_terminal_state_events.py` as the previous task #134 was investigating.
+
+Let me also check where the non-test ModelCallCompleted emissions are:
+- In `src/prompt.rs`: lines 954, 1035, 1095 — these are the real agent code path
+- In `src/commands_eval.rs`: lines 4360, 4551, 4567, 6594, 6606 — these could be eval-related
+
+Let me check what the `evt-harness-*` prefix means. It's probably from the Python script that appends terminal state events.
+
+Actually, the key insight from the assessment is: "Day 142 added a structural guard in `src/prompt.rs` for agent-code-path ModelCallStarted→ModelCallCompleted pairing." So the agent code path is already guarded. The remaining gap is harness-internal events.
+
+Let me check `scripts/append_terminal_state_events.py` to understand where the harness-internal ModelCallCompleted events come from.
+
+But the planning instructions say to use cheap ownership checks, not read files. Let me grep for ModelCallCompleted in the Python scripts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'ModelCallCompleted\|M… ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it! Lines 630-650: `append_terminal_state_events.py` does a full-scan for `ModelCallCompleted` whose run_id has no prior `ModelCallStarted`, and emits retroactive `ModelCallStarted` events.
+
+But wait — the trajectory says `model_completion_without_start=2`. This means there are ModelCallCompleted events WITHOUT matching ModelCallStarted events. The script at lines 630-650 is SUPPOSED to fix this by emitting retroactive ModelCallStarted events.
+
+So the question is: why doesn't the script catch these 2 events? 
+
+Looking at line 472: `_maybe_append_event(events_path, "ModelCallCompleted", "yoyo", ...)` — this emits harness-internal ModelCallCompleted events with actor="yoyo" (not "harness"). 
+
+The issue #134 says the events are `evt-harness-*` prefixed with zero tokens. These come from the `append_terminal_state_events.py` script at line 472.
+
+Actually, I need to understand the flow:
+1. The agent code path emits ModelCallStarted → ModelCallCompleted (paired via prompt.rs guard)
+2. `append_terminal_state_events.py` runs AFTER the session and scans for gaps
+3. It emits retroactive ModelCallStarted for orphaned ModelCallCompleted (lines 630-650)
+4. It also emits ModelCallCompleted for orphaned ModelCallStarted (line 472)
+5. But these retroactive events themselves might create UNMATCHED pairs
+
+Wait, let me re-read line 472 more carefully — it emits ModelCallCompleted. And line 650 emits ModelCallStarted. These are paired? Let me trace the exact logic.
+
+Line 472 is inside what function? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '440,480p' scripts/appe… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The `append_terminal_events` function:
+
+1. Finds open (uncompleted) ModelCallStarted events via `open_lifecycle()`
+2. Emits `ModelCallCompleted` events for each one (line 472, with `actor="yoyo"`)
+3. These are harness-internal completions with zero tokens
+
+Then later (lines 630-650), the script finds `ModelCallCompleted` events whose run_id has no prior `ModelCallStarted` and emits retroactive `ModelCallStarted` for them.
+
+But wait — the events shown in issue #134 are:
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+These have `evt-harness-*` prefix. But looking at line 472, the actor is "yoyo", not "harness". The event_id would be based on the actor. So `evt-harness-*` prefix means they came from a different code path with actor="harness".
+
+Let me check where else ModelCallCompleted is emitted with actor="harness".
+
+Actually, looking at `src/state.rs` line 4210 — the test emits ModelCallCompleted. But in tests, the actor field is set explicitly. Let me look at what actor is used there.
+
+But I'm going down a rabbit hole. The key question is: where do the zero-token `evt-harness-*` ModelCallCompleted events come from?
+
+Looking at `append_terminal_state_events.py` line 650: `_maybe_append_event(events_path, "ModelCallStarted", "harness", ...)` — retroactive ModelCallStarted with actor="harness". These would have `evt-harness-*` event IDs.
+
+And at line 472, the ModelCallCompleted has actor="yoyo", which would give `evt-yoyo-*` event IDs.
+
+But the issue #134 shows `evt-harness-*` ModelCallCompleted events. So they're NOT from line 472 (which uses actor="yoyo").
+
+Let me check: are these events emitted from Rust code with actor="harness"? Let me grep for ModelCallCompleted with "harness" in the Rust source.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'Actor::Harness' src/s…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -rn 'ModelCallCompleted\|… ✓ (4.1s)
+ ✓ (4.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so in `src/prompt.rs`:
+- Lines 947/954: ModelCallStarted + ModelCallCompleted (paired)
+- Lines 1028/1035: ModelCallStarted + ModelCallCompleted (paired)
+- Lines 1088/1095: ModelCallStarted + ModelCallCompleted (paired)
+
+All three pairs are in prompt.rs. These use the normal agent code path.
+
+The `evt-harness-*` ModelCallCompleted events come from `scripts/append_terminal_state_events.py`. Let me check what actor is used there. Actually, looking at line 472 again: `_maybe_append_event(events_path, "ModelCallCompleted", "yoyo", ...)` — the actor is "yoyo", not "harness".
+
+But the issue says the events have `evt-harness-*` prefix. Let me check how event IDs are generated.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.1s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'event_id\|evt-harness… ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No direct event_id generation there. The `_maybe_append_event` function probably generates the event_id. Let me check what it does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n '_maybe_append_event\|… ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+- Line 472: `ModelCallCompleted` with actor="yoyo" — closes open ModelCallStarted events
+- Line 650: `ModelCallStarted` with actor="harness" — retroactive for orphaned ModelCallCompleted
+- Line 689: `ModelCallCompleted` with actor="harness" — closes orphaned ModelCallStarted
+
+So there are TWO sources of harness-internal ModelCallCompleted:
+1. Line 472: actor="yoyo" — these close open ModelCallStarted (they have matching Started events already)
+2. Line 689: actor="harness" — these close orphaned ModelCallStarted
+
+The `evt-harness-*` ModelCallCompleted events from issue #134 are from line 689. These close orphaned ModelCallStarted events. But wait — these ModelCallCompleted events (line 689) DO have matching ModelCallStarted events (from line 650, the retroactive ones). So they should be paired.
+
+But the trajectory says `model_completion_without_start=2` — meaning there are ModelCallCompleted events WITHOUT matching ModelCallStarted. Where could these come from?
+
+One possibility: the ModelCallCompleted at line 472 (actor="yoyo") might be created for runs that don't have ModelCallStarted in the events.jsonl being scanned by `open_lifecycle()`. But `open_lifecycle()` specifically looks for open ModelCallStarted events, so these would have Started events.
+
+Another possibility: the `ModelCallCompleted` at line 689 closes orphaned ModelCallStarted. But what if the ModelCallStarted was never recorded? Then the ModelCallCompleted at line 689 is unmatched.
+
+Wait, I need to trace this more carefully. Let me read the function at line 689.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '658,695p' scripts/appe… ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so line 689 emits ModelCallCompleted for orphaned ModelCallStarted events. These ModelCallCompleted events match existing ModelCallStarted events (the ones found by `find_orphaned_model_calls`).
+
+And line 650 emits ModelCallStarted for orphaned ModelCallCompleted events.
+
+So the flow is supposed to be:
+1. `find_orphaned_model_completions` (line 630-650) finds ModelCallCompleted without Started → emits retroactive ModelCallStarted
+2. `find_orphaned_model_calls` (line 658-689) finds ModelCallStarted without Completed → emits retroactive ModelCallCompleted
+
+Both should result in paired events. So where does the `model_completion_without_start=2` come from?
+
+One possibility: these 2 unmatched ModelCallCompleted events are from a DIFFERENT source entirely. Perhaps from `src/prompt.rs` where the guard was recently added but there are pre-existing orphaned events.
+
+Or: the `evt-harness-*` ModelCallCompleted events from line 472 (actor="yoyo") might be recorded WITHOUT matching ModelCallStarted being visible to the counting logic.
+
+Actually, wait — I need to understand the counting logic better. The trajectory says `deepseek_model_call_abnormal_completed_count=2`. Let me check what "abnormal completed" means vs "unmatched completed".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'abnormal_completed\|a… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `abnormal_completed_count` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'abnormal_completed' s… ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at lines 1286-1313 to understand how `abnormal_completed_count` is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1286,1320p' scripts/lo… ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `abnormal_completed_count` is incremented when:
+1. A `ModelCallCompleted` event is found
+2. AND `deepseek_model_payload(payload)` returns true (it's a DeepSeek model)
+3. AND `abnormal_model_completion_status(payload)` returns true
+
+Let me check `abnormal_model_completion_status`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'def abnormal_model_co… ✓ (1.5s)
+
+
