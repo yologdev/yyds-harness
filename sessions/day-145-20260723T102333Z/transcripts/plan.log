@@ -1,0 +1,415 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me assess the situation:
+
+1. The codebase is healthy - build passes, tests pass
+2. 5 of the last 6 sessions landed no code changes (quiet sessions)
+3. The assessment identifies that this is a clean codebase, not a broken pipeline
+4. There are 3 open agent-self issues, but #135 is stale (already fixed), #134 is a legitimate lifecycle gap, and #105 is blocked upstream
+5. The trajectory graph pressure points to some areas, but most are cumulative/aggregate
+
+Key decisions to make:
+
+1. **#135**: Already fixed in Day 144 17:24 (commit d68c13f2). Should be closed.
+2. **#134**: A legitimate harness-internal lifecycle gap. But this already failed once (Day 143 blocked by agent). Making it smaller is the right approach.
+3. **#105**: Blocked on upstream yoagent change (#90). Not actionable.
+
+Now, the policy says I need at least 2 task slots from state/trajectory evidence. Let me look at the graph-derived pressure:
+
+1. **Make planning failure actionable** (planner_no_task_count=1) - but this was already addressed by Day 144 fix
+2. **Close yyds state and model lifecycle gaps** (deepseek_model_call_abnormal_completed_count=1) - this is #134
+3. **Raise session success rate** (session_success_rate=0.0) - the session didn't complete cleanly but the codebase is healthy
+4. **Bound failing shell commands** (bash_tool_error=12) - cumulative, not fresh
+5. **Reconcile transcript-only tool failures** (transcript_only_failed_tool_count=1) - minor
+
+Let me think about what's actionable:
+
+- #135: Close it (stale, already fixed). This is a task.
+- #134: This is the lifecycle gap. The task says option (c): add `harness_internal: bool` field to ModelCallCompleted to distinguish harness-internal from agent model calls. But this failed before because the implementation agent got lost in analysis. Let me make it smaller.
+
+Let me craft the tasks:
+
+**Task 1**: Close stale issue #135 — the fix landed in Day 144. This is straightforward: verify the fix exists, close the issue.
+
+**Task 2**: Address #134 with a narrower scope. Instead of the full lifecycle gap fix, focus on just ONE THING: add a `harness_internal: bool` field to the ModelCallCompleted event schema and set it to `true` for harness-internal completions. Then update the gnome counting script to filter them out. This is narrow and verifiable.
+
+Wait, let me re-read the task sizing rules. Each task MUST touch at most 3 source files. For #134, the files would be src/state.rs (schema + emission) and scripts/summarize_state_gnomes.py or scripts/extract_trajectory.py (filtering). That's 2-3 files, which is within bounds.
+
+Actually, let me think about what makes #134 fail. The implementation agent spent 24 turns reading code and got lost. The problem was too broad — "Close harness-internal model lifecycle gap" is a big ask. Let me make it narrower:
+
+Instead of "fix all harness-internal lifecycle gaps", focus on: "Add harness_internal flag to evt-harness ModelCallCompleted events in src/state.rs so gnome counters can filter them." Just the flag addition, no gnome filtering changes. That's a single-file change to src/state.rs.
+
+But then what's the gnome counter going to do? The trajectory will still show unmatched. Hmm.
+
+Actually, let me re-read the task. The core issue is: harness-internal ModelCallCompleted events (evt-harness-* prefix, zero tokens) inflate the unmatched count. The fix is option (c): add a `harness_internal: bool` field.
+
+But this is a schema change. Let me check if there's a simpler approach.
+
+Actually, looking at the event format, the events look like:
+```
+1784660225962  ModelCallCompleted  evt-harness-a9fb61e65f6f1387  run=run-1784660115834-47270  model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+These already have a distinctive prefix (`evt-harness-*`). The gnome counter could just filter by model_call_id prefix. But that's fragile. The `harness_internal` flag is cleaner.
+
+OK let me plan the tasks. First, let me check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls session_plan/ 2>/dev/null || echo "directory not found"  ▶ $ mkdir -p session_plan ✓ (9ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and an assessment.md. Let me read the existing task_01.md to see what the harness seeded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seeded task_01.md is about cache metrics — this is #105 which is blocked on upstream yoagent change (#90). The assessment clearly says:
+
+> **#105** — "Task reverted: Record DeepSeek prompt cache metrics during prompt runs": Blocked on upstream yoagent change (#90). Not actionable in yyds alone.
+
+This task shouldn't be sent to implementation — it's blocked. I need to replace it with an obsolete note and create evidence-backed tasks.
+
+Let me plan:
+
+1. **task_01_obsolete.md**: Explain why the seeded cache metrics task is blocked (#90), and reference the assessment which confirms it.
+2. **task_01.md** (replacement): Close stale issue #135 — the fix already landed. This is a straightforward task: verify commit d68c13f2 exists, confirm the self-test passes, close the issue.
+3. **task_02.md**: Address #134 — add `harness_internal` flag to harness-internal ModelCallCompleted events. Narrow scope: just src/state.rs.
+
+Wait, let me think about whether closing a GitHub issue is a valid task. Yes — it's a lightweight task that unblocks visibility. The assessment explicitly says #135 is stale and should be closed.
+
+Now let me also consider: what about the issue_responses.md?
+
+For issues:
+- #135: Already fixed, will close as part of task_01
+- #134: Implement as task_02 (narrow scope)
+- #105: Blocked, deferred (no change)
+- #131: Help wanted, no replies yet, defer
+- #90: Help wanted, waiting on human, defer
+
+Let me now write the plan. But first, I need to verify that #135's fix actually exists. Let me check the commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify #135's fix exists and check the current state before writing task files:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -5  ▶ $ git show d68c13f2 --stat 2>/dev/null || echo "commit not found"  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -5 ✓ (19ms)
+ ✓ (39ms)
+ ✓ (261ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit d68c13f2 exists and the fix is in. But the self-test has an assertion failure: `Expected validated_against_assessment=true, got False`. This is a test failure in the seeded task picker, not in the code changes. Let me investigate - the test is checking that a seed task has `validated_against_assessment: true`, but the current seed task (task_01.md) has it set to true. Wait, actually the test failure is from preseed_session_plan.py itself, not about the task file.
+
+Let me re-read: `assert task.get("validated_against_assessment") is True, (...)` — this is checking that the task returned by the picker has this field. Let me look more carefully at the test output.
+
+Actually wait - the task_01.md that was seeded has `validated_against_assessment: true`. But this test failure is in preseed_session_plan.py's own test. Let me check what the full error is.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.9s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | head -30 ✓ (232ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test failure is in the task picker's own self-test. This could be a regression from the Day 144 fix. Let me look at what the test expects vs what the code returns. Let me look at line 1792 and surrounding context.
+
+Wait, actually, the assessment says the codebase is healthy and the tests passed. But this test is failing. Let me check if this is a pre-existing failure or something new.
+
+Actually, the assessment also said:
+> Preflight `cargo build` and `cargo test` green
+
+That's for cargo test, not python tests. The python test in preseed_session_plan.py might have been broken by the Day 144 change. Let me check.
+
+Actually wait - let me re-read the assessment. It says build/test green. The python test might have been broken by the Day 144 change (d68c13f2) and the fix that landed might have a bug in the test.
+
+Let me look at the test around line 1792 to understand what's failing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1785,1810p' scripts/preseed_session_plan.py ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see - this is a test in preseed_session_plan.py that's checking the behavior of the task picker. The test creates a mock assessment, calls `choose_task(assessment)`, and expects it to return a task with `validated_against_assessment=True`. But it's returning `False`.
+
+This is likely a regression from the Day 144 fix (d68c13f2). The fix changed the `choose_task()` function's behavior, and the test at line 1792 wasn't updated to match.
+
+This is actually a real bug! The Day 144 fix landed but broke the self-test. Let me investigate further to confirm and then make this a task.
+
+Let me look at what the Day 144 change did around the `validated_against_assessment` logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show d68c13f2 -- scripts/preseed_session_plan.py ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - the Day 144 fix changed the `choose_task()` function. When `analysis_only_active` is True and zero candidates matched, it now returns `_healthy_codebase_fallback()` instead of the old self-referential "Repair evidence-backed planning" fallback.
+
+But one of the existing tests (around line 1792) still expects the old behavior - it expects `validated_against_assessment=True` for a task, but the changed code path might be returning a task without that field set.
+
+Let me check the `_healthy_codebase_fallback()` function to see if it sets `validated_against_assessment`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_healthy_codebase_fallback' scripts/preseed_session_plan.py ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_healthy_codebase_fallback()` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1272..1302 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `_healthy_codebase_fallback()` doesn't set `validated_against_assessment` at all. So when `choose_task()` returns this fallback task, the test at line 1792 fails because it expects `validated_against_assessment=True`.
+
+But wait, let me re-read the test more carefully. The test at line 1792 is checking a specific assessment about search regex errors. Let me trace through the code to see if the analysis_only_active path is even hit for that test.
+
+Actually, let me look at the test more carefully. The test is around line 1775 onwards:
+
+```python
+task = choose_task(assessment)
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+assert task.get("validated_against_assessment") is True, (...)
+```
+
+This is test 5 (or similar), testing that when an assessment shows search_regex_error, the picker finds the right task. The assertion that `validated_against_assessment` should be True.
+
+The Day 144 change added: when `analysis_only_active` is True AND zero candidates matched, return `_healthy_codebase_fallback()`. But in this test, there ARE candidates matching (the search regex error task), so the analysis_only_active path shouldn't be hit. Unless something else changed.
+
+Let me look at the actual failing line more carefully. The error says line 1792, which is:
+```python
+assert task.get("validated_against_assessment") is True, (
+    f"Expected validated_against_assessment=true, got {task.get('validated_against_assessment')}"
+)
+```
+
+So the task returned doesn't have `validated_against_assessment=True`. This could mean either:
+1. The candidate matching is not finding the task, and falling through to the healthy codebase fallback
+2. The candidate matching found the task but it doesn't have the field set
+
+Let me understand the flow better. Let me look at where `validated_against_assessment` is set in the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'validated_against_assessment' scripts/preseed_session_plan.py ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the section around line 983-995 to understand the flow:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:975..1015 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. If candidates are found, iterate and return the first uncontradicted one (with `validated_against_assessment=True`)
+2. If all candidates are contradicted, return the first with `validated_against_assessment=False`
+3. If NO candidates match at all:
+   - If `analysis_only_active`, return `_healthy_codebase_fallback()` (which doesn't have `validated_against_assessment`)
+   - Otherwise, return the hardcoded "Repair evidence-backed planning" fallback (also doesn't have `validated_against_assessment`)
+
+The test at line 1792 creates a mock assessment that should match a candidate (search regex error), and expects `validated_against_assessment=True`. But the test is failing, which means the candidate isn't being found. Let me look at the test more carefully.
+
+Let me read the test from around line 1770 to understand what assessment it's creating.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1770..1810 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. Test 5 creates a mock assessment with `search_regex_error` (57 occurrences). The test expects `choose_task()` to find the candidate "Reduce recurring search-tool friction before implementation" and return it with `validated_against_assessment=True`. But it's failing.
+
+The problem is likely that the task picker can't find any matching candidates for this assessment. The candidates are hardcoded in the `TASKS` constant. Let me check if that task is a real candidate.
+
+Let me search for the search friction task in the TASKS constant.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'search.*friction\|search_regex_error\|SEARCH_FRICTION' scripts/preseed_… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `has_actionable_search_friction` (line 776) and how the candidate filtering works around line 960:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:776..806  ▶ read scripts/preseed_session_plan.py:955..980 ✓ (6ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `has_actionable_search_friction()` function on line 776-790 is checking if the search friction is "current" not "cumulative". For the test at line 1792, the mock assessment is:
+
+```
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+The function `has_actionable_search_friction` will try to match each line. The line `HIGH - \`search_regex_error\` (57 occurrences): the most frequent tool failure.` — let me trace through:
+
+1. `any(key in lower for key in SEARCH_FRICTION_KEYS)` — `search_regex_error` is in the line → True
+2. `"historical tool failures" in lower` — No
+3. `"recent verified task" in lower` — No
+4. `lower.startswith("tool failures:")` — No
+5. `lower.startswith("top tool-failure categories:")` — No  
+6. `re.fullmatch(r"[-*]?\s*`?search_(?:regex_error|binary_match)`?\s*[=:]\s*\d+", lower)` — Let me check: the line is `high - \`search_regex_error\` (57 occurrences): the most frequent tool failure.`
+
+The regex is `[-*]?\s*`?search_(?:regex_error|binary_match)`?\s*[=:]\s*\d+`
+
+The line starts with `high - ` which doesn't match `[-*]?\s*`. So the regex won't match.
+
+7. Returns True!
+
+So `has_actionable_search_friction` should return True for this line. Let me re-check...
+
+Wait, the issue might be elsewhere. Let me look at the candidate matching loop more carefully to see if the search friction task is being filtered out for another reason.
+
+Let me look at the full candidate loop:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.5s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:920..975 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me trace through the logic for the failing test. The mock assessment at line 1779 is:
+
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+Now `current_evidence_text(assessment)` extracts the "Bugs / Friction Found" section, so `current` will be:
+```
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+Then `lower = current.lower()`:
+```
+high - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+Now `numeric_metrics(lower)` - let me check what metrics it finds:
+- `search_regex_error` with `57` → but wait, `numeric_metrics` probably looks for `key=value` patterns
+
+Let me check `_has_analysis_only_pressure(metrics)`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_has_analysis_only_pressure\|task_analysis_only_attempt_count\|reverted… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check `_has_analysis_only_pressure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..882 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `_ANALYSIS_ONLY_METRICS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_ANALYSIS_ONLY_METRICS' scripts/preseed_session_plan.py ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see what's in _ANALYSIS_ONLY_METRICS:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..867 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `numeric_metrics` to see what keys it extracts from the assessment text. The mock assessment has:
+```
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+Let me check `numeric_metrics`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def numeric_metrics' scripts/preseed_session_plan.py ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the numeric_metrics function to understand what keys it extracts:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:742..782 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `numeric_metrics` finds patterns like `` `search_regex_error` = 57 `` or `` `search_regex_error`: 57 ``. But in the test assessment, the text is:
+
+```
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+This would NOT match the regex `r"\`?([a-z][a-z0-9_]+)\`?\s*[=:]\s*(-?\d+)"` because there's no `=` or `:` before the number — it's `(57 occurrences)`.
+
+So `metrics` from this assessment would be empty (or nearly so). That means:
+- `_has_analysis_only_pressure(metrics)` → False (no analysis-only metrics found)
+- `analysis_only_active` = False
+
+OK so the analysis_only path isn't the issue. Let me trace through more carefully.
+
+The assessment text is:
+```
+# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+`current_evidence_text(assessment)` extracts the "Bugs / Friction Found" section. Let me check what that function returns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def current_evidence_text' scripts/preseed_session_plan.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:412..442 ✓ (5ms)
+
+
