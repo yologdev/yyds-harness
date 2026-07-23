@@ -1,0 +1,521 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment was produced by the Phase A1 agent.
+2. The trajectory shows clear signals:
+   - `planner_no_task_count=1` — previous session had 0/0 tasks
+   - `session_success_rate=0.0` 
+   - `task_analysis_only_attempt_count` is elevated (analysis-only pressure)
+   - `deepseek_model_call_unmatched_completed_count=230` — #1 graph pressure
+3. There's a seed task already created by the harness: session_plan/task_01.md (Issue #135 - Break self-referential planning fallback)
+4. The trajectory shows day-144 had a successful session (2/2 tasks verified) — a script change in preseed_session_plan.py
+
+Let me check if session_plan/task_01.md already exists, then plan tasks.
+
+The evidence says:
+- Top graph pressure: Make planning failure actionable (planner_no_task_count=1)
+- Second: Raise session success rate (session_success_rate=0.0)
+- Third: Bound failing shell commands before retrying (bash_tool_error=12)
+- deepseek_model_call_unmatched_completed_count=230 is a major state lifecycle issue
+
+Looking at the backlog:
+- Issue #135: Break self-referential planning fallback — was task_01 yesterday (Day 144) and was REVERTED due to evaluator timeout, not code failure. The code passed tests but the evaluator timed out. This is an infrastructure problem (Issue #131).
+- Issue #134: Close harness-internal model lifecycle gap — was reverted due to agent not landing code.
+- Issue #105: Record DeepSeek prompt cache metrics — blocked on yoagent upstream (#90).
+
+For today's planning:
+
+The trajectory says `planner_no_task_count=1` — the most recent day-145 sessions had 0/0 tasks. This is the immediate problem to fix: planning needs to produce tasks.
+
+Given the fallback rule: "First create session_plan/task_01.md from the trajectory, recent CI, journals, state/gnome feedback, or the assessment-missing failure itself."
+
+Let me think about which tasks to plan:
+
+1. **Task 01**: The harness already seeded task_01.md from #135. Let me check if it exists. The reverted task was about breaking the self-referential planning fallback in preseed_session_plan.py. But day-144 already had a successful session that modified preseed_session_plan.py (the 2/2 verified session). Maybe the fix already landed? Let me check what day-144's successful session changed.
+
+2. **Task 02/03**: From the trajectory pressures:
+   - The `bash_tool_error=12` and `transcript_only_failed_tool_count=1` / `state_only_failed_tool_count=41` suggest tool failure tracking mismatches
+   - `deepseek_model_call_unmatched_completed_count=230` — but this was tried and reverted in #134
+
+The most actionable pressure is the planning failure itself. Let me check if task_01.md already exists.
+
+Actually, let me first check:
+1. Does session_plan/task_01.md exist?
+2. What did the day-144 successful session actually do?
+3. Then decide tasks.
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null; echo "---"; cat sessi…  ▶ $ git log --oneline -20 ✓ (1.6s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Important findings:
+
+1. `session_plan/task_01.md` already exists — seeded by the harness. It's about fixing assessment phase timeout.
+2. Day 144 had a successful session! `d68c13f2` shows "Break self-referential planning fallback when analysis-only pressure is active (Task 1)" — THAT IS ISSUE #135! It already landed!
+
+Let me verify that the fix from Day 144 is actually in the codebase now:
+- `d68c13f2 Day 144 (17:24): Break self-referential planning fallback when analysis-only pressure is active (Task 1)` 
+- `e265e586 Day 144 (17:24): Add unit tests for redaction and sensitive-key detection in src/state.rs (Task 2)`
+
+So Issue #135 is ALREADY FIXED. The seed task_01.md is stale — it was generated by a harness that didn't know about the Day 144 success.
+
+Let me check what the assessment_missing.md says and verify the Day 144 fix is present.
+
+The trajectory says: `day-144 (2026-07-22 19:19:26): tasks 2/2 ✅ — 2/2 strict verified; build OK, tests OK`
+
+So the fix landed. The seed task_01.md is stale. I need to:
+1. Write task_01.md with a real task based on current trajectory evidence
+2. Potentially write task_02.md and task_03.md
+
+The current trajectory pressures are:
+- planner_no_task_count=1 (but day-144 fixed the self-referential fallback, so this might be a different cause)
+- session_success_rate=0.0 
+- bash_tool_error=12
+- transcript_only_failed_tool_count=1
+- state_only_failed_tool_count=41
+- deepseek_model_call_unmatched_completed_count=230
+
+The assessment phase timed out — that's why there's no assessment. The seed task says "Fix assessment phase timeout after 600s."
+
+But the policy says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task is about fixing assessment timeout. That's still a live problem (assessment did timeout). But the seed task says to modify `scripts/preseed_session_plan.py` — which is the planning script, not the assessment runner. The assessment timeout is in `scripts/evolve.sh` which is a do-not-modify file.
+
+Let me think about what's most actionable:
+
+1. The assessment timed out — this is in evolve.sh (protected). Can't fix directly.
+2. The seed task_01.md targets `scripts/preseed_session_plan.py` which is the WRONG file for assessment timeout. But it IS the right file for planning improvements.
+3. Day 144 already fixed the self-referential fallback in preseed_session_plan.py.
+4. The current trajectory shows `state_only_failed_tool_count=41` — this is a big mismatch between state events and transcripts. This is a state integrity issue.
+5. `deepseek_model_call_unmatched_completed_count=230` is the #1 graph pressure. But Issue #134 tried this and was reverted.
+
+Let me look at what's most actionable and important right now:
+
+The trajectory says:
+- "Make planning failure actionable (planner_no_task_count=1)" 
+- "Reconcile state-only tool failures (state_only_failed_tool_count=41)"
+
+But the day-145 sessions (today) had 0/0 tasks. The previous day-144 session at 19:19 had 2/2 tasks (success). Then day-144 at 19:48 had 0/0 tasks — the assessment timed out for that session too.
+
+The assessment timeout is a recurring problem. But evolve.sh is protected. What can I do?
+
+Looking at the trajectory more carefully:
+- `bash_tool_error=12` — "prefer bounded commands with explicit paths and inspect exit output before retrying"
+- `state_only_failed_tool_count=41` — state events contain failed tool actions without matching transcript entries
+
+The state_only_failed_tool_count=41 is interesting — it suggests state events being recorded for failures that don't appear in transcripts. This could indicate tool failure tracking bugs in the state recorder or transcript capture.
+
+Let me check what's actually actionable:
+
+1. **Task 01**: The seed task_01.md targets `scripts/preseed_session_plan.py` but the assessment timeout problem is in `scripts/evolve.sh` (protected). I should replace this with a task that's actually actionable.
+
+2. The most concrete, actionable pressure from the trajectory: `state_only_failed_tool_count=41` — state events with failed tool actions that have no matching transcript entry. This suggests a state recording bug that could be investigated in `src/state.rs` and `scripts/log_feedback.py`.
+
+3. `transcript_only_failed_tool_count=1` — the inverse: transcript failures not in state. Much smaller count.
+
+Actually, let me reconsider. The trajectory says `bash_tool_error=12` — this is about bash commands timing out or failing. And `state_only_failed_tool_count=41` is about state events without transcript matches.
+
+Let me also check: what changed in day-144's successful session? Let me look at the actual code changes.
+
+Let me plan:
+
+**Task 01**: Replace the stale seed task. The assessment timeout is in evolve.sh (protected). But the seed task points at preseed_session_plan.py. Instead, create a task targeting `scripts/log_feedback.py` or `src/state.rs` to improve state-transcript reconciliation for tool failures.
+
+Actually wait — let me re-read the seed task more carefully:
+
+"Objective: The assessment phase timed out after 600 seconds. No transcript was saved... Analyze the harness dispatching logic in evolve.sh to understand why the assessment prompt took so long."
+
+But the Files line says `scripts/preseed_session_plan.py` — this is a mismatch. The assessment timeout is in `scripts/evolve.sh` (protected). The seed is confused.
+
+Let me replace it with a real task. The top actionable pressures are:
+
+1. `state_only_failed_tool_count=41` — state events with failed tools not in transcript. This could be investigated in `src/state.rs` or `scripts/log_feedback.py`.
+
+2. The `bash_tool_error=12` — bash commands timing out. But this might be in evolve.sh (protected) or could be improved via recovery hints in prompt.rs or tools.rs.
+
+Let me go with something concrete and verifiable. Let me look at the `state_only_failed_tool_count=41` issue — this is a state integrity problem that affects all metrics. If state events record failures that transcripts don't, we have a recording gap.
+
+Let me also check: did day-144's successful session already address any of these pressures?
+
+Looking at the commits:
+- `d68c13f2` — "Break self-referential planning fallback when analysis-only pressure is active (Task 1)" — in preseed_session_plan.py
+- `e265e586` — "Add unit tests for redaction and sensitive-key detection in src/state.rs (Task 2)" — in src/state.rs
+
+So day-144 already fixed Issue #135. The seed task_01.md is stale.
+
+Let me plan tasks:
+
+**Task 01**: Diagnose and fix state-only tool failure recording mismatch (state_only_failed_tool_count=41). This is a state integrity issue where state events record tool failures that don't appear in transcripts. Investigate `src/state.rs` for how tool failures are recorded vs how transcripts capture them. Files: src/state.rs, scripts/log_feedback.py.
+
+**Task 02**: (Maybe) Address the bash_tool_error=12 pressure by improving bash recovery hints or command timeout handling in src/prompt.rs or src/tools.rs.
+
+**Task 03**: (Maybe) Address transcript_only_failed_tool_count=1.
+
+Actually, let me keep it focused. The trajectory says "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+The state-only tool failure mismatch (41 events) is an observability/state integrity issue. That's a good task.
+
+But wait — I also need to write issue_responses.md. Let me check the issues:
+
+- #135: Already fixed by day-144's session. Should be closed.
+- #134: Was reverted. The model lifecycle gap (unmatched_completed_count=230) is still live.
+- #105: Blocked on yoagent upstream (#90).
+- #131: Help wanted — evaluator timeouts. Still waiting.
+- #90: Help wanted — yoagent Usage struct. Still waiting.
+
+For #135: I should note it's fixed and will be closed.
+
+For #134: It was reverted because the implementation agent couldn't land it. The scope was too broad (whole src/state.rs). Should I retry with narrower scope? The issue is about `evt-harness-*` ModelCallCompleted events without matching ModelCallStarted. The fix would be in src/state.rs — adding a harness_internal flag or pairing them. But the last attempt failed. I could try with a narrower scope: just add the `harness_internal: bool` field to distinguish harness-internal events.
+
+For the planning, let me focus on:
+
+1. **Task 01**: Replace stale seed with state integrity fix — address `state_only_failed_tool_count=41` in src/state.rs and scripts/log_feedback.py
+2. **Task 02**: Address `bash_tool_error=12` — improve bash error recovery in src/prompt.rs 
+3. **Task 03**: Maybe address model lifecycle gap with narrower scope — add `harness_internal` flag to ModelCallCompleted events in src/state.rs
+
+Actually, let me first verify what day-144's fix actually changed, so I can write task_01.md that builds on current state.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.4s (2 ✓)
+
+Let me check what the Day 144 successful session actually changed, and verify the current code state.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show d68c13f2 --stat  ▶ $ git show e265e586 --stat  ▶ $ cat session_plan/assessment_missing.md ✓ (2.5s)
+ ✓ (2.5s)
+ ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. Day 144's successful session ALREADY fixed Issue #135 (the self-referential planning fallback). The commit `d68c13f2` changed `scripts/preseed_session_plan.py`.
+2. Day 144's Task 2 added unit tests for redaction in `src/state.rs`.
+3. The seed task_01.md is stale — it was generated before the harness knew about the Day 144 fix.
+
+Now, the seed task_01.md is about "Fix assessment phase timeout" but targets `scripts/preseed_session_plan.py` (wrong file). The assessment timeout is in `scripts/evolve.sh` which is protected. And the Day 144 fix already improved planning fallback.
+
+I need to:
+1. Replace task_01.md with a real, evidence-backed task
+2. Add task_02.md if there's another good candidate
+3. Write issue_responses.md
+
+The trajectory's top pressures:
+- `state_only_failed_tool_count=41` — state events with failed tool actions without matching transcript entries. This is a concrete, actionable state integrity issue.
+- `bash_tool_error=12` — bash commands timing out or failing
+- `transcript_only_failed_tool_count=1` — transcript failures not in state
+
+The `state_only_failed_tool_count=41` is the most interesting. It means the state recorder is capturing tool failures that don't appear in transcripts. Either:
+- State is over-counting (recording failures that didn't happen)
+- Transcripts are under-capturing (missing failure evidence)
+
+Either way, this affects all metrics that depend on state-transcript reconciliation.
+
+Let me check if I can find where these state-only failures come from. Let me search for how tool failures are recorded.
+
+Actually, the planning instructions say: "Do NOT read all source files. Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+But it does allow: "You may still use cheap ownership checks before finalizing Files: entries: `git ls-files <path>`, `git grep -n -- <symbol> src/`, or a scoped `rg -n <simple_identifier> src/`."
+
+Let me do a quick ownership check to make sure `src/state.rs` is the right file for the tool failure recording issue.
+
+Let me also consider: the `bash_tool_error=12` — this is about bash commands failing. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying." This could be improved in `src/prompt.rs` (where retry logic lives) or `src/tools.rs` (where bash tool is defined). 
+
+Actually, let me plan two tasks:
+
+**Task 01**: Investigate and fix the state-transcript tool failure mismatch (`state_only_failed_tool_count=41`). This is a state integrity problem. The fix is likely in `src/state.rs` (where tool failures are recorded) — either the state recorder emits FailureObserved events that aren't reflected in transcripts, or there's a race condition in how tool results are captured. Files: `src/state.rs`, `scripts/log_feedback.py`.
+
+**Task 02**: Address `bash_tool_error=12` by improving bash command error recovery. The trajectory suggests "prefer bounded commands with explicit paths and inspect exit output before retrying." This could mean adding better error messages or recovery hints when bash commands fail. Files: `src/prompt.rs`, `src/tools.rs`.
+
+Actually, wait. Let me re-read the trajectory more carefully:
+
+```
+- Reconcile state-only tool failures (state_only_failed_tool_count=41): State events contained failed tool actions without matching transcrip...
+- Reconcile transcript-only tool failures (transcript_only_failed_tool_count=1): Recent transcripts contained failed tool actions absent from state ev...
+```
+
+The `state_only_failed_tool_count=41` is much larger than `transcript_only_failed_tool_count=1`. This suggests the state recorder is recording failures that transcripts miss — possibly because the failures happen outside normal tool execution (e.g., in error recovery paths, or during state recording itself).
+
+Let me check what `FailureObserved` events look like and where they're emitted.
+
+Actually, I should just plan the tasks now. Let me keep it simple:
+
+**Task 01**: Replace stale seed. Focus on `state_only_failed_tool_count=41` — the state-transcript reconciliation gap. The state recorder in `src/state.rs` emits `FailureObserved` events that don't have matching transcript entries. Investigate where these come from (likely error-recovery or internal paths) and either pair them with transcript-visible evidence or add a `source` discriminator so the dashboard can distinguish internal from agent-visible failures.
+
+Wait, but the task needs to be concrete and verifiable. Let me think about what the actual fix would be...
+
+The mismatch could be caused by:
+1. `FailureObserved` events emitted during state recording itself (e.g., when `append_terminal_state_events.py` runs and finds orphaned runs)
+2. Tool failures that happen during error recovery that don't go through normal transcript capture
+3. The transcript parser missing certain failure patterns
+
+For a 20-minute task, I should scope it narrowly. Let me focus on identifying and classifying the source of these 41 state-only failures, rather than trying to fix all of them.
+
+Actually, let me look at this differently. The trajectory says there are 41 state events that show failed tool actions but no matching transcript entry. This is a reconciliation metric computed by `scripts/build_evolution_dashboard.py` or `scripts/log_feedback.py`. The fix might be:
+
+1. In `src/state.rs`: Add a `source` or `origin` field to `FailureObserved` events to distinguish internal/harness failures from agent-visible tool failures
+2. In `scripts/log_feedback.py`: Filter out harness-internal failures from the reconciliation count
+
+Or alternatively:
+1. In `scripts/append_terminal_state_events.py`: The terminal state appender might be creating `FailureObserved` events for runs that don't have transcripts
+
+Let me take a quick look at where FailureObserved events are emitted in src/state.rs.
+
+OK let me just plan the tasks. I'll do a quick ownership check.
+
+For Task 01: `state_only_failed_tool_count=41` — state-transcript reconciliation
+- Files: `src/state.rs`, `scripts/log_feedback.py`
+
+For Task 02: `bash_tool_error=12` — bash recovery improvements
+- Files: `src/prompt.rs`, `src/tools.rs`
+
+Let me check if there are existing `FailureObserved` emissions in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 21.5s (3 ✓)
+
+Good — Day 144 already landed the self-referential fallback fix (Issue #135). The seed task_01.md is stale. Let me do quick ownership checks, then write the real plan.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ rg -n 'FailureObserved' src/state.rs | head -20  ▶ $ rg -n 'state_only_failed_tool\|transcript_only_failed\|failed_tool.*reconcil' sc…  ▶ $ rg -n 'fn.*retry\|max_retries\|BACKOFF\|bash.*error\|tool.*failure\|recovery_hin… ✓ (1.6s)
+ ✓ (1.6s)
+ ✓ (4.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`rg` is not available. Let me use `grep` instead.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'FailureObserved' src/state.rs | head -20  ▶ $ grep -n 'state_only_failed_tool\|transcript_only_failed\|failed_tool.*reconcil' …  ▶ $ grep -n 'fn.*retry\|max_retries\|bash.*error\|tool.*failure\|recovery_hint' src/… ✓ (2.5s)
+ ✓ (1.8s)
+ ✓ (3.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. Let me understand the `state_only_failed_tool_count` calculation. It's in `scripts/build_evolution_dashboard.py` at line 2713 — `unique_delta_count(state_failed_tools_all, transcript_failed_tools_all)`. So it counts tool failures that appear in state events but NOT in transcripts.
+
+The `FailureObserved` events are emitted in `src/state.rs` from:
+- Line 60: panic hook
+- Line 365: orphaned run handling
+- Various test cases
+
+The key insight: `FailureObserved` events are emitted from the panic hook (line 60) and from auto-closing orphaned runs (line 459). These are harness-internal events that wouldn't appear in agent transcripts. If the dashboard reconciliation counts them as "tool failures" and compares against transcripts, the mismatch is expected — harness-internal failures don't go through the agent's tool execution path.
+
+Now let me plan the tasks:
+
+**Task 01**: Replace stale seed. Focus on `state_only_failed_tool_count=41`. The fix is to add a discriminator to `FailureObserved` events so the reconciliation in `scripts/build_evolution_dashboard.py` can classify them as harness-internal vs agent-visible. This is narrow and actionable.
+
+**Task 02**: Address `bash_tool_error=12` — improve bash error recovery. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying." The retry logic is in `src/prompt.rs` around line 1405.
+
+Let me write the task files now. I need to also write issue_responses.md.
+
+For issue responses:
+- #135: Already fixed by Day 144 — close
+- #134: Still active, but previous attempt reverted. Defer for now, note that state integrity fix (Task 01) will help diagnose it.
+- #105: Blocked on yoagent upstream (#90). No change.
+- #131: Still waiting for human. No change.
+- #90: Still waiting for human. No change.
+
+Let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+Good. Now I have the evidence I need. Let me write the plan. The seed task_01.md is stale (Issue #135 was already fixed in Day 144's session), so I'll replace it with evidence-backed tasks.
+  - Title: Fix assessment phase timeout after 600s with trajectory evidence
+  - Files: scripts/preseed_session_plan.py
+  + Title: Add harness-internal discriminator to FailureObserved events to fix state-transcript reconciliation
+  + Files: src/state.rs, scripts/build_evolution_dashboard.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The harness reached planning with no task artifacts. That makes evolution look healthy while skipping implementation, so planning reliability itself becomes the highest-priority repair.
+  + - Trajectory: state_only_failed_tool_count=41 — 41 state events contain failed tool actions with no matching transcript entry
+  + - Trajectory: transcript_only_failed_tool_count=1 — only 1 transcript failure missing from state (asymmetric)
+  + - The 41:1 ratio strongly suggests harness-internal FailureObserved events (panic hook at state.rs:60, orphaned-run auto-close at state.rs:459) are being counted as tool failures in the reconciliation query
+  + - `scripts/build_evolution_dashboard.py:2713` computes `state_only_failed_tool_count` as `unique_delta_count(state_failed_tools_all, transcript_failed_tools_all)` — it treats ALL FailureObserved events as tool failures
+  + - The panic hook (state.rs:32-60) emits `FailureObserved` with `Actor::Harness` — these are infrastructure failures, not agent tool failures
+  + - The orphaned-run closer (state.rs:412-459) also emits `FailureObserved` — same category
+  + - Existing `Actor` enum already has `Harness` vs `Agent` — the reconciliation just doesn't filter by actor
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (56 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (56 lines) ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write task_02.md. The next pressure is `bash_tool_error=12`. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying." Let me check what the bash tool error recovery looks like in prompt.rs.
+
+Actually, let me also consider: there's Issue #134 about model lifecycle gap (unmatched_completed_count=230). It was reverted because the agent couldn't land the implementation. The scope was too broad. But the issue is real — 230 unmatched events is the #1 graph pressure.
+
+Let me think about whether to make task_02 about bash errors or about the model lifecycle gap.
+
+The model lifecycle gap is higher priority (230 vs 12), but it was already attempted and reverted. The task needs to be narrower. 
+
+For task_02: I'll focus on the `bash_tool_error=12` pressure since it's more actionable — improving bash error recovery in the retry loop. This is in `src/prompt.rs`.
+
+Actually wait — the trajectory graph pressures in order:
+1. Make planning failure actionable (planner_no_task_count=1)
+2. Raise session success rate
+3. Bound failing shell commands before retrying (bash_tool_error=12)
+4. Reconcile transcript-only tool failures (transcript_only_failed_tool_count=1)
+5. Reconcile state-only tool failures (state_only_failed_tool_count=41) — I just addressed this
+
+Task 01 already addresses #5. Let me think about what's most impactful for the remaining slots.
+
+The `bash_tool_error=12` is actionable — it's about improving error messages when bash commands fail. The retry logic in prompt.rs could surface better diagnostics.
+
+But actually, looking at the trajectory again: `session_success_rate=0.0` and `planner_no_task_count=1`. The assessment phase is timing out. The most impactful thing would be to prevent assessment timeouts. But evolve.sh is protected...
+
+Let me think differently. What if I create a task that reduces the assessment scope or improves the assessment prompt to be faster? The assessment prompt is constructed in `scripts/evolve.sh` but the prompt content might come from another file.
+
+Actually, looking at `scripts/preseed_session_plan.py` — this script was updated in Day 144 to fix the planning fallback. Maybe there's also a way to improve how the assessment phase works through this script.
+
+But wait — the assessment is Phase A1, `preseed_session_plan.py` is the task seeder that runs between A1 and A2. Different phases.
+
+Let me focus on what I can actually change. The `bash_tool_error=12` is a good candidate. Let me check what the actual recovery looks like.
+
+For task_02, let me focus on improving bash error recovery hints in the retry logic.
+
+Actually, let me reconsider. The trajectory says there's also `failed_tool_summary.bash_tool_error=12`. Let me check what this means — it could be about bash tool errors during implementation, not during planning. The recovery hints in `src/prompt.rs` affect how the agent retries after errors.
+
+Let me write task_02.md about improving bash error recovery. The files would be `src/prompt.rs` and `src/tools.rs`.
+
+But wait — the policy says: "Prefer tasks that improve DeepSeek reliability, observability, eval coverage, prompt/context policy, protocol handling, cache behavior, or harness self-evolution quality."
+
+The bash error recovery is a reliability improvement. Good.
+
+Let me also consider: do I want a task_03? The policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." I have task_01 from state evidence. Let me add task_02 from trajectory evidence.
+
+For task_03, maybe I should create one about the `transcript_only_failed_tool_count=1` or defer. Actually, 1 is negligible. Let me skip task_03.
+
+Let me write task_02 and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Improve bash error recovery hints with bounded retry guidance
+  + Files: src/prompt.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Trajectory: failed_tool_summary.bash_tool_error=12 — 12 bash tool errors across recent sessions
+  + - Trajectory graph pressure: "Bound failing shell commands before retrying — prefer bounded commands with explicit paths and inspect exit output before retrying"
+  + - The retry loop in `src/prompt.rs` (run_prompt_auto_retry at line 1405, run_prompt_auto_retry_with_content at line 1462) constructs retry prompts when tool calls fail
+  + - Current retry prompts may not include specific guidance about bounding commands (adding timeouts, using explicit paths, checking $? immediately)
+  + - Day 114 learning: "A recovery instruction without timing is a tip, not a safety net" — recovery hints need temporal constraints
+  + - Day 114 also added `set -e` guidance and `./script.sh` path hints to bash recovery — but retry prompt construction may not surface these
+  + 
+  + Edit Surface:
+  + - src/prompt.rs
+  + 
+  + Verifier:
+  + - cargo build
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (52 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (52 lines) ✓ (362ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md. Let me review the issues:
+
+- #135: Already fixed by Day 144 (commit d68c13f2). Should be closed.
+- #134: Model lifecycle gap. Was reverted. Still active but I didn't make it a task. Defer.
+- #105: Cache metrics. Blocked on yoagent upstream (#90). No change.
+- #131: Help wanted - evaluator timeouts. Still waiting for human.
+- #90: Help wanted - yoagent Usage struct. Still waiting for human.
+
+I should also consider: should I close #135 via gh? The task says I should write responses in issue_responses.md and the implementation agent will handle the actual close.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 145
+  + 
+  + ## #135: Task reverted: Break self-referential planning fallback
+  + **Action: CLOSE as resolved**
+  + 
+  + Day 144's successful session (commit d68c13f2) landed this exact fix. The self-referential planning fallback in `scripts/preseed_session_plan.py` now routes to `_healthy_codebase_fallback()` when analysis-only pressure is active. The task was previously reverted due to evaluator timeout, not code failure — the code was correct and passed tests. Day 144 re-ran it with the same scope and it landed cleanly (2/2 strict verified). Closing.
+  + 
+  + ## #134: Task reverted: Close harness-internal model lifecycle gap
+  + **Action: DEFER**
+  + 
+  + The `deepseek_model_call_unmatched_completed_count=230` is still the #1 graph pressure. But the previous implementation attempt failed to land any code — the agent spent 24 turns reading source without producing changes. The scope was too broad (whole src/state.rs). 
+  + 
+  + Today's task_01 addresses a related state integrity issue (`state_only_failed_tool_count=41`) by filtering harness-internal events from the dashboard reconciliation. That fix will make the model lifecycle gap easier to diagnose by reducing noise. I'll revisit #134 in a future session with narrower scope — likely just adding a `harness_internal: bool` discriminator to the event payload rather than trying to pair every event.
+  + 
+  + ## #105: Task reverted: Record DeepSeek prompt cache metrics
+  + **Action: DEFER (blocked upstream)**
+  + 
+  + Still blocked on yoagent upstream (#90). The yoagent `Usage` struct drops `cache_read_input_tokens` and `cache_creation_input_tokens` fields from DeepSeek API responses. The diagnostic paths (`deepseek stream-check`, `deepseek fim-complete`) prove the data exists — they parse raw SSE/JSON and report cache ratios correctly. But agent chat completions go through yoagent's `Usage` struct which silently drops these fields.
+  + 
+  + No change from previous sessions. Waiting for a human with yoagent repo access to add two fields.
+  ... (10 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (30 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (30 lines) ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the plan files are written correctly and the task files are valid. Let me also verify the issue_responses.md is complete.
+
+Let me also check if there are any issues I missed — the trusted owner issues section says to check ISSUES_TODAY.md but I don't see any content from it in the context. Let me check if it exists.
+
+Actually, looking back at the prompt, the ISSUES_TODAY.md content was supposed to be included in the "TRUSTED OWNER ISSUES" section but it appears empty — there's no content between the header and the next section. So there are no trusted owner issues to address.
+
+Let me verify the plan files exist and look reasonable.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan files are complete and valid.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "=== TASK 01 ===" && head -5 session_plan/task_01.m… ✓ (789ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The plan is complete:
+
+1. `session_plan/task_01.md` — Add harness-internal discriminator to FailureObserved events (src/state.rs, scripts/build_evolution_dashboard.py)
+2. `session_plan/task_02.md` — Improve bash error recovery hints (src/prompt.rs)
+3. `session_plan/issue_responses.md` — Issue responses for #135 (close), #134 (defer), #105 (defer/blocked), #131 (waiting), #90 (waiting)
+
+Both tasks are evidence-backed from the trajectory:
+- Task 01 addresses `state_only_failed_tool_count=41` (graph pressure #5, but closely related to state integrity)
+- Task 02 addresses `bash_tool_error=12` (graph pressure #3)
+
+Both tasks are narrow (2 files max, one fix each), verifiable with existing tests, and touch files I confirmed exist via ownership checks.
+
+Let me also confirm: the seed task_01.md was replaced. The old seed was about "Fix assessment phase timeout" targeting the wrong file (preseed_session_plan.py instead of evolve.sh). The assessment timeout is a real problem but it's in a protected file, so I can't fix it directly. My replacement tasks are actionable.
+
+I should summarize what I did for the user.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's what I produced for Day 145:
+
+────────────────────────────────────────
+
+**session_plan/task_01.md** — Add harness-internal discriminator to FailureObserved events
+• **Pressure**: `state_only_failed_tool_count=41` (41 state failures with no transcript match, only 1 the reverse)
+• **Root cause**: Harness-internal `FailureObserved` events (panic hook, orphaned-run closer) use `Actor::Harness` but the dashboard reconciliation in `build_evolution_dashboard.py` doesn't filter by actor
+• **Fix**: Add an actor filter at line ~2713 to exclude `Actor::Harness` events from the tool-failure reconciliation
+• **Files**: `src/state.rs`, `scripts/build_evolution_dashboard.py`
+• **Verify**: `cargo test state`, dashboard import check
+
+**session_plan/task_02.md** — Improve bash error recovery hints with bounded retry guidance
+• **Pressure**: `bash_tool_error=12` (12 bash tool failures in recent sessions)
+• **Fix**: Add bash-specific recovery hints to the retry prompt in `src/prompt.rs` — explicit paths, `--` separator, check `$?` immediately
+• **Files**: `src/prompt.rs`
+• **Verify**: `cargo test prompt`
+
+**session_plan/issue_responses.md**:
+• **#135**: CLOSE — Day 144 already landed this fix (commit `d68c13f2`)
+• **#134**: DEFER — state integrity fix (task_01) will help diagnose it; revisit with narrower scope
+• **#105**: DEFER — still blocked on yoagent upstream (#90)
+• **#131, #90**: WAITING — no human replies yet
+
+The stale seed task_01.md was replaced — it targeted `scripts/preseed_session_plan.py` for an assessment timeout problem that lives in the protected `scripts/evolve.sh`. Day 144 already fixed the preseed_session_plan.py fallback anyway.
+
+

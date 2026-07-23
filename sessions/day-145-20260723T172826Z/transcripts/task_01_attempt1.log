@@ -1,0 +1,442 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. The core problem is that `state_only_failed_tool_count=41` in the trajectory is inflated because harness-internal `FailureObserved` events (panic hooks, orphaned-run auto-close) are being counted as tool failures in the reconciliation query. The fix is to filter on `Actor::Harness` vs `Actor::Agent` in the dashboard script.
+
+Let me start by reading the evolve skill, then the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the key files mentioned in the task:
+1. `scripts/build_evolution_dashboard.py` around line 2713 for the reconciliation query
+2. `src/state.rs` around lines 32-60 and 412-459 for the panic hook and orphaned-run closer
+
+Let me also check the variable `state_failed_tools_all` to understand how it's populated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (436ms)
+  ▶ todo ✓ (394ms)
+  ▶ todo ✓ (440ms)
+  ▶ todo ✓ (411ms)
+  ▶ todo ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the relevant sections in parallel.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 3.7s (5 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (412ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2690..2750  ▶ read src/state.rs:1..81 ✓ (1.3s)
+ ✓ (796ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I can see that line 60 in state.rs uses `Actor::Harness` for the panic hook FailureObserved event. Now let me:
+
+1. Find where `state_failed_tools_all` is populated in the dashboard script
+2. Check the orphaned-run closer around line 412-459 in state.rs
+3. See how the `Actor` enum is defined and serialized
+
+Let me search for these things.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_failed_tools_all' in scripts/build_evolution_dashboard.py  ▶ read src/state.rs:400..460  ▶ search 'enum Actor' in src/state.rs ✓ (853ms)
+ ✓ (792ms)
+ ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read:
+1. The lines around 2682 to see how `state_failed_tools_all` is populated
+2. The Actor enum at line 162
+3. Also check how the event_data is populated - specifically how failed_tools are extracted from events
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2675..2710  ▶ read src/state.rs:155..175 ✓ (1.3s)
+ ✓ (810ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand how `event_data` is populated. The key is `event_data["failed_tools"]` which is a set/list of failed tool labels. I need to find where `event_data` is constructed and how `failed_tools` and `_failed_tools_all` are computed. The `_failed_tools_all` seems to be the raw set and `failed_tools` is the compacted version.
+
+Let me search for where `_failed_tools_all` is set and how the event data is built. It likely comes from state events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_failed_tools_all' in scripts/build_evolution_dashboard.py  ▶ search 'event_data\[' in scripts/build_evolution_dashboard.py ✓ (812ms)
+ ✓ (845ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the `event_data` variable itself to find where it's constructed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '"event_data"' in scripts/build_evolution_dashboard.py ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check around line 714 where `_failed_tools_all` is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:680..740 ✓ (406ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, this is the `summarize_transcript_actions` function. Now I need to find where `event_data` is populated. The `event_data` comes from state events, processed somewhere. Let me look for where the state tool failure data is extracted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'failed_tools' in scripts/build_evolution_dashboard.py ✓ (406ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the function that processes state events to build the `event_data` dictionary. This is likely the `summarize_audit_actions` function or similar. Let me search for where the state event processing happens.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'summarize_state' in scripts/build_evolution_dashboard.py  ▶ search 'FailureObserved' in scripts/build_evolution_dashboard.py ✓ (788ms)
+ ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the function around line 937 where FailureObserved is referenced to understand how state events are processed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:900..980 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is the `trace_quality` function, which just counts events by type. The actual tool failure extraction from state events happens elsewhere. Let me look for where `failed_tools` is computed from state events. It's likely in a function that processes state event payloads.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def summarize_state' in scripts/build_evolution_dashboard.py  ▶ search 'event_data =' in scripts/build_evolution_dashboard.py ✓ (801ms)
+ ✓ (853ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `summarize_events_for_work` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def summarize_events_for_work' in scripts/build_evolution_dashboard.py ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2241..2351 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see where `FailureObserved` events are processed in this function and how `failed_tools` are added. Let me continue reading.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2350..2450 ✓ (400ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The `summarize_events_for_work` function iterates over events and builds `failed_tools` from `ToolCallCompleted` events (lines 2361-2368). It does NOT process `FailureObserved` events at all for the `failed_tools` list.
+
+So the `failed_tools` coming from state events are from `ToolCallCompleted` events with errors. That's correct filtering.
+
+The question is: where do the 41 `state_only_failed_tool_count` tools come from? They come from `ToolCallCompleted` events in the state that don't have matching transcript entries. But the task says harness-internal `FailureObserved` events are being counted as tool failures...
+
+Wait, let me re-read the task description more carefully. The task says:
+- "the panic hook (state.rs:32-60) emits `FailureObserved` with `Actor::Harness` — these are infrastructure failures, not agent tool failures"
+- "the orphaned-run closer (state.rs:412-459) also emits `FailureObserved` — same category"
+
+But looking at the code, `FailureObserved` events are NOT contributing to `failed_tools` in `summarize_events_for_work`. The `failed_tools` list is populated only from `ToolCallCompleted` events.
+
+Wait, maybe there's another path? Let me check if there's a different processing pipeline for `failed_tools` from state events. Perhaps it comes from the `event_counts` or from a different function. Let me look at the task description again...
+
+The task says the fix should be:
+- "Filtering harness-internal events from the tool-failure reconciliation"
+- "The fix is in `scripts/build_evolution_dashboard.py` around line 2713"
+- "The `state_failed_tools_all` set is populated from state events — add an actor filter there"
+
+But looking at the code I see:
+1. `state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])` (line 2682)
+2. `event_data` comes from `summarize_events_for_work` which only adds to `failed_tools` from `ToolCallCompleted` events with errors (lines 2361-2368)
+
+So the `failed_tools` already should only contain tool call failures, not `FailureObserved` events. Hmm, unless the `FailureObserved` events are somehow being double-counted through a different path...
+
+Wait, let me look at what the `exit_code_failure` function does to understand what counts as a failure. Also, let me check if there's some other mechanism...
+
+Actually, the task says "state_only_failed_tool_count=41" — these could be genuine tool failures that exist in state but don't appear in transcripts. This is a different problem from what the task describes. Let me re-read the task more carefully.
+
+The task claims that `FailureObserved` events are being counted as tool failures. But from the code, they're not — only `ToolCallCompleted` events with errors contribute to `failed_tools`.
+
+Let me search for whether there's some other way `FailureObserved` events affect the `failed_tools` count. Maybe through the `event_counts` or through a different processing path.
+
+Actually wait, let me look more carefully. The task says `scripts/build_evolution_dashboard.py:2713` computes `state_only_failed_tool_count`. Let me look at how `event_data` is populated for the state side, and then also look at `log_feedback.py` which processes state events differently and might be generating the `failed_tools`.
+
+Actually, the dashboard script processes state events through `summarize_events_for_work`, and the `failed_tools` only come from `ToolCallCompleted` events. So the claim that harness-internal `FailureObserved` events inflate the count is questionable.
+
+But wait — I should check if maybe there's another path. Perhaps `log_feedback.py` computes `failed_tools` differently and feeds that into the dashboard somehow. Let me look at the trajectory extractor to see where the 41 count comes from.
+
+Actually, let me look at this more carefully. The `state_only_failed_tool_count` is `unique_delta_count(state_failed_tools_all, transcript_failed_tools_all)`. This means tools that appear in state "failed_tools" but not in transcript "failed_tools". So if every `ToolCallCompleted` error in state is also in transcripts, this count would be 0.
+
+The 41:1 ratio suggests there are 41 tool failures recorded in state that don't have matching transcript entries. These could be:
+1. Harness-internal `FailureObserved` events with tool-like payloads (but the code doesn't seem to process these into `failed_tools`)
+2. Some other mechanism
+
+Wait, let me check if `FailureObserved` events could carry payloads with `tool_name` or similar fields that would cause them to be picked up by the `ToolCallCompleted` processing. No, that can't be — the events are filtered by `kind == "ToolCallCompleted"`.
+
+Let me think differently. Maybe the issue is in `log_feedback.py`. Let me check how `log_feedback.py` processes events and whether it counts `FailureObserved` as tool failures.
+
+Actually, let me check the trajectory extractor to see where the 41 number comes from.
+
+Let me look at this from a different angle. Let me look at `scripts/build_evolution_dashboard.py` to see if there's some other code path that processes `FailureObserved` events into failed tool labels.
+
+Actually, let me re-examine. The `summarize_events_for_work` function returns `failed_tools` which is only from `ToolCallCompleted` errors. This goes into `event_data["failed_tools"]`. Then at line 2682:
+```python
+state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])
+```
+
+But wait, `_failed_tools_all` is a key in transcript_actions, not event_data! Let me look again...
+
+At line 714:
+```python
+"_failed_tools_all": failed_tools,
+```
+This is in `summarize_transcript_actions` which returns dict with `_failed_tools_all` as a key. The transcript data is built separately.
+
+At line 2682:
+```python
+state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])
+```
+
+So `event_data` is the state-side data from `summarize_events_for_work`. It has a `failed_tools` key. The question is whether `event_data` also has a `_failed_tools_all` key. Looking at the return value of `summarize_events_for_work` — let me check that.
+
+Wait, let me read the rest of `summarize_events_for_work` to see its return value.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2449..2529 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so now I have the full picture. The `summarize_events_for_work` function:
+
+1. Returns `_failed_tools_all` at line 2497 which includes ALL failed tools from `ToolCallCompleted` events with errors
+2. Returns `failed_tools` as a compacted version
+3. `ToolCallCompleted` events are only added to `failed_tools` at lines 2361-2368
+
+The `FailureObserved` events are NOT being added to `failed_tools` at all in this function. They are simply not processed.
+
+So the task's premise — that harness-internal `FailureObserved` events inflate the `state_only_failed_tool_count` — may be incorrect. The 41 `state_only_failed_tool_count` entries could be genuine `ToolCallCompleted` errors that exist in state but not in transcripts.
+
+But wait — let me check `log_feedback.py` to see if it processes state events differently and could be the source of the `failed_tools` that goes into the dashboard.
+
+Actually, looking at the code flow more carefully:
+
+At line 2621:
+```python
+event_data = summarize_events_for_work(load_jsonl(session_dir / "state" / "events.jsonl"))
+```
+
+And then at line 2682:
+```python
+state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])
+```
+
+So `state_failed_tools_all` gets the raw `failed_tools` list from state events (from `ToolCallCompleted` errors).
+
+Now, the transcripts side: `transcript_failed_tools_all` comes from `transcript_actions.get("_failed_tools_all", transcript_actions["failed_tools"])` at line 2683. These are transcript actions processed by `summarize_transcript_actions`.
+
+The `unique_delta_count(state_failed_tools_all, transcript_failed_tools_all)` gives tools that are in state but not in transcripts. If there are 41 of these, it means there are 41 tool failures recorded in state events that the transcript parser didn't pick up.
+
+Now, is it possible that some state `ToolCallCompleted` events have harness-internal origins that shouldn't be counted? Let me think about this...
+
+Actually, the task has a Fallback clause: "If Actor filtering is already implemented in the reconciliation but the count is still 41, the issue is in how transcripts classify tool failures — mark this task obsolete and write a new task targeting transcript parsing in scripts/log_feedback.py."
+
+This suggests the task author anticipated this possibility. Let me now:
+
+1. Check if there's an `Actor` field in the events processed by `summarize_events_for_work` 
+2. Check if the state event's Actor field is accessible from the event dict
+3. Validate the actual mechanism
+
+Looking at `event_kind`, `event_payload`, `event_run_id` — these are helpers that extract from the JSON. Let me check what `event_payload` returns — specifically whether it includes the `actor` field.
+
+Actually, let me search for these helper functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_payload' in scripts/build_evolution_dashboard.py  ▶ search 'def event_kind' in scripts/build_evolution_dashboard.py ✓ (809ms)
+ ✓ (854ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:360..385 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to check how the `actor` field is stored in the events. Looking at `src/state.rs`, the `StateEvent` struct has an `actor: Actor` field. When serialized to JSON, it would be a field of the event object, not the payload. So it would be `event["actor"]`.
+
+Let me now verify the actual mechanism. The task says `FailureObserved` events with `Actor::Harness` inflate the count. But from the code in `summarize_events_for_work`, only `ToolCallCompleted` events are used for `failed_tools`, not `FailureObserved`. 
+
+Wait, let me re-examine. Maybe `FailureObserved` events contain payloads with `tool_name` fields that would be picked up? No, `FailureObserved` events aren't even checked for `ToolCallCompleted` kind — they have kind `FailureObserved`, not `ToolCallCompleted`.
+
+So the premise in the task description may be wrong, BUT the task's Fallback says: "If Actor filtering is already implemented in the reconciliation but the count is still 41, the issue is in how transcripts classify tool failures — mark this task obsolete and write a new task targeting transcript parsing in scripts/log_feedback.py."
+
+However, looking at the code more carefully, the issue is NOT that Actor filtering is already implemented — it's that `FailureObserved` events are NEVER counted as tool failures. So the task premise is wrong.
+
+But wait - let me check if there's perhaps a different code path where `FailureObserved` events could end up in `failed_tools`. Let me search for `FailureObserved` more broadly in the dashboard.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:930..980 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `FailureObserved` is only used in `trace_quality` to count operational events. It is NOT used in `summarize_events_for_work` for `failed_tools`.
+
+Now, let me check if maybe `log_feedback.py` processes events differently and feeds into the dashboard. Let me look at the trajectory extractor.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_only_failed_tool_count' in scripts/extract_trajectory.py ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `state_only_failed_tool_count` is used in the trajectory extractor. But more importantly, let me now think about whether the task premise is correct.
+
+Looking at the code:
+1. `summarize_events_for_work` builds `failed_tools` ONLY from `ToolCallCompleted` events with errors (lines 2361-2368)
+2. `FailureObserved` events are never added to `failed_tools`
+3. The `state_only_failed_tool_count` is `unique_delta_count(state_failed_tools_all, transcript_failed_tools_all)` where `state_failed_tools_all` comes from `event_data["_failed_tools_all"]`
+
+So the issue is NOT that `FailureObserved` events are counted as tool failures. The `failed_tools` in state events are actual tool failures. The question is why these 41 tool failures in state have no matching entries in transcripts.
+
+But the task specifically says to filter by actor. Let me think about what the actual fix should be...
+
+Actually, wait. Let me re-read the task more carefully. It says:
+
+> The panic hook (state.rs:32-60) emits `FailureObserved` with `Actor::Harness` — these are infrastructure failures, not agent tool failures
+> The orphaned-run closer (state.rs:412-459) also emits `FailureObserved` — same category
+> Existing `Actor` enum already has `Harness` vs `Agent` — the reconciliation just doesn't filter by actor
+
+But the reconciliation code I see doesn't process `FailureObserved` at all. The `failed_tools` come from `ToolCallCompleted`. So...
+
+Hmm, unless the task author is confused and thinks that `FailureObserved` events somehow contribute to `failed_tools` count, but they don't. In that case, the Fallback applies: the issue is elsewhere.
+
+But the Fallback says: "If Actor filtering is already implemented in the reconciliation but the count is still 41, the issue is in how transcripts classify tool failures — mark this task obsolete and write a new task targeting transcript parsing in scripts/log_feedback.py."
+
+Actor filtering is NOT already implemented in the reconciliation — because `FailureObserved` events aren't even in the `failed_tools` pipeline. So the Fallback doesn't quite apply either. But the task premise is wrong.
+
+Let me think about this differently. Maybe there IS a mechanism by which `FailureObserved` events could inflate the count, one that I'm not seeing. Let me look more carefully...
+
+Actually, wait. Let me look at the `event_counts` in the summary. Maybe the `failed_tool_count` in the summary is computed differently from `event_counts` rather than from the `failed_tools` list.
+
+Let me look at how `event_data` is used more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2615..2645 ✓ (400ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so I can see at line 2639-2642, the `failed_tool_values` is a concatenation of state and transcript failed tools. But importantly, `state_failed_tools_all` at line 2682 uses only state events:
+
+```python
+state_failed_tools_all = event_data.get("_failed_tools_all", event_data["failed_tools"])
+```
+
+This comes from `summarize_events_for_work` where `_failed_tools_all` is populated at line 2497, which itself comes from the `failed_tools` list populated at lines 2361-2368 (only from `ToolCallCompleted` errors).
+
+Now, I'm convinced that `FailureObserved` events are NOT contributing to the `failed_tools` in `summarize_events_for_work`. The task premise is incorrect.
+
+However, the task has a Fallback that says: "If Actor filtering is already implemented in the reconciliation but the count is still 41..." — which doesn't quite match (actor filtering isn't "already implemented", it's that the mechanism doesn't even process FailureObserved).
+
+But there's a catch: the Fallback also says "mark this task obsolete and write a new task targeting transcript parsing in scripts/log_feedback.py."
+
+I think the right thing to do here is:
+1. The task premise is wrong — `FailureObserved` events don't contribute to `failed_tools` in the dashboard
+2. The 41:1 ratio is real but the cause is different than what the task claims
+3. Per the Fallback, I should mark this task obsolete and write an obsolete note
+
+But wait — let me also check if maybe this is actually about a totally different code path. Let me look at `log_feedback.py` to see if it processes FailureObserved into tool failures somewhere that gets fed into the dashboard.
+
+Actually, let me also look at the `transcript_summary` function to understand how transcript tool failures are computed, since the asymmetry is 41 state-only vs 1 transcript-only.
+
+Actually, I think the right approach per the evolve skill rule #6 is: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+And the Fallback says: "mark this task obsolete and write a new task targeting transcript parsing in scripts/log_feedback.py."
+
+Let me write the obsolete task note. But first, let me verify my understanding is correct by looking at a sample state events file to confirm that FailureObserved events don't carry tool_name payloads.
+
+Actually, I should just write the obsolete note. The evidence is clear:
+1. `summarize_events_for_work` only adds to `failed_tools` from `ToolCallCompleted` events with errors (lines 2361-2368)
+2. `FailureObserved` events are never processed for `failed_tools`
+3. Therefore, the claimed mechanism (harness-internal FailureObserved inflating state_only_failed_tool_count) doesn't exist
+
+The 41:1 asymmetry is a real problem, but it's caused by transcript parsing gaps, not by panic-hook FailureObserved events being misclassified.
+
+Wait, but let me be more careful. Let me search for any other place in the dashboard where FailureObserved events might be turned into tool failures. Let me also check if there's some function that iterates over events and looks at error labels more broadly.
+
+Actually, let me also think about whether the `event_counts` in the summary is somehow separate. Let me check the `state_pipeline_summary` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def state_pipeline_summary' in scripts/build_evolution_dashboard.py ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function too to see if it processes FailureObserved.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:1169..1219 ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `state_pipeline_summary` doesn't process FailureObserved into tool failures either.
+
+Let me now approach this differently. Let me check if there's maybe a different query or computation that generates `state_only_failed_tool_count` besides what I've found at line 2713. Let me also check if the `log_feedback.py` processes state differently.
+
+Actually, I think I should just check the actual state events to see what kinds of FailureObserved events exist and whether any of them have tool-like payloads. But that would require having the state events file, which is a runtime artifact.
+
+Let me instead focus on what I can verify: look at the `record` function in `state.rs` to understand how FailureObserved events are recorded, and confirm that they don't have tool_name fields.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record(' in src/state.rs ✓ (409ms)
+
+

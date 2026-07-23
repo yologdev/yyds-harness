@@ -1,0 +1,353 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to improve bash error recovery hints in the retry prompt in `src/prompt.rs`. Let me first read the evolve skill, then examine the relevant code.
+
+Let me plan my approach:
+1. Read `skills/evolve/SKILL.md` for the implementation contract
+2. Read `src/prompt.rs` around the retry prompt construction (lines ~1405, ~1462)
+3. Understand current retry prompt behavior
+4. Check if bash-specific hints already exist
+5. Implement changes
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:1380..1530 ✓ (1.2s)
+ ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find the `build_auto_retry_prompt` function to understand how retry prompts are constructed. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_auto_retry_prompt' in src/prompt.rs ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `build_auto_retry_prompt` function and the surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:270..370 ✓ (404ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `build_auto_retry_prompt` function is in `src/prompt_retry.rs`. Let me read that file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find the `tool_recovery_hint` function to understand what recovery hints currently exist for bash, and then I'll know if the task is already satisfied or needs changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_recovery_hint' in src/prompt_retry.rs ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `tool_recovery_hint` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:99..249 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the current state. Let me analyze:
+
+The `tool_recovery_hint` function already has bash-specific recovery hints:
+- **Attempt 1 (lines 138-146):** "The shell command failed. Inspect the exit code and stderr output above to understand why — both stdout and stderr carry diagnostic signals. Before retrying, verify any file paths exist: use `test -f <path>` for files, `ls <dir>` for directories, or `rg --files | head` to list available project files. Then try a simpler bounded version of the command: pipe through `head -n 50` or `tail -n 20` to keep output manageable."
+- **Attempt 2+ (lines 126-132):** "Try a simpler bounded command: break into smaller steps with explicit absolute paths. Check exit output first — don't retry the same command without understanding the failure. Verify paths exist with `ls` or `test -f`. Prefer targeted tools (read_file, search) over complex shell pipelines. Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+
+Now let me check what the task is asking for specifically:
+- (1) add `--` to separate flags from positional args
+- (2) use explicit paths like `./script.sh` not `script.sh`
+- (3) check `$?` immediately after the failing command
+
+The current hints DO include:
+- "verify any file paths exist"
+- "use explicit absolute paths" (attempt 2)
+- "Inspect the exit code" (attempt 1)
+- "Check exit output first" (attempt 2)
+- "Try a simpler bounded version" (both)
+
+But they DON'T include:
+- (1) `--` to separate flags from positional args
+- (3) checking `$?` immediately (the current text says "Inspect the exit code" but doesn't give the temporal constraint about doing it immediately)
+
+The Day 114 learning says: "A recovery instruction without timing is a tip, not a safety net" — and "check $? immediately after the failing command" is the temporal constraint.
+
+So the task is partially satisfied — the hints exist but could be improved. The task's fallback says:
+> "If the retry prompt already includes bounded-command guidance (timeout flags, explicit paths, set -e, check $?), mark this task obsolete."
+
+But the hints don't currently include `--` separator guidance or the `$?` immediate check. And they don't include `set -e` or timeout flags specifically. So the task is NOT fully obsolete.
+
+However, the current attempt 1 hint already says "Try a simpler bounded version" and mentions path verification. The attempt 2 hint mentions "explicit absolute paths" and "bounded command." 
+
+I think the right approach is to:
+1. Enhance the bash attempt 1 hint with the specific temporal guidance about `$?` and the `--` separator, plus `set -e`
+2. Add a test that verifies the bash-specific hint contains bounded-command guidance
+
+Let me also think about whether the bash errors are from harness infrastructure (evolve.sh) or from agent tool calls. The task says to check this. But I don't have the specific error data - however, the trajectory reports 12 bash tool errors as a pressure signal, and they're under `failed_tool_summary.bash_tool_error` which suggests they're from tool calls, not evolve.sh failures (evolve.sh errors would show up differently).
+
+So let me proceed with the implementation. I'll:
+1. Write a test first for the bash recovery hint
+2. Enhance the bash attempt 1 hint with `--`, `$?`, and `set -e` guidance
+3. Run `cargo fmt`, `cargo build`, and `cargo test prompt_retry`
+
+Let me check what tests exist in prompt_retry.rs for tool_recovery_hint first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_tool_recovery_hint' in src/prompt_retry.rs ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, there are already tests for `tool_recovery_hint`. Let me read them to understand the test pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:780..980 ✓ (359ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me look at the existing bash hints more carefully and assess what needs to change:
+
+**Current attempt 1 bash hint (lines 138-146):**
+```
+"The shell command failed. Inspect the exit code and stderr output above 
+ to understand why — both stdout and stderr carry diagnostic signals. 
+ Before retrying, verify any file paths exist: 
+ use `test -f <path>` for files, `ls <dir>` for directories, or 
+ `rg --files | head` to list available project files. 
+ Then try a simpler bounded version of the command: pipe through 
+ `head -n 50` or `tail -n 20` to keep output manageable."
+```
+
+**Current attempt 2+ bash hint (lines 126-132):**
+```
+"Try a simpler bounded command: break into smaller steps with explicit 
+ absolute paths. Check exit output first — don't retry the same command 
+ without understanding the failure. Verify paths exist with `ls` or `test -f`. 
+ Prefer targeted tools (read_file, search) over complex shell pipelines. 
+ Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+```
+
+What the task asks for in the Success Criteria:
+- "Retry prompts after bash tool failures include at least one bounded-command hint (timeout, explicit path, or set -e)"
+- "The hint is specific to bash failures, not a generic error message"
+
+What the task's Implementation Notes ask for:
+- (1) add `--` to separate flags from positional args
+- (2) use explicit paths like `./script.sh` not `script.sh`
+- (3) check `$?` immediately after the failing command
+
+The current hints already include:
+- explicit paths (attempt 2)
+- simpler bounded command (both)
+- verify file paths (attempt 1)
+
+What's missing:
+- `--` separator for flags vs positional args
+- `$?` temporal constraint ("immediately")
+- `set -e` guidance
+- timeout hints
+
+Now let me figure out what to enhance:
+
+1. In attempt 1 hint: Add "check `$?` immediately" (temporal constraint), add `--` separator guidance
+2. In attempt 2 hint: Add `set -e` and timeout guidance
+
+But wait — the task says "Keep the change under 30 lines in src/prompt.rs". But the actual change is in `src/prompt_retry.rs`, not `src/prompt.rs`. The task's Files line says `src/prompt.rs` but the implementer found the retry prompt is in `src/prompt_retry.rs`. The task file says:
+
+"Files: src/prompt.rs"
+
+But the key function (`tool_recovery_hint` and `build_auto_retry_prompt`) is in `src/prompt_retry.rs`. The task file says to check this. The evolve skill says:
+
+> If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task.
+
+Hmm, but the task also says "Edit Surface: src/prompt.rs". The actual retry prompt construction is in `src/prompt_retry.rs`. However, both `run_prompt_auto_retry` and `run_prompt_auto_retry_with_content` are in `src/prompt.rs` and they call `build_auto_retry_prompt` from `prompt_retry`. 
+
+The task implementation notes say: "The retry prompt is constructed in `run_prompt_auto_retry` (line 1405) and `run_prompt_auto_retry_with_content` (line 1462) in `src/prompt.rs`" — but the actual prompt text is in `build_auto_retry_prompt` in `src/prompt_retry.rs`, and the recovery hints are in `tool_recovery_hint` in that same file.
+
+I think the intent of the task is "Edit Surface: src/prompt.rs" but the actual code to change is in `src/prompt_retry.rs`. The task also says the change should be in `src/prompt.rs`. The task implementation notes reference `run_prompt_auto_retry` which is in `src/prompt.rs`, but the actual retry prompt *text* is constructed in `build_auto_retry_prompt` in `src/prompt_retry.rs`.
+
+Let me re-read the task more carefully:
+
+> Add a concise bash-error-recovery block to the retry prompt in `src/prompt.rs`
+
+But then:
+
+> The retry prompt is constructed in `run_prompt_auto_retry` (line 1405) and `run_prompt_auto_retry_with_content` (line 1462) in `src/prompt.rs`
+
+These functions call `build_auto_retry_prompt` from `prompt_retry`. The prompt text is built by `build_auto_retry_prompt` which calls `tool_recovery_hint`, both in `src/prompt_retry.rs`.
+
+Given the task's Evidence notes "Edit Surface: src/prompt.rs" but the real owning file is `src/prompt_retry.rs`, the evolve skill says I should write a blocked note. But wait — the task also says the Functions are in `src/prompt.rs` and gives line numbers for `run_prompt_auto_retry`. Maybe the task expects changes in `src/prompt.rs` even though the hint text is elsewhere.
+
+Actually, let me reconsider. The task says:
+
+> Add a helper function that detects whether the failed tool was a bash command and returns a bash-specific recovery hint string
+
+This could be done as a helper in `src/prompt.rs` that's called before `build_auto_retry_prompt`. But that feels convoluted.
+
+I think the most honest approach is: the actual code that needs changing is in `src/prompt_retry.rs`, not `src/prompt.rs`. I should write a blocked note.
+
+But wait, let me also consider: could I add something to `src/prompt.rs` in the `run_prompt_auto_retry` function? Like adding a bash-specific string to the retry prompt? The current flow is:
+
+```rust
+let retry_prompt = build_auto_retry_prompt(input, err, outcome.last_tool_name.as_deref(), attempt);
+```
+
+I could modify the retry prompt by adding bash-specific guidance in `src/prompt.rs` after `build_auto_retry_prompt` returns. That would keep the change in `src/prompt.rs` as the task specifies.
+
+But that would be a weird split — the recovery hints are centralized in `tool_recovery_hint`, and injecting bash-specific guidance on top of the already-present hints would be poor design. It would also make the code less maintainable because now bash hints would be in two different files.
+
+The honest thing to do is write the blocked note. The task's Files line says `src/prompt.rs` but the real owner is `src/prompt_retry.rs`.
+
+Let me write `session_plan/task_02_blocked.md`.
+
+Actually wait, let me re-read the evolve skill more carefully:
+
+> If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task.
+
+OK, this is clear. The real owning files are:
+- `src/prompt_retry.rs` — contains `tool_recovery_hint` (line 100), `build_auto_retry_prompt` (line 64), and the recovery hint tests
+
+The smallest corrected Files list would be: `src/prompt_retry.rs`
+
+Let me write the blocked note. But actually, let me also check the fallback more carefully:
+
+> Fallback:
+> - If the retry prompt already includes bounded-command guidance (timeout flags, explicit paths, set -e, check $?), mark this task obsolete.
+
+The current hints include:
+- "explicit absolute paths" ✓ (attempt 2)
+- "simpler bounded version" ✓ (both attempts)
+- exit code inspection ✓ (attempt 1 mentions "exit code", attempt 2 mentions "Check exit output first")
+- path verification ✓ (both attempts)
+
+They don't include:
+- `timeout` flags ✗
+- `set -e` ✗ 
+- `$?` immediately (temporal constraint) ✗ — current text says "Inspect the exit code" but doesn't say "immediately"
+- `--` separator ✗
+
+So the guidance is partially there but not complete. The fallback check is whether it "already includes bounded-command guidance (timeout flags, explicit paths, set -e, check $?)" — it has "explicit paths" and "check exit code" but not "timeout flags", "set -e", or "check $?". So the fallback doesn't fully apply either.
+
+I think the right call is to write a blocked note about the file mismatch, but also suggest the corrected files list. The task's own notes acknowledge the code might be in prompt_retry.rs (mentioning the recovery_hint field), so there's some awareness.
+
+Actually, you know what, let me just go ahead and do the work. The task's intent is clear — add bash-specific bounded-command guidance to the retry prompt. The task mentions `src/prompt.rs` as the edit surface but the actual implementation needs to touch `src/prompt_retry.rs`. However, the evolve skill is very explicit about not editing files outside the Files list. 
+
+I'll write the blocked note.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the current state. The `tool_recovery_hint` function in `src/prompt_retry.rs` already has bash-specific recovery hints at both attempt levels. Let me assess:
+
+1. The actual retry prompt construction is in `src/prompt_retry.rs` (`build_auto_retry_prompt` and `tool_recovery_hint`), not in `src/prompt.rs`
+2. The current bash hints already include path verification, bounded commands, and exit code inspection
+3. But the task's `Files` line says `src/prompt.rs`
+
+The evolve skill says: *If you discover that the real owning file is outside the task's Files list, do not edit that outside file. Write session_plan/task_02_blocked.md with the exact owner file, the symbol/evidence that proves the mismatch, and the smallest corrected Files list for a future task.*
+
+Let me verify this is truly a file mismatch by checking whether there's any bash-hint-relevant code I could add in `src/prompt.rs` itself.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1405..1465 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The functions in `src/prompt.rs` just call out to `build_auto_retry_prompt` from `prompt_retry.rs`. All the bash recovery hint text is in `tool_recovery_hint` in `src/prompt_retry.rs`. 
+
+The task's Files says `src/prompt.rs` but the real owning file is `src/prompt_retry.rs`. The evolve skill says to write a blocked note. Let me do that.
+
+But wait — I should also consider: could I add bash-specific guidance directly in `src/prompt.rs` by modifying the retry prompt after `build_auto_retry_prompt` returns? Like:
+
+```rust
+let mut retry_prompt = build_auto_retry_prompt(input, err, outcome.last_tool_name.as_deref(), attempt);
+if outcome.last_tool_name.as_deref() == Some("bash") {
+    retry_prompt.push_str("\n[Bash hint: add -- to separate flags from positionals, use explicit ./script.sh paths, check $? immediately.]");
+}
+```
+
+This would keep the change in `src/prompt.rs` and would be a valid surgical edit. But it's a poor design choice because:
+1. Recovery hints are already centralized in `tool_recovery_hint` in `prompt_retry.rs`
+2. Adding bash hints in a second location creates maintenance burden
+3. The implementation notes say "Add a helper function" which would be awkward in `src/prompt.rs` when the existing helper is in `prompt_retry.rs`
+
+I think the honest thing is to note the file mismatch. The task's own implementation notes acknowledge this possibility: "If the existing retry prompt already has a `recovery_hint` or similar field, use that" — and indeed, `tool_recovery_hint` IS the recovery hint system, it's just in a different file.
+
+Let me write the blocked note.
+────────────────────────────────────────────────────────────────────────────────
+
+The retry prompt is entirely constructed in `src/prompt_retry.rs` — `build_auto_retry_prompt` (line 64) calls `tool_recovery_hint` (line 100). The functions in `src/prompt.rs` only pass through the tool name. The bash recovery hints live in `src/prompt_retry.rs`, not in `src/prompt.rs`. Per the evolve skill file-mismatch rule, I'll write the blocked note.
+  + # Task 02 Blocked — File Mismatch
+  + 
+  + **Task**: Improve bash error recovery hints with bounded retry guidance  
+  + **Planned Files**: `src/prompt.rs`  
+  + **Actual Owner**: `src/prompt_retry.rs`
+  + 
+  + ## Evidence
+  + 
+  + The task's `Edit Surface` and `Files` list names `src/prompt.rs`. However, the
+  + retry prompt construction and recovery hints live in `src/prompt_retry.rs`:
+  + 
+  + - `build_auto_retry_prompt` (line 64) — constructs the retry prompt text
+  + - `tool_recovery_hint` (line 100) — returns tool-specific recovery hints,
+  +   including the existing bash attempt-1 and attempt-2 hints
+  + 
+  + The functions in `src/prompt.rs` (`run_prompt_auto_retry` at line 1405,
+  + `run_prompt_auto_retry_with_content` at line 1462) only call
+  + `build_auto_retry_prompt` with the tool name. They contain no recovery hint
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02_blocked.md (54 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02_blocked.md (54 lines) ✓ (407ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the diff is clean. There should be no code changes, only the blocked note.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (854ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is empty (only the new `session_plan/task_02_blocked.md` which is untracked). Let me check git status.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short ✓ (850ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, `session_plan/` is gitignored (per CLAUDE.md: "session_plan/ — ephemeral directory with per-task files (gitignored)"). The status is empty because the new file is gitignored. Let me verify the file exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la session_plan/task_02_bl… ✓ (839ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+The blocked note is written. Summary:
+
+**Task 02 is blocked** — the task's `Files` line names `src/prompt.rs`, but the actual owning file for bash recovery hints is `src/prompt_retry.rs`. The existing `tool_recovery_hint` function in `src/prompt_retry.rs` already provides bash-specific recovery hints at both attempt levels. The `src/prompt.rs` functions (`run_prompt_auto_retry`, `run_prompt_auto_retry_with_content`) are only callers that pass the tool name through — they contain no recovery text to modify.
+
+The blocked note (`session_plan/task_02_blocked.md`) documents:
+• The file mismatch with exact symbols (`build_auto_retry_prompt` line 64, `tool_recovery_hint` line 100)
+• What the existing hints already cover (exit codes, path verification, bounded commands)
+• What's still missing (`--` separator, `$?` temporal constraint, `set -e`, timeout flags)
+• The corrected `Files` list for a future task: `src/prompt_retry.rs`
+
+TASK_TERMINAL_EVIDENCE: blocked
+
+
