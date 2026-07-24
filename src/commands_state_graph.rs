@@ -1197,6 +1197,18 @@ pub(crate) fn build_graph_hotspots_report(
     let limit = limit.clamp(1, 50);
     let hotspots = query_graph_hotspots(sqlite_path, limit, kind_filter)?;
     if hotspots.is_empty() {
+        if let Some(kind) = kind_filter {
+            let available = query_distinct_kinds(sqlite_path).unwrap_or_default();
+            if available.is_empty() {
+                return Err(format!(
+                    "no hotspots matched kind={kind}; projection has no relations"
+                ));
+            }
+            return Err(format!(
+                "no hotspots matched kind={kind}; kinds in data: {}",
+                available.join(", ")
+            ));
+        }
         return Err("no graph relations found".to_string());
     }
 
@@ -1228,6 +1240,18 @@ pub(crate) fn build_graph_hotspots_payload(
     let limit = limit.clamp(1, 50);
     let hotspots = query_graph_hotspots(sqlite_path, limit, kind_filter)?;
     if hotspots.is_empty() {
+        if let Some(kind) = kind_filter {
+            let available = query_distinct_kinds(sqlite_path).unwrap_or_default();
+            if available.is_empty() {
+                return Err(format!(
+                    "no hotspots matched kind={kind}; projection has no relations"
+                ));
+            }
+            return Err(format!(
+                "no hotspots matched kind={kind}; kinds in data: {}",
+                available.join(", ")
+            ));
+        }
         return Err("no graph relations found".to_string());
     }
 
@@ -1321,4 +1345,23 @@ fn query_graph_hotspots(
     });
     hotspots.truncate(limit.clamp(1, 50));
     Ok(hotspots)
+}
+
+fn query_distinct_kinds(sqlite_path: &Path) -> Result<Vec<String>, String> {
+    let conn = Connection::open(sqlite_path)
+        .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT dst_kind FROM state_relations ORDER BY dst_kind")
+        .map_err(|e| format!("prepare distinct kinds query: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| format!("query distinct kinds: {e}"))?;
+    let mut kinds = Vec::new();
+    for row in rows {
+        let kind = row.map_err(|e| format!("read distinct kind row: {e}"))?;
+        if !kind.is_empty() {
+            kinds.push(kind);
+        }
+    }
+    Ok(kinds)
 }
