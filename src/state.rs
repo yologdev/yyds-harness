@@ -7655,6 +7655,17 @@ mod tests {
     }
 
     #[test]
+    fn close_orphaned_run_non_existent_file() {
+        // When the events file doesn't exist at all, close_orphaned_run_if_needed
+        // should return Ok(()) without panic or error.
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("nonexistent.jsonl");
+        // File does not exist — no std::fs::write call
+
+        close_orphaned_run_if_needed(&events_path, None).unwrap();
+    }
+
+    #[test]
     fn close_orphaned_run_already_closed_runcompleted_last() {
         // RunCompleted is the most recent lifecycle event -> no orphan
         let dir = tempfile::tempdir().unwrap();
