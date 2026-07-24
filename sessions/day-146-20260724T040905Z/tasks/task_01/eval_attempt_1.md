@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff adds a focused unit test (`stash_and_take_diagnostic_error_roundtrips`) for two public functions in `src/state.rs` (`stash_diagnostic_error` and `take_diagnostic_error`), matching the task's mandate for one small verifiable improvement. The test verifies store-take-clear-reuse semantics. Build and `cargo test state` both pass. Change is scoped to `src/state.rs` with no modifications to scripts/ or other modules.
