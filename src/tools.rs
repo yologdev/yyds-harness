@@ -655,12 +655,12 @@ impl AgentTool for StreamingBashTool {
                                 Ok(None)
                             } else {
                                 crate::state::stash_diagnostic_error(&format!(
-                                    "bash timeout: {} after {}s",
+                                    "bash timeout: {} after {}s (add explicit timeout parameter, break into smaller bounded steps, or check partial output before retrying)",
                                     command,
                                     current_timeout.as_secs()
                                 ));
                                 Err(ToolError::Failed(format!(
-                                    "Command timed out after {}s",
+                                    "Command timed out after {}s. Add an explicit timeout parameter (e.g. timeout: 600) for long-running commands, break into smaller bounded steps, or check partial output for clues before retrying the same command.",
                                     current_timeout.as_secs()
                                 )))
                             }
@@ -3457,6 +3457,32 @@ mod tests {
         assert!(
             names.contains(&"web_search"),
             "web_search should be in build_tools output, got: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bash_timeout_error_includes_remediation_hints() {
+        // Verify that when a bash command times out, the error message includes
+        // actionable remediation hints so the agent knows how to adapt instead
+        // of retrying the same unbounded call.
+        let tool = StreamingBashTool {
+            timeout: Duration::from_secs(1),
+            progress_requires_tty: false,
+            ..Default::default()
+        };
+        let ctx = test_tool_context(None);
+        let result = tool
+            .execute(serde_json::json!({"command": "sleep 5"}), ctx)
+            .await;
+        assert!(result.is_err(), "sleep 5 should time out with 1s limit");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("timeout parameter"),
+            "Timeout error should mention the timeout parameter: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("smaller bounded steps") || err_msg.contains("smaller steps"),
+            "Timeout error should suggest smaller steps: {err_msg}"
         );
     }
 }
