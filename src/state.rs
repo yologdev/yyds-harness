@@ -4398,7 +4398,7 @@ mod tests {
         assert_eq!(report.events, 3);
         assert_eq!(report.failures, 1);
         assert_eq!(report.evals, 1);
-        assert_eq!(report.relations, 16);
+        assert_eq!(report.relations, 17);
         let task_relations = query_sqlite_relations(&sqlite_path, "context-miss").unwrap();
         assert!(task_relations.iter().any(|relation| {
             relation.relation == "records_task"
@@ -4486,7 +4486,7 @@ mod tests {
 
         assert_eq!(report.events, 2);
         assert_eq!(report.failures, 1);
-        assert_eq!(report.relations, 15);
+        assert_eq!(report.relations, 16);
         let context_relations = query_sqlite_relations(&sqlite_path, "evt-context").unwrap();
         assert!(context_relations.iter().any(|relation| {
             relation.relation == "uses_context_policy"
