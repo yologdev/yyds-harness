@@ -1,0 +1,390 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the current `src/prompt_retry.rs` to understand the existing `tool_recovery_hint` function
+3. Add specific recovery tokens to bash hints
+4. Add tests
+5. Verify and commit
+
+Let me begin by reading the evolve skill and the target file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt_retry.rs (200 lines) ✓ (1.3s)
+ ✓ (797ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the existing `tool_recovery_hint` function. Let me look at the remaining parts I need:
+
+1. The test section near the end of the file (around line 1400+)
+2. The current bash hints at lines 126-132 (attempt 2) and 138-145 (attempt 1)
+
+Let me read the test section and the full file to understand the structure.
+
+I can see that:
+- **Attempt 1 (line 138-145):** The bash hint says: "The shell command failed. Inspect the exit code and stderr output above to understand why — both stdout and stderr carry diagnostic signals. Before retrying, verify any file paths exist: use `test -f <path>` for files, `ls <dir>` for directories, or `rg --files | head` to list available project files. Then try a simpler bounded version of the command: pipe through `head -n 50` or `tail -n 20` to keep output manageable."
+
+This does NOT include: `$?` immediate temporal constraint, `--` flag-argument separator.
+
+- **Attempt 2 (line 126-132):** The bash hint says: "Try a simpler bounded command: break into smaller steps with explicit absolute paths. Check exit output first — don't retry the same command without understanding the failure. Verify paths exist with `ls` or `test -f`. Prefer targeted tools (read_file, search) over complex shell pipelines. Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+
+This does NOT include: `set -e` or `timeout` guidance.
+
+Now let me read the test section.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:1390.. ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see where the tests start to understand the test structure.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find where the test module starts:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg(test)\]' in src/prompt_retry.rs ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `mod tests` in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/prompt_retry.rs ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test section to see what tests exist already, specifically looking for any `tool_recovery_hint` tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_recovery_hint' in src/prompt_retry.rs ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests are at line 520+. Let me search for `test_tool_recovery_hint` to see if there are existing tests for this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_tool_recovery' in src/prompt_retry.rs ✓ (407ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing bash-related tests to understand what's already tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:788..988 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan my changes:
+
+1. **Edit `tool_recovery_hint` at attempt 1 (lines 138-145):** Add `$?` and `--` guidance
+2. **Edit `tool_recovery_hint` at attempt 2 (lines 126-132):** Add `set -e` and `timeout` guidance
+3. **Add a test** that verifies these new tokens exist in the strings
+
+Let me also check the existing test `test_tool_recovery_hint_bash_attempt1_path_checking` at line 912 - it only checks for `test -f` or `ls` or `rg --files` and `exit` or `stderr`. It doesn't check for `$?` or `--`.
+
+Now let me make the changes. I'll:
+1. Edit the attempt 1 bash hint to add `$?` and `--` guidance
+2. Edit the attempt 2 bash hint to add `set -e` and `timeout` guidance
+3. Add a new test after the existing bash tests
+
+Let me start with the edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the code. Let me make the edits:
+
+1. **Attempt 1 (lines 138-145):** Add `$?` immediate check and `--` separator guidance
+2. **Attempt 2 (lines 126-132):** Add `set -e` and `timeout` guidance  
+3. **Add a test** verifying all four tokens
+                    "The shell command failed. Inspect the exit code and stderr output above \
+                      to understand why — both stdout and stderr carry diagnostic signals. \
+  +                   Check `$?` immediately after the failing command — don't run anything \
+  +                   else first or the exit code is lost. \
+  +                   Use `--` to separate flags from positional arguments \
+  +                   (e.g., `grep -- -n file.txt`). \
+                      Before retrying, verify any file paths exist: \
+                      use `test -f <path>` for files, `ls <dir>` for directories, or \
+                      `rg --files | head` to list available project files. \
+  ✓ Auto-approved: edit: src/prompt_retry.rs (7 → 11 lines)
+                    "The shell command failed. Inspect the exit code and stderr output above \
+  -                  to understand why — both stdout and stderr carry diagnostic signals. \
+  -                  Before retrying, verify any file paths exist: \
+  -                  use `test -f <path>` for files, `ls <dir>` for directories, or \
+  -                  `rg --files | head` to list available project files. \
+  -                  Then try a simpler bounded version of the command: pipe through \
+  -                  `head -n 50` or `tail -n 20` to keep output manageable."
+  +                   to understand why — both stdout and stderr carry diagnostic signals. \
+  +                   Check `$?` immediately after the failing command — don't run anything \
+  +                   else first or the exit code is lost. \
+  +                   Use `--` to separate flags from positional arguments \
+  +                   (e.g., `grep -- -n file.txt`). \
+  +                   Before retrying, verify any file paths exist: \
+  +                   use `test -f <path>` for files, `ls <dir>` for directories, or \
+  +                   `rg --files | head` to list available project files. \
+  +                   Then try a simpler bounded version of the command: pipe through \
+  +                   `head -n 50` or `tail -n 20` to keep output manageable."
+  ✓ Auto-approved: edit: src/prompt_retry.rs (7 → 11 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt_retry.rs (7 → 11 lines)
+                    "The shell command failed. Inspect the exit code and stderr output above \
+                      to understand why — both stdout and stderr carry diagnostic signals. \
+  +                   Check `$?` immediately after the failing command — don't run anything \
+  +                   else first or the exit code is lost. \
+  +                   Use `--` to separate flags from positional arguments \
+  +                   (e.g., `grep -- -n file.txt`). \
+                      Before retrying, verify any file paths exist: \
+                      use `test -f <path>` for files, `ls <dir>` for directories, or \
+                      `rg --files | head` to list available project files. \
+ ✓ (406ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now edit the attempt 2 bash hint to add `set -e` and `timeout` guidance.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                      absolute paths. Check exit output first — don't retry the same command \
+                      without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+                      Prefer targeted tools (read_file, search) over complex shell pipelines. \
+  -                   Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+  +                   Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs. \
+  +                   Add `set -e` at the top of multi-step scripts to stop on first error. \
+  +                   Add `timeout 30` for commands that might hang."
+  ✓ Auto-approved: edit: src/prompt_retry.rs (5 → 7 lines)
+                    "Try a simpler bounded command: break into smaller steps with explicit \
+  -                  absolute paths. Check exit output first — don't retry the same command \
+  -                  without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+  -                  Prefer targeted tools (read_file, search) over complex shell pipelines. \
+  -                  Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+  +                   absolute paths. Check exit output first — don't retry the same command \
+  +                   without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+  +                   Prefer targeted tools (read_file, search) over complex shell pipelines. \
+  +                   Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs. \
+  +                   Add `set -e` at the top of multi-step scripts to stop on first error. \
+  +                   Add `timeout 30` for commands that might hang."
+  ✓ Auto-approved: edit: src/prompt_retry.rs (5 → 7 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt_retry.rs (5 → 7 lines)
+                      absolute paths. Check exit output first — don't retry the same command \
+                      without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+                      Prefer targeted tools (read_file, search) over complex shell pipelines. \
+  -                   Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+  +                   Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs. \
+  +                   Add `set -e` at the top of multi-step scripts to stop on first error. \
+  +                   Add `timeout 30` for commands that might hang."
+ ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the test. I'll add it after `test_tool_recovery_hint_bash_attempt1_path_checking` (around line 924).
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test verifying all four new tokens:
+  +     #[test]
+  +     fn test_tool_recovery_hint_bash_bounded_retry_tokens() {
+  +         // attempt 1 should include $? and -- guidance
+  +         let hint1 = tool_recovery_hint("bash", 1);
+  +         assert!(
+  +             hint1.contains("$?"),
+  +             "bash attempt 1 hint should mention $? for exit code inspection: {hint1}"
+  +         );
+  +         assert!(
+  +             hint1.contains("--"),
+  +             "bash attempt 1 hint should mention -- for separating flags from arguments: {hint1}"
+  +         );
+  +         // attempt 2 should include set -e and timeout guidance
+  +         let hint2 = tool_recovery_hint("bash", 2);
+  +         assert!(
+  +             hint2.contains("set -e"),
+  +             "bash attempt 2 hint should mention set -e for stopping on first error: {hint2}"
+  +         );
+  +         assert!(
+  +             hint2.contains("timeout"),
+  ... (5 more lines)
+  ✓ Auto-approved: edit: src/prompt_retry.rs (1 → 25 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt_retry.rs (1 → 25 lines)
+  +     #[test]
+  +     fn test_tool_recovery_hint_bash_bounded_retry_tokens() {
+  +         // attempt 1 should include $? and -- guidance
+  +         let hint1 = tool_recovery_hint("bash", 1);
+  +         assert!(
+  +             hint1.contains("$?"),
+  +             "bash attempt 1 hint should mention $? for exit code inspection: {hint1}"
+  +         );
+  +         assert!(
+  +             hint1.contains("--"),
+  +             "bash attempt 1 hint should mention -- for separating flags from arguments: {hint1}"
+  +         );
+  +         // attempt 2 should include set -e and timeout guidance
+  +         let hint2 = tool_recovery_hint("bash", 2);
+  +         assert!(
+  +             hint2.contains("set -e"),
+  +             "bash attempt 2 hint should mention set -e for stopping on first error: {hint2}"
+  +         );
+  +         assert!(
+  +             hint2.contains("timeout"),
+  ... (5 more lines)
+ ✗ (848ms)
+    │ old_text matches 87 locations in src/prompt_retry.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `#[test]` pattern matches too many locations. Let me include more context to make the match unique. I need to find the exact surrounding context after the `test_tool_recovery_hint_bash_attempt1_path_checking` test. Let me read the lines around it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:920.. ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can add the test after line 930 (end of `test_tool_recovery_hint_bash_attempt1_path_checking`) and before line 932 (`#[test]` for `test_tool_recovery_hint_unknown`). Let me use a more specific context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                "bash hint should still mention exit code or stderr output: {hint}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn test_tool_recovery_hint_bash_bounded_retry_tokens() {
+  +         // attempt 1 should include $? and -- guidance
+  +         let hint1 = tool_recovery_hint("bash", 1);
+  +         assert!(
+  +             hint1.contains("$?"),
+  +             "bash attempt 1 hint should mention $? for exit code inspection: {hint1}"
+  +         );
+  +         assert!(
+  +             hint1.contains("--"),
+  +             "bash attempt 1 hint should mention -- for separating flags from arguments: {hint1}"
+  +         );
+  +         // attempt 2 should include set -e and timeout guidance
+  +         let hint2 = tool_recovery_hint("bash", 2);
+  +         assert!(
+  +             hint2.contains("set -e"),
+  ... (8 more lines)
+  ✓ Auto-approved: edit: src/prompt_retry.rs (6 → 30 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt_retry.rs (6 → 30 lines)
+                "bash hint should still mention exit code or stderr output: {hint}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn test_tool_recovery_hint_bash_bounded_retry_tokens() {
+  +         // attempt 1 should include $? and -- guidance
+  +         let hint1 = tool_recovery_hint("bash", 1);
+  +         assert!(
+  +             hint1.contains("$?"),
+  +             "bash attempt 1 hint should mention $? for exit code inspection: {hint1}"
+  +         );
+  +         assert!(
+  +             hint1.contains("--"),
+  +             "bash attempt 1 hint should mention -- for separating flags from arguments: {hint1}"
+  +         );
+  +         // attempt 2 should include set -e and timeout guidance
+  +         let hint2 = tool_recovery_hint("bash", 2);
+  +         assert!(
+  +             hint2.contains("set -e"),
+  ... (8 more lines)
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the edits look correct by reading the modified sections.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Let me verify the edited sections look correct:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:126..  ▶ read src/prompt_retry.rs:138..  ▶ read src/prompt_retry.rs:930.. ✓ (2.0s)
+ ✓ (941ms)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All edits look correct. Now let me run the verification:
+
+1. `cargo fmt -- --check`
+2. `cargo test prompt_retry`
+
+Let me also check git diff to make sure the changes are right.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+All edits look correct. Let me now run verification. First `cargo fmt`, then the focused tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo fmt` passed (no output means no changes). Now run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test prompt_retry 2>&1 ✓ (34.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 88 tests passed, including the new test. Let me also run the secondary verifier `cargo test -- prompt_retry` and check with `cargo build`.
+────────────────────────────────────────────────────────────────────────────────
+
+All 88 tests passed including the new one. Let me also run the secondary verifiers:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- prompt_retry 2>&…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (803ms)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me verify the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+All checks pass. Let me verify the diff and commit:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (785ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only `src/prompt_retry.rs` was changed — matches the task's Edit Surface. Let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Diff touches only `src/prompt_retry.rs` — matches the task's Edit Surface. Committing:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (755ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task complete. Let me summarize:
+
+**What changed:**
+- `src/prompt_retry.rs` — modified `tool_recovery_hint()` for `"bash"` tool:
+  - **Attempt 1** (line 140-151): Added `$?` immediate exit code check with temporal constraint ("don't run anything else first or the exit code is lost") and `--` flag-argument separator guidance (`grep -- -n file.txt` example)
+  - **Attempt 2** (line 126-133): Added `set -e` guidance for multi-step scripts and `timeout 30` for commands that might hang
+  - **New test** `test_tool_recovery_hint_bash_bounded_retry_tokens` (line 932-954): Verifies all four tokens (`$?`, `--`, `set -e`, `timeout`) appear in the respective hint strings
+
+**Verification run:**
+- `cargo fmt -- --check` — clean
+- `cargo build` — clean
+- `cargo test prompt_retry` — 88/88 passed including the new test
+- `cargo test -- prompt_retry` — all passed
+
+**Commit:** 8eb4731e — "Day 146 (02:43): Improve bash error recovery hints with bounded retry guidance (Task 1)"
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Changed:** `src/prompt_retry.rs` (1 file, +40/-10 lines)
+
+**What changed in `tool_recovery_hint("bash", ...)`:**
+• **Attempt 1** (diagnostic, lines 143-146): Added `Check \`$?\` immediately after the failing command — don't run anything else first or the exit code is lost.` and `Use \`--\` to separate flags from positional arguments (e.g., \`grep -- -n file.txt\`).`
+• **Attempt 2** (escalated, lines 132-133): Added `Add \`set -e\` at the top of multi-step scripts to stop on first error.` and `Add \`timeout 30\` for commands that might hang.`
+• **New test** `test_tool_recovery_hint_bash_bounded_retry_tokens` (line 932-954): Asserts all four tokens (`$?`, `--`, `set -e`, `timeout`) appear in the correct attempt-level hint
+
+**Verification:** `cargo fmt --check` ✓, `cargo build` ✓, `cargo test prompt_retry` (88/88) ✓, `cargo test -- prompt_retry` ✓
+
+**Commit:** `8eb4731e` — "Day 146 (02:43): Improve bash error recovery hints with bounded retry guidance (Task 1)"
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
