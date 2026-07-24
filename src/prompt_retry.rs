@@ -125,10 +125,12 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
             }
             "bash" => {
                 "Try a simpler bounded command: break into smaller steps with explicit \
-                 absolute paths. Check exit output first — don't retry the same command \
-                 without understanding the failure. Verify paths exist with `ls` or `test -f`. \
-                 Prefer targeted tools (read_file, search) over complex shell pipelines. \
-                 Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs."
+                  absolute paths. Check exit output first — don't retry the same command \
+                  without understanding the failure. Verify paths exist with `ls` or `test -f`. \
+                  Prefer targeted tools (read_file, search) over complex shell pipelines. \
+                  Avoid unbounded/recursive commands like `rm -rf`, `find /`, or unconstrained globs. \
+                  Add `set -e` at the top of multi-step scripts to stop on first error. \
+                  Add `timeout 30` for commands that might hang."
             }
             _ => "The tool call failed again. Try a completely different tool or approach.",
         }
@@ -137,12 +139,16 @@ pub fn tool_recovery_hint(tool_name: &str, attempt: u32) -> &'static str {
         match tool_name {
             "bash" => {
                 "The shell command failed. Inspect the exit code and stderr output above \
-                 to understand why — both stdout and stderr carry diagnostic signals. \
-                 Before retrying, verify any file paths exist: \
-                 use `test -f <path>` for files, `ls <dir>` for directories, or \
-                 `rg --files | head` to list available project files. \
-                 Then try a simpler bounded version of the command: pipe through \
-                 `head -n 50` or `tail -n 20` to keep output manageable."
+                  to understand why — both stdout and stderr carry diagnostic signals. \
+                  Check `$?` immediately after the failing command — don't run anything \
+                  else first or the exit code is lost. \
+                  Use `--` to separate flags from positional arguments \
+                  (e.g., `grep -- -n file.txt`). \
+                  Before retrying, verify any file paths exist: \
+                  use `test -f <path>` for files, `ls <dir>` for directories, or \
+                  `rg --files | head` to list available project files. \
+                  Then try a simpler bounded version of the command: pipe through \
+                  `head -n 50` or `tail -n 20` to keep output manageable."
             }
             "edit_file" => {
                 "The edit failed (likely old_text mismatch or wrong file path). \
@@ -920,6 +926,30 @@ mod tests {
         assert!(
             hint.contains("exit") || hint.contains("stderr"),
             "bash hint should still mention exit code or stderr output: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_tool_recovery_hint_bash_bounded_retry_tokens() {
+        // attempt 1 should include $? and -- guidance
+        let hint1 = tool_recovery_hint("bash", 1);
+        assert!(
+            hint1.contains("$?"),
+            "bash attempt 1 hint should mention $? for exit code inspection: {hint1}"
+        );
+        assert!(
+            hint1.contains("--"),
+            "bash attempt 1 hint should mention -- for separating flags from arguments: {hint1}"
+        );
+        // attempt 2 should include set -e and timeout guidance
+        let hint2 = tool_recovery_hint("bash", 2);
+        assert!(
+            hint2.contains("set -e"),
+            "bash attempt 2 hint should mention set -e for stopping on first error: {hint2}"
+        );
+        assert!(
+            hint2.contains("timeout"),
+            "bash attempt 2 hint should mention timeout for commands that might hang: {hint2}"
         );
     }
 
