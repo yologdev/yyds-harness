@@ -1,0 +1,272 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the exact code that needs to be changed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (40 lines)  ▶ read scripts/summarize_state_gnomes.py:345..405 ✓ (1.2s)
+ ✓ (990ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the broader context around line 356-357 to understand the full `elif kind == "ModelCallCompleted"` block, and also check the `event_id` function at line 153.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:320..350  ▶ read scripts/summarize_state_gnomes.py:148..163 ✓ (1.6s)
+ ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. The fix needs to be at line 356-357, where `model_call_completed_runs.add(run_id)` is called. I need to wrap it with a check for `evt-harness-` prefix on the event ID.
+
+Let me also check if there's a `retroactive` field in the payload for harness-internal events. Let me search for that.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me check if harness-internal events have a `retroactive` flag in their payload and look at how they're emitted:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'retroactive' in src/state.rs ✓ (453ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `retroactive` flag is used on RunStarted events, not on ModelCallCompleted events. Let me check if ModelCallCompleted events from harness-internal sources also have a retroactive flag. Let me look at how ModelCallCompleted events are emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs ✓ (455ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 4210 to see how ModelCallCompleted events are emitted, and whether they include a retroactive flag or have evt-harness prefix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4190..4240 ✓ (393ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for where harness-internal ModelCallCompleted events with `evt-harness-` prefix are emitted. The task says these have `tokens=in:0 out:0 cache_read:0 cache_write:0`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'evt-harness' in src/state.rs ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `evt-harness-` prefix must be generated as an event_id format for harness-internal events. Let me look at how event IDs are generated in the harness layer, which might be in the commands_state.rs or similar.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'evt-harness-' in src ✓ (454ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the commands_state.rs to find this. The `evt-harness-` prefix is likely generated in a helper function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'evt-harness' in src ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, maybe the `evt-harness-` prefix is generated dynamically in the code. Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'harness-' in src ✓ (454ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `evt-harness-` prefix must be part of the event_id generation for harness-internal state events. Let me check the state.rs for how event IDs are generated for harness-internal events, specifically around the `record` or event creation paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '"evt-harness' in src ✓ (451ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. Let me check the events.jsonl to see if these events exist there. Or look at how event_id is generated in the state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7000..7040 ✓ (397ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the event_id generation path for harness-internal events. The `evt-harness-` prefix events come from the task lineage/terminal evidence tracking. Let me search for it differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'evt-harness' in src ✓ (440ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `evt-harness-` prefix might be generated by computing a hash from harness-related data. Let me search for it differently. Maybe it's constructed at runtime via a format string.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '"evt-"' in src ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the event_id for harness events gets generated. It might be in state.rs where harness events are recorded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'event_id"' in src ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the event_id generation more carefully. The `evt-harness-` prefix must be generated in commands_state.rs, probably in a harness event recording function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '"evt-harness-"' in src ✓ (449ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `evt-harness-` prefix may be formatted as part of a function. Let me look at the context around line 13392 in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13380..13410 ✓ (408ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task says `evt-harness-*` prefix events are harness-internal cleanup events. Let me check if there are harness-internal events with that prefix in the events.jsonl. Let me look at the actual events file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls .yoyo/state/events.jsonl 2>/dev/null || find . -name "events.jsonl" -type f 2… ✓ (845ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ head -3 .yoyo/state/events.jsonl | python3 -c "import sys,json; [print(json.dump… ✓ (848ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check for harness-internal events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (9 lines) ✓ (853ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see that `evt-harness-*` prefixed events are harness-internal events (RunStarted, DecisionRecorded, RunCompleted, TaskLineageLinked, etc.) — they're NOT ModelCallCompleted events. 
+
+Let me check if there are actually evt-harness events with ModelCallCompleted type:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (14 lines) ✓ (843ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a malformed JSON line. Let me handle that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (20 lines) ✓ (850ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are zero `evt-harness-` prefixed ModelCallCompleted events. So the events described in the task (with `tokens=in:0 out:0 cache_read:0 cache_write:0`) are not harness-internal ModelCallCompleted events with `evt-harness-` prefix.
+
+Let me check what kind of ModelCallCompleted events have zero tokens:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (25 lines) ✓ (844ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Zero ModelCallCompleted events. Let me look at the whole picture differently. The task talks about `deepseek_model_call_unmatched_completed_count=154` and `model_completion_without_start=8`. Let me look at the actual gnome values to understand the data.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/summarize_state_gnomes.py 2>&1 | head -80 ✓ (863ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run the script with the events.jsonl file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/summarize_state_gnomes.py --events .yoyo/sta… (7 lines) ✓ (7.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the output differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/summarize_state_gnomes.py --events .yoyo/sta… (6 lines) ✓ (7.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can clearly see the situation. Looking at the `state_lifecycle` gnome data, I see:
+
+- `model_calls.completed`: 3928
+- `model_calls.started`: 1579  
+- `model_calls.unmatched_completed`: 0 (wait, it's 0 in the lifecycle report)
+- But `latest_gnomes.deepseek_model_call_unmatched_completed_count`: 0
+
+So `model_call_unmatched_completed` is 0 in the gnome. But looking at the `latest_gnomes`:
+- `deepseek_model_call_completed_count`: 3928
+- `deepseek_model_call_started_count`: 1579  
+- `deepseek_model_call_unmatched_completed_count`: 0
+
+Hmm, wait. Looking at the `state_lifecycle.model_calls`:
+- `completed`: 3928
+- `started`: 1579
+- `unmatched_completed`: 0
+
+But `model_call_unmatched_completed` being 0 seems wrong since there are 3928 completed but only 1579 started. Let me look more closely at the code flow.
+
+Wait - the `unmatched_completed` is `model_call_completed_runs - model_call_started_runs`. Let me look at how `model_call_completed_runs` is populated. It's a set of run_ids. It doesn't count *all* completions, just the unique run_ids that have completions.
+
+Actually, I see now: looking at `latest_gnomes.deepseek_model_call_unmatched_completed_count`, it's 0. But looking at the historical eval gnomes, I can see values like 174, 9, 0... The current value is 0.
+
+But wait - `deepseek_model_call_completed_count` is 3928 and `deepseek_model_call_started_count` is 1579. These are simple counts, not unique runs. The `model_call_completed_runs` set is about unique run_ids with ModelCallCompleted events.
+
+Actually, let me re-read the code more carefully. The `model_call_completed` is a counter (line 342). But `model_call_completed_runs` is a set of run_ids (line 357).
+
+The `model_unmatched_completed_ids` at line 394-396 computes: runs that have a ModelCallCompleted but not a ModelCallStarted. This is about which *run_ids* appear in both sets, not about totals.
+
+Now, looking at the `abnormal_completed_runs` data, I can see some of them have event_ids like `evt-harness-fb6a65ec2dffcc2c` and `evt-harness-f165532379428054`. These are harness-internal events with `evt-harness-` prefix that ARE being counted in `model_call_abnormal_completed_runs`.
+
+But the task says the issue is about `model_call_completed_runs` being inflated by harness-internal `evt-harness-*` ModelCallCompleted events. Let me check if there are evt-harness prefixed ModelCallCompleted events in the actual data:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (37 lines) ✓ (849ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Zero harness-internal ModelCallCompleted events with `evt-harness-` prefix. Let me check what kind of events have `evt-harness-` prefix and `ModelCallCompleted` type in the lifecycle reporting. Let me look more carefully.
+
+Actually wait, let me check more broadly. The `deepseek_model_payload` function might be filtering out all ModelCallCompleted events from `evt-harness-*` prefixed events because they don't have a model name in the payload. Let me look at the `deepseek_model_payload` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 27 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:170..190 ✓ (396ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `deepseek_model_payload` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 28 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def deepseek_model_payload' in scripts/summarize_state_gnomes.py ✓ (454ms)
+
+

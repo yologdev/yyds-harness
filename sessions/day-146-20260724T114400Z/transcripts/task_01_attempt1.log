@@ -1,0 +1,518 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then the target file to understand the current code structure before making any changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:985..1035 ✓ (1.3s)
+ ✓ (852ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at the code, I can see that at line 993-994, the `analysis_only_active` check along with `_healthy_codebase_fallback()` is already there! The task says to add this, but it's already in place. Let me verify this more carefully by reading the full context around these lines and checking the test at line 1889.
+
+Let me read more of the code to understand the full picture.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Let me check the current state more carefully — looks like the change at lines 993-994 may already be there. Let me verify and check the self-test.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:975..1025  ▶ read scripts/preseed_session_plan.py:1880..1910  ▶ read scripts/preseed_session_plan.py:1260..1300 ✓ (2.2s)
+ ✓ (1.8s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. The code at lines 993-994 already has:
+
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+And the test at line 1894-1895 already tests for this:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+Wait, this test should already be passing with the current code... Let me look more carefully at the test context. The test at line 1894 calls `choose_task("No known current bug matched this assessment.")` - I need to understand what `analysis_only_active` is set to in this test context. Let me look at the test function this is within.
+
+Let me also check the `choose_task` function signature and how `analysis_only_active` gets its value.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+Let me understand the test context — how `analysis_only_active` is determined in the test and check if the self-test at line 1894 is actually the right one.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1840..1900  ▶ search 'analysis_only_active' in scripts/preseed_session_plan.py ✓ (864ms)
+ ✓ (892ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `choose_task` function to understand how `analysis_only_active` is computed, and then see the test context at line 1894. The test passes `"No known current bug matched this assessment."` as the assessment - I need to understand what `analysis_only_active` becomes for that assessment text.
+
+Let me read the `choose_task` function from the beginning to understand the flow.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:910..965 ✓ (394ms)
+  ▶ read scripts/preseed_session_plan.py:1950..1990 ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. Lines 993-994 already have the `analysis_only_active` check that returns `_healthy_codebase_fallback()` — this was added in a previous session (evidently Day 144 or earlier).
+
+2. The test at lines 1961-1978 also already tests this behavior: it creates a `no_match_assessment` with `task_analysis_only_attempt_count=3` and asserts the fallback is `"Add a small verifiable improvement to src/"`.
+
+3. However, at line 1894, there's ANOTHER test that passes `"No known current bug matched this assessment."` — this assessment text does NOT contain `task_analysis_only_attempt_count`, so `analysis_only_active` would be False. This means `_healthy_codebase_fallback()` is NOT returned here; instead the old self-referential fallback at line 996 would be used.
+
+Wait, but the test at line 1894-1895 asserts:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+If `analysis_only_active` is False (because the assessment text doesn't contain `task_analysis_only_attempt_count`), then this test should FAIL because the fallback at line 996 would return "Repair evidence-backed planning after no-task sessions" instead.
+
+Let me check: the assessment text "No known current bug matched this assessment." — does it contain `task_analysis_only_attempt_count`? No, it doesn't. So `_has_analysis_only_pressure(metrics)` would return False.
+
+Wait - but maybe the code is different than I think. Let me look at how `_has_analysis_only_pressure` works and also check `numeric_metrics`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _has_analysis_only_pressure' in scripts/preseed_session_plan.py  ▶ search 'def numeric_metrics' in scripts/preseed_session_plan.py ✓ (845ms)
+ ✓ (842ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both of these functions to understand how the logic works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:862..892  ▶ read scripts/preseed_session_plan.py:742..802 ✓ (1.3s)
+ ✓ (848ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (453ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the definition of `_ANALYSIS_ONLY_METRICS`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:855..865 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me trace through the test at line 1894:
+
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+```
+
+The assessment text "No known current bug matched this assessment." contains none of the keys in `_ANALYSIS_ONLY_METRICS` (`task_analysis_only_attempt_count`, `task_no_edit_revert_count`, `reverted_no_edit`), so `analysis_only_active` is False.
+
+But the test asserts:
+```python
+assert fallback["title"] == "Add a small verifiable improvement to src/"
+```
+
+This should FAIL because with `analysis_only_active=False`, the code at line 993-994 would NOT return `_healthy_codebase_fallback()`, and instead would fall through to the old self-referential fallback at line 996.
+
+Wait, but the test is apparently already there (at line 1894) and is part of the existing test suite. Let me re-read the test more carefully.
+
+Actually wait — let me re-read line 1894. The test calls `choose_task("No known current bug matched this assessment.")`. This assessment text has NO matching TASK keys and NO analysis-only metrics. So `candidates` would be empty, and `analysis_only_active` would be False. The code would fall through to the old fallback at line 996 ("Repair evidence-backed planning after no-task sessions").
+
+But the test asserts the title is "Add a small verifiable improvement to src/". That test should be failing right now!
+
+Let me actually run the test to see what happens.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run the test to see the current state:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (846ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test is already failing! This is the current state of the codebase — the test at line 1792 is failing. Let me look at that test more carefully.
+
+Let me look at line 1792.
+────────────────────────────────────────────────────────────────────────────────
+
+The test is already failing. Let me see the full test to understand what's happening:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1760..1810 ✓ (395ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1792 fails because `validated_against_assessment` is False instead of True. This test is checking that when the assessment mentions a search regex error, the search-friction task should be selected and validated.
+
+Let me look at what task is actually being selected instead, since the test only checks the title. The issue might be that the task title matches but the `validated_against_assessment` is wrong. Let me check the `check_task_contradiction` function and how the search friction task is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (22 lines) ✓ (846ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the contradiction check is finding that `search_regex_error` appears in `src/tools.rs` and is treating that as "code already exists." This is the current state of the code — the search-friction task is being contradicted because the regex error code already exists in the codebase.
+
+Now, I need to understand what I need to do. The task description says:
+
+> Break self-referential planning fallback when analysis-only pressure is active
+
+Looking at lines 993-994, the code ALREADY has:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+And the tests at lines 1961-1978 already test for this.
+
+But the test at line 1894 is testing a different scenario:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/"
+```
+
+This test was presumably added in a previous session (Day 144) but it would fail because `analysis_only_active` is False for that assessment. Let me actually check if this test is the one at line 1894 or if I miscounted.
+
+Wait, let me re-read the test at line 1894. It's inside a test function. What test function is it?
+
+Let me also check the overall test structure to understand if lines 1894-1899 are inside the same function as the earlier tests and whether the test function that contains line 1894 is actually run.
+
+Actually, looking more carefully, the test at line 1894 exists inside a function, and the test execution appears to be failing at line 1792 BEFORE reaching line 1894. So the test at 1894 may or may not pass — we just can't tell because the test suite fails earlier.
+
+Now, the task says the change needs to be at lines 993-1022. Looking at the current code, lines 993-994 already have the change! So either:
+1. This task was already implemented (in a previous session), and the test just needs to be fixed/updated
+2. The test at 1894 was added along with the change but the overall test suite is broken by another issue (the search_regex_error contradiction)
+
+Let me follow the Fallback in the task:
+> If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when analysis_only_active is True, mark this task obsolete and explain why the self-test at line 1891 still asserts the old fallback title.
+
+So the task tells me to check if it's already implemented, and if so, mark it obsolete. But the test at line 1894 actually already asserts the NEW behavior (`"Add a small verifiable improvement to src/"`), not the old behavior. So the test was updated along with the code change.
+
+The issue is that the test suite is BROKEN — it fails at line 1792 because of the search_regex_error contradiction. This test failure is not related to the task I'm working on.
+
+Let me read the Fallback more carefully:
+> If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when analysis_only_active is True, mark this task obsolete and explain why the self-test at line 1891 still asserts the old fallback title.
+
+Wait, it says "line 1891" — but the test at line 1894 already asserts the NEW title. Perhaps the task instructions were written before the previous agent already implemented this change. The task is already done!
+
+But I need to verify this more carefully. Let me:
+1. Check if the line 993-994 change exists
+2. Check if the test at line 1894 and line 1968 both assert the new behavior
+3. If yes, mark the task obsolete
+
+Actually, wait — the test is FAILING. This means the task might have been partially implemented (the code change was made but the test wasn't properly wired up), or there's a regression. Let me investigate the failing test more carefully.
+
+The failing test at 1792 says that `choose_task` returns the search-friction task but with `validated_against_assessment=False` instead of True. The contradiction reason is that `search_regex_error` appears in `src/tools.rs` and the contradiction checker thinks this means the code already exists.
+
+This test failure is unrelated to the task at hand. It might be a pre-existing regression. Let me check how `check_task_contradiction` works:
+
+Let me look at it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the check_task_contradiction function and understand why the test is failing. This failure at line 1792 is a pre-existing issue unrelated to my task. Let me check it then determine if this task is already done or needs fixing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:698..748 ✓ (409ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `_check_code_already_exists` is triggering a contradiction. Let me look at that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _check_code_already_exists' in scripts/preseed_session_plan.py ✓ (452ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_check_code_already_exists` function to understand why `search_regex_error` in the task keys is matching against existing code in `src/tools.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:644..694 ✓ (411ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue. The search-friction task has keys like `search_regex_error`, `search_binary_match`, etc. The `_check_code_already_exists` function is running `git grep -n -F -- search_regex_error -- src/tools.rs` and finding it. This is likely because the code in `src/tools.rs` contains the string `search_regex_error` as part of test functions or similar.
+
+But this test failure at line 1792 is a pre-existing issue — it's not related to the task I'm working on. The task is about "Break self-referential planning fallback when analysis-only pressure is active."
+
+Looking at the code:
+- Lines 993-994: `if analysis_only_active: return _healthy_codebase_fallback()` — ALREADY IMPLEMENTED
+- Lines 1961-1978: Test for analysis-only no-candidates fallback — ALREADY IMPLEMENTED
+- Line 1894: Another test that asserts healthy codebase fallback — ALREADY IMPLEMENTED
+
+So the task is already implemented! The infrastructure change is in place. The failing test at line 1792 is a pre-existing issue (the search_regex_error contradiction), not related to this task.
+
+Per the task's Fallback:
+> If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when analysis_only_active is True, mark this task obsolete and explain why the self-test at line 1891 still asserts the old fallback title.
+
+Wait, the fallback says "line 1891 still asserts the old fallback title" — but looking at line 1895, it actually asserts the NEW title:
+```python
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+So the test was already updated. The task is complete. The only issue is that the test suite is failing at line 1792 due to a separate bug.
+
+But... the task says to mark it obsolete if already implemented. But the task also says: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied."
+
+Let me think about what I should do:
+1. The code change (lines 993-994) is already in place
+2. The test for the new behavior (lines 1961-1978 and 1894-1899) is already in place
+3. The existing test suite is broken at line 1792 due to a pre-existing issue
+
+The pre-existing test failure at 1792 is blocking verification of the whole test suite, including the test at 1961-1978 that specifically tests my task's behavior.
+
+Should I fix that pre-existing issue? The task says I should only work on this task, not anything else...
+
+Actually, wait. Let me re-read the evolve skill: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface. If no honest code/test/docs improvement exists, write session_plan/task_01_obsolete.md explaining the exact evidence and stop without claiming the task landed."
+
+So I should either:
+1. Make the test suite pass (fix the pre-existing issue) so the verification works
+2. Or write the obsolete note
+
+Let me investigate the pre-existing issue. The `_check_code_already_exists` function is finding `search_regex_error` in `src/tools.rs` — but this is a test function name, not the actual bug being searched for. The task's keys are being used as literal search patterns and matching test function names.
+
+Actually, wait — let me look more carefully at the test assessment text:
+
+```
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+The assessment text contains `search_regex_error`. The code in `src/tools.rs` has a test function with `search_regex_error` in the name. The `_check_code_already_exists` uses `git grep -F` for a literal match, and it finds this.
+
+But this is a test function name, not actual code that fixes the search regex error. This is a false positive from `_check_code_already_exists`.
+
+However, fixing this is out of scope for my task. My task is about the self-referential planning fallback. The code and tests for my task are already in place.
+
+Let me write the obsolete note. The task is already implemented:
+- Lines 993-994: The `analysis_only_active` check with `_healthy_codebase_fallback()` 
+- Lines 1961-1978: The test for analysis-only no-candidates fallback
+- Lines 1894-1899: Another test for the healthy codebase fallback
+
+Wait, actually, there might be a subtle issue. Let me re-check whether the test at line 1894 actually passes or fails. The test is at line 1894:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/"
+```
+
+The assessment "No known current bug matched this assessment." has no analysis-only metrics, so `analysis_only_active` is False. The code would NOT hit line 993-994 and would fall through to line 996.
+
+But the test asserts the title is "Add a small verifiable improvement to src/" — which only happens when `analysis_only_active` is True.
+
+So this test at line 1894 should actually FAIL, because `analysis_only_active` is False.
+
+Hold on, let me look at this more carefully. Let me trace through `choose_task` with "No known current bug matched this assessment.":
+
+1. `lower` = "no known current bug matched this assessment."
+2. `metrics = numeric_metrics(lower)` = {} (no `key=value` patterns)
+3. `analysis_only_active = _has_analysis_only_pressure(metrics)` = False (empty metrics)
+4. No candidates match any task keys in the assessment text
+5. `candidates` is empty
+6. `analysis_only_active` is False → skips line 993-994
+7. Falls through to the old fallback at line 996 with title "Repair evidence-backed planning after no-task sessions"
+
+So the test at line 1894-1895 should be FAILING! But we never reach it because the test suite fails at line 1792 first.
+
+This is actually interesting. The test at line 1894 was added to test the new behavior but it doesn't actually trigger the new behavior because `analysis_only_active` is False for its assessment text. The test at lines 1961-1978 DOES properly test the behavior (it uses `task_analysis_only_attempt_count=3` in the assessment).
+
+So there are TWO issues:
+1. Pre-existing test failure at line 1792 (search_regex_error contradiction)
+2. The test at line 1894 is testing the wrong condition (it asserts healthy fallback but doesn't activate analysis_only_active)
+
+Let me think about what to do. The task says to mark it obsolete if already implemented. But the verification doesn't pass because of the pre-existing test issue. I think the right thing to do is:
+
+Since the task implementation is already in place (lines 993-994) and has a proper test (lines 1961-1978), but the test suite is failing due to an unrelated issue, I should:
+
+1. Fix the pre-existing test issue so the test suite passes, OR
+2. Write the obsolete note
+
+Actually, the evolve skill says: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied."
+
+Let me try a different approach: can I fix the pre-existing test issue cleanly? The issue is that `_check_code_already_exists` finds `search_regex_error` in `src/tools.rs` because of a test function name. This is a false positive.
+
+Actually, let me look at the git grep output:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'search_rege… ✓ (854ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `search_regex_error` appears in a test function name in `src/tools.rs`. The `_check_code_already_exists` function incorrectly considers this as "code already exists" for the search-friction task. The task's keys include `search_regex_error`, and it's finding it in the test function name.
+
+This is a false positive — the fact that there's a test for search regex errors doesn't mean the problem is solved. The key `search_regex_error` is actually referring to the error metric that shows up in assessments, not the test function name.
+
+Now, fixing this would require changing `_check_code_already_exists` to be smarter about what it matches. But that's out of scope for this task.
+
+Alternatively, I could fix the test at line 1894 to properly activate `analysis_only_active`, but that's also not the scope of THIS task — the task is about the code change at lines 993-994, which is already there.
+
+Let me now summarize:
+
+1. The core code change (lines 993-994: `if analysis_only_active: return _healthy_codebase_fallback()`) is ALREADY IMPLEMENTED
+2. The proper test (lines 1961-1978) is ALREADY IMPLEMENTED and tests the exact behavior
+3. The test at line 1894 was also updated but has a subtle issue (it asserts the fallback title but doesn't trigger analysis_only_active)
+4. The overall test suite fails at line 1792 due to an unrelated false positive in `_check_code_already_exists`
+
+Per the task's Fallback: "If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when analysis_only_active is True, mark this task obsolete and explain why the self-test at line 1891 still asserts the old fallback title."
+
+The fallback says to check line 1891 but the actual test is at 1894. The test at 1894 asserts the NEW title, not the old one. So the task's fallback prediction is slightly wrong — the test was already updated.
+
+I should write the obsolete note. The task was already implemented in a previous session (likely Day 144 or 145).
+
+Let me write `session_plan/task_01_obsolete.md`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me verify the full scope of what's already implemented vs what still needs work:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --all --oneline --grep… ✓ (1.7s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a commit `d68c13f2 Day 144 (17:24): Break self-referential planning fallback when analysis-only pressure is active (Task 1)` that implemented this task! Let me check what that commit did.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show d68c13f2 --stat 2>&1 ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task was already implemented in Day 144. The commit added 27 lines with 3 deletions to `scripts/preseed_session_plan.py`. This is the implementation at lines 993-994 and the tests at lines 1894-1899 and 1961-1978.
+
+So the task is ALREADY DONE. I should mark it as obsolete.
+
+But wait, the issue description says: "Agent-self #135: reverted Day 144 due to evaluator timeout, not code failure." So perhaps the commit exists (it was committed) but it was reverted? Let me check if there was a revert.
+
+Actually, looking at the git log, the commit `d68c13f2` is NOT in the current branch's history (the current HEAD is `2962e757`). It's only in `--all` (all branches). Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git branch -a --contains d68c1…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all | head… ✓ (849ms)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit `d68c13f2` is on `main` and it was made at Day 144 (17:24). But the current HEAD is `2962e757`, which is AFTER that commit. Let me check if `d68c13f2` is an ancestor of the current HEAD.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git merge-base --is-ancestor d… ✓ (863ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the commit `d68c13f2` is an ancestor of the current HEAD. The code is already in the tree. This task was already implemented in Day 144 and it's still present in the current code.
+
+Now let me verify exactly what's in the tree. The code at lines 993-994 has:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+And the tests at lines 1961-1978 properly test this behavior.
+
+The test at line 1894 also tests for the healthy fallback, but it doesn't actually trigger `analysis_only_active`. This might be a subtle bug in the test but not in the implementation.
+
+However, the test suite is currently BROKEN at line 1792 due to the `search_regex_error` contradiction false positive.
+
+So the task is already implemented. Per the task's own Fallback instructions and the evolve skill, I should:
+
+1. Check if the implementation is complete → Yes, it is
+2. The test suite can't pass due to a pre-existing issue
+3. Write `session_plan/task_01_obsolete.md`
+
+But wait — the task also says: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface."
+
+So I should make a small verification improvement. One thing I notice: the test at line 1894 tests for the healthy fallback but doesn't actually trigger `analysis_only_active`. Let me check if this test is correct or if it's relying on some side effect.
+
+Wait, let me re-read the test at 1894:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This assessment text has NO `task_analysis_only_attempt_count` or other analysis-only metrics. So `analysis_only_active` is False. The code should fall through to the old self-referential fallback.
+
+But the test asserts the title is "Add a small verifiable improvement to src/". This test should FAIL.
+
+Unless... there's something I'm missing. Let me actually run just this test to confirm.
+
+Actually, I can't run just this test because the test suite fails at line 1792. But I can test it manually with a Python snippet.
+
+Let me do that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (18 lines) ✓ (847ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Both tests return the healthy codebase fallback. So there's something else going on. Let me trace through `choose_task` more carefully.
+
+For Test 1 with "No known current bug matched this assessment.":
+- `lower` = "no known current bug matched this assessment."
+- `metrics` = `numeric_metrics("no known current bug matched this assessment.")` = {}
+- `analysis_only_active` = False (empty metrics)
+- No candidates match (no task keys in assessment)
+- At line 993: `analysis_only_active` is False, so skip to line 996
+- But the fallback at line 996 should be the "Repair evidence-backed planning" one...
+
+Unless the code was changed to always use `_healthy_codebase_fallback()` when there are no candidates, regardless of `analysis_only_active`. Let me re-read lines 992-996 more carefully.
+
+Wait, let me check if `_healthy_codebase` is being checked somewhere else that I'm missing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:988..1008 ✓ (392ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code at line 993-994 only returns `_healthy_codebase_fallback()` when `analysis_only_active` is True. But my test showed it returning the healthy fallback even when `analysis_only_active` is False (no metrics in "No known current bug matched this assessment.").
+
+Let me re-check. Actually, maybe something happens at the candidates level. Let me look at what happens with the TASK candidates for "No known current bug matched this assessment." — maybe one of the TASKS has a key that matches.
+
+Actually wait, I need to trace more carefully. Let me add some debug output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (18 lines) ✓ (861ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No matches and `analysis_only_active` is False. But `choose_task` returns the healthy fallback anyway. There must be something else going on. Let me add debug to `choose_task` directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (41 lines) ✓ (852ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The trace shows "-> falling to old fallback (self-referential)" but the result is still "Add a small verifiable improvement to src/". That means the fallback at line 996 is NOT being used — there must be a `_healthy_codebase` check somewhere between line 996 and the return. Let me look at the `_healthy_codebase` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ search '_healthy_codebase' in scripts/preseed_session_plan.py ✓ (457ms)
+
+
