@@ -7072,6 +7072,22 @@ mod tests {
     }
 
     #[test]
+    fn stash_and_take_diagnostic_error_roundtrips() {
+        // Verify that stash_diagnostic_error stores and take_diagnostic_error
+        // retrieves exactly once — then clears.
+        stash_diagnostic_error("test diagnostic");
+        assert_eq!(take_diagnostic_error(), Some("test diagnostic".to_string()));
+        // After take, it should be None
+        assert!(take_diagnostic_error().is_none());
+        // Stash again and verify reuse
+        stash_diagnostic_error("second diagnostic");
+        assert_eq!(
+            take_diagnostic_error(),
+            Some("second diagnostic".to_string())
+        );
+    }
+
+    #[test]
     fn run_completion_guard_reports_error_on_panic() {
         let _state_lock = state_global_test_lock();
         reset_global_recorder_for_test();
