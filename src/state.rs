@@ -1820,6 +1820,26 @@ fn project_relations(
             }
         }
     }
+    if matches!(
+        event.event_type,
+        EventType::FailureObserved | EventType::JsonOutputFailure | EventType::ToolSchemaFailure
+    ) {
+        // Link the failure to its source (tool, operation, or "unknown")
+        // so the failure node gets kind="failure" in graph queries,
+        // enabling `state graph hotspots --kind failure` to return data.
+        let source = payload_str(&event.payload, "source")
+            .or_else(|| payload_str(&event.payload, "operation"))
+            .unwrap_or("unknown");
+        insert_relation(
+            conn,
+            source,
+            "produced_failure",
+            &event.event_id,
+            "failure",
+            &event.event_id,
+            report,
+        )?;
+    }
     for task_id in payload_task_ids(&event.payload) {
         insert_relation(
             conn,
