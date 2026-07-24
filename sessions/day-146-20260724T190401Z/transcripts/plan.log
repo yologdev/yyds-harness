@@ -1,0 +1,571 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before writing task files.
+
+## Current State Assessment
+
+### Recent Trajectory
+- Day 146 has had multiple sessions. The most recent (12:40) had 0/2 tasks reverted_no_edit. But the three before it all landed verified code.
+- The trajectory shows a session at 12:40 UTC that reverted both tasks. That's ~6.5 hours ago. The current time is 19:04 UTC.
+
+### Graph Pressure (prioritized)
+1. **Force analysis-only attempts into action** (task_analysis_only_attempt_count=4)
+2. **Raise verified task success rate** (task_success_rate=0.0)
+3. **Require strict verifier evidence** (task_verification_rate=0.0)
+4. **Bound failing shell commands** (bash_tool_error=13)
+5. **Close yyds state and model lifecycle gaps** (deepseek_model_call_abnormal_completed_count=1)
+
+### Assessment Evidence
+- Build is clean, tests pass (265 state tests)
+- Cache-report is empty (known issue #90, blocked on yoagent upstream)
+- `state graph hotspots --kind failure` returns zero results (no failure relations in graph data)
+- Retroactive FailureObserved from run-1784895914354-51121
+- The graph hotspots `--kind` listing shows kinds that produce zero results
+
+### Issues
+- #142: Planning-only session (Day 146) - all 2 tasks reverted
+- #135: Task reverted - Break self-referential planning fallback
+- #134: Task reverted - Close harness-internal model lifecycle gap
+- #105: Task reverted - Record DeepSeek prompt cache metrics (blocked on #90)
+- #131: Evaluator timeouts (in evolve.sh, which is do-not-modify)
+- #90: yoagent Usage struct drops DeepSeek cache fields (blocked on upstream)
+
+### What to Plan
+
+The highest graph pressure is "Force analysis-only attempts into action" (#1) and "Raise verified task success rate" (#2). These are tied - the analysis-only sessions are the main reason for 0% task success rate.
+
+But wait - looking more carefully at the trajectory: the session at 12:40 reverted both tasks. The assessment says this was "likely a planning failure, not an implementation failure." The seed task #135 (Break self-referential planning fallback) was one of those reverted tasks - the evaluator timed out.
+
+The most recent session (which is NOW, 19:04) hasn't produced results yet. The assessment was done at 17:37.
+
+Let me think about what's actually actionable:
+
+1. **Issue #135 (Break self-referential planning fallback)** - This was reverted because the evaluator timed out. The code was likely correct (python tests pass). This could be tried again but the evaluator timeout is the blocker.
+
+2. **Issue #134 (Close harness-internal model lifecycle gap)** - The implementation transcript shows the agent spent 24+ turns analyzing and never landed code. This is the "analysis-only" pattern. The task scope was too broad for the agent to complete.
+
+3. **Graph hotspots `--kind` lists unavailable kinds** - The assessment notes that several kinds (eval, model, task, trace) exist in the data schema but produce zero results. This is a diagnostic gap but also a small, verifiable fix.
+
+4. **No failure relations in graph** - `state graph hotspots --kind failure` returns zero. The failure relations exist in the schema but are never populated.
+
+Let me think about what the most impactful, verifiable tasks are:
+
+**Task 1: Add failure relations to state graph projection**
+
+This directly addresses graph pressure #1 and #2 by making failure evidence visible. Currently, the graph has no failure-to-tool/file/task relations, which means graph hotspots can't answer "what tools fail most?" or "which files have the most failures?"
+
+The assessment says the failing shell commands (bash_tool_error=13) are in the trajectory but not in the graph. If we add failure relations, the graph becomes more useful for diagnosing recurring failures.
+
+Files: `src/commands_state_graph.rs` and `src/state.rs` (or `src/commands_state.rs` - need to check)
+
+Actually, let me check which file owns the graph building. The assessment says `commands_state.rs` has `build_graph_hotspots_report` and `build_graph_hotspots_payload`, while `commands_state_graph.rs` has the newer `handle_graph_subcommand` and the improved error messages from the most recent task.
+
+Let me check the ownership:
+
+- `src/commands_state.rs` (25,042 lines) - has `build_graph_*` functions
+- `src/commands_state_graph.rs` (1,367 lines) - has `handle_graph_subcommand`, `build_graph_hotspots_report`, `build_graph_hotspots_payload`
+
+Wait, the repo map shows `build_graph_hotspots_report` and `build_graph_hotspots_payload` in `src/commands_state_graph.rs`. So the graph code was split. Let me use ownership checks.
+
+**Task 2: Fix `--kind` listing to only show kinds with actual data**
+
+The 17:38 session added the improvement to list available kinds when a filter matches nothing. But it lists ALL kinds in the data schema, including ones that have zero matching rows (eval, model, task, trace). The fix would filter the available-kinds listing to only show kinds that have at least one matching row in the query result.
+
+Actually wait, this might be more nuanced. The kinds exist in the data but some have zero rows. The current listing shows the kinds that exist in the graph schema, not the kinds with actual rows. The fix would show only kinds that have data.
+
+Let me think about whether these are good tasks...
+
+Actually, re-reading the assessment more carefully:
+
+> **[MEDIUM] `state graph hotspots --kind` lists kinds that produce zero results**: The 17:38 improvement shows available kinds when a filter matches nothing, but several kinds (eval, model, task, trace) are in the data but have zero matching rows. This suggests the graph projection populates the kind enum but some relations are never created. Not a crash, but a diagnostic tool that advertises filters it can never satisfy.
+
+This is directly observable and the fix is to either (a) populate those relations, or (b) filter the listing to only show kinds with data. Option (b) is simpler and immediate.
+
+But option (a) - populating the missing relations (especially failure relations) - is more valuable because it makes the graph actually useful for failure diagnosis, which directly addresses graph pressure about bash tool errors.
+
+Let me plan two tasks:
+
+**Task 1**: Add failure relations to state graph projection - so `state graph hotspots --kind failure` returns actual data, making the graph useful for diagnosing recurring tool failures.
+
+**Task 2**: Filter `--kind` available-kinds listing to only show kinds with actual data rows, so users don't try filters that can never produce results.
+
+Wait, but task 1 (adding failure relations) would make task 2 less necessary for the `failure` kind. And task 2 is more of a UX polish.
+
+Let me re-examine: graph pressure #5 says "Close yyds state and model lifecycle gaps" and "state_unmatched/open_after_FailureObserved=8". The failure observation gap is about runs completing with error status but no FailureObserved being recorded. This is about `src/state.rs` and the state recorder.
+
+Actually, let me look at what's truly actionable and impactful:
+
+The biggest problem visible in the trajectory is the analysis-only sessions (task_analysis_only_attempt_count=4). But fixing the task picker (#135) was already attempted and reverted due to evaluator timeout. The evaluator timeout problem (#131) requires modifying `scripts/evolve.sh` which is in the do-not-modify list.
+
+So the most actionable tasks are:
+
+1. **Add failure relations to graph projection** - Makes graph diagnostics useful. Addresses the gap where `--kind failure` returns zero. Files: `src/commands_state_graph.rs`, `src/state.rs`.
+
+2. **Filter available-kinds listing to only kinds with data** - Small UX fix that the assessment identified as a bug. Files: `src/commands_state_graph.rs`.
+
+3. For a third task, I could look at issue #134 (harness-internal model lifecycle gap) but make it much SMALLER than the previous attempt. The previous attempt had the agent spend 24 turns reading code without landing anything. A narrower version would be: just add a `harness_internal: bool` field to ModelCallCompleted events in `src/state.rs`.
+
+Actually, the planning instructions say: "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." And "State-driven DeepSeek harness work: at least 2 slots."
+
+Let me plan 2 tasks:
+
+**Task 1**: Add failure relations to state graph projection
+- Directly addresses: graph pressure "no failure relations exist", assessment bug "[MEDIUM] graph hotspots --kind failure returns zero"
+- Files: `src/commands_state_graph.rs` or `src/commands_state.rs` (need to check which owns the graph building)
+- Verifiable with: `cargo build && cargo test` plus `yyds state graph hotspots --kind failure`
+
+**Task 2**: Filter `--kind` listing to only show kinds with >0 rows
+- Addresses: assessment bug "graph hotspots --kind lists kinds with zero results"
+- Files: `src/commands_state_graph.rs`
+- Small, verifiable, self-contained
+
+Let me check file ownership before writing the tasks.
+
+Actually, the artifact-first requirement says: "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md." Let me check if task_01.md exists.
+
+Let me start by creating the session_plan directory and checking if task files exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ ✓ (847ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it first, then decide whether to refine it or add task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is the harness-seeded fallback task. It's a generic "add a small improvement" task. The assessment now has much more specific evidence than when this was seeded. I should refine this task to be more specific, based on the assessment evidence, AND add a second task.
+
+Let me look at the assessment evidence more carefully:
+
+1. **Graph hotspots `--kind failure` returns zero results** - The failure relations exist in the graph schema but are never populated. This is a directly actionable bug.
+
+2. **Graph hotspots `--kind` lists kinds with zero results** - The available-kinds listing includes kinds that have zero matching rows.
+
+These are both in `src/commands_state_graph.rs`. Let me check ownership.
+
+Actually, let me think about which tasks to plan:
+
+The most impactful task from the assessment is fixing the failure relations gap in the graph. This would make `state graph hotspots --kind failure` actually useful - it would show which tools/files/tasks have the most failures. Currently this returns zero results because failure relations are never created.
+
+But I need to check which file owns the graph building. The assessment says `commands_state.rs` (25K lines) has `build_graph_*` functions, and `commands_state_graph.rs` (1,367 lines) has `handle_graph_subcommand` and the hotspot-specific functions. Let me check.
+
+Let me refine task_01 to be specific about adding failure relations, and create task_02 for the kind-listing fix. But first, let me check ownership.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn build_graph_hotspots_report\|fn build_graph_hotspots_payload\|fn que…  ▶ $ grep -n 'RelationKind\|graph_relation_kind\|failure.*relation\|insert.*relation'… ✓ (1.8s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The hotspot functions are in `src/commands_state_graph.rs`. Let me look at the query to understand how hotspots are built and where failure relations might be added.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'kind\|Kind\|relation' src/commands_state_graph.rs | head -40  ▶ $ sed -n '1276,1367p' src/commands_state_graph.rs ✓ (898ms)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+
+1. `query_graph_hotspots` reads from `state_relations` table in the SQLite projection
+2. The `dst_kind` is used for filtering by kind
+3. `query_distinct_kinds` returns distinct `dst_kind` values from `state_relations`
+4. `infer_graph_node_kind` is used for the `src_id` kind inference
+
+So the graph is populated from the SQLite projection. The question is: what populates the `state_relations` table? And are failure relations being inserted?
+
+Let me check how the state_relations table is populated. The assessment says this is in `src/commands_state.rs` with `build_graph_*` functions. But the actual graph building (rebuilding the SQLite projection) is likely in `src/state.rs` or `src/commands_state.rs`.
+
+Actually, let me check `src/state.rs` for `rebuild_sqlite_projection` or similar functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_relations\|failure.*relation\|FailureObserved.*relation\|insert.*…  ▶ $ grep -n 'rebuild_sqlite_projection\|state_relations\|failure\|FailureObserved' s… ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state_relations INSERT into understand what kinds of relations are being populated.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:2895..3015 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where FailureObserved is used in the projection building code to understand if failure relations are being created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'FailureObserved\|case EventType::Failure' src/state.rs | head -20 ✓ (854ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the projection code around line 1555 to see if FailureObserved events create relations in the graph.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1545..1625 ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see: `project_failure` inserts into the `failures` table but does NOT create relations in `state_relations`. So failures are recorded but never linked to tools, files, tasks, etc. through the relation graph.
+
+Now I understand the gap clearly. The `project_failure` function should also create relations that link failures to:
+1. The tool that failed (if the failure payload has a tool/operation field)
+2. The file being edited (if the failure is related to a file operation)
+3. The task (via the run)
+
+This would make `state graph hotspots --kind failure` actually useful.
+
+Let me now look at how other projections create relations for comparison. Let me look at `project_tool_call` or similar.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn project_tool\|fn project_file\|fn project_task\|insert_relation' src… ✓ (845ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the tool call projection to understand what relations it creates, so I can model failure relations similarly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1685..1765 ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the pattern. The `project_relations` function creates graph relations based on event types. But `FailureObserved` events are NOT handled here — they only go to the `failures` table.
+
+For failures, we should create relations like:
+1. Failure → run (already done by the generic event→run relation since `event.run_id` is set)
+2. Failure → tool (if the payload has a "source" or "tool" field)
+3. Failure → file (if the payload has "file" or "path" fields)
+
+But wait — let me check if the generic relations (event→run, event→trace) are created for ALL events including FailureObserved. Let me look at how `project_relations` is called.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'project_relations\|project_event\|for event in' src/state.rs | head -20 ✓ (846ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `project_relations` is called for every event at line 1447. Let me see the full flow around there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1408..1468 ✓ (462ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `project_relations` function at line 1694-1930 creates relations for events including FileRead, FileEdited, CommitCreated, RevertPerformed, and likely tool calls. But it does NOT create any tool-specific or failure-specific relations for `FailureObserved` events.
+
+However, the generic event→run and event→trace relations ARE created for FailureObserved events (lines 1699-1719 apply to all events). So failure events DO have relations to their runs. The issue is that `query_graph_hotspots` uses `dst_kind` field for filtering, and when filtering by "failure", it looks for nodes whose `kind` is "failure" — but failure event IDs are not being indexed as nodes with kind "failure".
+
+Let me re-read the query:
+```sql
+SELECT src_id, relation, dst_id, dst_kind
+FROM state_relations
+```
+
+So the relations table has `src_id` (the event ID), `relation` (e.g., "observed_in"), `dst_id` (the run ID), `dst_kind` (e.g., "run"). When we create:
+- `insert_relation(conn, "evt-failure-123", "observed_in", "run-456", "run", ...)` 
+
+This creates a relation where src_id="evt-failure-123" and dst_kind="run". The `query_graph_hotspots` function then infers the kind of "evt-failure-123" via `infer_graph_node_kind`. The hotspot for "evt-failure-123" would have `kind` inferred from its ID, and the hotspot for "run-456" would have `kind="run"`.
+
+When we filter by `--kind failure`, we're looking for hotspots where `kind` contains "failure". The `infer_graph_node_kind` function is what determines the kind of each node. Let me check it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn infer_graph_node_kind' src/commands_state.rs ✓ (838ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13391..13471 ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `infer_graph_node_kind` classifies node IDs: `evt-*` → "event", `run-*` → "run", etc.
+2. There is NO classification for "failure" — failure event IDs start with `evt-` so they're classified as "event".
+3. The `query_graph_hotspots` function filters by `kind`, so `--kind failure` never matches because no node has kind "failure".
+4. The `project_failure` function inserts into the `failures` table but doesn't create any relations specific to failures.
+5. The `project_relations` function creates generic event→run relations for FailureObserved events (since they have run_ids), but doesn't create tool→failure or file→failure relations.
+
+So there are two issues:
+1. Failure events have kind="event" not kind="failure" — the kind inference doesn't recognize them
+2. There are no failure-specific graph relations (failure→tool, failure→file)
+
+For a task, the fix would be:
+- In `project_relations`, add a `FailureObserved` match arm that creates relations from the failure event to the tool/file that caused it
+- In `infer_graph_node_kind`, the failure events are still `evt-*` prefixed, so they need special handling
+
+Actually, let me reconsider. The simplest approach is:
+
+**Option A**: In `project_failure`, when inserting into the failures table, also create relations that link the failure event to the tool/file. Then in the graph query, the failure events would appear as nodes with relations to tools/files.
+
+But the `kind` filter would still not work because `infer_graph_node_kind("evt-...")` returns "event", not "failure".
+
+**Option B**: Add failure→tool and failure→file relations in `project_relations` under a `FailureObserved` match arm.
+
+**Option C**: Make `infer_graph_node_kind` recognize failure event IDs by looking them up in the failures table, or by checking if they're FailureObserved events.
+
+Actually, let me reconsider the approach entirely. The `query_graph_hotspots` function filters based on `dst_kind` from the relations table. But the `infer_graph_node_kind` is only used for the `src_id`. So:
+
+- When we have: `evt-failure-123` --observed_in--> `run-456` (dst_kind="run")
+  - The hotspot for `evt-failure-123` has `kind = infer_graph_node_kind("evt-failure-123")` = "event"
+  - The hotspot for `run-456` has `kind = "run"` (from dst_kind in the relation)
+
+Filtering by `--kind failure` looks for hotspots where `kind.to_lowercase().contains("failure")`. Neither "event" nor "run" contains "failure".
+
+So the fix needs to make failure events identifiable in the graph. The cleanest approach:
+
+1. In `project_relations`, add a `FailureObserved` case that creates specific relations (failure→tool, failure→file)
+2. Give the failure source nodes a kind that can be filtered — either by modifying the ID to start with "failure-" or by adding the kind to the `infer_graph_node_kind` function
+
+Actually, the simplest approach would be to:
+1. In `project_relations`, for `FailureObserved` events, insert a self-referencing relation or a relation from the failure's tool to the failure, with appropriate kinds
+2. OR, modify `project_failure` to also insert relations
+
+Wait, let me think about this differently. The `query_graph_hotspots` function filters on `h.kind`. The `kind` comes from either `dst_kind` in the relation, or from `infer_graph_node_kind` for the source. 
+
+The cleanest approach: In `project_relations`, add a `FailureObserved` match arm that creates relations between the failure event and:
+- The tool that failed (from payload "source" or "tool")
+- The file involved (from payload "file" or "path")
+
+And to make the failure node itself kind="failure", we could either:
+- Change `infer_graph_node_kind` to recognize failure event IDs
+- Or add a relation from the failure event to itself with dst_kind="failure"
+
+Actually, the simplest working fix: in `project_relations`, add a match arm for `FailureObserved` that creates a relation from the tool to the failure event (with the failure event as destination and dst_kind="failure"). This way, tools that have failures would show up in hotspots with outgoing relations to failure nodes of kind "failure".
+
+But this still doesn't make the failure events themselves filterable by `--kind failure`. 
+
+Let me reconsider. The approach should be:
+
+1. In `project_relations`, add a `FailureObserved` arm that:
+   - Creates a relation from the failure event to the tool (with `dst_kind="tool"`)
+   - This makes the failure event appear as a node with outgoing relations to tools
+
+2. Make the failure event itself have kind "failure" instead of "event". We can do this by:
+   - Adding a special case in `infer_graph_node_kind` — but that's fragile (it can't distinguish failure events from regular events by ID alone)
+   - OR, creating a relation where the failure event is the destination with `dst_kind="failure"`. For example: tool → failure_event (dst_kind="failure"). Then the failure event would appear with kind="failure".
+
+Actually wait - let me re-read how `query_graph_hotspots` builds the hotspot kind:
+
+```rust
+let src = hotspots.entry(relation.src_id.clone()).or_insert_with(|| GraphHotspot {
+    id: relation.src_id.clone(),
+    kind: infer_graph_node_kind(&relation.src_id),
+    ..
+});
+// ...
+let dst = hotspots.entry(relation.dst_id.clone()).or_insert_with(|| GraphHotspot {
+    id: relation.dst_id.clone(),
+    kind: relation.dst_kind.clone(),
+    ..
+});
+```
+
+So for source nodes, `kind = infer_graph_node_kind(id)`, and for destination nodes, `kind = dst_kind` from the relation. If we create a relation where the failure event is the dst and dst_kind="failure", then the failure event would get kind="failure" in the graph.
+
+But the relation needs a source. We could use the tool as source: `tool:bash -> failure_event (dst_kind="failure")`. This would:
+- Make the tool node show up with outgoing relations to failures (useful for hotspots)
+- Make the failure event node show up with kind="failure" (filterable by `--kind failure`)
+
+This seems like the right approach. Let me now plan the task.
+
+OK, I have a clear understanding. Let me plan:
+
+**Task 1 (refined from harness-seed)**: Add failure relations to state graph projection. This replaces the generic "add a small verifiable improvement" with a specific, evidence-backed task.
+
+**Task 2**: Filter available-kinds listing to only kinds with >0 rows. The `query_distinct_kinds` returns all distinct dst_kind values from state_relations. After task 1 adds failure relations, the "failure" kind will actually have data. But other kinds like "eval", "model", "task" still won't. The task is to filter the listing.
+
+Actually wait, task 2 would filter the listing to only kinds that actually have matching rows in the query result. Let me think about how to implement this...
+
+Actually, `query_distinct_kinds` returns distinct `dst_kind` values from `state_relations`. The issue is that `dst_kind` values like "artifact", "eval", "event", "file", "run" etc. are all present because the relations table has rows with those dst_kinds. The kinds that allegedly "have zero results" might not actually be in the dst_kind column at all.
+
+Wait, let me re-read the assessment: "several kinds (eval, model, task, trace) are in the data but have zero matching rows." This means `query_distinct_kinds` returns these kinds (they exist as dst_kind values in state_relations), but when `query_graph_hotspots` filters by that kind, no nodes match because no hotspot has that kind as its primary kind.
+
+Actually, that's exactly the issue. The `dst_kind` exists in the table (e.g., "eval" appears as a dst_kind for some relation), but when we filter hotspots by kind="eval", we get zero results because the eval nodes have zero degree or are filtered out somehow.
+
+Wait no, let me re-read `query_graph_hotspots` more carefully:
+
+```rust
+if let Some(kind) = kind_filter {
+    let kind_lower = kind.to_lowercase();
+    hotspots.retain(|h| h.kind.to_lowercase().contains(&kind_lower));
+}
+```
+
+The filtering uses `contains`, not exact match. So `--kind eval` would match any kind containing "eval" — like "eval" itself. And for destination nodes, `kind = dst_kind` from the relation. So if there's a relation where `dst_kind = "eval"`, the destination node would have `kind = "eval"` and would match.
+
+But the hotspot's degree is `incoming + outgoing`, and the filter is applied BEFORE the truncation. So if a node has kind "eval" but degree=0, it would still be in the result... wait, no. Let me re-read:
+
+```rust
+let mut hotspots = hotspots.into_values().collect::<Vec<_>>();
+if let Some(kind) = kind_filter {
+    let kind_lower = kind.to_lowercase();
+    hotspots.retain(|h| h.kind.to_lowercase().contains(&kind_lower));
+}
+hotspots.sort_by(|a, b| { ... });
+hotspots.truncate(limit.clamp(1, 50));
+```
+
+So the filter happens before truncation. If a node has kind "eval" but degree=0, it would still pass the filter, then be sorted (with degree=0), and then possibly truncated by the limit.
+
+Hmm, but the assessment says `--kind failure` returns zero results. That would mean NO node has kind "failure". And indeed, no node has kind "failure" because:
+1. `infer_graph_node_kind` never returns "failure" (failure events are `evt-*` → "event")
+2. No relation uses `dst_kind = "failure"`
+
+So the fix for failure is to create relations where `dst_kind = "failure"`.
+
+For the other kinds (eval, model, task, trace), they DO appear as dst_kind values in relations, so they DO have nodes with those kinds. The assessment says they "have zero matching rows" — but this might be inaccurate. Let me check.
+
+Actually, the assessment says: "This suggests the graph projection populates the kind enum but some relations are never created." The "kind enum" is what `query_distinct_kinds` returns. But `query_distinct_kinds` queries `SELECT DISTINCT dst_kind FROM state_relations` — so these kinds ARE present in the relations table. If they're present, then there ARE nodes with those kinds, and the filter should match them.
+
+Unless... the issue is that those kinds appear as dst_kind but the LIMIT 10000 in the query combined with truncation means they're cut off. Or the nodes with those kinds have such low degree they get truncated.
+
+I think the assessment might be slightly wrong about "eval, model, task, trace" having zero matching rows. Let me not overanalyze this. The assessment specifically mentions two actionable items:
+1. Failure kind returns zero — clear actionable gap
+2. Available-kinds listing includes kinds that produce zero results — this is for the error message, so we should filter the listing to only kinds that actually have nodes in the hotspot result
+
+Actually, rethinking: the error message at line 1204/1208 says:
+```
+"no hotspots matched kind={kind}; kinds in data: {}",
+```
+
+And `query_distinct_kinds` returns all distinct dst_kind values. So if `dst_kind="eval"` exists, it would be listed. But when filtering by `--kind eval`, the filter might still return zero nodes because the eval nodes might not be in the top 10000 rows or might have been truncated.
+
+The fix for task 2 would be: instead of using `query_distinct_kinds` for the error message, run the hotspots query without filtering and list the kinds that actually appear in the result.
+
+OK, let me now write the tasks. Let me start by refining task_01.md and creating task_02.md.
+
+For task 1, I need to be very specific about what to change:
+- In `src/state.rs`, the `project_relations` function, add a `FailureObserved` match arm
+- The arm should extract tool/source info from the payload and create a relation: tool → failure_event (dst_kind="failure")
+- This makes failure events appear as nodes with kind="failure" in the graph
+
+Let me check how the failure payload looks to know what fields to extract.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'FailureObserved\|failure_class\|"source".*failure\|store_run_error\|sta… ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the failure payload format more carefully. I need to understand what fields are available in the failure payload for creating relations.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:32..82 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check how FailureObserved events are created in other places. The key question is: what fields does the failure payload have? I see "failure_class", "panic_message", "panic_location", "recorded_at_ms". Also "source" or "operation" is read by `project_failure`.
+
+Let me also look at how tasks are related to runs, so I can model failure relations similarly.
+
+Let me now plan the task more concretely. I'll refine task_01 to be about adding failure relations, and create task_02 for the kind-listing fix.
+
+For task_01 (failure relations):
+- In `project_relations` (src/state.rs), add a `FailureObserved | JsonOutputFailure | ToolSchemaFailure` match arm
+- Create relations from the run to the failure event (with dst_kind="failure") — so the failure event appears as a node with kind="failure"
+- Also create a relation from the failure event to the tool/source if available in the payload
+- Files: src/state.rs
+- Verify: cargo test state + `yyds state graph hotspots --kind failure`
+
+For task_02 (filter available kinds):
+- In the error message path, filter `query_distinct_kinds` to only kinds that have actual nodes in the hotspot result
+- Files: src/commands_state_graph.rs
+- Verify: cargo test state
+
+Let me write these now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me refine the seed task_01.md and create task_02.md.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write task_01.md. I need to be very specific about the change. Let me verify one thing first — how does `project_relations` currently look for the FailureObserved event type, and what match arms exist.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+Let me verify the exact structure of the `project_relations` match block to make the task precise.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1694..1814 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full pattern. Let me also look at how the failure payload is structured - specifically what fields it has that could be used for relations. The `project_failure` function at line 1547 reads "source" and "operation" from the payload.
+
+For failure relations, I should:
+1. Add a `FailureObserved | JsonOutputFailure | ToolSchemaFailure` match arm in the existing `match event.event_type` block (or as a separate if block like model calls)
+2. Create a relation from the tool/source to the failure event, with `dst_kind="failure"` — this makes the failure node appear with kind="failure" in the graph
+
+Now let me also check what fields the failure payload has. Looking at the panic hook, the payload has "failure_class", "panic_message", "panic_location". For tool failures, the payload likely has "source", "tool", etc.
+
+Let me also look at `project_failure` to see what payload fields it reads:
+- "source" (line 1568)
+- "operation" (line 1569)  
+- "error_preview" (line 1573)
+
+So the failure payload can have a "source" field (the tool or module that caused the failure). Let me use that.
+
+Now let me write the refined task_01.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll write the refined task_01.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Add a small verifiable improvement to src/
+  + Title: Add failure relations to state graph projection so --kind failure returns data
+    Files: src/state.rs
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found no actionable bugs in src/. Instead of producing a journal-only observation that wastes an evolution cycle, this task produces a small, verifiable code improvement that passes cargo build && cargo test.
+  + - `yyds state graph hotspots --kind failure` returns zero results: "no hotspots matched kind=failure; kinds in data: artifact, eval, event, file, model..."
+  + - The `project_failure` function (state.rs:1547) inserts into the `failures` table but never creates graph relations
+  + - The `project_relations` function (state.rs:1694) handles FileRead/FileEdited/ModelCall/ToolCall events but has no match arm for FailureObserved, JsonOutputFailure, or ToolSchemaFailure
+  + - `query_graph_hotspots` filters by `h.kind`, and failure events get kind="event" from `infer_graph_node_kind` (commands_state.rs:13391) because their IDs start with "evt-". No node ever gets kind="failure".
+  + - Graph pressure: `bash_tool_error=13` — these failures are invisible in the graph. Graph hotspots can't show which tools fail most.
+  + - This was noted in the assessment: "[MEDIUM] `state graph hotspots --kind failure` returns zero results — the kind exists in the data schema but no failure relations are actually created"
+    
+    Edit Surface:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (87 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (87 lines) ✓ (6ms)
+
+

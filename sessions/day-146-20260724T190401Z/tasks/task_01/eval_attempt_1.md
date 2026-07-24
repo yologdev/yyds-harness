@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation exactly matches the task spec — adds a `FailureObserved | JsonOutputFailure | ToolSchemaFailure` match arm in `project_relations` that creates `tool→failure` graph relations with `dst_kind="failure"`, enabling `state graph hotspots --kind failure` to return data. Build and tests pass, insertion point is correct (after ToolCall block, before task_id loop), and `.skill_evolve_counter` bump is the only collateral change.
