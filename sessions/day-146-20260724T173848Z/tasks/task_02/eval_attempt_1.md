@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The implementation correctly modifies `build_graph_hotspots_report()` and `build_graph_hotspots_payload()` to include the filter value and list available kinds when a kind filter matches zero nodes. The `query_distinct_kinds()` helper is added. Unfiltered output is unchanged. Build passes and all three verification commands produce the expected output: `--kind all` shows "no hotspots matched kind=all; kinds in data: ...", `--kind nonexistent` shows the same helpful pattern, and unfiltered `--limit 5` returns normal hotspot results.

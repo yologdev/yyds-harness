@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff adds a focused unit test for the non-existent-file edge case of close_orphaned_run_if_needed(), matching the task description. The test is small (11 lines), uses a temp directory, and both build and cargo test state pass.
