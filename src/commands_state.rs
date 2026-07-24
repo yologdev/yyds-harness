@@ -19649,7 +19649,8 @@ mod tests {
         crate::state::rebuild_sqlite_projection(&events_path, &sqlite_path).unwrap();
 
         let report =
-            crate::commands_state_graph::build_graph_hotspots_report(&sqlite_path, 3).unwrap();
+            crate::commands_state_graph::build_graph_hotspots_report(&sqlite_path, 3, None)
+                .unwrap();
 
         assert!(report.contains("State graph hotspots limit=3"));
         assert!(report.contains("patch-1"));
@@ -19658,7 +19659,8 @@ mod tests {
         assert!(report.contains("uses_patch="));
 
         let payload =
-            crate::commands_state_graph::build_graph_hotspots_payload(&sqlite_path, 3).unwrap();
+            crate::commands_state_graph::build_graph_hotspots_payload(&sqlite_path, 3, None)
+                .unwrap();
 
         assert_eq!(payload["diagnostic"], "state_graph_hotspots");
         assert_eq!(payload["limit"], 3);

@@ -448,7 +448,8 @@ pub fn handle_graph_subcommand(args: &[String]) {
         let limit = flag_value(args, "--limit")
             .and_then(|raw| raw.parse::<usize>().ok())
             .unwrap_or(10);
-        handle_graph_hotspots(limit, args.iter().any(|arg| arg == "--json"));
+        let kind_filter = flag_value(args, "--kind").map(String::as_str);
+        handle_graph_hotspots(limit, kind_filter, args.iter().any(|arg| arg == "--json"));
         return;
     }
     if args.get(3).map(|arg| arg.as_str()) == Some("summary") {
@@ -466,7 +467,7 @@ pub fn handle_graph_subcommand(args: &[String]) {
     }
     let Some(id) = args.get(3) else {
         eprintln!(
-                    "{YELLOW}  Usage: yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n         yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hotspots [--limit N] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
+                    "{YELLOW}  Usage: yoyo state graph <event-id|patch-id|eval-id|commit> [--depth N] [--to TARGET]\n         yoyo state graph summary <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph clusters <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph impact <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph signals <event-id|patch-id|eval-id|commit> [--depth N] [--json]\n         yoyo state graph evidence <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph files <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph evals <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph patches <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph decisions <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hypotheses <event-id|hypothesis-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph versions <event-id|harness-version|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph runs <event-id|run-id|trace-id|task-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph artifacts <event-id|artifact-uri|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph models <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tools <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commands <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph tests <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph commits <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph memories <event-id|memory-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph issues <event-id|issue-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph cache <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph failures <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph policies <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph protocol <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph timeline <event-id|patch-id|eval-id|commit> [--depth N] [--limit N] [--json]\n         yoyo state graph hotspots [--limit N] [--kind KIND] [--json]{RESET}\n{GRAPH_ID_DISCOVERY_HINT}"
                 );
         return;
     };
@@ -1147,7 +1148,7 @@ fn handle_graph_timeline(id: &str, depth: usize, limit: usize, json_output: bool
     }
 }
 
-fn handle_graph_hotspots(limit: usize, json_output: bool) {
+fn handle_graph_hotspots(limit: usize, kind_filter: Option<&str>, json_output: bool) {
     let events_path = default_events_path();
     let sqlite_path = default_store_path(&events_path);
     if !sqlite_path.exists() {
@@ -1158,7 +1159,7 @@ fn handle_graph_hotspots(limit: usize, json_output: bool) {
         return;
     }
     if json_output {
-        match build_graph_hotspots_payload(&sqlite_path, limit) {
+        match build_graph_hotspots_payload(&sqlite_path, limit, kind_filter) {
             Ok(payload) => println!(
                 "{}",
                 serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string())
@@ -1167,7 +1168,7 @@ fn handle_graph_hotspots(limit: usize, json_output: bool) {
         }
         return;
     }
-    match build_graph_hotspots_report(&sqlite_path, limit) {
+    match build_graph_hotspots_report(&sqlite_path, limit, kind_filter) {
         Ok(report) => println!("{report}"),
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
@@ -1191,15 +1192,20 @@ impl GraphHotspot {
 pub(crate) fn build_graph_hotspots_report(
     sqlite_path: &Path,
     limit: usize,
+    kind_filter: Option<&str>,
 ) -> Result<String, String> {
     let limit = limit.clamp(1, 50);
-    let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+    let hotspots = query_graph_hotspots(sqlite_path, limit, kind_filter)?;
     if hotspots.is_empty() {
         return Err("no graph relations found".to_string());
     }
 
     let mut out = String::new();
-    out.push_str(&format!("State graph hotspots limit={limit}\n"));
+    if let Some(kind) = kind_filter {
+        out.push_str(&format!("State graph hotspots kind={kind} limit={limit}\n"));
+    } else {
+        out.push_str(&format!("State graph hotspots limit={limit}\n"));
+    }
     for hotspot in hotspots {
         out.push_str(&format!(
             "  {:<32} kind={:<10} degree={} in={} out={} relations={}\n",
@@ -1217,9 +1223,10 @@ pub(crate) fn build_graph_hotspots_report(
 pub(crate) fn build_graph_hotspots_payload(
     sqlite_path: &Path,
     limit: usize,
+    kind_filter: Option<&str>,
 ) -> Result<Value, String> {
     let limit = limit.clamp(1, 50);
-    let hotspots = query_graph_hotspots(sqlite_path, limit)?;
+    let hotspots = query_graph_hotspots(sqlite_path, limit, kind_filter)?;
     if hotspots.is_empty() {
         return Err("no graph relations found".to_string());
     }
@@ -1242,7 +1249,11 @@ pub(crate) fn build_graph_hotspots_payload(
     }))
 }
 
-fn query_graph_hotspots(sqlite_path: &Path, limit: usize) -> Result<Vec<GraphHotspot>, String> {
+fn query_graph_hotspots(
+    sqlite_path: &Path,
+    limit: usize,
+    kind_filter: Option<&str>,
+) -> Result<Vec<GraphHotspot>, String> {
     let conn = Connection::open(sqlite_path)
         .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
     let mut stmt = conn
@@ -1298,6 +1309,10 @@ fn query_graph_hotspots(sqlite_path: &Path, limit: usize) -> Result<Vec<GraphHot
     }
 
     let mut hotspots = hotspots.into_values().collect::<Vec<_>>();
+    if let Some(kind) = kind_filter {
+        let kind_lower = kind.to_lowercase();
+        hotspots.retain(|h| h.kind.to_lowercase().contains(&kind_lower));
+    }
     hotspots.sort_by(|a, b| {
         b.degree()
             .cmp(&a.degree())
