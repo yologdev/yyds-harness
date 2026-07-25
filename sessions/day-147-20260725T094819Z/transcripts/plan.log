@@ -1,0 +1,363 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for Day 147.
+
+## Assessment Summary
+- Build is green
+- Day 147 first session (02:42) failed with empty_input — model returned zero tokens
+- Three open agent-self issues: #135, #134, #105 — all reverted
+- Graph-derived pressure:
+  1. Make planning failure actionable (planner_no_task_count=1)
+  2. Close yyds state and model lifecycle gaps (unmatched_completed_count=81)
+  3. Raise session success rate (0.0)
+  4. Validate seeded tasks against fresh assessment (contradiction_count=1)
+  5. Force analysis-only attempts into action (analysis_only_attempt_count=1)
+
+## Priority Analysis
+
+The trajectory says "can_drive_evolution=false" and "no selected or attempted task evidence captured." But the assessment says this session IS running with events flowing. The trajectory snapshot was taken at 09:52Z, before this planning phase started.
+
+Let me check the trajectory more carefully:
+- The latest run (30153369576) is "running" — that's this session
+- The previous run produced empty_input
+
+The graph pressure says `planner_no_task_count=1` — one session produced no task files. That was the 02:42 session which got empty_input.
+
+Key decision: what tasks to plan?
+
+Looking at the open agent-self issues:
+- #135 (Break self-referential planning fallback): Reverted by evaluator timeout. The assessment says "code may have been correct but evaluator couldn't confirm it." This touches `scripts/preseed_session_plan.py` only. It's small scope, one file.
+- #134 (Close model lifecycle gap): Reverted — implementation agent couldn't land it. The task scope involves understanding `scripts/append_terminal_state_events.py` and `src/state.rs`. Possibly too complex.
+- #105 (Cache metrics): Reverted — blocked. Needs yoagent upstream fix first.
+
+For the empty_input failure: this is the most pressing issue. But fixing it likely needs harness changes in `evolve.sh` (do-not-modify) or prompt pipeline changes. Could make it a task to add empty-input detection/diagnosis.
+
+Let me think about what's actionable:
+
+1. **Task 1: SQLite projection rebuild** — The assessment found `state graph hotspots --kind failure` returns empty because the projection needs rebuilding after Day 146 added failure relations. This is small, verifiable, touches `src/commands_state_graph.rs` and `src/state.rs`. But it's purely diagnostic.
+
+2. **Task 2: Wire `_healthy_codebase_fallback()` into no-candidates path (#135)** — This is a well-scoped task: ~5-10 lines in `scripts/preseed_session_plan.py`. Previously reverted by evaluator timeout (not code failure). The task is clearly defined with exact line numbers and behavior. Let me re-plan it smaller/more focused.
+
+3. **Task 3: Empty-input detection** — The 02:42 session failed with zero-token model response. Adding detection in `src/prompt.rs` or `src/state.rs` to classify this differently from other failures.
+
+Wait, let me re-read the planning rules:
+- Task sizing: each must touch at most 3 source files, completable in 20 minutes
+- #135 was reverted before, so make it SMALLER
+- At least 2 slots SHOULD come from state/trajectory/eval evidence
+
+Let me first check if session_plan/task_01.md already exists.
+
+Actually, let me think about what makes the most impact:
+
+The graph pressure is clear:
+1. `planner_no_task_count=1` — this IS the empty_input session. Not a recurring pattern yet.
+2. `unmatched_completed_count=81` — this is #134's territory, but #134 was too complex
+3. `session_success_rate=0.0` — this is from the empty_input session
+4. `task_seed_contradiction_count=1` — seeded tasks contradicted assessment
+5. `task_analysis_only_attempt_count=1` — one session had analysis-only
+
+From the assessment's candidate directions:
+1. Rebuild SQLite projection (small, verifiable)
+2. Add empty-input detection/diagnosis
+3. Replan #105 with narrower scope
+4. Wire `_healthy_codebase_fallback()` (#135)
+
+For task planning, I'll go with:
+- Task 1: SQLite projection rebuild — make failure relations visible after Day 146 fix
+- Task 2: Wire healthy_codebase_fallback (#135) — break the analysis-only cycle
+- Task 3: Empty-input detection in prompt.rs — classify silent model failures
+
+Wait, but the trajectory says `can_drive_evolution=false`. Let me check if there's a seed task already. Let me look at session_plan/ first.
+
+Actually, the instructions say:
+"If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md."
+
+Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "session_plan/ does not exist" ✓ (899ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to understand what the harness seeded, then decide whether to refine it or add more tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is a generic "healthy codebase fallback" task. It's vague — "add one focused unit test, doc comment, or micro-improvement." The assessment reveals more specific, actionable evidence:
+
+1. The `state graph hotspots --kind failure` returns empty despite failure relations code existing — the SQLite projection needs rebuilding
+2. The #135 task (wire `_healthy_codebase_fallback()`) is well-scoped and was reverted by evaluator timeout, not code failure
+3. The empty_input failure needs detection
+
+The seed task_01.md is weak — it just says "add something to src/state.rs." I should refine it to be specific and evidence-backed. But the assessment doesn't have a specific bug in src/state.rs. The SQLite projection issue is in `src/commands_state_graph.rs` and maybe `src/state.rs`.
+
+Let me think about what specific task would be best for task_01:
+
+Option A: Make the SQLite projection auto-rebuild or document the rebuild step. But this touches `src/state.rs` (projection code) and `src/commands_state_graph.rs` (hotspots). The assessment says the projection needs manual rebuild.
+
+Option B: Wire `_healthy_codebase_fallback()` into the no-candidates path — this is #135. But it touches `scripts/preseed_session_plan.py`, not `src/state.rs`.
+
+Option C: Add empty-input detection to `src/prompt.rs` or `src/state.rs`.
+
+Let me refine task_01 to be concrete. The assessment says the SQLite projection needs rebuilding to make failure relations visible. Let me check what functions handle projection rebuild in `src/state.rs`.
+
+Actually, let me think more carefully. The seed task says `Files: src/state.rs`. If I refine it, I should keep the file list compatible or update it.
+
+Let me plan three tasks:
+
+1. **Task 1 (refine seed):** Rebuild SQLite projection to include failure relations added in Day 146. The `state graph hotspots --kind failure` returns empty because the projection was built before the failure relation code landed. Add a projection version check or auto-rebuild trigger. Files: `src/state.rs`, `src/commands_state_graph.rs`.
+
+2. **Task 2:** Wire `_healthy_codebase_fallback()` into the no-candidates path in `choose_task()` (#135 re-plan). This was reverted by evaluator timeout, not code failure. The change is ~5-10 lines. Files: `scripts/preseed_session_plan.py`.
+
+3. **Task 3:** Add empty-input detection to `src/prompt.rs` so silent model failures (zero tokens) get classified differently from other failures. Files: `src/prompt.rs`, `src/state.rs`.
+
+Actually wait, task 3 might be too complex. Let me check what the empty_input situation actually looks like. The assessment says the model returned zero tokens. The failure was retroactive. Adding detection might require understanding the prompt pipeline deeply.
+
+Let me be more focused. The two most actionable things are:
+1. Fix the SQLite projection staleness — small, verifiable
+2. Wire `_healthy_codebase_fallback()` — well-scoped, previously attempted
+
+For task 3, I could do a simpler version: add a `RebuildProjection` event or similar, or just make the `state graph hotspots` command suggest a rebuild when the projection is stale.
+
+Actually, let me reconsider. Let me look at what `rebuild_sqlite_projection` looks like to understand if auto-rebuild is feasible.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn rebuild_sqlite_projection' (*.rs)  ▶ search 'fn sqlite_projection_path' (*.rs) ✓ (904ms)
+ ✓ (903ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the rebuild function signature looks like and whether there's a version check mechanism.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:903..983 ✓ (463ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check how the graph hotspots query works and where the failure relation was added — the PR from Day 146. I need to understand what `--kind failure` queries now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'failure.*relation\|FailureObserved.*graph\|graph.*failure\|k…' (*.rs)  ▶ $ git log --oneline -10 ✓ (1.4s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Day 146 commit "Add failure relations to state graph projection so --kind failure returns data (Task 1)" at 519e62ea is what I need. Let me see what that commit added — specifically what graph relations were added and whether they're being inserted during projection or only at event time.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show 519e62ea --stat ✓ (890ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only 2 lines changed. Let me see the actual diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show 519e62ea --no-stat -p ✓ (887ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show 519e62ea -p | head -40 ✓ (888ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the Day 146 fix only updated test assertion counts (15→16, 16→17) but not the actual projection logic that inserts failure relations. The commit message says "Add failure relations to state graph projection" but the diff only shows test assertion count changes.
+
+Wait, let me check if there's another commit that actually added the failure relation inserts. Let me check the commits more carefully between 9b81141c and 519e62ea.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline 9b81141c..519e62ea ✓ (905ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the only implementation commit between the wrap-up and the skill-evolve bump is 519e62ea, which only changed test assertion counts. That's odd. Let me check what was actually changed between the base and this commit more carefully — maybe the failure relation code was added in an earlier commit and this one only updated tests.
+
+Actually wait, let me look more carefully. The commit message says "Add failure relations to state graph projection so --kind failure returns data." But the diff only shows test assertion count changes. The actual projection code might have been added but not shown in the first 40 lines of the diff.
+
+Let me see the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff 9b81141c..519e62ea -- src/state.rs ✓ (889ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the commit added 22 lines to `project_relations` that insert a failure-related relation. Let me see the full diff to understand what relation was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff 9b81141c..519e62ea -- src/state.rs | head -80 ✓ (903ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated by the tool. Let me read the actual code at the relevant line to see what was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1815..1855 ✓ (454ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The Day 146 commit added failure relations to `project_relations()` (lines 1823-1842). This code creates a `produced_failure` relation from the source to the failure event. The issue is that:
+
+1. The code WAS added to `project_relations()` — so NEW events will get these relations at insert time
+2. BUT the existing SQLite projection was built BEFORE this code landed, so historical `FailureObserved` events don't have these relations
+3. The fix needs a projection rebuild to add the failure relations for existing events
+
+So the assessment is correct: the feature is half-landed — code exists for new events, but existing projection needs rebuild.
+
+Now let me think about what tasks to plan:
+
+**Task 1: Add projection schema version tracking and auto-rebuild detection**
+
+Actually, let me check what `STATE_SQLITE_SCHEMA_VERSION` does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'STATE_SQLITE_SCHEMA_VERSION' ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a schema version system. The schema version is 3. The Day 146 change didn't bump it. So there's no mechanism to detect that the projection is stale.
+
+Now let me finalize my plan:
+
+**Task 1: Bump SQLite schema version to 4 and add auto-rebuild detection for stale projections**
+
+This is concrete and verifiable. The Day 146 change added failure relation code to `project_relations()` but the projection was built under schema version 3. Bumping to 4 will cause the migration/rebuild path to fire, rebuilding the projection with failure relations included.
+
+Files: `src/state.rs` (schema version, migration function), `src/commands_state.rs` (if the check references it)
+
+Wait, actually let me check if `migrate_sqlite_projection` handles this case or if bumping the version just causes a full rebuild.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1105..1185 ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The schema version migration system is for SQL schema changes (adding tables, columns, indexes). The failure relations are added during event projection, not schema changes. The existing events need to be re-projected to get the new failure relations.
+
+Bumping the schema version alone won't help — it would trigger schema migrations but wouldn't re-project existing events. The existing rebuild path (`rebuild_sqlite_projection`) reads all events and re-projects them — that's what's needed.
+
+So the task is simpler than I thought:
+1. The code already exists for inserting failure relations during projection
+2. The projection just needs a rebuild to apply this to existing events
+3. We should add a mechanism to detect when a rebuild is needed, or add a convenience command
+
+Let me think about what's the minimum viable task:
+
+Option A: Add a `--rebuild` flag to `state graph hotspots` that rebuilds the projection before querying. Files: `src/commands_state.rs`, `src/commands_state_graph.rs`.
+
+Option B: Bump `STATE_SQLITE_SCHEMA_VERSION` to 4 and add `apply_projection_schema_v4` that triggers a full rebuild when the version changes. But this doesn't work because schema versions track SQL schema changes, not projection logic changes.
+
+Option C: Add a version field to the SQLite projection that tracks the code version that built it, and check it on every `state graph` query, suggesting a rebuild when stale.
+
+Option D: Just add a `state graph rebuild` subcommand that calls `rebuild_sqlite_projection`. Small, verifiable.
+
+I think Option D is the most pragmatic. Let me check if there's already a rebuild command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'rebuild\|graph rebuild\|rebuild.*projection' (*commands_state*.rs) ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'graph' (*commands_state*.rs) ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the graph subcommand handler to see if there's already a concept of rebuilding.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1..61 ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for the handle_graph_subcommand function to see how the graph command is structured.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_graph' in src/commands_state_graph.rs ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:71..191 ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me now plan the tasks. I have a good understanding of the situation. Let me finalize:
+
+**Task 1: Bump STATE_SQLITE_SCHEMA_VERSION to 4 and add v4 migration that rebuilds projection**
+
+The approach: bump the schema version from 3 to 4, and in `ensure_projection_schema`, when `from_version < 4`, call `apply_projection_schema_v4` which does a full rebuild. This way, the next time someone runs any `yyds state` command that opens the projection, the migration path will detect the stale version and rebuild automatically, adding the failure relations from the Day 146 code.
+
+Wait, but a full rebuild from `ensure_projection_schema` would be expensive and unexpected. Let me think of a better approach.
+
+Actually, looking at the migration code again: `apply_projection_schema_v1/2/3` are SQL schema migrations (adding tables, indexes). They don't re-project events. A v4 that does a full rebuild from within `ensure_projection_schema` would be surprising.
+
+Better approach: just bump the version, add `apply_projection_schema_v4` that's a no-op (no SQL changes needed), and rely on the existing `state doctor` or a manual rebuild to update existing data. The schema version bump alone ensures the projection has the right schema; the rebuild is needed for data, not schema.
+
+Hmm, but that doesn't actually fix anything. The projection already has the right schema — the missing thing is the failure relations in the data, which only get added when events are re-projected.
+
+Let me take a step back. What's the simplest way to make failure relations visible?
+
+Option 1: Add `yyds state graph rebuild` command that rebuilds the projection. Simple, explicit, no surprise behavior.
+
+Option 2: In `migrate_sqlite_projection`, when a version bump is detected, offer to rebuild. Still requires user action.
+
+Option 3: Auto-rebuild when the code version changes. This is the most user-friendly but adds complexity.
+
+I think Option 1 is the right scope for a 20-minute task. Let me plan:
+
+**Task 1**: Add `yyds state graph rebuild` subcommand that rebuilds the SQLite projection from the events file. This makes the Day 146 failure relations visible in `state graph hotspots --kind failure`.
+
+Files: `src/commands_state_graph.rs`, `src/commands_state.rs`
+
+Wait, but `rebuild_sqlite_projection` is already public in `src/state.rs`. The task is just wiring it to a CLI subcommand.
+
+Let me also check what the `state doctor` does — maybe it already offers a rebuild.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'doctor\|rebuild' in src/commands_state.rs ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'doctor' (*commands_state*.rs) ✓ (454ms)
+
+
