@@ -1,0 +1,587 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for Day 147.
+
+## Current State Assessment
+
+From the trajectory and assessment:
+
+1. **Build Status**: Green. cargo build and cargo test pass.
+2. **Recent Sessions**: Day 146 had 6 sessions, 5 of which succeeded with strict verification. One session (12:40) had 0/2 tasks that were reverted with `reverted_no_edit=2`.
+3. **Open Issues**:
+   - #135: Break self-referential planning fallback (reverted, evaluator timeout)
+   - #134: Close harness-internal model lifecycle gap (reverted, agent blocked)
+   - #105: DeepSeek prompt cache metrics (reverted, blocked on yoagent upstream)
+   - #131: Help wanted - evaluator timeouts (no replies yet)
+   - #90: Help wanted - yoagent Usage struct drops cache fields (no replies yet)
+
+4. **Graph-derived next-task pressure**:
+   1. Close deepseek model lifecycle gaps (abnormal_completed_count=6)
+   2. Force analysis-only attempts into action (analysis_only_attempt_count=1)
+   3. Bound failing shell commands (bash_tool_error=21)
+   4. Reconcile transcript-only tool failures (5)
+   5. Reconcile state-only tool failures (59)
+
+5. **Evo readiness**: verified_success, can_drive_evolution=true
+
+## Task Selection
+
+Let me think about what to pick:
+
+**#135 (planning fallback)**: REVERTED task. The assessment says it's low priority since task_success_rate=1.0 and analysis_only_active is not currently triggered. However, the issue was that the evaluator timed out. The code change was likely correct (it was a ~5-10 line change to `scripts/preseed_session_plan.py`). I should try it again but make it smaller.
+
+Actually wait - let me re-read. The task file says the change should be ~5-10 lines. The evaluator timed out, not the implementation. The issue #131 discusses evaluator timeouts. The reversion was automatic due to evaluator timeout.
+
+**#134 (model lifecycle gap)**: REVERTED. The agent couldn't figure out the root cause - it was investigating `append_terminal_state_events.py` instead of `src/state.rs`. The task was too open-ended. I should narrow it.
+
+**Analysis of pressure signals**:
+- All 5 pressure signals are diagnostic/metadata issues, not coding-capability issues
+- The top one (model lifecycle gaps) is tracked in #134
+- The second one (analysis-only) is tracked in #135
+- The rest are tool-failure reconciliation which seems like a dashboard/data cleanup task
+
+Given the policy: "Prefer tasks that raise yyds/DeepSeek coding-agent fitness gnomes such as task_success_rate, task_verification_rate..."
+
+Wait, all three reverted tasks are from issues that failed. Let me think about what's actually actionable:
+
+1. **#135** - The evaluator timeout caused the revert. The code change itself was probably fine. I can re-plan it with the same scope but make it even more explicit about what to change. The assessment says "LOW priority" since health is good. But it IS actionable.
+
+2. **#134** - The agent got lost investigating. It's a valid task but needs to be much more specific. The assessment says "LOW" and notes the janitor already handles this.
+
+3. **#105** - Blocked on yoagent upstream issue #90. Can't do anything here.
+
+Let me also check if there are any new things to work on. The assessment shows a healthy codebase. The trajectory shows 5 successful sessions landed yesterday.
+
+Let me think about what would actually improve fitness gnomes...
+
+The policy says: "Prefer tasks that raise yyds/DeepSeek coding-agent fitness gnomes such as task_success_rate, task_verification_rate, coding_log_score, retry_success_rate, json_parse_failure_rate, tool_call_malformed_rate, context_miss_rate, cost_per_successful_task_usd, or latency_per_successful_task_ms."
+
+And: "Diagnostic gnomes such as planner_no_task_count, provider_error_count, evaluator_timeout_count, task_artifact_coverage, task_lineage_capture_coverage, and state_capture_coverage are gates. Fix them when they block fitness measurement or waste DeepSeek turns."
+
+Looking at the graph pressure again:
+- Model lifecycle gaps: diagnostic gnome, low priority since janitor handles it
+- Forcing analysis-only into action: this is a real fitness issue - it addresses task_success_rate
+- Shell command failures: diagnostic
+- Transcript/state reconciliation: diagnostic
+
+So the actually important one for fitness is #135 - breaking the planning fallback. When analysis-only mode kicks in, sessions waste turns. But... it's currently NOT active (task_success_rate=1.0).
+
+Let me look at what's currently NOT well-covered: evaluator timeouts. Issue #131 shows evaluator timeouts cause false reverts. This directly blocks task_success_rate and task_verification_rate. But the fix is in `scripts/evolve.sh` which is in the DO-NOT-MODIFY list.
+
+Hmm, but the assessment says the fix could be in `scripts/log_feedback.py` - detecting evaluator timeouts and scoring them less harshly. That's allowed.
+
+Actually wait, let me re-read the policy: "Never modify IDENTITY.md, PERSONALITY.md, ECONOMICS.md, scripts/evolve.sh, scripts/format_issues.py, scripts/build_site.py, or .github/workflows/"
+
+So `scripts/evolve.sh` is protected. But `scripts/log_feedback.py` is NOT. And the assessment says: "This session plans task_01 to improve scripts/log_feedback.py — detecting when evaluator timeouts happen on implementations that show passing build/test evidence, and scoring them less harshly."
+
+This was from a previous session. Let me check if this is still relevant. Issue #131 is still open. But the trajectory shows task_success_rate=1.0 from the most recent session, so evaluator timeouts aren't currently causing problems.
+
+OK, let me think about what makes sense for 3 tasks:
+
+**Task 1**: #135 - Re-attempt the planning fallback fix. It was reverted due to evaluator timeout, not because the code was wrong. The change is small (~5-10 lines). I can make it even more explicit.
+
+**Task 2**: #134 - Close model lifecycle gap. But I need to make it much more specific. The previous attempt failed because the agent went down a rabbit hole investigating `append_terminal_state_events.py` instead of `src/state.rs`. I should narrow the scope to just `src/state.rs` and be very specific about what to find and fix.
+
+**Task 3**: Either something from the graph pressure or something new.
+
+Actually, let me reconsider. The assessment says both #134 and #135 are LOW priority. And #135 is self-referential (fixing the planning pipeline). 
+
+Let me look at what's genuinely actionable and high-impact:
+
+1. The Day 146 sessions were all about diagnostic visibility. That's been fruitful.
+2. The graph shows `state_only_failed_tool_count=59` and `transcript_only_failed_tool_count=5` - these are reconciliation gaps.
+3. The `bash_tool_error=21` is a recurring issue.
+
+Let me think about what would actually improve fitness vs just clean up diagnostics...
+
+The evaluator timeout problem (#131) directly impacts task_verification_rate. Even though it's not currently active, it WILL happen again. Improving `log_feedback.py` to detect and score evaluator timeouts correctly would improve the reliability of the feedback loop.
+
+But wait - that's still a diagnostic fix, not a fitness fix.
+
+Let me reconsider #135 more carefully. The planning fallback creates a self-referential cycle when analysis-only pressure is active. This directly affects task_success_rate because it generates tasks that can't succeed (they modify the planning pipeline but don't get verified). Fixing this would prevent future analysis-only loops. Even though it's not currently active, it's a structural improvement.
+
+I think the best approach is:
+
+**Task 1**: #135 - Fix planning fallback. This is the most impactful structural fix. Make it explicit and small.
+**Task 2**: Something from graph pressure that's actionable and small.
+**Task 3**: Maybe #134 with narrowed scope, or defer.
+
+Actually, let me be more practical. The policy says: "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." And the trajectory graph pressure is:
+1. Model lifecycle gaps → #134
+2. Analysis-only → #135  
+3. Shell command failures
+4. Transcript reconciliation
+5. State reconciliation
+
+Let me pick:
+- **Task 1**: #135 (planning fallback) - addresses graph pressure #2
+- **Task 2**: #134 (model lifecycle gap) - addresses graph pressure #1, but narrowed significantly
+- **Task 3**: Investigate and fix the bash_tool_error=21 recurring pattern - addresses graph pressure #3
+
+Wait, but task 3 would need investigation. Let me check if there's a clear fix path.
+
+Actually, the graph pressure says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." This sounds like a prompt/behavioral fix, not a code fix. It could be a skill or prompt improvement.
+
+Hmm, I think I should focus on concrete code tasks. Let me go with:
+
+**Task 1**: #135 - Fix planning fallback (small, specific, previously attempted)
+**Task 2**: #134 - Close model lifecycle gap (narrowed scope, be very specific about what to do)
+**Task 3**: Small but concrete improvement - maybe improve the state/transcript reconciliation, or add better error handling for bash failures.
+
+Actually, I want to be disciplined. Let me look at what the assessment says about task sizing:
+
+"Each task MUST touch at most 3 source files."
+"Each task must be completable in 20 minutes by a focused agent."
+"If a task has been reverted before, make it SMALLER than last time."
+
+For #135: The previous attempt was ~5-10 lines in one file. That's already small. The reversion was due to evaluator timeout, not code complexity.
+
+For #134: The previous attempt was too open-ended. I should narrow it to a very specific change.
+
+Let me finalize my plan:
+
+**Task 1**: #135 - Fix the planning fallback in `scripts/preseed_session_plan.py`. The change is well-understood: when `analysis_only_active` is True and zero candidates match, call `_healthy_codebase_fallback()` instead of returning the hardcoded self-referential fallback. This is ~5-10 lines.
+
+**Task 2**: #134 narrowed - Instead of trying to fix all model lifecycle gaps, focus on just one specific thing: ensure that `src/state.rs` or `src/prompt.rs` always emits a `ModelCallStarted` before any `ModelCallCompleted` in the harness-internal path. Or alternatively, add a `harness_internal: bool` field to distinguish these events.
+
+Actually, looking at the assessment more carefully, it says "the janitor already handles this, making it a data-quality issue rather than a correctness bug." So #134 is truly low priority.
+
+Let me think about what else could be high impact...
+
+The Day 146 sessions focused on diagnostic visibility. What about continuing that theme but making it fitness-oriented? For example, improving `log_feedback.py` to better handle evaluator timeouts (#131).
+
+Or... what about the `state_only_failed_tool_count=59` and `transcript_only_failed_tool_count=5`? These indicate event capture gaps. Fixing them would improve state reliability.
+
+Hmm, but those are historical counts and the assessment says "not all may be current."
+
+OK, I'm going to go with a practical plan:
+
+**Task 1**: #135 - Fix planning fallback. This is the most important structural fix and directly addresses the analysis-only cycle.
+
+**Task 2**: Improve `scripts/log_feedback.py` to detect evaluator timeouts and adjust scoring. This addresses #131 and improves the feedback loop reliability. The assessment suggests this is doable and valuable.
+
+**Task 3**: I'll defer or pick something small. Let me check if there's a quick win...
+
+Actually, let me stay focused. Two good tasks are better than three mediocre ones. Let me plan two tasks and if I find a good third, add it.
+
+Wait, the policy says "You have 3 task slots per session" and "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence."
+
+Let me go with:
+
+**Task 1**: #135 - Fix planning fallback (graph pressure #2)
+**Task 2**: Improve evaluator timeout detection in log_feedback.py (addresses #131, improves verification rate)
+**Task 3**: #134 narrowed - Add a targeted fix for the model lifecycle gap, focusing on just one specific change in src/state.rs
+
+Actually, for task 3, I realize #134 was reverted because the agent couldn't find the root cause. Let me check if I have enough evidence to narrow it. The assessment says the evt-harness ModelCallCompleted events come from the state recorder. The fix options are:
+  a) Add matching ModelCallStarted
+  b) Suppress emission when no Started exists
+  c) Add harness_internal field
+
+Option (c) seems safest. Let me plan that.
+
+But wait, I need to verify which file owns these events. The assessment says to search for `ModelCallCompleted` in `src/state.rs`. Let me verify with a quick search but not read the file (as per the planning rules).
+
+Actually, I should use `git grep` to verify ownership before finalizing the Files: line.
+
+Let me start writing the plan. First, create the directory.
+
+Actually, I realize I need to check if task_01.md already exists from the harness seed. The instructions say: "The harness may have already created session_plan/task_01.md from assessment evidence before you started."
+
+Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null  ▶ $ git grep -n 'ModelCallCompleted' src/state.rs | head -20 ✓ (1.8s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `session_plan/task_01.md` already exists (seeded by harness) and `session_plan/assessment.md` exists too. Let me read the existing task_01.md to see what the harness seeded.
+
+Also, `ModelCallCompleted` is in `src/state.rs` at line 4230 - let me check that specific location.
+
+Let me also check the existing task_01.md first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read src/state.rs:4220..4245 ✓ (1.3s)
+ ✓ (895ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The harness seeded task_01.md with a generic "add a small verifiable improvement" task. This is the `_healthy_codebase_fallback()` task - the kind that gets generated when no specific issues are found.
+
+Now I need to decide: should I keep this as task_01, or refine it with something more specific?
+
+Given the policy: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+The seed task is not wrong - it's just generic. The assessment confirms the codebase is healthy. But I have specific, actionable issues:
+
+1. #135 - Fix the planning fallback (reverted due to evaluator timeout, not code error)
+2. #134 - Model lifecycle gap  
+3. #131 - Evaluator timeout detection in log_feedback.py
+
+Let me refine task_01 to be more specific. The seed task is a fallback for when nothing is broken. But we DO have specific issues to address.
+
+Let me plan:
+
+**Task 1**: Refine from seed to #135 - fix the planning fallback. This is the most impactful concrete change.
+**Task 2**: #134 narrowed - add a specific fix for the model lifecycle gap in src/state.rs.
+**Task 3**: Improve log_feedback.py to detect evaluator timeouts (addresses #131).
+
+Actually wait, I need to be very careful about task sizing. The policy says "If a task has been reverted before, make it SMALLER than last time." For #135, the previous attempt was already tiny (~5-10 lines). For #134, the previous attempt was too open-ended.
+
+Let me write task_01 as a refined version of the seed, focusing on #135 since it's the most impactful and well-understood.
+
+For task_02, I'll take on #134 but with very narrow scope.
+
+For task_03, the evaluator timeout improvement in log_feedback.py.
+
+Actually, let me reconsider. The evaluator timeout fix in log_feedback.py doesn't prevent the revert (that's in evolve.sh which is protected). It only improves scoring. That's a diagnostic improvement, not a fitness improvement. And the policy says "Fix them when they block fitness measurement or waste DeepSeek turns; do not treat dashboard cleanliness as the final objective."
+
+The evaluator timeout DOES waste DeepSeek turns (reverted tasks need to be re-planned and re-implemented). So it's valid.
+
+But let me think about what's highest impact:
+
+1. #135: Prevents the analysis-only loop. Directly improves task_success_rate when analysis-only pressure is active. Small, well-understood change.
+2. #134: Closes model lifecycle gap. Diagnostic improvement but reduces noise in the unmatched count.
+3. Evaluator timeout handling: Improves feedback accuracy, potentially prevents false reverts (though the actual prevention is in evolve.sh).
+
+I think #135 should be task_01. Let me refine the seed task.
+
+For task_02, I'll do #134 with very narrow scope - just add a `harness_internal: bool` field to distinguish harness events.
+
+For task_03, I'll improve log_feedback.py to detect evaluator timeouts.
+
+Wait, actually let me reconsider whether 3 tasks makes sense. The policy says "You have 3 task slots per session." But also "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence."
+
+All three of my proposed tasks come from trajectory/state evidence:
+- #135: graph pressure #2 (analysis-only)
+- #134: graph pressure #1 (model lifecycle)  
+- Evaluator timeout: issue #131 (help-wanted, related to verification rate)
+
+OK, let me write all three. But I need to verify file ownership first with `git grep`.
+
+Let me verify the relevant symbols for each task.
+
+For #135: `scripts/preseed_session_plan.py` - need to check `choose_task`, `_healthy_codebase_fallback`, `analysis_only_active`
+For #134: `src/state.rs` - need to check where harness-internal ModelCallCompleted events are emitted
+For evaluator timeout: `scripts/log_feedback.py` - need to check existing evaluator timeout detection
+
+Let me do quick ownership checks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 17.9s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn choose_task\|def choose_task\|_healthy_codebase_fallback\|analys…  ▶ $ git grep -n 'evaluator.*timeout\|timeout.*evaluator\|EVALUATOR_TIMEOUT\|eval.*ti…  ▶ $ git grep -n 'fn.*record.*ModelCall\|ModelCallCompleted.*emit\|emit.*ModelCallCom… ✓ (1.5s)
+ ✓ (3.5s)
+📦 RTK detected — using compressed output (disable with --no-rtk)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I have the ownership confirmed:
+
+1. `scripts/preseed_session_plan.py`: `choose_task` at line 927, `_healthy_codebase_fallback` exists, `analysis_only_active` used in tests at line 1560.
+2. `scripts/log_feedback.py`: Already has `EVALUATOR_TIMEOUT_RE` at line 49, `evaluator_timeout_with_verdict_count` at line 1605.
+3. ModelCallCompleted in state.rs: lines 128, 1772, 3195, 3234, 4230.
+
+Now let me search for where harness-internal events are emitted - the assessment mentioned `evt-harness-*` prefix events:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.4s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'evt-harness\|harness.*ModelCall\|close_orphaned\|orphaned.*run' src…  ▶ $ git ls-files scripts/log_feedback.py scripts/preseed_session_plan.py src/state.r… ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me search for where the actual harness-internal ModelCallCompleted events originate. The assessment mentioned `evt-harness-*` prefix events with zero tokens. Let me look at the `close_orphaned_run_if_needed` function and the state recorder to see where these come from.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:315..435 ✓ (439ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I see the orphan run closing logic. But the assessment mentioned `evt-harness-*` ModelCallCompleted events with zero tokens. Let me search for where those are emitted. They're likely from the state recorder or from `append_terminal_state_events.py`.
+
+Let me search more specifically for where harness-internal ModelCallCompleted events come from:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'ModelCallCompleted\|model_call_completed' src/state.rs | grep -v 't…  ▶ $ git grep -n 'model_call.*completed\|ModelCall.*Complete' scripts/append_terminal… ✓ (840ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the harness-internal ModelCallCompleted events come from `scripts/append_terminal_state_events.py`, not from `src/state.rs`. The model lifecycle gap is NOT in `src/state.rs` directly - it's in `scripts/append_terminal_state_events.py` which is a janitor script that retroactively adds missing events.
+
+This changes my task planning for #134. The fix would be in `scripts/append_terminal_state_events.py` to also emit a matching ModelCallStarted before each retroactive ModelCallCompleted. Or alternatively, in `src/prompt.rs` to ensure ModelCallStarted is always emitted.
+
+But wait - the assessment says the source is `src/prompt.rs` not always emitting ModelCallStarted before ModelCallCompleted. Let me check where ModelCallCompleted events are emitted during agent runs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'ModelCallStarted\|ModelCallCompleted\|model_call_started\|model_cal…  ▶ $ git grep -n 'retroactive\|harness_internal\|harness-internal' scripts/append_ter… ✓ (1.7s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clearer picture. Let me read the relevant part of append_terminal_state_events.py to understand the ModelCallCompleted handling:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..180 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where append_terminal_state_events.py emits retroactive ModelCallCompleted events (the ones without matching ModelCallStarted). Let me find the `find_orphaned_model_calls` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'def find_orphaned_model_calls\|def find_missing.*model\|orphaned.*m… ✓ (897ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:615..715 ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also check `find_missing_model_call_started`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'def find_missing_model_call_started' scripts/append_terminal_state_… ✓ (897ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function quickly to understand the mechanism.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:310..370 ✓ (452ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. The `append_terminal_state_events.py` script already handles the model lifecycle gap! It has:
+
+1. `find_missing_model_call_started` (line 310): Finds ModelCallCompleted entries without matching ModelCallStarted, and emits retroactive ModelCallStarted events.
+2. `find_orphaned_model_calls` (line 354): Finds ModelCallStarted entries without matching ModelCallCompleted, and emits retroactive ModelCallCompleted events.
+
+So the janitor script (which runs after each agent invocation) already handles the gap. The `deepseek_model_call_unmatched_completed_count=6` in the trajectory represents historical entries that predate the janitor fix.
+
+But the assessment says "still 6 abnormal completions in the data" — these are likely historical, not new. The janitor handles them retroactively.
+
+OK so #134 is truly low priority. The janitor already handles it. I should focus on #135 instead.
+
+Let me also check the evaluator timeout detection in log_feedback.py to understand what exists vs what's needed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:45..75  ▶ read scripts/log_feedback.py:1595..1625 ✓ (442ms)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `log_feedback.py` already has:
+- `EVALUATOR_TIMEOUT_RE` (line 49)
+- `evaluator_timeout_with_verdict_count` (line 1605)
+- `evaluator_timeout_with_passing_impl_count` (line 1606)
+
+So evaluator timeout detection already exists. Let me check if there's something missing or if it can be improved. Let me search for how these are computed:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'evaluator_timeout\|evaluator_unverified\|eval_timed_out' scripts/lo… ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, log_feedback.py already has evaluator timeout detection. Improving it further would be marginal.
+
+Now let me finalize my task plan. Let me reconsider the three reverted tasks:
+
+1. **#135** (planning fallback): The change was ~5-10 lines in `scripts/preseed_session_plan.py`. Reverted due to evaluator timeout. But the code change was likely correct. I should re-attempt it.
+
+2. **#134** (model lifecycle gap): The janitor script `append_terminal_state_events.py` already handles this. The unmatched count is historical. Low priority.
+
+3. **#105** (cache metrics): Blocked on yoagent upstream (#90). Cannot proceed.
+
+So #135 is the only reverted task that's actionable AND impactful.
+
+For additional tasks, let me look at what else is valuable:
+
+The Day 146 sessions all focused on diagnostic visibility. The codebase is healthy. What about:
+
+- Adding a new eval fixture?
+- Improving test coverage?
+- Fixing a minor bug?
+
+Let me look at the `state_only_failed_tool_count=59` and `transcript_only_failed_tool_count=5` pressure. These indicate gaps between what the transcript shows and what state events record. Fixing the event capture for failed tools could improve state reliability.
+
+Actually, let me look at what `bash_tool_error=21` means more specifically. Is there a fixable pattern?
+
+Let me check the assessment for any specific bugs mentioned: "Bugs / Friction Found" section lists 3 items, all LOW priority. No new bugs.
+
+OK, here's my final plan:
+
+**Task 1**: Refine the seed task (which is generic "add small improvement to src/") into #135 - fix the planning fallback. The seed task's "add a small verifiable improvement to src/" is actually a fallback for when nothing is broken. But #135 is a real, concrete fix that addresses graph pressure #2. I'll replace the generic seed with the specific #135 task.
+
+**Task 2**: #134 narrowed - but wait, the janitor already handles this. Let me skip it and do something else.
+
+Actually, let me re-read the policy: "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+The graph pressure items are:
+1. Model lifecycle gaps → already handled by janitor
+2. Analysis-only → #135
+3. Bash tool errors → could be a task
+4. Transcript reconciliation → could be a task  
+5. State reconciliation → could be a task
+
+For #3 (bash_tool_error=21), the recommendation is "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." This sounds like it could be a prompt/skill improvement rather than a code change. But it's not clearly actionable as a code task.
+
+For #4 and #5 (transcript/state reconciliation), these are data quality issues. The assessment says "not all may be current."
+
+I think the right approach is:
+- **Task 1**: #135 - Fix planning fallback (concrete, well-understood, addresses graph pressure)
+- **Task 2**: A new task to improve state event capture for tool failures - addressing the `state_only_failed_tool_count=59` and `transcript_only_failed_tool_count=5` gap. This would involve adding event recording for tool failures in `src/tools.rs` or `src/tool_wrappers.rs`.
+
+But wait, I don't know exactly where tool failures should be recorded. Let me check.
+
+Actually, let me keep it simple and focused. The policy says "One thing at a time, done well." Let me write:
+
+**Task 1**: #135 - Fix planning fallback (refined from harness seed)
+**Task 2**: Improve tool-failure event capture to reduce transcript/state discrepancy
+**Task 3**: If I can't find a good third task, I'll write task_02 only and leave it at 2 tasks.
+
+Let me check if there's a clear, small fix for the tool-failure recording gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'ToolCallFailed\|tool.*fail.*record\|record.*tool.*fail\|FailureObse…  ▶ $ git grep -n 'FailureObserved' src/tools.rs src/tool_wrappers.rs src/prompt.rs | … ✓ (853ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The FailureObserved events are emitted in `src/prompt.rs`, not in the tool wrappers. The tool failure recording gap is likely that the tool wrappers (GuardedTool, etc.) don't emit state events when tools fail. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:900..930 ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `src/prompt.rs` already emits `FailureObserved` events for tool failures at line 903-914. The tool name and error preview are recorded. But the transcript might log additional context that the state event doesn't capture.
+
+The `state_only_failed_tool_count=59` and `transcript_only_failed_tool_count=5` discrepancy is likely because:
+- Some tool failures are recorded in state but not in transcripts (or vice versa)
+- This could be due to different error paths or timing
+
+This seems like a complex investigation task, not a focused 20-minute fix. I'll skip it.
+
+Let me focus on what I can do concretely:
+
+**Task 1**: #135 - Fix planning fallback. Concrete, small, well-understood.
+**Task 2**: I'll look for another concrete task from the graph pressure.
+
+Actually, let me look at the "Reconcile transcript-only tool failures" more carefully. The count is only 5 - this is small. And "state-only" is 59. These are historical. The assessment says "not all may be current."
+
+Let me look at another angle. The assessment shows the codebase is healthy with all checks passing. Let me look for small, verifiable improvements:
+
+1. Add a test for something untested
+2. Fix a clippy warning
+3. Improve an error message
+
+Actually, let me check if there are any clippy warnings:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (26.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean clippy. No warnings. The codebase is very healthy.
+
+Let me also check for test coverage gaps quickly:
+
+OK, let me finalize. I have two good tasks:
+
+**Task 1**: #135 - Fix planning fallback. This is the most impactful concrete change. It replaces the generic harness seed with a specific, evidence-backed task.
+
+**Task 2**: Since the codebase is very healthy and all reverted tasks are either handled by the janitor (#134) or blocked upstream (#105), I'll plan a task that addresses the `bash_tool_error=21` pattern. But instead of a broad "fix all bash errors" task, I'll narrow it to a specific improvement: add better error recovery hints for bash timeout errors in `src/prompt_retry.rs`, since timeouts are one of the identified failure categories.
+
+Actually wait, looking at the graph pressure again: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=21): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This is a behavioral recommendation for the agent, not a code fix. It's more of a prompt engineering or skill improvement.
+
+Let me think about what actual code change would reduce bash tool errors...
+
+One concrete approach: improve the bash tool's error output so the agent gets better diagnostics. For example, when a command fails, include more context (the working directory, the exact command, the exit code) in the error message.
+
+But looking at `src/tools.rs`, the `StreamingBashTool` already captures stdout, stderr, and exit code.
+
+OK let me just finalize with 2 good tasks. Quality over quantity.
+
+**Task 1**: #135 - Fix planning fallback (refined from harness seed)
+**Task 2**: A smaller, concrete improvement. Let me pick something from the graph pressure that has a clear code fix.
+
+Actually, I just realized: the #135 task is about `scripts/preseed_session_plan.py`, which is a PLANNING script. The implementation agent will be modifying the planning pipeline. This has the self-referential risk - but the change is in the fallback path, not the main logic.
+
+For task 2, let me look at what concrete change could reduce `bash_tool_error=21`. Let me check if there's a specific pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'timeout\|timed.out\|TIMEOUT' src/tools.rs | head -20  ▶ $ git grep -n 'bash_tool_error\|tool_error\|ToolFailureTracker\|tool.*failure.*tra… ✓ (852ms)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I see that `StreamingBashTool` already has timeout handling with automatic retry and doubled timeout (lines 645-652). It's quite robust. The `bash_tool_error=21` is likely from commands that genuinely fail (exit code != 0) rather than timeouts.
+
+Let me take a different approach. Instead of trying to find a perfect third task, let me focus on two high-quality tasks:
+
+**Task 1**: #135 - Fix the planning fallback (refined from harness seed). This is the most impactful and well-understood change.
+
+**Task 2**: Evaluate and potentially improve the error recovery hints in `src/prompt_retry.rs` for common bash failure patterns, making them more actionable. The `build_auto_retry_prompt` function and `tool_recovery_hint` could be improved.
+
+Actually, I want to check if `tool_recovery_hint` has specific guidance for bash failures:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:60..140 ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The bash recovery hints are already quite good. They include:
+- "Try a simpler bounded command"
+- "Check exit output first"
+- "Verify paths exist"
+- "Prefer targeted tools"
+- "Avoid unbounded/recursive commands"
+- "Add set -e"
+- "Add timeout 30"
+
+These directly address the graph pressure recommendations. So the bash recovery hints are already implemented!
+
+Let me read the attempt-1 hints:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:137..167 ✓ (459ms)
+
+
