@@ -1,0 +1,460 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. The assessment has been completed (Phase A1). This is Phase A2 (planning).
+2. The harness may have already seeded `session_plan/task_01.md` from assessment evidence.
+3. I need to check if it exists, and then either refine it or create task files.
+4. The priorities from the assessment and trajectory are clear.
+
+Key evidence:
+- Task success rate: 0.333 (1/3 tasks verified)
+- Evaluator timeouts causing false reverts (#131, #144, #135)
+- bash_tool_error=10
+- DeepSeek cache observability gap (#90)
+- Old reverted tasks: #144 (today), #135, #134, #105
+
+Highest leverage task based on evidence:
+1. Fix the seeder contradiction detection (#144) - this was built and compiled but evaluator timed out. The code fix (restrict to .rs files) is already landed in the working tree? Actually, looking at the assessment more carefully: "The Day 148 build fix restricted it to .rs files, but the evaluator timed out before verifying. The code fix is partially landed but unverified." So the code might still be in the tree or reverted.
+
+Let me check if session_plan/task_01.md exists first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null  ▶ $ git log --oneline -5 ✓ (3.2s)
+ ✓ (3.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `session_plan/task_01.md` already exists (seeded by the harness) and `assessment.md` exists. Let me read the seeded task_01.md to understand what the harness wrote.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (769ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check if this seeded task contradicts assessment evidence. Looking at the assessment:
+
+The assessment's lifecycle-related findings:
+- `deepseek_model_call_unmatched_completed_count=308` — cumulative across all history
+- Day 142 fix (hello/goodbye pairing guard in prompt.rs) should have reduced new orphans
+- The assessment itself says: "Need to verify whether the count is still growing."
+
+The seeded task is about closing lifecycle gaps, targeting `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, `scripts/summarize_state_gnomes.py`. These are all script files — not `src/*.rs`. 
+
+However, the assessment and trajectory list higher-priority items:
+
+1. **Evaluator timeout false reverts** — This is the #1 problem: tasks that pass cargo build && cargo test get reverted because the evaluator times out. Day 148 Task 1 (#144) was a direct casualty. The assessment says the code fix for #144 (restrict to .rs files) was correct but the evaluator timed out.
+
+2. **bash_tool_error=10** — elevated shell failures.
+
+3. **Seed task #144** — the seeder contradiction fix was correct, evaluator timed out.
+
+Let me check the actual contradiction detection in the preseed script. The harness seed task (task_01.md) is about lifecycle gaps, but this is a relatively low-leverage task since:
+- The lifecycle count (308) is cumulative, not per-session
+- Day 142 already added a guard for new orphans
+- The trajectory says "unmatched completed count" but the assessment questions whether it's still growing
+
+The higher leverage tasks based on evidence are:
+1. Fix evaluator timeout problem (#131) — but this involves `evolve.sh` which is DO-NOT-MODIFY
+2. Re-land the seeder contradiction fix (#144) — the code was correct, evaluator timed out
+3. Investigate bash_tool_error=10
+
+Wait, looking more carefully at the constraints: I cannot modify `evolve.sh` (do-not-modify). So fixing evaluator timeouts directly is blocked.
+
+For #144: the code fix (restrict `_check_code_already_exists` to `.rs` files) was in `scripts/preseed_session_plan.py`. It was reverted because the evaluator timed out. I could re-create the same fix as a task, but it would likely hit the same evaluator timeout.
+
+Let me think about what task I can actually accomplish:
+1. The seeded task (lifecycle gaps) — it targets script files, not `src/*.rs`. It addresses a diagnostic metric, not a fitness metric. The assessment says the lifecycle count is cumulative and may not be growing anymore.
+2. I could refine the seeded task to be more specific and actionable.
+3. I could add a task_02.md that addresses the seeder contradiction fix (re-do #144) with a simpler approach.
+4. I could add a task_03.md for bash_tool_error investigation.
+
+Let me check: does the `_check_code_already_exists` fix still need to be re-done? Let me look at the current state of the script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git diff HEAD~3 -- scripts/preseed_session_plan.py 2>/dev/null | head -80  ▶ $ grep -n '_check_code_already_exists\|src/\*\.rs\|\.rs.*grep\|restrict.*\.rs\|onl… ✓ (1.6s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the `_check_code_already_exists` function at line 644 hasn't been modified yet (the git diff only shows test assertion changes, not the actual function fix). The Day 148 Task 1 was reverted, so the code fix was likely reverted too.
+
+Let me check the revert status:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 -- scripts/preseed_session_plan.py  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -20 ✓ (1.5s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the test is failing because the lifecycle gap task in the preseed script's TASKS constant is what's being matched (the seeded task_01.md is literally the same task definition), and the test on line 1405 is asserting the wrong task title. The preseed script has the lifecycle gap task as a built-in task definition, and the `choose_task()` function is returning it instead of the expected "Stabilize run completion guard panic test" task.
+
+This is evidence that the assessment changed the task ranking and the test assertions haven't been updated. This is essentially the same problem that #144's fix was supposed to address — the test expectations need updating.
+
+But wait, the test failure is about `choose_task()` returning the lifecycle gap task instead of the panic test task. This is because the assessment text contains lifecycle-related keywords that activate the lifecycle gap task.
+
+Let me look at what's actually happening:
+- The test at line 1405 asserts the selected task is "Stabilize run completion guard panic test"
+- But `choose_task()` is returning "Close yyds state and model lifecycle gaps" instead
+
+This is interesting: the seeded task_01.md is literally one of the TASKS definitions in the preseed script. The assessment text containing lifecycle metrics triggered the lifecycle gap task to be ranked higher than the panic test task.
+
+OK, let me step back and think about what tasks to write for this session.
+
+**Priority assessment:**
+
+1. **Evaluator timeout false reverts (#131)**: CRITICAL but I cannot modify `evolve.sh` (do-not-modify). Already asked for human help. Cannot action directly.
+
+2. **Seeder contradiction fix (#144)**: Day 148 Task 1 was reverted due to evaluator timeout, NOT because the code was wrong. The code fix (restrict to `.rs` files) was correct. But if I re-submit this as a task, the evaluator will likely time out again. The problem is the evaluator, not the code.
+
+3. **The test failure in preseed_session_plan.py**: The `--test` is currently failing because the assessment text triggers a different task (lifecycle gaps) than what the test expects. This is a test assertion that needs updating — a script change, not `src/*.rs`.
+
+4. **bash_tool_error=10**: Could investigate, but this is a diagnostic investigation with no clear `src/*.rs` fix.
+
+5. **The seeded lifecycle gaps task**: Targets script files only, not `src/*.rs`. Low fitness impact.
+
+Given my constraints:
+- Cannot modify `evolve.sh` (evaluator timeout fix blocked)
+- Previous `src/*.rs` tasks (#144's fix, #135) were reverted by evaluator timeout
+- The seeded task targets scripts, not `src/*.rs`
+
+Actually, wait. Let me re-read the task_01.md more carefully. It's seeded by the harness and validated against assessment. The test failure at line 1405 is a DIFFERENT test — that test uses a specific assessment text and asserts a specific task result. The fact that `choose_task()` returns the lifecycle gap task for that test's assessment text is expected behavior if the assessment text contains lifecycle keywords.
+
+But the test at line 1405 expects "Stabilize run completion guard panic test" — so either:
+1. The assessment text for that test has changed (maybe the Day 148 changes to assessment generation)
+2. The task definitions (TASKS constant) were modified making the lifecycle task rank higher
+3. The assessment text used in the test is outdated
+
+Let me check what the test expects vs what's happening. But this is getting deep into analysis. Let me focus on writing task files.
+
+**My plan:**
+
+1. **Refine task_01.md**: The seeded lifecycle gaps task targets scripts only. I should refine it to be more specific and actionable. But the assessment says that the lifecycle count (308) is cumulative and the Day 142 fix should have reduced new orphans. So this task might not be the highest leverage.
+
+2. **Create task_02.md**: The preseed test is failing. This is a concrete, verifiable problem. Fixing the test assertions in `scripts/preseed_session_plan.py` would unblock the harness's self-test. This is a script change though.
+
+3. **Create task_03.md**: Something `src/*.rs` related that can actually land. Looking at the assessment...
+
+Actually, let me reconsider. The assessment mentions:
+- `bash_tool_error=10` — elevated shell failures
+- Zero-token model completions now diagnosed but not recovered from
+
+Zero-token recovery in `src/prompt.rs` would be a concrete `src/*.rs` improvement. When the model returns zero tokens, the harness records it but doesn't retry. Adding a retry or fallback strategy would be a verifiable improvement.
+
+But wait — I should check what the assessment says about zero-token: "Now diagnosed (Day 148 Task 3), but not yet recovered from." So the diagnostic was just added. Recovery would be the next step.
+
+OK, let me plan concretely:
+
+1. **task_01.md**: Refine the lifecycle gaps task. The seeded task targets `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, `scripts/summarize_state_gnomes.py`. These are all script files, not `src/*.rs`. The assessment says `state_run_incomplete_count` and `deepseek_model_call_incomplete_count` are cumulative metrics that may not be growing. This is a diagnostic cleanup, not a fitness improvement.
+
+The trajectory's graph-derived pressure says: "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=308)". So it IS a top pressure item. But it's script-only.
+
+Given that the seeded task exists and is validated_against_assessment=true, I should keep it but maybe refine it to be more specific and scoped. Actually, looking at it more carefully, let me see if I can narrow it to be more actionable.
+
+Wait, the test is actually failing. The `--test` has an assertion error. So the seeded task definition might have been changed to add the lifecycle gap task to the TASKS constant in a way that broke the test.
+
+Let me check what changed in the preseed script recently:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 23.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git diff 9bba46e6..6efebafa -- scripts/preseed_session_plan.py | head -60  ▶ $ git show 9bba46e6 --stat | head -20 ✓ (3.1s)
+ ✓ (3.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the Day 148 (02:50) session made two changes:
+1. `scripts/preseed_session_plan.py`: test assertions updated for the search-tool contradiction (this is the `_check_code_already_exists` fix's test changes, but the actual function fix wasn't landed)
+2. `src/prompt.rs`: a 2-line change
+
+The test assertion changes at lines 1793-1803 were landed, but the actual `_check_code_already_exists()` function fix was NOT landed (it was part of Task 1 which was reverted). So the test now expects the function to detect contradictions (validated_against_assessment=false) but the function hasn't been fixed — it still scans all files, not just `.rs` files.
+
+Wait, let me re-read the diff. The test change says the task should be `validated_against_assessment=False` when the key is found in `src/tools.rs`. But the `_check_code_already_exists` function currently scans ANY file. If the key "search_regex_error" is actually IN `src/tools.rs` as a real function or test name, then the function IS correctly detecting it — the problem was specifically about keys matching test/constant definitions in `scripts/preseed_session_plan.py` itself.
+
+Actually wait. Let me re-read the test. The assessment text says:
+```
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+```
+
+And the test asserts the task is `validated_against_assessment: false` because the key "search_regex_error" was found in `src/tools.rs`. If `search_regex_error` is a real symbol in `src/tools.rs`, then this IS a legitimate contradiction — the feature was already implemented. The fix for `_check_code_already_exists` was about preventing false contradictions from script files, not from `src/*.rs` files.
+
+So the test assertion change is actually correct: if "search_regex_error" is found in `src/tools.rs`, the task IS genuinely contradicted. The fix that was supposed to land (restrict to `.rs` files) wouldn't change this behavior for `src/tools.rs` — it would only prevent false positives from `scripts/*.py` files.
+
+OK so the tests as landed (9bba46e6) are correct. The `_check_code_already_exists` function doesn't need to be changed for this specific test case — it correctly finds the key in `src/tools.rs`.
+
+But the `--test` is currently failing at a different assertion (line 1405). Let me check what assessment text the test at line 1405 uses and why it changed.
+
+Actually, I should look at what the current test failure is telling me. It's failing at line 1405 expecting "Stabilize run completion guard panic test" but getting "Close yyds state and model lifecycle gaps". This means the lifecycle gap task is now ranked above the panic test task for that assessment text. This could be because:
+
+1. The TASKS constant was modified to have different ranking
+2. The assessment text used in that test was changed
+3. The `choose_task()` function's ranking logic changed
+
+Let me check if the TASKS constant was modified between commits.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 13.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git diff 09bf2434..9bba46e6 -- scripts/preseed_session_plan.py | head -30  ▶ $ grep -n 'LIFECYCLE_TASK_TITLE\|def.*choose_task\|class TASKS\|TASKS =' scripts/p… ✓ (1.6s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The commit `9bba46e6` (Day 148 02:50 fix build errors) added the `.rs` file restriction to `_check_code_already_exists`:
+
+```python
++            # Only check Rust source files — script files contain task definitions
+```
+
+So the fix WAS landed in commit 9bba46e6! Let me verify by reading the current state of the function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:665..690 ✓ (771ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `.rs` file restriction IS already landed (lines 674-677). So the `_check_code_already_exists` fix from Day 148 Task 1 is already in the codebase! The commit `9bba46e6` landed it.
+
+But the Day 148 session wrap-up says Task 1 was reverted. Let me check if the fix was reverted after this commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline --all -- scripts/preseed_session_plan.py | head -10  ▶ $ git show 6efebafa -- scripts/preseed_session_plan.py | head -30 ✓ (1.6s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. Looking at the git history:
+
+1. `09bf2434` — Day 144 session wrap-up
+2. `9bba46e6` — Day 148 (02:50) fix build errors: the `.rs` restriction was landed in `_check_code_already_exists` 
+3. `6efebafa` — Day 148 (02:50) session wrap-up: test assertions were updated
+
+So the `.rs` restriction landed in commit 9bba46e6 and the test assertions were updated in 6efebafa. The Day 148 session wrap-up says Task 1 was "reverted" (evaluator timed out), but the code changes actually survived into the tree! The wrap-up commit (6efebafa) landed AFTER the build-fix commit (9bba46e6), and neither commit was reverted (there's no revert commit after them).
+
+Wait, that doesn't make sense. Let me re-read. Session wrap-up commit 6efebafa includes the test assertion changes for the search-tool contradiction. But the actual `.rs` restriction was in 9bba46e6 which is the parent commit.
+
+So the timeline was:
+1. Task 3 (zero-token diagnostic) landed in `src/prompt.rs` — this survived
+2. The build-fix commit (9bba46e6) landed the `.rs` restriction in `_check_code_already_exists` 
+3. The session wrap-up commit (6efebafa) included the test assertion updates for the contradiction
+4. Task 1 was marked as "reverted" (evaluator timed out) — but its code changes seem to have survived in the build-fix commit
+
+Actually, looking at the Day 148 session output (from the trajectory): "tasks 1/3" with "obsolete_already_satisfied=1, reverted_unverified=1". So one task was obsolete and one was reverted.
+
+- Task 1 (#144 fix): The code fix landed in the build-fix commit (9bba46e6). Then the evaluator timed out? But the code is in the tree.
+- Task 3: zero-token diagnostic in `src/prompt.rs` — this survived.
+
+Hmm, actually the `_check_code_already_exists` fix might have been part of the "fix build errors" commit which was part of the normal evolution flow. The evaluator may have timed out on verifying a different aspect of the task.
+
+Regardless, the code IS in the tree. The `--test` still fails but for a different reason (line 1405, lifecycle gap task ranking).
+
+Now let me focus. The test is failing at line 1405. Let me see what that test does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1380..1440 ✓ (933ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The test at line 1396-1408 creates an assessment with lifecycle gnome metrics and expects `choose_task()` to return the "Stabilize run completion guard panic test" task (which targets `src/state.rs`). But instead, it's returning the "Close yyds state and model lifecycle gaps" task (which targets script files).
+
+The lifecycle gnome metrics in the test assessment (line 1402) include:
+- `state_run_incomplete_count=2`
+- `deepseek_model_call_incomplete_count=1`
+
+These metrics trigger the lifecycle task because it has matching keys. The lifecycle task has `reject_keys` for input-validation exits, but the test assessment doesn't mention input-validation exits.
+
+Let me check the lifecycle task definition and how `choose_task()` ranks tasks:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:315..365 ✓ (981ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `choose_task()` function to understand how it ranks tasks:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:931..1031 ✓ (772ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the test failure. At line 956-963:
+
+```python
+if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:
+    if analysis_only_active:
+        # Analysis-only pressure takes priority over lifecycle cleanup
+        continue
+    if not has_actionable_lifecycle_gap(metrics):
+        continue
+    candidates.append(task)
+    continue
+```
+
+The lifecycle task is only added to candidates if `has_actionable_lifecycle_gap(metrics)` returns True. The test assessment at line 1396-1402 has specific lifecycle metrics (`state_run_incomplete_count=2`, `deepseek_model_call_incomplete_count=1`). Let me check `has_actionable_lifecycle_gap`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def has_actionable_lifecycle_gap' in scripts/preseed_session_plan.py ✓ (791ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand why the lifecycle task is being selected:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:776..806 ✓ (795ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `ACTIONABLE_LIFECYCLE_METRICS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ACTIONABLE_LIFECYCLE_METRICS' in scripts/preseed_session_plan.py ✓ (791ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:17..27 ✓ (772ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The test assessment at line 1402 has `state_run_incomplete_count=2` and `deepseek_model_call_incomplete_count=1` — both are in `ACTIONABLE_LIFECYCLE_METRICS`. So `has_actionable_lifecycle_gap` returns True, and the lifecycle gap task gets added as a candidate.
+
+The lifecycle gap task doesn't have `_has_src_files` (it targets script files), but the panic test task (`src/state.rs`) is also a candidate. The question is why the lifecycle task is returned first.
+
+Looking at `choose_task()`:
+1. Candidates are collected in order of TASKS list
+2. If `analysis_only_active`, src-file tasks get sorted first
+3. `check_task_contradiction` is called on each candidate in order
+
+For the test assessment (line 1396-1402), `analysis_only_active` would be False (no analysis-only metrics in the assessment text). So candidates keep their original order from the TASKS list.
+
+The lifecycle gap task appears earlier in the TASKS list than the panic test task. Let me verify by checking TASKS order:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '"title"' scripts/preseed_session_plan.py | head -30 ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The TASKS list order:
+1. Line 74: "Verify and fix sub-agent API key propagation"
+2. Line 114: "Record DeepSeek prompt cache metrics during prompt runs"
+3. Line 162: "Improve cold-start state failure diagnostics"
+4. Line 193: "Stabilize run completion guard panic test" ← LINE 193
+5. Line 232: "Add recovery hints for common tool-path and permission errors"
+6. Line 276: "Make analysis-only task pressure landable"
+7. Line 321: LIFECYCLE_TASK_TITLE ← LINE 321 (after panic test)
+
+Wait, the lifecycle gap task is at line 321 but the panic test task is at line 193. So the panic test task comes FIRST in the TASKS list. But the test assertion at line 1405 expects the panic test task, yet the test failure shows the lifecycle task is being returned.
+
+Let me trace through the logic again:
+
+For the test assessment at line 1396-1402:
+- It has `state_run_incomplete_count=2` and `deepseek_model_call_incomplete_count=1` → `lifecycle_metrics_present = True`
+- It has `run_completion_guard` text → the panic test task's keys should match
+- No `analysis_only_active` metrics → `analysis_only_active = False`
+
+Processing:
+1. Task 1 (sub-agent): keys don't match assessment → skip
+2. Task 2 (cache metrics): keys don't match → skip
+3. Task 3 (cold-start): keys don't match → skip
+4. Task 4 (panic test): keys match ("run_completion_guard" is mentioned) → `candidates.append(task)` ← This should be first!
+5. Task 5 (recovery hints): keys don't match → skip
+6. Task 6 (analysis-only): checked for rejection
+7. Task 7 (lifecycle gap): `lifecycle_metrics_present` is True, `analysis_only_active` is False, `has_actionable_lifecycle_gap` returns True → `candidates.append(task)`
+
+So both the panic test task AND the lifecycle gap task should be candidates, with the panic test task FIRST.
+
+Then `check_task_contradiction` is called on the panic test task. If it's NOT contradicted, it should be returned. The lifecycle gap task would only be returned if the panic test task is contradicted.
+
+Wait, but the test is actually failing with the lifecycle task being returned. Let me check `check_task_contradiction` to see if the panic test task is being wrongly contradicted.
+
+Actually wait — let me re-read the test failure output more carefully:
+
+```
+AssertionError: {'keys': ('state_run_incomplete', 'state_run_unmatched_non_validation_completed', ...), 'reject_keys': ..., 'title': 'Close yyds state and model lifecycle gaps', 'files': 'scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py', ...}
+```
+
+The task returned has `validated_against_assessment: True`. So it's the lifecycle gap task being returned first, which means either:
+1. The panic test task was never added to candidates (its keys don't match), or
+2. The panic test task was contradicted
+
+Let me check the panic test task's keys:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:193..233 ✓ (792ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The panic test task at line 193 doesn't have a `keys` field! It's missing. Let me look more carefully:
+
+```python
+    {
+        "title": "Stabilize run completion guard panic test",
+        "files": "src/state.rs",
+        "objective": (...)
+```
+
+No `keys` field! So at line 939: `if not any(key in lower for key in task["keys"]):` — this would fail with a KeyError because there's no "keys" key.
+
+Wait, but the test at line 1405 was previously passing (before the Day 148 session). Let me check if the keys field was inadvertently removed or if it was always missing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show 09bf2434:scripts/preseed_session_plan.py | sed -n '190,220p' ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ah, there's a chunk missing from the current version. The day 144 version had:
+
+```python
+        "keys": (
+            "flaky test",
+            "state::tests::run_completion_guard",
+        ),
+```
+
+But the current version at line 193 starts with:
+```python
+        "title": "Stabilize run completion guard panic test",
+```
+
+The `keys` field is missing! The keys lines were removed. Let me check what happened. Let me see the full context around line 193 in the current file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:188..198 ✓ (779ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, but where does line 188 start? Let me see more context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:182..192 ✓ (772ms)
+
+
