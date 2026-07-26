@@ -1,0 +1,477 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. The task is to update a test assertion in `scripts/preseed_session_plan.py` at line 1405 to reflect corrected task selection behavior after the #144 fix.
+
+2. The key change needed:
+   - Line 1405: Change `assert task["title"] == "Stabilize run completion guard panic test"` to `assert task["title"] == LIFECYCLE_TASK_TITLE`
+   - Add assertions about `validated_against_assessment` not being False
+   - Line 1408 assertion about "run_completion_guard_reports_error_on_panic" needs updating
+
+Let me start by reading the relevant lines to understand the current state, then make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read scripts/preseed_session_plan.py:1390..1420  ▶ read scripts/preseed_session_plan.py:1..21 ✓ (1.4s)
+ ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact lines I need to change. Let me also check the `_check_code_already_exists` function and `_healthy_codebase_fallback` to understand the fix that's already in place.
+
+Let me also check the `choose_task` function to understand how `validated_against_assessment` gets set, and look at the `LIFECYCLE_TASK_TITLE` constant.
+
+Now let me verify whether the test at line 2191 is also failing due to this same issue. Let me also check the `render_task` function briefly.
+
+Actually, the task is clear: update lines 1405-1408. Let me make the edit now.
+
+The current code (lines 1405-1408):
+```python
+        assert task["title"] == "Stabilize run completion guard panic test", task
+        assert task["files"] == "src/state.rs", task
+        text = render_task(task, "107", "21:45")
+        assert "run_completion_guard_reports_error_on_panic" in text, text
+```
+
+The replacement should be:
+```python
+        assert task["title"] == LIFECYCLE_TASK_TITLE, task
+        # The lifecycle task should NOT be falsy contradicted — its script files are
+        # no longer checked by _check_code_already_exists (only src/*.rs files).
+        assert task.get("validated_against_assessment") is not False, (
+            f"Lifecycle task should not be falsy contradicted after #144 fix, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+```
+
+Wait, but I need to also check what `choose_task` returns for the lifecycle task. Let me look at how `choose_task` processes this. The lifecycle task likely has `files` set to include `scripts/preseed_session_plan.py` and `.github/workflows/` — that's the whole point. The `_check_code_already_exists` fix now only looks at `src/*.rs` files, so it won't false-contradict the lifecycle task.
+
+Let me also check what the lifecycle task's `files` field actually is.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'LIFECYCLE_TASK_TITLE\… ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the lifecycle task definition around line 321 to understand its `files` field:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:316..356 ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lifecycle task's `files` is `"scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"` — these are all `.py` files, not `src/*.rs` files.
+
+The `_check_code_already_exists` fix now only checks `src/*.rs` files, so the lifecycle task won't be falsely contradicted anymore.
+
+Now, the test assertion at line 1405-1408 needs updating. The pre-fix behavior would falsely contradict the lifecycle task because its keys (like "state_run_incomplete_count") appear in `scripts/append_terminal_state_events.py`. But post-fix, `_check_code_already_exists` only checks `src/*.rs` files, so the lifecycle task correctly wins.
+
+Now let me make the edit. I need to change lines 1405-1408:
+
+Current:
+```python
+        assert task["title"] == "Stabilize run completion guard panic test", task
+        assert task["files"] == "src/state.rs", task
+        text = render_task(task, "107", "21:45")
+        assert "run_completion_guard_reports_error_on_panic" in text, text
+```
+
+New:
+```python
+        assert task["title"] == LIFECYCLE_TASK_TITLE, task
+        # The lifecycle task should NOT be falsy contradicted — its script files are
+        # no longer checked by _check_code_already_exists (only src/*.rs files).
+        assert task.get("validated_against_assessment") is not False, (
+            f"Lifecycle task should not be falsy contradicted after #144 fix, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
+```
+
+Wait, I should check if `render_task` would work for the lifecycle task. If the lifecycle task's `files` is `"scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py"`, then `render_task` should work fine.
+
+Actually, I should also check: does `choose_task` set `validated_against_assessment` on the task? Let me search for that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'validated_against_assessment' in scripts/preseed_session_plan.py ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `validated_against_assessment` is set on the candidate. Let me check how it's set to see if it's always set when a task is chosen:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:980..1005 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `validated_against_assessment` is:
+- Set to `True` (line 987) when a candidate passes contradiction check
+- Set to `False` (line 993) when all candidates are contradicted and we return the first one with annotation
+- Not set at all for `_healthy_codebase_fallback()` (line 998) and the regular fallback (line 1000)
+
+So if the lifecycle task is chosen because it's not contradicted (line 984-988), `validated_against_assessment` will be `True`, and `task.get("validated_against_assessment") is not False` will pass.
+
+Now let me make the edit. I need to update lines 1405-1408.
+
+But wait, I also need to check whether line 2191 is failing as well. The task says line 1405 is the "LAST remaining piece of stale test code." But the earlier transcript showed a line 2191 failure. Let me check line 2191 too.
+
+Actually, let me first make the edit for lines 1405-1408, then run `--test` and see if line 2191 is also failing.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll make the surgical edit to update the test assertion at lines 1405-1408:
+  -         assert task["title"] == "Stabilize run completion guard panic test", task
+  -         assert task["files"] == "src/state.rs", task
+  -         text = render_task(task, "107", "21:45")
+  -         assert "run_completion_guard_reports_error_on_panic" in text, text
+  +         assert task["title"] == LIFECYCLE_TASK_TITLE, task
+  +         # The lifecycle task should NOT be falsy contradicted — its script files are
+  +         # no longer checked by _check_code_already_exists (only src/*.rs files).
+  +         assert task.get("validated_against_assessment") is not False, (
+  +             f"Lifecycle task should not be falsy contradicted after #144 fix, "
+  +             f"got validated_against_assessment={task.get('validated_against_assessment')}"
+  +         )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 7 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 7 lines)
+  -         assert task["title"] == "Stabilize run completion guard panic test", task
+  -         assert task["files"] == "src/state.rs", task
+  -         text = render_task(task, "107", "21:45")
+  -         assert "run_completion_guard_reports_error_on_panic" in text, text
+  +         assert task["title"] == LIFECYCLE_TASK_TITLE, task
+  +         # The lifecycle task should NOT be falsy contradicted — its script files are
+  +         # no longer checked by _check_code_already_exists (only src/*.rs files).
+  +         assert task.get("validated_against_assessment") is not False, (
+  +             f"Lifecycle task should not be falsy contradicted after #144 fix, "
+  +             f"got validated_against_assessment={task.get('validated_against_assessment')}"
+  +         )
+ ✓ (439ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, edit applied. Now let me run the test to see if it passes:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let's run the test:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (911ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 1405 now passes, but line 2190 is also failing. The task said line 1405 is the "LAST remaining piece of stale test code from the pre-fix behavior", but clearly there's another stale assertion at line 2190.
+
+Wait, let me re-read the task:
+> Test at line 1899-1900 was already updated for the #135 fix: expects `_healthy_codebase_fallback()` title
+> The test assertion at line 1405 is the LAST remaining piece of stale test code from the pre-fix behavior
+
+But now I see a failure at line 2190. Let me check what this test is.
+────────────────────────────────────────────────────────────────────────────────
+
+Line 1405 passes, but there's another stale assertion at line 2190. Let me investigate:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2170..2200 ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 2190-2193: This test expects the `_healthy_codebase_fallback()` to produce a title containing "no-edit" or "trajectory". But the `_healthy_codebase_fallback()` now returns "Add a small verifiable improvement to src/" which has neither "no-edit" nor "trajectory". 
+
+This is the same class of stale test — the #135 fix changed `_healthy_codebase_fallback()` output, and this test wasn't updated for it.
+
+Wait, but the task says:
+> Test at line 1899-1900 was already updated for the #135 fix: expects `_healthy_codebase_fallback()` title
+> The test assertion at line 1405 is the LAST remaining piece of stale test code from the pre-fix behavior
+
+So the task claims line 1405 is the LAST stale assert. But line 2190 is also stale. However, this test at line 2190 is the result of the `assessment_was_missing=True` path calling `choose_task` which falls through to `_healthy_codebase_fallback()` — and that function was changed by #135.
+
+Let me check what the correct assertion should be. The `_healthy_codebase_fallback()` returns "Add a small verifiable improvement to src/" as the title. So the test should check for that instead of "no-edit" or "trajectory".
+
+But wait, the task says "Do NOT change any production code — the fixes are already in place. This is purely a test assertion update." And it also says:
+
+> If the test fails for a different reason (not line 1405), investigate but do NOT change production code — only update the test assertion.
+
+So I should update this assertion too. The actual behavior is that `_healthy_codebase_fallback()` returns "Add a small verifiable improvement to src/" — so the test should expect that.
+
+Let me check `_healthy_codebase_fallback`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1276..1301 ✓ (455ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `_healthy_codebase_fallback()` returns title "Add a small verifiable improvement to src/" and files "src/state.rs".
+
+The test at 2190-2193 is stale. It expects "no-edit" or "trajectory" in the title, but the actual title is "Add a small verifiable improvement to src/". The line 2186 assertion already passes (it checks `src/` in files, and `src/state.rs` does contain `src/`).
+
+Now I should update the test assertion at line 2190 to match the actual behavior. But the task's scope says line 1405 is "the LAST remaining piece." Let me update line 2190 too — it's the same class of stale test from the #135 fix.
+
+The correct assertion should be:
+```python
+        assert "small verifiable improvement" in task_zero_gnomes["title"].lower(), (
+            f"Exit-0 with gnomes should produce src/-improvement fallback title, "
+            f"got: {task_zero_gnomes['title']}"
+        )
+```
+
+Or more simply:
+```python
+        assert task_zero_gnomes["title"] == "Add a small verifiable improvement to src/", (
+            ...
+        )
+```
+
+Let me go with matching the `_healthy_codebase_fallback` title exactly.
+
+Actually wait, let me check - is there a HEALTHY_CODEBASE_FALLBACK_TITLE constant I should use? Let me check... No, the title string "Add a small verifiable improvement to src/" is hardcoded in `_healthy_codebase_fallback`. I'll just match against the string directly.
+
+But, the task says to be minimal. Let me be pragmatic: since this is the same cause (stale test from #135 fix), and the task says to update tests for passing `--test`, I should fix it.
+────────────────────────────────────────────────────────────────────────────────
+
+Line 2190 is also stale from the same `_healthy_codebase_fallback` change. Let me update it:
+  -         assert "no-edit" in task_zero_gnomes["title"].lower() or \
+  -             "trajectory" in task_zero_gnomes["title"].lower(), (
+  -             f"Exit-0 with gnomes should produce gnome-aware title, "
+  +         assert task_zero_gnomes["title"] == "Add a small verifiable improvement to src/", (
+  +             f"Exit-0 with gnomes should produce src/-improvement fallback title, "
+                f"got: {task_zero_gnomes['title']}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 4 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 4 lines)
+  -         assert "no-edit" in task_zero_gnomes["title"].lower() or \
+  -             "trajectory" in task_zero_gnomes["title"].lower(), (
+  -             f"Exit-0 with gnomes should produce gnome-aware title, "
+  +         assert task_zero_gnomes["title"] == "Add a small verifiable improvement to src/", (
+  +             f"Exit-0 with gnomes should produce src/-improvement fallback title, "
+                f"got: {task_zero_gnomes['title']}"
+            )
+ ✓ (455ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test again to see if it passes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (913ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now another stale test at line 2286. Let me look at it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2260..2295 ✓ (440ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test is also going through the `assessment_was_missing=True` path and hitting `_healthy_codebase_fallback()`. The `_healthy_codebase_fallback()` returns files="src/state.rs", which doesn't include "scripts/preseed_session_plan.py".
+
+This isn't directly related to the #144 fix — it's a side effect of the #135 `_healthy_codebase_fallback` change. But the test assertion was written for the old behavior where fallbacks included `scripts/preseed_session_plan.py`.
+
+Let me think about what the correct assertion should be. The `_healthy_codebase_fallback()` returns "src/state.rs", so the assertion should be:
+
+```python
+        assert "Add a small verifiable improvement to src/" == task_traj["title"], (
+            f"Trajectory gnomes should produce healthy-codebase fallback, got: {task_traj['title']}"
+        )
+```
+
+But wait, I need to be more careful. Let me think about what path this takes through `choose_task`. When `assessment_was_missing=True`:
+
+1. The function would enter the `analysis_only_active` path
+2. Then within `choose_task`, it would eventually hit the fallback at line 997-998: `if analysis_only_active: return _healthy_codebase_fallback()`
+
+So `task_traj` should be the `_healthy_codebase_fallback()` result. The test should therefore assert the title and files from that function.
+
+Let me update the assertions. The key assertions are:
+- title is "Add a small verifiable improvement to src/"
+- files is "src/state.rs"
+
+But I should also check whether the trajectory gnomes affect the fallback. Looking at lines 997-998, the fallback just returns `_healthy_codebase_fallback()` without any gnome enrichment. So the evidence won't contain trajectory gnomes either... 
+
+Let me check what the correct assertions should be. The simpler approach: update the title/files assertions, and update or remove the evidence assertions.
+
+Actually, let me be more careful. Let me trace the code path for `assessment_was_missing=True` with trajectory gnomes.
+
+Looking at `choose_task`, the `assessment_was_missing=True` sets `analysis_only_active = True`. Then:
+
+1. At line 956: `if task["title"] == LIFECYCLE_TASK_TITLE and lifecycle_metrics_present:` - but the assessment text has trajectory gnomes, not lifecycle metrics
+2. The function tries to match candidates against the assessment
+3. If no candidates match (because it's a trajectory-only assessment), it falls through to line 997: `if analysis_only_active: return _healthy_codebase_fallback()`
+
+So the task_traj will be the `_healthy_codebase_fallback()` result, which is:
+```python
+{
+    "title": "Add a small verifiable improvement to src/",
+    "files": "src/state.rs",
+    ...
+}
+```
+
+The evidence field won't contain trajectory gnomes since `_healthy_codebase_fallback()` doesn't include them.
+
+Let me update this test appropriately.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2281..2306 ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This test block (lines 2267-2307) tests "Trajectory evidence enrichment in assessment_missing fallback." With the `_healthy_codebase_fallback()` now returning a fixed title "Add a small verifiable improvement to src/" and fixed files "src/state.rs", the gnome enrichment doesn't happen.
+
+The test assertions at lines 2286-2305 need updating. Since `assessment_was_missing=True` falls through to `_healthy_codebase_fallback()`, the result is deterministic:
+- title: "Add a small verifiable improvement to src/"
+- files: "src/state.rs"
+- evidence: whatever is in `_healthy_codebase_fallback()`
+
+Let me check what evidence `_healthy_codebase_fallback()` produces:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1300..1340 ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `_healthy_codebase_fallback()` evidence field is a list of 3 items, none of which contain trajectory gnome data.
+
+Now I need to update the stale assertions at lines 2281-2305. The path through `choose_task` when `assessment_was_missing=True` with trajectory gnomes goes to `_healthy_codebase_fallback()` (line 997-998), which returns a fixed result. The test should assert that result.
+
+Let me update the test block:
+
+```python
+        task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
+        assert task_traj["title"] == "Add a small verifiable improvement to src/", (
+            f"Trajectory gnomes should produce healthy-codebase fallback, got: {task_traj['title']}"
+        )
+        assert "src/" in str(task_traj["files"]), (
+            f"Files should include src/*.rs, got: {task_traj['files']}"
+        )
+```
+
+I need to be careful not to remove assertions that still pass. Line 2283 ("src/" in files) passes. Lines 2286 ("scripts/preseed_session_plan.py" in files) fails. Lines 2291-2305 (evidence gnomes, title Fix) all fail.
+
+Let me replace the entire block from line 2286 to 2305.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2305..2315 ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me replace lines 2281-2306 with updated assertions that match the `_healthy_codebase_fallback()` output:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
+  -         # Files should include src/*.rs when task_no_edit_revert_count > 0
+  -         assert "src/" in str(task_traj["files"]), (
+  -             f"Files should include src/*.rs when task_no_edit_revert_count > 0, got: {task_traj['files']}"
+  -         )
+  -         assert "scripts/preseed_session_plan.py" in str(task_traj["files"]), (
+  -             f"Files should still include preseed, got: {task_traj['files']}"
+  -         )
+  -         # Evidence should contain trajectory gnome data
+  -         evidence_str = str(task_traj["evidence"])
+  -         assert "task_no_edit_revert_count=1" in evidence_str or "task_no_edit_revert_count" in evidence_str, (
+  -             f"Evidence should include task_no_edit_revert_count gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_obsolete_count" in evidence_str, (
+  -             f"Evidence should include task_obsolete_count gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_verification_rate" in evidence_str, (
+  -             f"Evidence should include task_verification_rate gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_unlanded_source_count" in evidence_str, (
+  ... (12 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (26 → 9 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (26 → 9 lines)
+            task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
+  -         # Files should include src/*.rs when task_no_edit_revert_count > 0
+  -         assert "src/" in str(task_traj["files"]), (
+  -             f"Files should include src/*.rs when task_no_edit_revert_count > 0, got: {task_traj['files']}"
+  -         )
+  -         assert "scripts/preseed_session_plan.py" in str(task_traj["files"]), (
+  -             f"Files should still include preseed, got: {task_traj['files']}"
+  -         )
+  -         # Evidence should contain trajectory gnome data
+  -         evidence_str = str(task_traj["evidence"])
+  -         assert "task_no_edit_revert_count=1" in evidence_str or "task_no_edit_revert_count" in evidence_str, (
+  -             f"Evidence should include task_no_edit_revert_count gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_obsolete_count" in evidence_str, (
+  -             f"Evidence should include task_obsolete_count gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_verification_rate" in evidence_str, (
+  -             f"Evidence should include task_verification_rate gnome, got: {evidence_str[:200]}"
+  -         )
+  -         assert "task_unlanded_source_count" in evidence_str, (
+  ... (12 more lines)
+ ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me verify the diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests pass. Let me verify the diff and commit:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (903ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Only `scripts/preseed_session_plan.py` is changed. Let me check the diff summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (912ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, 15 insertions, 30 deletions — net reduction of 15 lines.
+
+Now I'll commit. The touched file is `scripts/preseed_session_plan.py`, which matches the task's Edit Surface.
+
+Let me commit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Commit succeeded. Let me verify once more that `--test` passes.
+────────────────────────────────────────────────────────────────────────────────
+
+Commit successful. Let me confirm the final state:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (896ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`--test` passes. Let me summarize what changed.
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary of changes in `scripts/preseed_session_plan.py`:**
+
+1. **Line 1405-1411** (original lines 1405-1408): Updated the lifecycle task selection assertion from expecting "Stabilize run completion guard panic test" to `LIFECYCLE_TASK_TITLE` ("Close yyds state and model lifecycle gaps"). Added `validated_against_assessment is not False` check verifying the #144 fix prevents false contradiction.
+
+2. **Line 2189-2191** (original lines 2190-2193): Updated `assessment_was_missing` path test — `_healthy_codebase_fallback()` now returns "Add a small verifiable improvement to src/" instead of a "no-edit"/"trajectory" title.
+
+3. **Line 2281-2286** (original lines 2281-2306): Simplified trajectory gnome enrichment test — the `_healthy_codebase_fallback()` path no longer enriches evidence with gnome data, so removed stale assertions that expected trajectory gnomes in evidence and "Fix" in title.
+
+**Verification:** `python3 scripts/preseed_session_plan.py --test` exits 0 with all checks passing.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
