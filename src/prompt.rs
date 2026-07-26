@@ -959,7 +959,11 @@ async fn handle_prompt_events(
                                 &state.usage,
                                 state.thinking_observed,
                                 "completed",
-                                None,
+                                if state.usage.input == 0 && state.usage.output == 0 {
+                                    Some("model returned zero tokens — possible API error, timeout, or empty response")
+                                } else {
+                                    None
+                                },
                                 &state.collected_text,
                                 state.last_tool_name.as_deref(),
                             ),
@@ -1922,6 +1926,69 @@ mod tests {
         assert_eq!(payload["last_tool_name"], "edit_file");
         assert_eq!(payload["input_tokens"], 0);
         assert_eq!(payload["cache_read_tokens"], 0);
+    }
+
+    #[test]
+    fn model_call_terminal_payload_zero_tokens_completed_includes_error_detail() {
+        let usage = Usage {
+            input: 0,
+            output: 0,
+            cache_read: 0,
+            cache_write: 0,
+            ..Default::default()
+        };
+
+        let payload = model_call_terminal_payload(
+            "mc-zero-1",
+            "deepseek-chat",
+            &usage,
+            false,
+            "completed",
+            Some("model returned zero tokens — possible API error, timeout, or empty response"),
+            "",
+            None,
+        );
+
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["input_tokens"], 0);
+        assert_eq!(payload["output_tokens"], 0);
+        assert!(
+            payload["error_detail"]
+                .as_str()
+                .unwrap_or("")
+                .contains("zero tokens"),
+            "expected error_detail to mention zero tokens"
+        );
+    }
+
+    #[test]
+    fn model_call_terminal_payload_nonzero_tokens_no_error_detail() {
+        let usage = Usage {
+            input: 10,
+            output: 5,
+            cache_read: 0,
+            cache_write: 0,
+            ..Default::default()
+        };
+
+        let payload = model_call_terminal_payload(
+            "mc-ok-1",
+            "deepseek-chat",
+            &usage,
+            true,
+            "completed",
+            None,
+            "some text",
+            None,
+        );
+
+        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["input_tokens"], 10);
+        assert_eq!(payload["output_tokens"], 5);
+        assert!(
+            payload.get("error_detail").map_or(true, |v| v.is_null()),
+            "expected no error_detail when tokens are non-zero"
+        );
     }
 
     #[test]
