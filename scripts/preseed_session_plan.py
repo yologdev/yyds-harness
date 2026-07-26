@@ -1793,12 +1793,13 @@ HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
 """
         task = choose_task(assessment)
         assert task["title"] == "Reduce recurring search-tool friction before implementation", task
-        assert task.get("validated_against_assessment") is True, (
-            f"Expected validated_against_assessment=true, got {task.get('validated_against_assessment')}"
+        assert task.get("validated_against_assessment") is False, (
+            f"Expected validated_against_assessment=false (key found in src/tools.rs), got {task.get('validated_against_assessment')}"
         )
+        assert task.get("contradiction_reason"), "Expected contradiction_reason"
         text = render_task(task, "105", "10:00")
-        assert "validated_against_assessment: true" in text
-        assert "contradiction:" not in text
+        assert "validated_against_assessment: false" in text
+        assert "contradiction:" in text
         # Test 6: Sub-agent task contradicted by Recent Changes
         assessment = """# Assessment
 
