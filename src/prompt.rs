@@ -1986,7 +1986,7 @@ mod tests {
         assert_eq!(payload["input_tokens"], 10);
         assert_eq!(payload["output_tokens"], 5);
         assert!(
-            payload.get("error_detail").map_or(true, |v| v.is_null()),
+            payload.get("error_detail").is_none_or(|v| v.is_null()),
             "expected no error_detail when tokens are non-zero"
         );
     }

@@ -671,6 +671,10 @@ def _check_code_already_exists(task: dict[str, object]) -> tuple[bool, str]:
         if not key_str:
             continue
         for fp in file_paths:
+            # Only check Rust source files — script files contain task definitions
+            # and test fixtures that will always match their own keywords.
+            if not (fp.startswith("src/") and fp.endswith(".rs")):
+                continue
             # git grep -F for literal match (not regex) to avoid false positives
             # from regex metacharacters in the key
             try:
