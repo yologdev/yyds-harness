@@ -1402,10 +1402,13 @@ Top tool-failure categories:
 lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; state_run_incomplete_count=2; state_run_unmatched_completed_count=2; state_run_unmatched_non_validation_completed_count=0; state_run_unstarted_input_validation_error_count=2; deepseek_model_call_started_count=1; deepseek_model_call_completed_count=0; deepseek_model_call_incomplete_count=1
 """
         task = choose_task(assessment)
-        assert task["title"] == "Stabilize run completion guard panic test", task
-        assert task["files"] == "src/state.rs", task
-        text = render_task(task, "107", "21:45")
-        assert "run_completion_guard_reports_error_on_panic" in text, text
+        assert task["title"] == LIFECYCLE_TASK_TITLE, task
+        # The lifecycle task should NOT be falsy contradicted — its script files are
+        # no longer checked by _check_code_already_exists (only src/*.rs files).
+        assert task.get("validated_against_assessment") is not False, (
+            f"Lifecycle task should not be falsy contradicted after #144 fix, "
+            f"got validated_against_assessment={task.get('validated_against_assessment')}"
+        )
 
         # --- render_task raises on empty files ---
         empty_files_task = {
@@ -2184,9 +2187,8 @@ task_success_rate=0
             f"Exit-0 with actionable gnomes should target src/*.rs, "
             f"got: {task_zero_gnomes.get('files')}"
         )
-        assert "no-edit" in task_zero_gnomes["title"].lower() or \
-            "trajectory" in task_zero_gnomes["title"].lower(), (
-            f"Exit-0 with gnomes should produce gnome-aware title, "
+        assert task_zero_gnomes["title"] == "Add a small verifiable improvement to src/", (
+            f"Exit-0 with gnomes should produce src/-improvement fallback title, "
             f"got: {task_zero_gnomes['title']}"
         )
 
@@ -2277,30 +2279,13 @@ Guard result:
 Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1; task_success_rate = 0; task_verification_rate = 0; task_unlanded_source_count = 1; task_failed_count = 2; bash_tool_error = 3
 """
         task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
-        # Files should include src/*.rs when task_no_edit_revert_count > 0
+        # #135 _healthy_codebase_fallback returns a fixed src/ improvement task;
+        # trajectory gnomes no longer enrich the fallback evidence field.
+        assert task_traj["title"] == "Add a small verifiable improvement to src/", (
+            f"Trajectory gnomes should produce healthy-codebase fallback, got: {task_traj['title']}"
+        )
         assert "src/" in str(task_traj["files"]), (
-            f"Files should include src/*.rs when task_no_edit_revert_count > 0, got: {task_traj['files']}"
-        )
-        assert "scripts/preseed_session_plan.py" in str(task_traj["files"]), (
-            f"Files should still include preseed, got: {task_traj['files']}"
-        )
-        # Evidence should contain trajectory gnome data
-        evidence_str = str(task_traj["evidence"])
-        assert "task_no_edit_revert_count=1" in evidence_str or "task_no_edit_revert_count" in evidence_str, (
-            f"Evidence should include task_no_edit_revert_count gnome, got: {evidence_str[:200]}"
-        )
-        assert "task_obsolete_count" in evidence_str, (
-            f"Evidence should include task_obsolete_count gnome, got: {evidence_str[:200]}"
-        )
-        assert "task_verification_rate" in evidence_str, (
-            f"Evidence should include task_verification_rate gnome, got: {evidence_str[:200]}"
-        )
-        assert "task_unlanded_source_count" in evidence_str, (
-            f"Evidence should include task_unlanded_source_count gnome, got: {evidence_str[:200]}"
-        )
-        # Title should describe fixing, not just diagnosing
-        assert "Fix" in task_traj["title"] or "fix" in task_traj["title"].lower(), (
-            f"Title should say Fix not Diagnose when trajectory evidence is present, got: {task_traj['title']}"
+            f"Files should include src/*.rs, got: {task_traj['files']}"
         )
         # --- End trajectory evidence enrichment test ---
 
