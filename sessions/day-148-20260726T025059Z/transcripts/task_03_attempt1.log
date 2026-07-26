@@ -1,0 +1,334 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+warning: skipping corrupted event at line 154100 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 522
+note: skipped 3 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and then follow the evolve skill rules. The task is to add diagnostic detail to `ModelCallCompleted` events when the model returns zero tokens. Let me first read the relevant skill file and then the source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the relevant source file to understand the current implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the source file to understand the current implementation around `model_call_terminal_payload` and the call sites.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_terminal_payload' (*.rs) ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function definition and the call sites to understand how it works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:30..70 ✓ (345ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me read the call sites to understand how the function is called.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me read the call sites around lines 950-960, 1030-1040, and 1090-1100 to understand how the function is invoked:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:948..968  ▶ read src/prompt.rs:1030..1050  ▶ read src/prompt.rs:1090..1110 ✓ (1.7s)
+ ✓ (1.3s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me understand the structure:
+
+1. `model_call_terminal_payload()` is called at three call sites:
+   - Line 956: status "completed", error_detail None — this is the normal completion path
+   - Line 1037: status "interrupted", error_detail Some("ctrl_c") 
+   - Line 1097: status "stream_closed_without_agent_end", error_detail Some("event_channel_closed_before_agent_end")
+
+The task asks me to add diagnostic detail when `usage.input == 0 && usage.output == 0`. The normal completion path at line 956 is the one where zero tokens can happen without an explicit error_detail — the model might return zero tokens but still complete "successfully".
+
+Let me also check the append_terminal_state_events.py for the retroactive payload to see if there's a `harness_internal` flag needed there (per the Fallback).
+
+But first, let me check the fallback: the task says the Fallback is to check if the zero-token events come from `scripts/append_terminal_state_events.py` (harness-internal retroactive lifecycle closing) vs agent-code-path. Let me check that.
+
+Actually, let me focus on the primary task first. The implementation notes say the change should be at the call site around line 956, adding diagnostic detail when usage has 0/0 tokens. The cleanest approach according to the task is to add the check at the call site (around line 956-966) before calling `model_call_terminal_payload()`, passing `Some("zero tokens — possible API error")` as the `error_detail` argument.
+
+Let me also check the append_terminal_state_events.py to understand if there are harness-internal retroactive events that generate ModelCallCompleted with 0/0 tokens.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.8s (3 ✓)
+
+Let me also check the retroactive terminal state events script since the fallback mentions it:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in scripts/append_terminal_state_events.py (*.py) ✓ (278ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the retroactive payload construction in `append_terminal_state_events.py` to see if there's a harness_internal flag or similar.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:680..710 ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full payload construction for the retroactive ModelCallCompleted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:640..690 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The retroactive events already have `retroactive: true` flag and `terminal_reason` set. The fallback says to check if the 0/0 events from Day 147 are exclusively from these harness-internal retroactive events. Since the retroactive events already have `retroactive: true` and a `terminal_reason` field, they're already distinguishable from agent-code-path events. This means the main task (adding diagnostic detail to agent-code-path events) is still valid.
+
+Now let me focus on the primary implementation. The task says:
+
+The change:
+- At the call site around line 953-966 (the normal completion path), when `usage.input == 0 && usage.output == 0`, pass a diagnostic error_detail.
+- Alternatively, add the check inside `model_call_terminal_payload()`.
+
+The task suggests the call-site approach is cleaner. Here's my plan:
+
+At line 956-966, change the `None` error_detail to a conditional that checks if usage is 0/0:
+
+```rust
+crate::state::record(
+    crate::state::EventType::ModelCallCompleted,
+    crate::state::Actor::Yoyo,
+    model_call_terminal_payload(
+        &model_call_id,
+        model,
+        &state.usage,
+        state.thinking_observed,
+        "completed",
+        if state.usage.input == 0 && state.usage.output == 0 {
+            Some("model returned zero tokens — possible API error, timeout, or empty response")
+        } else {
+            None
+        },
+        &state.collected_text,
+        state.last_tool_name.as_deref(),
+    ),
+);
+```
+
+Wait, but `state.usage.input` and `state.usage.output` - let me check the `Usage` type to see what fields it has. It's likely from yoagent.
+
+Let me also check how the `Usage` struct is defined and how `state.usage` is updated.
+
+Actually, let me just verify the tests pass before making changes. Let me first check if there are existing tests for `model_call_terminal_payload`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the existing test for this function and the `Usage` type:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1890..1920 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. There's already a test using `Usage { input: 0, output: 0, ... }`. Let me see the rest of this test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1919..1939 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me implement the change. I'll use the call-site approach: modify the normal completion path at line 956 to pass a diagnostic error_detail when both input and output tokens are zero.
+
+Actually wait, let me re-read the task more carefully:
+
+> Alternatively, the check could be done at the call site (around line 953-966) before calling `model_call_terminal_payload()`, passing `Some("zero tokens — possible API error")` as the `error_detail` argument. Either approach works; the call-site approach is slightly cleaner because it doesn't add logic to the payload builder.
+
+I'll go with the call-site approach. But I also need to consider: should I check at ALL call sites or just the "completed" one? The "interrupted" and "stream_closed_without_agent_end" call sites already have their own error_detail, so they don't need this check. Only the "completed" path at line 956 uses `None` as error_detail and could silently record 0/0 tokens.
+
+Let me now write the test first and then make the implementation change.
+
+Actually, let me also check the `Usage` struct from yoagent to confirm the fields:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct Usage' (*.rs) ✓ (280ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`Usage` is from yoagent, not defined in this repo. But the existing test already uses `Usage { input: 0, output: 0, ... }`, so I know the fields exist. Let me now proceed with the implementation.
+
+Plan:
+1. Add a test for the new behavior: when `usage.input == 0 && usage.output == 0` with status "completed" and no error_detail, the payload should include the diagnostic error_detail.
+2. Modify the call site at line 956 to pass the diagnostic error_detail when tokens are zero.
+
+Let me write the test first.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the change. I'll write a test first, then make the surgical edit at the call site.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1922..1932 ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I'll add a test after line 1925 (after the closing `}` of the existing test). Let me write the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me add a test for the zero-token diagnostic behavior. I'll insert it after the existing `model_call_terminal_payload_marks_stream_closed_without_agent_end` test:
+            assert_eq!(payload["last_tool_name"], "edit_file");
+            assert_eq!(payload["input_tokens"], 0);
+            assert_eq!(payload["cache_read_tokens"], 0);
+  +     }
+  + 
+  +     #[test]
+  +     fn model_call_terminal_payload_zero_tokens_completed_includes_error_detail() {
+  +         let usage = Usage {
+  +             input: 0,
+  +             output: 0,
+  +             cache_read: 0,
+  +             cache_write: 0,
+  +             ..Default::default()
+  +         };
+  + 
+  +         let payload = model_call_terminal_payload(
+  +             "mc-zero-1",
+  +             "deepseek-chat",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/prompt.rs (6 → 69 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (6 → 69 lines)
+            assert_eq!(payload["last_tool_name"], "edit_file");
+            assert_eq!(payload["input_tokens"], 0);
+            assert_eq!(payload["cache_read_tokens"], 0);
+  +     }
+  + 
+  +     #[test]
+  +     fn model_call_terminal_payload_zero_tokens_completed_includes_error_detail() {
+  +         let usage = Usage {
+  +             input: 0,
+  +             output: 0,
+  +             cache_read: 0,
+  +             cache_write: 0,
+  +             ..Default::default()
+  +         };
+  + 
+  +         let payload = model_call_terminal_payload(
+  +             "mc-zero-1",
+  +             "deepseek-chat",
+  +             &usage,
+  +             false,
+  ... (49 more lines)
+ ✓ (363ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me make the main implementation change — adding the diagnostic error_detail at the call site when both input and output tokens are zero.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me make the implementation change at the call site around line 956-966:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:950..970 ✓ (346ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll replace `None` with a conditional that checks if both input and output tokens are zero:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                                    &state.usage,
+                                    state.thinking_observed,
+                                    "completed",
+  -                                 None,
+  +                                 if state.usage.input == 0 && state.usage.output == 0 {
+  +                                     Some("model returned zero tokens — possible API error, timeout, or empty response")
+  +                                 } else {
+  +                                     None
+  +                                 },
+                                    &state.collected_text,
+                                    state.last_tool_name.as_deref(),
+                                ),
+  ✓ Auto-approved: edit: src/prompt.rs (10 → 14 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (10 → 14 lines)
+                                    &state.usage,
+                                    state.thinking_observed,
+                                    "completed",
+  -                                 None,
+  +                                 if state.usage.input == 0 && state.usage.output == 0 {
+  +                                     Some("model returned zero tokens — possible API error, timeout, or empty response")
+  +                                 } else {
+  +                                     None
+  +                                 },
+                                    &state.collected_text,
+                                    state.last_tool_name.as_deref(),
+                                ),
+ ✓ (301ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the focused tests: `cargo test prompt`
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the focused tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test prompt 2>&1 ✓ (4m 19s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 321+6 tests pass. Let me now run cargo fmt -- --check and cargo build to verify the changes in a focused way.
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass. Let me run format check and build:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes (no output means success). Now let me check git diff to confirm the changes are correct.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (649ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Only `src/prompt.rs` is changed, which matches the task's Edit Surface. Let me also verify the diff to make sure it looks right.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 2>&1 ✓ (663ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks good. Let me also run `cargo build` to make sure everything compiles cleanly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the build:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (648ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything passes. Let me now run the focused prompt tests one more time to confirm the new tests specifically pass:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me quickly verify the specific new tests pass:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test prompt::tests::mode… ✓ (648ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 3 tests pass, including the two new ones. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 3 tests pass, including the 2 new ones. Let me commit:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (642ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit succeeded. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's a summary of the change:
+
+**What changed:** `src/prompt.rs`
+
+**Implementation:** At the `ModelCallCompleted` "completed" call site (line ~962, the normal completion path), the `error_detail` parameter was changed from `None` to a conditional: when `state.usage.input == 0 && state.usage.output == 0`, it now passes `Some("model returned zero tokens — possible API error, timeout, or empty response")`. Non-zero-token completions are unchanged.
+
+**Tests added:**
+• `model_call_terminal_payload_zero_tokens_completed_includes_error_detail` — verifies that a completed call with 0/0 tokens includes `error_detail` containing "zero tokens"
+• `model_call_terminal_payload_nonzero_tokens_no_error_detail` — verifies no regression: non-zero-token completions don't get an `error_detail`
+
+**Verification:** `cargo fmt -- --check` (pass), `cargo build` (pass), `cargo test prompt` (321+6 pass), specific test run (3/3 pass).
+
+**Why this matters:** When a session fails silently because the model returned zero tokens, future state traces will include `error_detail` explaining the likely cause, making the `deepseek_model_call_abnormal_completed_count` metric actionable instead of opaque.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

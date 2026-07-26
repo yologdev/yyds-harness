@@ -1,0 +1,587 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+warning: skipping corrupted event at line 154100 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 522
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to fix `_check_code_already_exists()` in `scripts/preseed_session_plan.py` so that keywords found in the script's own TASKS constant definitions and test data don't cause false contradiction detection. This is causing empty sessions (planner_no_task_count=1) because tasks get falsely marked as "already done."
+
+Let me follow the evolve skill's discipline: first read the skill, then read the relevant source, then implement.
+
+Let me also:
+1. Read the evolve skill
+2. Read the `_check_code_already_exists` function
+3. Understand the test that's failing
+4. Implement the fix
+
+Let me start by reading multiple things in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:640..720 ✓ (895ms)
+ ✓ (602ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the problem:
+
+1. `_check_code_already_exists()` at line 644 iterates over task keys and files, running `git grep -F` for each key in each file.
+2. When a task's `files` includes `scripts/preseed_session_plan.py` and its `keys` include terms that appear in the script's own TASKS constants or test data, the grep hits those internal definitions — not actual implementation code.
+3. This causes false contradiction detection, which causes `choose_task()` to find no valid candidates, resulting in empty sessions.
+
+Now let me look at the TASKS constant to understand what keys are defined, and also look at the test at line 1792 to see the failing assertion.
+
+Let me also look at the task_01.md file to understand what specific keys/files are causing the issue.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+Now let me read the TASKS constant to understand the task definitions, and the test around line 1790.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_check_code_already_exists' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:1780..1840  ▶ read scripts/preseed_session_plan.py:1..61 ✓ (946ms)
+ ✓ (1.8s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the TASKS constant and how the keys/files relate. Let me look at the TASKS constant to see what keys each task has, and then trace through the failing test case at line 1790.
+
+The test at line 1790 uses `choose_task(assessment)` with an assessment that mentions `search_regex_error` — and the `SEARCH_FRICTION_TASK_TITLE` task likely has `keys` including `search_regex_error` and `files` including `scripts/preseed_session_plan.py`.
+
+Let me look at the TASKS constant.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TASKS =' in scripts/preseed_session_plan.py ✓ (287ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the TASKS constant to understand the task definitions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:62..182 ✓ (405ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find the SEARCH_FRICTION task definition. Let me find it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SEARCH_FRICTION_TASK_TITLE' in scripts/preseed_session_plan.py  ▶ search 'search_regex_error' in scripts/preseed_session_plan.py ✓ (565ms)
+ ✓ (598ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the search friction task definition around line 351.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:345..405 ✓ (252ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly. The SEARCH_FRICTION task (line 347-375) has:
+- `keys`: includes `search_regex_error` (from SEARCH_FRICTION_KEYS)
+- `files`: `src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py`
+
+When `_check_code_already_exists()` runs `git grep -n -F -- search_regex_error -- scripts/preseed_session_plan.py`, it finds `search_regex_error` at lines 24 (in the SEARCH_FRICTION_KEYS constant), 1788 (in the test assessment string), and other test data — not in shipped implementation code. This creates a false positive contradiction.
+
+Now let me also look at the test around line 1788 to understand the context better and the ANALYSIS_ONLY task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1785..1815 ✓ (341ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the exact problem:
+
+1. Test 5 (lines 1776-1797): Creates an assessment that mentions `search_regex_error`. The `choose_task()` function picks the SEARCH_FRICTION task. But then `_check_code_already_exists()` runs `git grep -n -F -- search_regex_error -- scripts/preseed_session_plan.py` and finds hits (in the SEARCH_FRICTION_KEYS constant at line 24, and also in the test assessment text at line 1788). So it marks the task as contradicted, setting `validated_against_assessment=False`. But the test expects `validated_against_assessment=True`.
+
+2. The ANALYSIS_ONLY task likely has similar issues with its keys/files.
+
+Now let me understand the `choose_task()` function to see how it uses `_check_code_already_exists`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:880..960 ✓ (235ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the rest of `choose_task()` to understand the full selection logic.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:958..1038 ✓ (415ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. At line 980-984, `choose_task()` iterates over candidates and checks for contradiction via `check_task_contradiction()`, which at line 714 calls `_check_code_already_exists()`.
+
+2. For the SEARCH_FRICTION task with `files: "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py"` and `keys: ("search_regex_error", ...)`, the function runs `git grep -n -F -- search_regex_error -- scripts/preseed_session_plan.py` and finds hits in:
+   - Line 24: `"search_regex_error"` (in SEARCH_FRICTION_KEYS constant)
+   - Line 1788: `search_regex_error` (in test assessment text)
+   - Other test data
+
+3. The function returns `(True, reason)` marking the task as contradicted, even though the "code" found is just the task definition and test data within the script itself.
+
+Now, the fix:
+
+The simplest fix as suggested in the task: **restrict `_check_code_already_exists()` to only check `src/*.rs` files**, since Rust source code changes are the primary evidence of completed implementation work. Script files contain task definitions and test fixtures that will always match their own keywords.
+
+Let me also verify: do any non-`src/*.rs` files in the TASKS constants represent real implementation targets where we'd want to detect already-completed code?
+
+Looking at the TASKS:
+- Task 1 (sub-agent): `files: "src/tools.rs, src/agent_builder.rs, src/lib.rs"` — all src/*.rs ✓
+- Task 2 (cache metrics): `files: "src/prompt.rs, src/deepseek.rs, src/state.rs"` — all src/*.rs ✓
+- Task 3 (cold-start): `files: "src/commands_state.rs, src/state.rs"` — all src/*.rs ✓
+- Task "SEARCH_FRICTION": `files: "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py"` — mix, includes scripts
+- Task "EXTRACT_STATE": `files: "src/commands_state.rs, src/commands_state_graph.rs"` — all src/*.rs ✓
+
+So the only task with non-src files is the SEARCH_FRICTION task. For that task, the `src/tools.rs` check would still work correctly. The `scripts/*.py` files are the problematic ones.
+
+Now let me run the test first to confirm the failure:
+
+Actually wait, let me first run the test to see the failure.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the problem. Let me run the test to confirm the failure, then implement the fix.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (689ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: the test fails exactly as described. Now let me implement the fix.
+
+The fix is simple: in `_check_code_already_exists()`, add a filter that only checks `src/*.rs` files. This way, script files that contain task definitions and test fixtures won't cause false contradictions.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Confirmed the failure. Now I'll implement the fix — restrict `_check_code_already_exists()` to only check `src/*.rs` files.
+            if not key_str:
+                continue
+            for fp in file_paths:
+  +             # Only check src/*.rs files: these are compiled Rust sources where
+  +             # keyword matches prove implementation code already exists. Script
+  +             # files (scripts/*.py) contain task definitions and test fixtures
+  +             # that will always match their own keywords, causing false positives.
+  +             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +                 continue
+                # git grep -F for literal match (not regex) to avoid false positives
+                # from regex metacharacters in the key
+                try:
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (27 → 33 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (27 → 33 lines)
+            if not key_str:
+                continue
+            for fp in file_paths:
+  +             # Only check src/*.rs files: these are compiled Rust sources where
+  +             # keyword matches prove implementation code already exists. Script
+  +             # files (scripts/*.py) contain task definitions and test fixtures
+  +             # that will always match their own keywords, causing false positives.
+  +             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +                 continue
+                # git grep -F for literal match (not regex) to avoid false positives
+                # from regex metacharacters in the key
+                try:
+ ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the fix works by running the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the fix:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1792 passed (the search_friction task is no longer falsely contradicted), but now there's a different test failure at line 1407. Let me look at that test. The issue is: the LIFECYCLE_TASK has `files: 'scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py'` — all script files, no src/*.rs files. With my filter, `_check_code_already_exists()` skips all of these, so it never detects when code already exists.
+
+But wait — the test expects this task to be contradicted. Let me read the test at line 1407.
+
+Actually, looking at the assertion: `assert task["title"] == "Stabilize run completion guard panic test", task`. The test expected a different task title, but got the LIFECYCLE task. This is a different assertion failure, not necessarily related to my change.
+
+Let me look at the test around line 1390-1410 to understand what it's testing.
+────────────────────────────────────────────────────────────────────────────────
+
+There's a different test failure now. Let me understand what it's testing.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1380..1430 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test at line 1407 expects that for an assessment mentioning lifecycle issues AND a flaky test, the chosen task should be "Stabilize run completion guard panic test" with `files: "src/state.rs"`. But instead, it's choosing the LIFECYCLE_TASK "Close yyds state and model lifecycle gaps".
+
+This is an unrelated test failure. The problem is that the assessment has both lifecycle metrics (state_run_incomplete_count=2, etc.) AND a flaky test mention. The `choose_task()` is picking the lifecycle task because it matches the lifecycle keys, while the "Stabilize run completion guard" task is what the test expects.
+
+Wait — but this test was passing before my change. Let me think about why...
+
+Looking at the LIFECYCLE_TASK:
+- `keys:` includes `state_run_incomplete`, `state_run_unmatched_non_validation_completed`, `deepseek_model_call_incomplete`, `deepseek_model_call_unmatched_completed`, etc.
+- `files:` `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py`
+
+Before my change, `_check_code_already_exists()` would run `git grep` for these keys in those script files. These keys likely appeared in those script files (since they handle state lifecycle events), causing the task to be contradicted. Now with my change, those script files are skipped, so the task is no longer contradicted.
+
+The test expects the lifecycle task to be contradicted (so that "Stabilize run completion guard" gets selected instead). But now it's not contradicted, so it's selected first.
+
+Hmm, but this is a genuine problem. The lifecycle task genuinely has keywords that would appear in its target script files (because those scripts handle lifecycle events). But the contradiction detector was working correctly before — those keywords in the script files DO represent already-implemented behavior.
+
+Wait, let me re-read the task objective more carefully:
+
+The task says:
+> "The simplest fix: restrict `_check_code_already_exists()` to only check `src/*.rs` files... The primary evidence of completed implementation work is compiled Rust code that passes tests."
+
+And:
+> "Script-only tasks that re-seed are lower cost than the current false-contradiction bug that causes zero-task sessions."
+
+So the task acknowledges that restricting to src/*.rs means script-only tasks might re-seed. But the test failure shows the lifecycle task being selected instead of the "Stabilize run completion guard" task.
+
+Let me look at how "Stabilize run completion guard panic test" is defined — is it in the TASKS constant, or is it dynamically generated?
+
+Actually, let me search for "Stabilize run completion guard" to see how this task is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Stabilize run completion guard' in scripts/preseed_session_plan.py ✓ (280ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that task definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:185..235 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test at line 1407 expects the "Stabilize run completion guard panic test" task (line 193) to be selected. But instead, the LIFECYCLE_TASK is being selected.
+
+The assessment text at line 1398-1404 contains both:
+1. "run_completion_guard" and "flaky" — matching the "Stabilize run completion guard" task keys
+2. "state_run_incomplete_count", "deepseek_model_call_incomplete_count", etc. — matching the LIFECYCLE_TASK keys
+
+The `choose_task()` function iterates through TASKS in order. Let me check which comes first. The TASKS list order:
+1. Verify and fix sub-agent API key propagation (line 62)
+2. Record DeepSeek prompt cache metrics (line 99)
+3. Improve cold-start state failure diagnostics (line 139)
+4. **Stabilize run completion guard panic test** (line 185) — 4th position
+5. Add recovery hints (line 219)
+6. ... etc
+7. **Close yyds state and model lifecycle gaps** (LIFECYCLE_TASK) — somewhere after
+
+Both match the assessment. The "Stabilize run completion guard" task is earlier in the list. So it should be checked first.
+
+But wait, let me look at the `choose_task()` function again more carefully.
+
+At line 934-965, it iterates through all TASKS and builds `candidates`. Both tasks that match keys get added. Then at line 980-984, it iterates through `candidates` and checks contradiction. The "Stabilize run completion guard panic test" has `files: "src/state.rs"`, so `_check_code_already_exists` would check if `run_completion_guard` etc. appear in `src/state.rs`. They likely do (since state.rs has functions named run_completion_guard), so it would be contradicted.
+
+Wait, that doesn't make sense. Before my change, this test was passing. Let me think about what was happening before...
+
+Before my change:
+- "Stabilize run completion guard": files="src/state.rs", keys include "run_completion_guard", "flaky test", etc.
+  - `git grep -F run_completion_guard -- src/state.rs` → might find matches (function names, test names)
+  - So it would be contradicted, and skipped
+  
+- "Close yyds state and model lifecycle gaps": files="scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py", keys include "state_run_incomplete", etc.
+  - `git grep -F state_run_incomplete -- scripts/append_terminal_state_events.py` → these scripts contain these keywords in their own code
+  - So it would also be contradicted, and skipped
+
+Then all candidates are contradicted. At line 987-991, the first candidate is returned with `validated_against_assessment=False`. The first candidate in `candidates` order is "Stabilize run completion guard panic test" (since it appears earlier in TASKS). So it gets returned, which is what the test expects.
+
+After my change:
+- "Stabilize run completion guard": files="src/state.rs" → still checked because src/*.rs → still contradicted
+- "Close yyds state and model lifecycle gaps": files="scripts/*.py" → now SKIPPED → NOT contradicted → selected as the valid candidate
+
+So the lifecycle task gets selected because it's the first non-contradicted candidate.
+
+But wait — "Stabilize run completion guard" is contradicted and "Close lifecycle" is not. So `choose_task()` returns "Close lifecycle".
+
+The test expects "Stabilize run completion guard" to be returned (as the first contradicted candidate). But now there IS a valid (non-contradicted) candidate, so the first-candidate-fallback path isn't reached.
+
+This is a problem. My fix is too broad — it's preventing the lifecycle task from being contradicted when it genuinely should be (because the script files DO contain implementation code matching those keys).
+
+The task says:
+> "Alternative if that's too restrictive: exclude the file being checked if it's also the file containing the TASKS constant (i.e., `scripts/preseed_session_plan.py`). But the src/*.rs filter is simpler and more correct — the primary evidence of completed implementation work is compiled Rust code that passes tests."
+
+But this alternative is actually needed because legitimate non-src files (like `scripts/append_terminal_state_events.py`) contain real implementation code that should trigger contradiction detection. The bug is specifically that `scripts/preseed_session_plan.py` contains TASKS constant definitions that match task keywords.
+
+Let me re-read the task's Fallback section:
+> "If restricting to src/*.rs causes legitimate completed-script-work to not be detected, that's acceptable — the primary evidence of completed implementation is Rust source changes that pass cargo build && cargo test. Script-only tasks that re-seed are lower cost than the current false-contradiction bug that causes zero-task sessions."
+
+OK so the task explicitly says this is acceptable. But the test failure shows it breaks an existing test expectation. The test at line 1407 was testing that when both a Rust task and a script task match, and the Rust task is contradicted (because the code already exists), the contradicted Rust task is returned as the fallback.
+
+Now with my change, the script task is no longer contradicted, so it's selected instead. This changes the test behavior.
+
+But wait — is this test actually testing something that should remain true? Let me look more carefully at what this test is really testing.
+
+The test assessment has lifecycle gnome metrics AND a flaky test mention. The expected behavior (before my fix) was: both candidate tasks match, both get contradicted (the Rust one because code exists, the script one because keywords appear in script files), and the first candidate (Rust one) is returned as contradicted.
+
+With my fix: the Rust task is still contradicted, the script task is NOT contradicted, so the script task is selected as valid.
+
+The task says this is acceptable: "Script-only tasks that re-seed are lower cost than the current false-contradiction bug that causes zero-task sessions."
+
+So I should update the test to match the new expected behavior. The test should expect the LIFECYCLE_TASK to be selected with `validated_against_assessment=True` instead of the "Stabilize run completion guard" task.
+
+Actually, wait. Let me reconsider. The issue is more nuanced:
+
+- The "Stabilize run completion guard" task is genuinely contradicted because `run_completion_guard` appears in `src/state.rs` (real implementation code).
+- The "Close lifecycle" task was being contradicted because its keywords appear in the target script files — but those script files DO implement lifecycle event handling. So the contradiction was actually CORRECT.
+
+But the SEARCH_FRICTION task was being falsely contradicted because its keywords appeared in `scripts/preseed_session_plan.py`'s TASKS constant definitions — not in implementation code.
+
+So the real fix should be more targeted: exclude `scripts/preseed_session_plan.py` specifically, or exclude files that appear in the `PROTECTED_IMPLEMENTATION_FILES` list, or even better: skip the file that's running the check (the preseed script itself).
+
+Actually, the simplest correct fix: **skip `scripts/preseed_session_plan.py` specifically** because it contains the TASKS constant definitions. Other script files in the `files` list of tasks are legitimate implementation targets.
+
+Let me change the approach: instead of restricting to `src/*.rs`, skip only `scripts/preseed_session_plan.py` from the grep check. But what about the `scripts/log_feedback.py` file in the SEARCH_FRICTION task? Does it also contain false positives?
+
+Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+I see the issue — restricting to only `src/*.rs` is too broad. It breaks the lifecycle task detection where legitimate script files like `scripts/append_terminal_state_events.py` should still trigger contradictions. The real bug is specifically `scripts/preseed_session_plan.py` containing its own TASKS constant definitions. Let me verify this and refine the fix.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'search_rege…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'search_rege… ✓ (1.2s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting: `search_regex_error` is NOT in `scripts/log_feedback.py`. So only `scripts/preseed_session_plan.py` contains the false positive. Let me verify more:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+Only `scripts/preseed_session_plan.py` contains `search_regex_error` in its own test data — not `scripts/log_feedback.py`. So the fix should be more targeted. Let me also confirm the lifecycle pattern:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'state_run_i… ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Right. `state_run_incomplete` appears in `scripts/append_terminal_state_events.py` — legitimate implementation code that correctly indicates the lifecycle task is already done. This should remain contradicted.
+
+The issue is that `scripts/preseed_session_plan.py` contains TASKS constant definitions and test data that match its own task keys. The fix should specifically handle the case where the target file is `scripts/preseed_session_plan.py` and the keywords are task definition constants.
+
+But wait — what's the cleanest approach? Let me reconsider.
+
+The problem: `_check_code_already_exists()` runs `git grep` for task keys in each task file. When the file is `scripts/preseed_session_plan.py`, the keys appear in:
+1. The TASKS constant definitions (lines 62+)
+2. The test data (assessment text used in `--test` mode)
+
+Both are false positives. The function should skip `scripts/preseed_session_plan.py` specifically because it's the file that defines the TASKS and contains test data that will always match.
+
+Actually, a cleaner approach: let me look at what the task's `files` field typically contains for tasks that list `scripts/preseed_session_plan.py`. 
+
+The SEARCH_FRICTION task has: `files: "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py"`
+
+For this task, `src/tools.rs` is the real implementation evidence. `scripts/preseed_session_plan.py` is the false positive source. `scripts/log_feedback.py` doesn't contain `search_regex_error` so it doesn't matter here.
+
+So the fix should specifically exclude `scripts/preseed_session_plan.py` from the grep check. But to be more general: any file path that is the script itself. Let me use `__file__` to skip self-checking.
+
+Actually, the simplest and cleanest fix: skip `scripts/preseed_session_plan.py` specifically.
+
+Or even better: skip any file path that contains `preseed_session_plan.py` — since that's the file that defines TASKS.
+
+Wait, let me look at what other tasks have `scripts/preseed_session_plan.py` in their files list...
+
+The ANALYSIS_ONLY task: Let me find it.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me find all tasks that include `scripts/preseed_session_plan.py` in their files:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n 'files.*preseed_se… ✓ (594ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are multiple tasks with `scripts/preseed_session_plan.py` in their files. The cleanest approach: skip the file that contains the TASKS definitions, i.e., `scripts/preseed_session_plan.py` itself. The path to the script is available via `__file__`, but a simpler approach is to just hardcode the exclusion.
+
+Actually, let me think about this differently. The real issue is that `scripts/preseed_session_plan.py` contains *task definition keywords* (the `keys` field values from TASKS) as literal strings in the TASKS constant definitions and test data. Other script files (like `scripts/append_terminal_state_events.py`) contain *implementation code* that happens to match task keywords — those are legitimate contradictions.
+
+The simplest correct approach: exclude `scripts/preseed_session_plan.py` from the check. This file is the source of the TASKS constants and test data, so any keyword match in it is a false positive.
+
+Let me update the fix to be more targeted.
+────────────────────────────────────────────────────────────────────────────────
+
+The right fix is more targeted: only exclude `scripts/preseed_session_plan.py` since it contains the TASKS definitions and test data. Other script files contain legitimate implementation code. Let me update the fix:
+                for fp in file_paths:
+  -             # Only check src/*.rs files: these are compiled Rust sources where
+  -             # keyword matches prove implementation code already exists. Script
+  -             # files (scripts/*.py) contain task definitions and test fixtures
+  -             # that will always match their own keywords, causing false positives.
+  -             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +             # Skip check against the preseed script itself: it contains TASKS
+  +             # constant definitions and test data where task keywords (keys)
+  +             # appear as literal strings, not as shipped implementation code.
+  +             if fp == "scripts/preseed_session_plan.py":
+                    continue
+                # git grep -F for literal match (not regex) to avoid false positives
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (8 → 7 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (8 → 7 lines)
+                for fp in file_paths:
+  -             # Only check src/*.rs files: these are compiled Rust sources where
+  -             # keyword matches prove implementation code already exists. Script
+  -             # files (scripts/*.py) contain task definitions and test fixtures
+  -             # that will always match their own keywords, causing false positives.
+  -             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +             # Skip check against the preseed script itself: it contains TASKS
+  +             # constant definitions and test data where task keywords (keys)
+  +             # appear as literal strings, not as shipped implementation code.
+  +             if fp == "scripts/preseed_session_plan.py":
+                    continue
+                # git grep -F for literal match (not regex) to avoid false positives
+ ✗ (604ms)
+    │ old_text not found in scripts/preseed_session_plan.py.
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the current state of the file to see what I actually changed it to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:669..684 ✓ (292ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the `edit_file` tool requires exact match. Let me provide the exact text including the trailing line after "continue".
+────────────────────────────────────────────────────────────────────────────────
+
+
+            for fp in file_paths:
+  -             # Only check src/*.rs files: these are compiled Rust sources where
+  -             # keyword matches prove implementation code already exists. Script
+  -             # files (scripts/*.py) contain task definitions and test fixtures
+  -             # that will always match their own keywords, causing false positives.
+  -             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +             # Skip the preseed script itself: it contains TASKS constant
+  +             # definitions and test data where task keywords appear as literal
+  +             # strings, not as shipped implementation code. Other script files
+  +             # (e.g. scripts/append_terminal_state_events.py) contain real
+  +             # implementation code — their keyword matches are legitimate.
+  +             if fp == "scripts/preseed_session_plan.py":
+                    continue
+                # git grep -F for literal match (not regex) to avoid false positives
+                # from regex metacharacters in the key
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (29 → 30 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (29 → 30 lines)
+            for fp in file_paths:
+  -             # Only check src/*.rs files: these are compiled Rust sources where
+  -             # keyword matches prove implementation code already exists. Script
+  -             # files (scripts/*.py) contain task definitions and test fixtures
+  -             # that will always match their own keywords, causing false positives.
+  -             if not (fp.startswith("src/") and fp.endswith(".rs")):
+  +             # Skip the preseed script itself: it contains TASKS constant
+  +             # definitions and test data where task keywords appear as literal
+  +             # strings, not as shipped implementation code. Other script files
+  +             # (e.g. scripts/append_terminal_state_events.py) contain real
+  +             # implementation code — their keyword matches are legitimate.
+  +             if fp == "scripts/preseed_session_plan.py":
+                    continue
+                # git grep -F for literal match (not regex) to avoid false positives
+                # from regex metacharacters in the key
+ ✓ (299ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the test again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Still failing at line 1799 (which is now 1799 instead of 1792 due to line shifts). The issue is that `search_regex_error` matches not just in `scripts/preseed_session_plan.py` but also potentially in `scripts/log_feedback.py` or `src/tools.rs`.
+
+Let me check: the SEARCH_FRICTION task has `files: "src/tools.rs, scripts/log_feedback.py, scripts/preseed_session_plan.py"`. With my fix, `scripts/preseed_session_plan.py` is skipped. But `scripts/log_feedback.py` might also contain `search_regex_error`. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'search_rege…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git grep -n -F -- 'search_rege… ✓ (1.1s)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `search_regex_error` is found in `src/tools.rs` at line 1838 — in a test function name `test_project_search_regex_error_includes_hint()`. This is a test function, not shipped implementation code. But the contradiction detector can't distinguish between test code and implementation code.
+
+Hmm. The `_check_code_already_exists` function considers any git grep match as evidence that the code already exists. The test function `test_project_search_regex_error_includes_hint()` is a test, not the actual feature. This is another false positive.
+
+But wait — is this test testing the search_regex_error feature itself? If so, the feature might actually already exist, and the contradiction would be correct. Let me think...
+
+The SEARCH_FRICTION task is about reducing search tool friction. The test function `test_project_search_regex_error_includes_hint()` suggests that regex error recovery hints already exist in the codebase. If that's the case, the contradiction is actually correct — the feature is already implemented.
+
+But the test at line 1788-1796 explicitly tests that the search friction task should NOT be contradicted when the assessment mentions `search_regex_error`. This is because the assessment mentions `search_regex_error` as a **bug/friction found**, not as a completed fix. The task should still be selected to fix the remaining friction.
+
+So the issue is: the code base has SOME search_regex_error handling (proven by the test), but the assessment says there are still 57 occurrences of the problem. The task might still be relevant even though some handling already exists.
+
+However, looking at the function's own docstring:
+> "false positives must be avoided — only return contradicted on an actual grep match."
+
+The docstring says to only return contradicted on an actual match. The match in `src/tools.rs` line 1838 IS an actual match (a test function). So the function is working as designed — it found a match and reported contradiction. The problem is that the test at line 1792 expects this NOT to happen.
+
+Let me re-read the test:
+```python
+assessment = """# Assessment
+
+## Recent Changes
+Day 105 added regex-error recovery hint to search tool errors.
+
+## Source Architecture
+| `commands_state.rs` | 23,548 | State CLI |
+
+## Bugs / Friction Found
+HIGH - `search_regex_error` (57 occurrences): the most frequent tool failure.
+"""
+task = choose_task(assessment)
+assert task["title"] == "Reduce recurring search-tool friction before implementation", task
+assert task.get("validated_against_assessment") is True
+```
+
+The assessment says "Day 105 added regex-error recovery hint" AND "search_regex_error (57 occurrences)". The test expects the task to be selected with `validated_against_assessment=True`. But the code check finds `search_regex_error` in `src/tools.rs` (the test function), which contradicts the task.
+
+Wait, but this test was passing before my change! So before, the contradiction was coming from `scripts/preseed_session_plan.py`, not from `src/tools.rs`. Let me trace through:
+
+Before my change:
+1. `_check_code_already_exists` would check all files in `files` list
+2. For `scripts/preseed_session_plan.py`: finds `search_regex_error` at line 24 → contradiction!
+3. Return contradiction early
+
+After my change (skipping preseed_session_plan.py):
+1. `_check_code_already_exists` skips `scripts/preseed_session_plan.py`
+2. For `scripts/log_feedback.py`: no match (returns exit 1)
+3. For `src/tools.rs`: finds `search_regex_error` at line 1838 → contradiction!
+
+So before, the contradiction was detected in `scripts/preseed_session_plan.py` first. After, it's detected in `src/tools.rs`. The result is the same: the task is contradicted.
+
+Hmm, but the task file says the test at line 1792 fails with "Expected validated_against_assessment=true, got False". This was also the error I saw before my first change. So the test was ALREADY failing before I changed anything. 
+
+Wait, no. The error message at the start of this task said: "python3 scripts/preseed_session_plan.py --test FAILS at line 1792". So the test was already failing. My fix for `scripts/preseed_session_plan.py` exposed the next layer: `src/tools.rs` also has the keyword in a test function.
+
+But wait — if the test was already failing at line 1792 BEFORE my change, then the contradiction was coming from `scripts/preseed_session_plan.py`. My fix skips that file, but now `src/tools.rs` matches too.
+
+Let me verify: was the test passing before any changes? Let me check by reverting my changes and running the test.
+
+Actually, I can't easily do that — I'd lose my edits. Let me think about this differently.
+
+The test at line 1792 was already failing due to `scripts/preseed_session_plan.py` containing `search_regex_error` in its own TASKS constant. My fix solves that. But now `src/tools.rs` also contains `search_regex_error` (in a test function name).
+
+The question is: should the test function `test_project_search_regex_error_includes_hint()` be treated as evidence that the feature already exists?
+
+Looking at the function: `async fn test_project_search_regex_error_includes_hint()` — this tests that the search tool includes a recovery hint when regex errors occur. This IS actual implementation code (a test proving the feature exists). So the contradiction is arguably correct.
+
+But the assessment says "search_regex_error (57 occurrences): the most frequent tool failure" — implying it's still a problem. The Day 105 fix added the recovery hint, but maybe it's not addressing all cases.
+
+This is getting complicated. The core issue is that `_check_code_already_exists` is too aggressive — any keyword match in any listed file counts as contradiction, even if the match is in a test function name or an error message string.
+
+Let me reconsider the approach. The task says:
+> "The simplest fix: restrict `_check_code_already_exists()` to only check `src/*.rs` files"
+
+And the test at line 1792 expects `validated_against_assessment=True`. But `src/tools.rs` contains `search_regex_error` which contradicts it.
+
+Wait — but was this test passing before Day 146 or 147? Maybe the `search_regex_error` in `src/tools.rs` was added by a previous session, and now it's causing a false contradiction?
+
+Let me check when `test_project_search_regex_error_includes_hint` was added to `src/tools.rs`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 26.8s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 -- src/to… ✓ (643ms)
+
+
