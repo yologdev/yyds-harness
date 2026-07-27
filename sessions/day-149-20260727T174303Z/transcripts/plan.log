@@ -1,0 +1,240 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The planning phase requires me to create task files in session_plan/. Let me first check if task_01.md already exists, then proceed with planning based on the assessment and trajectory evidence.
+
+Key evidence from the assessment:
+1. Git tree is clean, build and tests pass
+2. There's a **bug found**: `state graph hotspots --kind failure` and `--kind model_call` return "no hotspots matched" despite those kinds existing in data (regression from Day 146's supposed fix)
+3. Multiple sessions landed zero code changes - planner stuck
+4. Backlog issues: #144 (preseed false contradiction - partially fixed), #135 (self-referential fallback), #134 (model lifecycle gap), #105 (cache metrics - blocked on #90)
+5. Trajectory pressure: planner_no_task_count=1, deepseek_model_call_unmatched_completed_count=127, task_analysis_only_attempt_count=1
+
+The assessment found a concrete, verifiable bug: `state graph hotspots --kind failure` regression. This is a state/DeepSeek harness observability issue that directly affects diagnostic capability.
+
+Let me check if session_plan/task_01.md exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "no session_plan dir" ✓ (909ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to see what was seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (463ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md is a "healthy-codebase fallback" — it essentially says "add something small to src/state.rs because we can't find anything else to do." This is exactly the self-referential fallback pattern that the Day 115 lesson warned about: "Fallback self-reference turns 'nothing broken' into busywork you can't refuse."
+
+However, the assessment actually DID find a concrete, verifiable bug: the `state graph hotspots --kind failure` regression. This is a real, observable bug in the DeepSeek harness state observability — it directly harms diagnostic capability for failure analysis. Let me check if this is a better task to replace the seed with.
+
+Let me also verify the bug exists before planning a task around it.
+────────────────────────────────────────────────────────────────────────────────
+
+The seeded task_01.md is a fallback "do something in src/state.rs" task — exactly the self-referential pattern warned about in Day 115's learning. But the assessment found a **concrete, verifiable bug**: `state graph hotspots --kind failure` and `--kind model_call` return empty results despite those kinds existing in data. Let me verify this bug is real before replacing the seed.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ./target/debug/yyds state graph hotspots --kind failure 2>&1 | head -20  ▶ $ ./target/debug/yyds state graph hotspots --kind model_call 2>&1 | head -20  ▶ $ ./target/debug/yyds state graph hotspots --kind tool 2>&1 | head -20 ✓ (953ms)
+ ✓ (2.7s)
+ ✓ (4.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed: `--kind failure` and `--kind model_call` both say "no hotspots matched" despite listing those kinds in "kinds in data." `--kind tool` works fine. This is a real, verifiable bug.
+
+Now let me look at the code to understand the fix. The bug is likely in `src/commands_state_graph.rs` (1,367 lines) since that's where the graph hotspots command lives.
+
+Let me search for the filtering logic.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+Bug confirmed. Both `--kind failure` and `--kind model_call` return empty despite being listed in available kinds. `--kind tool` works. Let me trace the issue to its source quickly.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'no hotspots matched kind' (*.rs)  ▶ search 'fn build_graph_hotspots' (*.rs) ✓ (447ms)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the build_graph_hotspots_report and build_graph_hotspots_payload functions to understand the filtering logic.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1192..1272 ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The key function is `query_graph_hotspots(sqlite_path, limit, kind_filter)`. Let me find and read its implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn query_graph_hotspots' (*.rs) ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1276..1336 ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see where the kind_filter is applied.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1335..1365 ✓ (450ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I see the issue now. Let me trace it:
+
+1. `query_graph_hotspots` reads from `state_relations` table
+2. It builds hotspots where `src_id` gets its kind from `infer_graph_node_kind()` and `dst_id` gets its kind from `dst_kind` column
+3. The `kind_filter` at line 1336-1338 does `h.kind.to_lowercase().contains(&kind_lower)` — it uses `contains`, not exact match. So `--kind failure` should match anything whose kind *contains* "failure"
+
+But wait, for `src_id` entries, the kind comes from `infer_graph_node_kind(&relation.src_id)`, not from a DB column. Let me check what `infer_graph_node_kind` does for different IDs.
+
+Also, note that the hotspot kind for `src_id` nodes comes from `infer_graph_node_kind()`, while for `dst_id` nodes it comes from `relation.dst_kind`. Let me check what kinds the src nodes get.
+
+Let me look at `infer_graph_node_kind`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn infer_graph_node_kind' (*.rs) ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read this function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:13391..13421 ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The `infer_graph_node_kind` function infers kinds from id prefixes but doesn't include "failure" or "model_call" as output kinds. The `dst_kind` column in the DB has these values, but the `src_id` kind comes from `infer_graph_node_kind`.
+
+But wait, the `dst_kind` in the DB should have "failure" and "model_call" values since these show up in the `query_distinct_kinds` output. And `dst_id` nodes get their kind from `relation.dst_kind.clone()` at line 1323.
+
+So the hotspots from `dst_id` entries should have kind "failure" and "model_call". But the filter at line 1338 uses `contains`, not `==`. Let me check more carefully...
+
+Wait, actually the issue might be that "failure" and "model_call" kinds only appear on `dst_id` nodes and those don't have many entries. Let me check what the actual data looks like.
+
+Actually, I should check the DB directly to understand. But the simpler debugging approach: let me see if there are any rows with `dst_kind` = "failure" or "model_call" in the state_relations table.
+
+Let me try a direct SQL query.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ sqlite3 .yoyo/state/projection.sqlite3 "SELECT dst_kind, COUNT(*) as cnt FROM st… ✓ (892ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ sqlite3 .yoyo/state/projection.sqlite3 ".tables" ✓ (906ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty result - no tables at all. The SQLite projection might be empty or not yet rebuilt. Let me check if it's being read from a different location or format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/projection.sqlite3 2>/dev/null; file .yoyo/state/projection.s…  ▶ $ wc -c .yoyo/state/projection.sqlite3 2>/dev/null ✓ (949ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The SQLite projection is empty (0 bytes). So the state graph hotspots command is reading from an empty DB. But earlier, `--kind tool` returned results... That's contradictory. Let me check if `build_graph_hotspots_report` uses SQLite or reads directly from state JSONL.
+
+Wait, let me re-read: the function takes a `sqlite_path` parameter and calls `query_graph_hotspots(sqlite_path, ...)`. But maybe the hotspots command doesn't use the SQLite path — maybe it reads from state JSONL directly.
+
+Let me check how the `state graph hotspots` command is dispatched.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'hotspots' in src (*.rs) ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find where `graph hotspots` is actually dispatched. The SQLite DB is empty (0 bytes), so the command must be reading from event JSONL files directly, not from the SQLite projection. The `query_graph_hotspots` function I looked at uses SQLite which is empty - so maybe there's a different code path for the `graph hotspots` subcommand. Let me find the actual dispatch.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search '"hotspots"' in src/commands_state.rs (*.rs) ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `graph hotspots` is handled in handle_state_subcommand or handle_graph_subcommand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_graph_hotspots_report\|build_graph_hotspots_payload' in src/commands_state.rs (*.rs) ✓ (461ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'build_graph_hotspots' in src (*.rs) ✓ (448ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `build_graph_hotspots_report` and `build_graph_hotspots_payload` functions are called from both `commands_state.rs` (for tests) and `commands_state_graph.rs` (for actual dispatch). The `sqlite_path` is passed in both cases. But the SQLite DB is empty...
+
+Wait, maybe the SQLite DB is rebuilt on demand. Let me check how the dispatch works.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_graph.rs:1140..1180 ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `handle_graph_hotspots` at line 1151 checks if the SQLite file exists, and it does exist (I saw it earlier though it's 0 bytes). But it IS 0 bytes — an empty file. And the command does work (I saw `--kind tool` return results). So something doesn't add up...
+
+Wait, the path I checked was `.yoyo/state/projection.sqlite3` but the `default_store_path` might point somewhere else. Let me check what `default_store_path` returns.
+
+Also, let me re-check: when I ran `./target/debug/yyds state graph hotspots --kind tool`, it DID return results. So the SQLite DB must have data. Let me check the actual path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/ ✓ (903ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `projection.sqlite3` is 0 bytes but `state.sqlite` is 486.6M! The `default_store_path` might be returning `state.sqlite` not `projection.sqlite3`. Let me check what `default_store_path` returns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn default_store_path' in src (*.rs) ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:20..30 ✓ (462ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `default_store_path` uses `sqlite_projection_path` which probably returns `projection.sqlite3`. But that DB is 0 bytes... yet the command works. 
+
+Wait, `state graph hotspots` runs but the SQLite is 0 bytes. Let me check: maybe the `sqlite_projection_path` returns `state.sqlite` not `projection.sqlite3`?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn sqlite_projection_path' in src/state.rs (*.rs) ✓ (448ms)
+
+
