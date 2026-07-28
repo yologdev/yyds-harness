@@ -1,0 +1,587 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the task file, then examine the target script to understand the current state before making any changes.
+
+Let me follow the task structure:
+1. First read the evolve skill
+2. Read the target script `scripts/append_terminal_state_events.py`
+3. Search for input-validation related logic
+4. Make classification changes or mark obsolete/blocked
+
+Let me begin.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (1.4s)
+ ✓ (956ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the full script to understand all the relevant parts. The file was truncated at line 99. Let me read the rest, particularly looking for:
+1. Input-validation detection logic
+2. How model call completions are matched/unmatched
+3. The `find_orphaned_model_calls` function
+4. The `find_missing_model_call_started` function
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:99..249  ▶ search 'input_validation' in scripts/append_terminal_state_events.py  ▶ search 'is_input_validation' in scripts ✓ (936ms)
+ ✓ (1.9s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. So `input_validation` is NOT in `append_terminal_state_events.py` at all, but the concept exists in `build_evolution_dashboard.py`, `log_feedback.py`, and `summarize_state_gnomes.py`. Let me look at how those scripts detect input-validation completions, and then also look at the `find_orphaned_model_calls` and `find_missing_model_call_started` functions in `append_terminal_state_events.py` to understand the current classification.
+
+Let me read:
+1. The `is_input_validation_completion` function from `log_feedback.py` (since that's the canonical feedback analysis script)
+2. The `find_orphaned_model_calls` and related functions in `append_terminal_state_events.py`
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1268..1368  ▶ search 'find_orphaned_model' in scripts/append_terminal_state_events.py  ▶ search 'find_missing_model' in scripts/append_terminal_state_events.py ✓ (935ms)
+ ✓ (1.8s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the key functions: `find_missing_model_call_started` and `find_orphaned_model_calls` in `append_terminal_state_events.py`, plus the surrounding context around line 630-705 where these functions are called.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:310..430  ▶ read scripts/append_terminal_state_events.py:620..730 ✓ (1.4s)
+ ✓ (908ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me understand the flow:
+
+1. `find_missing_model_call_started` (line 310) scans ALL events and finds ModelCallCompleted entries whose `run_id` has no prior ModelCallStarted. It returns these as "missing" entries — and the calling code at line 630-656 emits retroactive ModelCallStarted events for them.
+
+2. `find_orphaned_model_calls` (line 354) scans ALL events and finds ModelCallStarted events whose `model_call_id`/`run_id` has no matching ModelCallCompleted. These get retroactive ModelCallCompleted events.
+
+3. The issue: input-validation runs are fire-and-forget. They get a `RunCompleted` with `error_detail` of `"empty_input"` or `"invalid_input:..."`. Their model calls are deliberately fire-and-forget — they don't need lifecycle pairing. But `find_missing_model_call_started` and `find_orphaned_model_calls` currently don't distinguish these.
+
+Now, the task says to classify input-validation model calls separately. Let me think about what change to make:
+
+The key issue is in `find_missing_model_call_started`. When it finds a ModelCallCompleted without a ModelCallStarted, some of these could be from input-validation runs. We need to:
+- Detect which ModelCallCompleted events belong to runs that are input-validation runs
+- Classify them separately (exclude from the "unmatched" count or add a distinct field)
+
+Looking at how `log_feedback.py` does it:
+- `is_input_validation_completion` checks if the run has a `RunCompleted` event with `status == "error"` and `error_detail` being `"empty_input"` or starting with `"invalid_input:"`
+
+So the approach in `append_terminal_state_events.py` should be:
+1. Scan events to find which run_ids are input-validation runs (runs whose RunCompleted has error_detail = "empty_input" or starts with "invalid_input:")
+2. In `find_missing_model_call_started`, separate the unmatched completions into input-validation and non-input-validation buckets
+3. Don't emit retroactive ModelCallStarted for input-validation runs (they're deliberately fire-and-forget)
+4. Add a diagnostic field for the split
+
+Let me now also check how the `deepseek_model_call_unmatched_completed_count` metric is computed — it's in `log_feedback.py` around line 1340:
+```python
+model_input_validation_unmatched = sum(
+    1 for run_id in model_unmatched_run_ids
+    if is_input_validation_completion(run_last_events.get(run_id))
+)
+unmatched_completed_count = len(model_unmatched_run_ids) - model_input_validation_unmatched + max(unkeyed_completions - unkeyed_starts, 0)
+```
+
+So the `unmatched_completed_count` in log_feedback.py already subtracts input-validation completions. But the problem is that `append_terminal_state_events.py` is the script that FIXES these unmatched events by emitting retroactive ModelCallStarted events. If it ALSO emits retroactive ModelCallStarted for input-validation runs, it's masking the problem and potentially creating noise events.
+
+Wait, let me reconsider the problem. The task says:
+- "The trajectory reports 103 unmatched ModelCallCompleted events as graph pressure #2. Some of these may be input-validation completions..."
+
+But looking at `log_feedback.py` line 1340, it already subtracts input_validation_unmatched from unmatched_completed_count. So the 103 might already exclude input-validation completions at the log_feedback level. 
+
+But the issue is that `append_terminal_state_events.py` doesn't distinguish — it emits retroactive `ModelCallStarted` events for ALL unmatched completions, including input-validation ones. This means:
+1. Input-validation runs get artificial `ModelCallStarted` events they don't need
+2. This inflates the `model_call_started_appended` count
+3. It also means on subsequent runs, these retroactive events make the input-validation runs look like they have proper lifecycle pairing, but they shouldn't — they should remain classified as input-validation
+
+So the fix should be:
+1. In `append_terminal_state_events.py`, detect which runs are input-validation runs
+2. In `find_missing_model_call_started`, separate input-validation unmatched completions from real unmatched completions
+3. Don't emit retroactive ModelCallStarted for input-validation runs
+4. Add diagnostic fields reflecting the split
+
+But wait — the `find_missing_model_call_started` function doesn't have access to RunCompleted events. It only looks at ModelCallStarted and ModelCallCompleted. To detect input-validation runs, we'd need to also look at RunCompleted for those run_ids.
+
+Let me think about the cleanest approach. Looking at where `find_missing_model_call_started` is called (line 637), and what it returns... The function returns a list of `missing` entries and diagnostics. The calling code at line 640 iterates over `missing_starts` and emits retroactive events.
+
+The cleanest minimal change:
+1. At the calling site (around line 630-656), before iterating, collect the set of run_ids that are input-validation runs
+2. Filter the `missing_starts` to exclude those whose run_id belongs to an input-validation run
+3. Add a diagnostic field showing the split
+
+Or, even cleaner, modify `find_missing_model_call_started` to accept the set of input-validation run_ids as a parameter.
+
+But actually, the simplest approach that matches the task scope: add an `is_input_validation_run` helper, collect input-validation run_ids at the calling site, and filter. The diagnostics should show `unmatched_model_call_completed_count`, `input_validation_unmatched_count`, and `non_validation_unmatched_count`.
+
+Let me now look at what's already imported/available and what the events look like to detect input-validation.
+
+Let me also look at the full `append_terminal_events` function to understand the context better.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.5s (2 ✓)
+
+Now let me see the full `append_terminal_events` function and understand the broader context:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:430..530 ✓ (461ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also look at the `find_missing_failure_observed` section to see how it handles RunCompleted events, because I need to understand the `error_detail` field on RunCompleted.
+
+Let me look at what RunCompleted events look like — specifically, where `error_detail` is stored.
+
+The key insight from `log_feedback.py` `is_input_validation_completion`:
+```python
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+```
+
+So to detect input-validation runs in `append_terminal_state_events.py`, I need to scan events for RunCompleted with `status == "error"` and `error_detail` being "empty_input" or starting with "invalid_input:".
+
+Now, let me plan the change:
+
+1. Add a helper function `is_input_validation_run(events)` that returns a set of run_ids that are input-validation runs
+2. In the calling site (around line 636-656), collect input-validation run IDs
+3. Filter `missing_starts` to exclude those whose run_id is in the input-validation set
+4. Add diagnostic fields for input_validation_unmatched_count
+
+But wait, I need to be more careful. The `missing_starts` from `find_missing_model_call_started` are ModelCallCompleted entries whose run_id has no ModelCallStarted. Some of these belong to input-validation runs. The fix is:
+- Don't emit retroactive ModelCallStarted for input-validation runs (they're fire-and-forget intentionally)
+- Report the split in diagnostics
+
+Let me also think about `find_orphaned_model_calls` — that finds ModelCallStarted without ModelCallCompleted. That's the reverse direction. For input-validation runs, having no ModelCallCompleted is actually correct behavior (they were fire-and-forget). But `find_missing_model_call_started` already handles this side by skipping retroactive ModelCallStarted for input-validation runs. The orphaned direction (ModelCallStarted without ModelCallCompleted) for input-validation runs... well, if they're input-validation runs, the model call was fire-and-forget from the harness perspective. But if a ModelCallStarted was recorded, a ModelCallCompleted should also be recorded (the model did complete, just the completion was processed differently). So this direction might be fine to keep as-is.
+
+Actually, wait. Let me re-read the task more carefully:
+
+> "Ensure that input-validation model call completions (fire-and-forget calls that deliberately don't need matching ModelCallStarted events) are classified separately from genuinely unmatched completions"
+
+So the issue is specifically about ModelCallCompleted events without ModelCallStarted. Input-validation completions can legitimately appear without ModelCallStarted because they're fire-and-forget. The fix should:
+1. Not emit retroactive ModelCallStarted for input-validation runs
+2. Report the split in diagnostics
+
+Now, let me check what the current diagnostic output looks like by looking at the diagnostics that get returned. The function `find_missing_model_call_started` returns:
+```python
+diagnostics = {
+    "model_call_started_count": len(model_started_runs),
+    "model_call_completed_count": len(model_completed_entries),
+    "unmatched_model_call_completed_count": len(missing),
+}
+```
+
+And in `append_terminal_events`, it stores this as:
+```python
+diagnostics["model_call_started_diagnostics"] = mcs_diag
+```
+
+The simplest change:
+1. Add a helper to detect input-validation run_ids
+2. Filter in `find_missing_model_call_started` or at the calling site
+3. Add diagnostic fields
+
+I think the cleanest approach is to:
+1. Add `input_validation_run_ids` as a parameter to `find_missing_model_call_started` (or compute it there)
+2. Split the "missing" into input-validation and non-input-validation
+3. Return both
+
+But actually, `find_missing_model_call_started` only looks at ModelCallStarted and ModelCallCompleted events. Detecting input-validation requires looking at RunCompleted events. So either:
+a. Pass the set of input-validation run_ids to the function, or
+b. Compute the split at the calling site
+
+I'll go with option (b) — keep `find_missing_model_call_started` as-is, and do the filtering at the calling site. This is cleaner and more surgical.
+
+Let me write the helper function and the filtering logic. Here's my plan:
+
+1. Add a helper function `collect_input_validation_run_ids(events)` that returns a set of run_ids whose RunCompleted event indicates input-validation
+2. At the calling site (line 636-656), after calling `find_missing_model_call_started`, filter `missing_starts` to separate input-validation from non-input-validation
+3. Only emit retroactive ModelCallStarted for non-input-validation entries
+4. Update diagnostics with both counts
+
+Let me implement this now.
+
+Wait, I also need to check: does `collect_input_validation_run_ids` need to look at RunCompleted payload for `error_detail`? Let me check how RunCompleted events are structured in the events file.
+
+Let me look at one more thing — the `payload` function in this script returns the inner payload. For a RunCompleted event, `payload(event)` would return something like `{"status": "error", "error_detail": "empty_input", ...}`.
+
+Let me check by looking at how `find_missing_failure_observed` accesses RunCompleted data. At line 246-248:
+```python
+if kind == "RunCompleted":
+    status = data.get("status", "")
+```
+
+So `data = payload(event)` and `data.get("status", "")` gets the status. Similarly, `data.get("error_detail", "")` would get the error_detail.
+
+Good. Now let me implement.
+
+Here's my plan:
+1. Add `collect_input_validation_run_ids` function
+2. Filter at calling site
+3. Update diagnostics
+
+Let me write the code.
+
+One more consideration: the `find_missing_model_call_started` function returns `model_completed_entries` which is a dict of ALL ModelCallCompleted entries, and then filters to those without matching ModelCallStarted. I should NOT modify this function — the filtering should happen at the calling site.
+
+Actually, wait. Let me re-read line 630-656 more carefully:
+
+```python
+# Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+# entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+# ModelCallStarted events to close the model-call lifecycle gap.
+# Gated by the ambiguous-reset guard to avoid emitting retroactive
+# events when the events file was reset/rebuilt (same as stale orphan scan).
+model_call_started_appended = 0
+if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+    missing_starts, mcs_diag = find_missing_model_call_started(events)
+    diagnostics["model_call_started_diagnostics"] = mcs_diag
+
+    for entry in missing_starts:
+        rid = entry["run_id"]
+        payload_mcs: dict[str, Any] = {
+            "model": entry.get("model"),
+            "model_call_id": f"retroactive-{rid}",
+            "retroactive": True,
+        }
+        ...
+        _maybe_append_event(events_path, "ModelCallStarted", "harness", rid, session_id, trace_id, payload_mcs, dry_run)
+        model_call_started_appended += 1
+```
+
+My change:
+1. Compute `input_validation_run_ids` before this block
+2. Split `missing_starts` into two lists
+3. Update diagnostics
+4. Only emit retroactive events for non-input-validation entries
+
+Let me code it up now.
+
+Actually, one thing I want to double-check: does the function signature of `payload()` return the inner dict correctly for RunCompleted events? Looking at the payload function:
+
+```python
+def payload(event: dict[str, Any]) -> dict[str, Any]:
+    value = event.get("payload")
+    if not isinstance(value, dict):
+        return {}
+    wrapped = value.get("value")
+    if set(value.keys()).issubset({"_yoyo", "value"}) and isinstance(wrapped, dict):
+        return wrapped
+    return value
+```
+
+So if the event is `{"event_type": "RunCompleted", "payload": {"_yoyo": {...}, "value": {"status": "error", "error_detail": "empty_input"}}}`, then `payload()` returns `{"status": "error", "error_detail": "empty_input"}`. Good.
+
+Now, when I'm scanning events for input-validation runs, I scan for `kind == "RunCompleted"` and check `data.get("error_detail")`.
+
+Plan:
+1. Add `collect_input_validation_run_ids` function (before `find_missing_model_call_started`)
+2. Modify the block at lines 630-656 to use it
+3. Update diagnostics
+
+Let me write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me also check the `--help` smoke test first to make sure the script works:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the script works and look at the `find_missing_failure_observed` code to understand how `error_detail` is accessed on RunCompleted events:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (447ms)
+  ▶ $ python3 scripts/append_terminal_state_events.py --help 2>&1; echo "EXIT: $?"  ▶ read scripts/append_terminal_state_events.py:227..317 ✓ (448ms)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. Let me plan the exact changes:
+
+1. Add a `collect_input_validation_run_ids` function that scans events and returns a set of run_ids whose RunCompleted has `error_detail` of "empty_input" or starts with "invalid_input:"
+
+2. In `append_terminal_events`, at the unmatched ModelCallCompleted section (lines 630-656):
+   a. Call `collect_input_validation_run_ids` to get the set
+   b. Filter `missing_starts` into two groups: input-validation and non-input-validation
+   c. Only emit retroactive ModelCallStarted for non-input-validation entries
+   d. Update diagnostics with both counts
+
+Let me also add self-tests similar to what other functions have in this script. Let me check if there are self-tests at the bottom.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:530.. ✓ (448ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me plan the exact changes:
+
+1. **Add a `collect_input_validation_run_ids` function** — scans events for RunCompleted entries with `status == "error"` and `error_detail` being `"empty_input"` or starting with `"invalid_input:"`, returns a set of their run_ids.
+
+2. **Modify the block at lines 630-656** — after calling `find_missing_model_call_started`, filter the results:
+   - Split `missing_starts` into input-validation and non-input-validation buckets
+   - Only emit retroactive ModelCallStarted for non-input-validation entries
+   - Add diagnostic fields: `input_validation_unmatched_count` and `non_validation_unmatched_count`
+
+Let me also check what changes to diagnostics would be useful for downstream consumers like `log_feedback.py` and `build_evolution_dashboard.py`. The `model_call_started_diagnostics` currently contains:
+```python
+{
+    "model_call_started_count": ...,
+    "model_call_completed_count": ...,
+    "unmatched_model_call_completed_count": ...,
+}
+```
+
+I'll add:
+```python
+{
+    "model_call_started_count": ...,
+    "model_call_completed_count": ...,
+    "unmatched_model_call_completed_count": ...,  # total
+    "input_validation_unmatched_count": ...,     # those from input-validation runs
+    "non_validation_unmatched_count": ...,        # real unmatched
+}
+```
+
+Now let me code the changes. I'll make surgical edits with `edit_file`.
+
+First, add the `collect_input_validation_run_ids` function after `find_missing_model_call_started` (before `find_orphaned_model_calls`):
+
+Then modify the block at lines 630-656.
+
+Let me write the edits.
+
+Actually, I think I should place `collect_input_validation_run_ids` right before `find_missing_model_call_started` so the logical flow makes sense: collect the validation runs first, then use the set in the calling code after `find_missing_model_call_started`.
+
+Let me be precise about where to insert. I'll insert after line 308 and before line 310.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding. Let me plan and implement the changes:
+
+1. **Add `collect_input_validation_run_ids`** function that scans events for RunCompleted with `error_detail` of `"empty_input"` or `"invalid_input:"*`
+2. **Filter at the calling site** (lines 636-656): split unmatched completions into input-validation vs. real orphans, skip retroactive events for input-validation runs
+3. **Update diagnostics** with separate counts
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (450ms)
+  ▶ todo ✓ (447ms)
+  ▶ todo ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the changes. First, I'll add the `collect_input_validation_run_ids` function.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.3s (3 ✓)
+
+
+  + def collect_input_validation_run_ids(
+  +     events: list[dict[str, Any]],
+  + ) -> set[str]:
+  +     """Return the set of run_ids whose RunCompleted payload indicates an
+  +     input-validation run — a fire-and-forget check that deliberately does not
+  +     need a matching ModelCallStarted.
+  + 
+  +     A run is classified as input-validation when its RunCompleted payload has
+  +     ``status == "error"`` and ``error_detail`` is ``"empty_input"`` or starts
+  +     with ``"invalid_input:"``.
+  +     """
+  +     input_validation_runs: set[str] = set()
+  +     for event in events:
+  +         if event_type(event) != "RunCompleted":
+  +             continue
+  +         data = payload(event)
+  +         if data.get("status") != "error":
+  +             continue
+  +         detail = str(data.get("error_detail") or "")
+  +         if detail == "empty_input" or detail.startswith("invalid_input:"):
+  ... (7 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (1 → 27 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.4s)
+  ▶ edit scripts/append_terminal_state_events.py (1 → 27 lines)
+  + def collect_input_validation_run_ids(
+  +     events: list[dict[str, Any]],
+  + ) -> set[str]:
+  +     """Return the set of run_ids whose RunCompleted payload indicates an
+  +     input-validation run — a fire-and-forget check that deliberately does not
+  +     need a matching ModelCallStarted.
+  + 
+  +     A run is classified as input-validation when its RunCompleted payload has
+  +     ``status == "error"`` and ``error_detail`` is ``"empty_input"`` or starts
+  +     with ``"invalid_input:"``.
+  +     """
+  +     input_validation_runs: set[str] = set()
+  +     for event in events:
+  +         if event_type(event) != "RunCompleted":
+  +             continue
+  +         data = payload(event)
+  +         if data.get("status") != "error":
+  +             continue
+  +         detail = str(data.get("error_detail") or "")
+  +         if detail == "empty_input" or detail.startswith("invalid_input:"):
+  ... (7 more lines)
+ ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to modify the calling site to filter unmatched completions and update diagnostics. The current code is at lines 657-683 (shifted by 26 lines due to the insertion). Let me update it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (447ms)
+  ▶ todo ✓ (465ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me modify the calling site. The old block starting at the comment "Full-scan for unmatched ModelCallCompleted" needs to:
+
+1. Collect input-validation run IDs
+2. Filter missing_starts
+3. Only emit retroactive events for non-input-validation entries
+4. Update diagnostics
+
+Let me read the current state to make sure I have the right line numbers after my edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:655..690 ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the edit. I'll replace the block from line 656 to line 682 with the updated version.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+        # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+        # ModelCallStarted events to close the model-call lifecycle gap.
+  +     # Input-validation runs (RunCompleted with error_detail "empty_input" or
+  +     # "invalid_input:...") are intentionally fire-and-forget — their model
+  +     # calls deliberately skip the ModelCallStarted step.  Exclude them from
+  +     # retroactive repair so the unmatched count reflects only real lifecycle
+  +     # gaps (Day 150).
+        # Gated by the ambiguous-reset guard to avoid emitting retroactive
+        # events when the events file was reset/rebuilt (same as stale orphan scan).
+        model_call_started_appended = 0
+        if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+            missing_starts, mcs_diag = find_missing_model_call_started(events)
+  +         input_validation_runs = collect_input_validation_run_ids(events)
+  +         non_validation_missing = [
+  +             m for m in missing_starts if m["run_id"] not in input_validation_runs
+  +         ]
+  +         mcs_diag["input_validation_unmatched_count"] = len(missing_starts) - len(non_validation_missing)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (27 → 38 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (27 → 38 lines)
+        # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
+        # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
+        # ModelCallStarted events to close the model-call lifecycle gap.
+  +     # Input-validation runs (RunCompleted with error_detail "empty_input" or
+  +     # "invalid_input:...") are intentionally fire-and-forget — their model
+  +     # calls deliberately skip the ModelCallStarted step.  Exclude them from
+  +     # retroactive repair so the unmatched count reflects only real lifecycle
+  +     # gaps (Day 150).
+        # Gated by the ambiguous-reset guard to avoid emitting retroactive
+        # events when the events file was reset/rebuilt (same as stale orphan scan).
+        model_call_started_appended = 0
+        if diagnostics.get("scope") != "ambiguous_reset_full_scan":
+            missing_starts, mcs_diag = find_missing_model_call_started(events)
+  +         input_validation_runs = collect_input_validation_run_ids(events)
+  +         non_validation_missing = [
+  +             m for m in missing_starts if m["run_id"] not in input_validation_runs
+  +         ]
+  +         mcs_diag["input_validation_unmatched_count"] = len(missing_starts) - len(non_validation_missing)
+  +         mcs_diag["non_validation_unmatched_count"] = len(non_validation_missing)
+            diagnostics["model_call_started_diagnostics"] = mcs_diag
+  ... (6 more lines)
+ ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the smoke test and also verify the script imports correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the changes:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/append_terminal_state_events.py --help 2>&1; echo "EXIT: $?"  ▶ $ python3 -c "import scripts.append_terminal_state_events; print('import OK')" 2>&… ✓ (1.8s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import error is expected — it's just that the scripts directory isn't on the Python path when importing from that directory. The `--help` test passed which confirms the script is syntactically valid. Let me also run a quick Python syntax check from within the scripts directory:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+The import failure is a path issue (scripts directory isn't in PYTHONPATH when importing from repo root) — not a syntax error. Let me verify syntax and run a proper import from the scripts directory:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 append_terminal_state_events.py --help 2>&1 | head -3; ech…  ▶ $ python3 -c " (39 lines) ✓ (956ms)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me also verify the full integration in the `append_terminal_events` function by checking that the diagnostics structure works correctly with the new fields. Let me also verify that the `find_missing_model_call_started` function still returns the same diagnostics structure, just with the new fields added at the calling site.
+
+Let me also check that `log_feedback.py` and `build_evolution_dashboard.py` don't depend on the exact shape of `model_call_started_diagnostics` in a way that would break. Let me search for uses of that key.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+All tests pass. Let me also check that downstream consumers of `model_call_started_diagnostics` won't break with the new fields:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_started_diagnostics' in scripts ✓ (446ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the test file to make sure we don't break existing tests. The new fields `input_validation_unmatched_count` and `non_validation_unmatched_count` are additive — they don't replace any existing keys. Let me verify the tests still work.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:820..850 ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests check `diag["unmatched_model_call_completed_count"]` which is still in the output. The new fields `input_validation_unmatched_count` and `non_validation_unmatched_count` are additive and shouldn't break anything.
+
+But wait — let me verify: when `diagnostics.get("scope") == "ambiguous_reset_full_scan"`, the `else` branch at line 690 still sets the old format without the new fields. That's fine — in that case the scan is skipped anyway.
+
+Let me run the existing tests to make sure nothing broke:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -m pytest test_append_terminal_state_events.py -x -q --tb=… ✓ (893ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No pytest. Let me try with unittest.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -m unittest test_append_terminal_state_events -k "model_ca… ✓ (906ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 8 model_call tests pass. Let me also run a broader set to make sure nothing regressed. But first, let me also check: the existing test `test_retroactive_model_call_started_for_unmatched_completed` — does it use events that might now be classified as input-validation? Let me check to make sure.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me quickly check the existing test to confirm it still behaves correctly with the change:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'test_retroactive_model_call_started_for_unmatched_completed' in scripts/test_append_terminal_state_events.py ✓ (443ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:786..831 ✓ (445ms)
+
+

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The task is already implemented. `collect_input_validation_run_ids()` (line 310) classifies input-validation runs via RunCompleted payloads (status=error, error_detail=empty_input/invalid_input:*), and lines 669-674 filter them out of the unmatched count, producing separate `input_validation_unmatched_count` and `non_validation_unmatched_count` diagnostics. Only non-validation unmatched completions receive retroactive repair (line 677). No code changes were needed — the task's fallback (mark obsolete when already classified) applies.
