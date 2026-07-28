@@ -1,0 +1,404 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The planning phase needs me to produce task files in session_plan/. Let me start by checking what already exists there and creating the directory.
+
+The assessment provides clear evidence:
+1. **Dominant failure mode**: 2/3 tasks obsolete — the plan phase is selecting already-done tasks. The preseed task picker needs better completion-signal detection.
+2. **Issue #135** is an agent-self issue (reverted Day 144) about breaking the self-referential planning fallback — directly addresses the obsolete task problem.
+3. **Trajectory pressure**: task_obsolete_count=2, task_success_rate=0.333, task_verification_rate=0.333
+4. **Graph pressure**: "Replace stale or already-satisfied tasks" at rank 5, "Raise verified task success rate" at rank 1
+
+Let me first check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "DIRECTORY_MISSING" ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md from the preseed. Let me read it to see what it contains.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the preseed task_01.md is about lifecycle gaps. But looking at the evidence:
+
+1. Day 150 (10:36) session already landed a fix for input-validation classification in `scripts/append_terminal_state_events.py` — that's exactly what the preseed task is asking for ("Pre-agent input-validation exits stay classified separately from non-validation unmatched completions").
+
+2. The assessment says this: "Day 150 (10:36) — Task 3 landed: 38-line fix in scripts/append_terminal_state_events.py to classify input-validation model calls separately from genuinely unmatched lifecycle completions."
+
+So the seed task is ALREADY DONE. The assessment confirms it. This is exactly the obsolete-task pattern the trajectory is flagging: `task_obsolete_count=2`.
+
+I should replace this with an evidence-backed task. The strongest signal from the trajectory and assessment is:
+
+1. **Planning precision / obsolete task selection** (highest impact): The dominant failure mode is 2/3 tasks being obsolete. The preseed task picker (`scripts/preseed_session_plan.py`) is seeding tasks the implementation correctly identifies as already done.
+
+2. **Issue #135**: Breaking the self-referential planning fallback — directly related to #1 above.
+
+Let me check whether issue #135 from the agent-self backlog has more current evidence. The assessment says the contradiction detector still misses completion signals. And the Day 115 learning (from the self-wisdom section): "Fallback self-reference turns 'nothing broken' into busywork you can't refuse."
+
+But wait - the current session has a clear evidence problem: the seed task_01 is obsolete (already done in the 10:36 session). This means the preseed task picker is still selecting obsolete tasks — exactly the #1 trajectory pressure point.
+
+Let me plan my tasks:
+
+**Task 1**: Replace the obsolete seed task with a real one. The highest-evidence task is improving the preseed contradiction detector so it recognizes when its own output is obsolete. This directly addresses `task_obsolete_count=2`, the #1 trajectory pressure.
+
+**Task 2**: Issue #135 — Break self-referential planning fallback. This is a previously reverted task that's directly related to the planning precision problem. But the previous attempt timed out on evaluator timeout, not on wrong code. The assessment says the evaluator timeout is infrastructure, not code-quality.
+
+**Task 3**: Maybe the state graph hotspot kind filter normalization (from the assessment bugs list) — but that's LOW priority.
+
+Let me think about what's most impactful:
+
+The assessment clearly shows the seed task (task_01.md) is already done — the 10:36 session landed the input-validation classification fix. So the preseed picker's contradiction detector failed AGAIN. This is the same pattern: 2/3 tasks obsolete.
+
+I should write task_01_obsolete.md explaining the contradiction, then write a new task_01.md that addresses the preseed contradiction detector itself. This is the core planning-precision fix.
+
+Then task_02.md addressing issue #135 (self-referential fallback) — this is related work that also improves planning precision.
+
+Let me check what the preseed contradiction detector currently looks like to understand the gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the contradiction detector and the task choosing logic to understand the gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:702..822 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to understand the contradiction detector's `_line_shows_resolution` and `_line_shows_obsolete_or_reverted` functions. These are the ones that failed to detect that the seed task was already done.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _line_shows_resolution' in scripts/preseed_session_plan.py  ▶ search 'def _line_shows_obsolete_or_reverted' in scripts/preseed_session_plan.py ✓ (2.3s)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:498..558 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the mechanism. The contradiction detector:
+1. Checks if task keys appear in the line and the line has a "Day NNN" prefix → resolution
+2. Checks if line has obsolete/reverted markers AND matches task keys or title words
+
+The problem: The seed task has `files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` and `keys: ["deepseek_model_call_incomplete_count", ...]` from the LIFE_CYCLE_TASK definition. But the assessment's "Recent Changes" section describes Day 150's fix in prose: "38-line fix in scripts/append_terminal_state_events.py to classify input-validation model calls separately from genuinely unmatched lifecycle completions."
+
+The contradiction detector should have matched this but it didn't. Let me look at what keys the lifecycle task has.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'LIFECYCLE_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the task definition to understand what keys it has.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:14..54 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the TASKS definition to see the lifecycle task and its keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'LIFECYCLE_TASK_TITLE.*:' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'Close yyds state and model lifecycle gaps' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the TASKS constant to see the task definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search '^TASKS\s*=' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the task definition differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search '"keys".*LIFECYCLE_TASK_TITLE' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'LIFECYCLE_TASK_TITLE.*keys' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the TASKS dictionary/list definition differently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'TASKS\|"title".*Close\|"keys".*lifecycle\|state_run_incomplete\|LIFECYC…📦 RTK detected — using compressed output (disable with --no-rtk)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the TASKS definition starting at line 62.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:62..262 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can now see the TASKS list. Let me find the lifecycle gap task definition. It should be the one with LIFECYCLE_TASK_TITLE.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '"Close yyds state and model lifecycle gaps"' scripts/preseed_session_pl… ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lifecycle task must be defined further down in the TASKS list. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'LIFECYCLE_TASK_TITLE\|"title".*lifecycle\|lifecycle.*gap\|"keys".*state… ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the lifecycle task definition at line 321.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:310..345 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the complete picture. The lifecycle task is defined with keys like `state_run_incomplete_count`, `deepseek_model_call_incomplete_count`, etc. The contradiction detector checks if assessment lines contain these keys AND have matching resolution signals.
+
+The assessment's Recent Changes section says:
+```
+Day 150 (10:36) — 1/3 tasks verified, 2 obsolete:
+- Task 3 landed: 38-line fix in scripts/append_terminal_state_events.py to classify input-validation model calls separately from genuinely unmatched lifecycle completions.
+```
+
+Now the task keys include `deepseek_model_call_incomplete_count` and `deepseek_model_call_unmatched_completed_count`. The line mentions "input-validation model calls" which should be picked up as related to model lifecycle. But the contradiction detector looks for exact key strings in the line.
+
+Wait, the task has `reject_keys` including "input-validation-only unmatched" and "pre-agent input-validation exit". The `_line_shows_resolution` function checks if the line has ANY task key AND either a "Day NNN" prefix or a resolution signal. Let me trace through:
+
+- Task keys: "state lifecycle unhealthy", "runstarted", "runcompleted", "modelcallstarted", "modelcallcompleted"
+- The assessment line mentions "model calls" but not "modelcallcompleted" or "modelcallstarted" exactly
+- But wait, the key is "modelcallstarted" — does the line contain "modelcallstarted"? The line says "input-validation model calls" which contains "modelcall" as a substring... 
+
+Actually wait, the task keys are: ("state lifecycle unhealthy", "runstarted", "runcompleted", "modelcallstarted", "modelcallcompleted"). The assessment line says: "classify input-validation model calls separately from genuinely unmatched lifecycle completions." Does the line contain any of these keys?
+
+- "state lifecycle unhealthy" — no
+- "runstarted" — no
+- "runcompleted" — no  
+- "modelcallstarted" — no
+- "modelcallcompleted" — no
+
+So the contradiction detector failed because none of the task keys appeared in the assessment text describing the fix. The fix was described in natural language ("classify input-validation model calls") rather than using the structured metric names.
+
+BUT wait - the `reject_keys` are: "input-validation exits without runstarted only", "input-validation-only unmatched", "pre-agent input-validation exit". These are used to REJECT the task, not to detect contradiction. Let me check how `reject_keys` works.
+
+Let me search for how `reject_keys` is used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'reject_keys' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how reject_keys is used at line 946.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:930..990 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow:
+
+1. At line 939: task keys must appear in the current evidence text to be a candidate
+2. At line 946: if reject_keys appear, skip
+3. At line 956-962: lifecycle task special handling
+4. At line 984-988: contradiction check for each candidate
+
+The lifecycle task at line 956: if `lifecycle_metrics_present` is True (meaning the evidence text has lifecycle metric keys in numeric form like `deepseek_model_call_incomplete_count=1`), it checks `has_actionable_lifecycle_gap`. If no actionable gap, it's skipped. But if it passes, it's added to candidates, and THEN contradiction-checked.
+
+Now let me check what `has_actionable_lifecycle_gap` returns. It checks if any of the ACTIONABLE_LIFECYCLE_METRICS have a value > 0. These are: `state_run_incomplete_count`, `state_run_unmatched_non_validation_completed_count`, `deepseek_model_call_incomplete_count`, `deepseek_model_call_unmatched_completed_count`.
+
+Now, the assessment's current evidence text (from `current_evidence_text`) includes trajectory data. Let me check what that function does.
+
+But more importantly, the key question is: does the trajectory evidence still show non-zero lifecycle metrics even after Day 150's (10:36) fix? The answer seems to be YES because the trajectory shows:
+- `deepseek_model_call_unmatched_completed_count` is still high (230) from historical events
+- `state_run_incomplete_count` may still have residual values
+
+But the contradiction detector at line 984 checks the assessment text. The assessment says "Day 150 (10:36) — Task 3 landed: 38-line fix in scripts/append_terminal_state_events.py to classify input-validation model calls separately from genuinely unmatched lifecycle completions."
+
+Now, in `check_task_contradiction`, it calls `_line_shows_resolution` which checks if the line has a task key AND either a "Day NNN" prefix or resolution signal. The task keys are: ("state lifecycle unhealthy", "runstarted", "runcompleted", "modelcallstarted", "modelcallcompleted").
+
+The assessment line: "Day 150 (10:36) — 1/3 tasks verified, 2 obsolete:" and "Task 3 landed: 38-line fix in scripts/append_terminal_state_events.py to classify input-validation model calls separately from genuinely unmatched lifecycle completions."
+
+Does the first line contain any task key? "Day 150 (10:36) — 1/3 tasks verified, 2 obsolete:" — no task key substring.
+
+Does the second line contain any task key? "classify input-validation model calls separately from genuinely unmatched lifecycle completions." Contains "model" but not "modelcallstarted" or "modelcallcompleted". It doesn't have any task key.
+
+So `_line_shows_resolution` returns False because no line has both a task key AND a "Day NNN" prefix.
+
+Then `_line_shows_obsolete_or_reverted` checks for obsolete/reverted markers. The assessment line doesn't say "marked obsolete" or "obsolete_already_satisfied" or any of those markers for Task 3 specifically - Task 3 was "verified", not obsolete.
+
+So the contradiction detector correctly doesn't find a contradiction in the assessment text — because the assessment doesn't explicitly say the lifecycle task is already done. But in reality, the lifecycle task's objective ("Pre-agent input-validation exits stay classified separately from non-validation unmatched completions") was ALREADY achieved by Day 150's Task 3.
+
+This is the core problem: the contradiction detector relies on keyword matching between task keys and assessment text, but the assessment describes fixes in prose that doesn't use the same structured metric names.
+
+Now I need to plan tasks. Let me think about what to do:
+
+**Task 1 (replaces obsolete seed task)**: The seed task_01.md is about lifecycle gaps, but the 10:36 session already fixed the input-validation classification gap (the main actionable lifecycle issue). The trajectory still shows `deepseek_model_call_unmatched_completed_count` but that's historical data, not a current actionable gap. I should mark task_01 as obsolete and create a new task.
+
+**The highest evidence task**: The assessment says the planning phase selects already-satisfied tasks — the preseed contradiction detector needs better completion-signal detection. This is the `task_obsolete_count=2` problem from the trajectory.
+
+But what specific fix? Let me think about what's achievable in 20 minutes:
+
+Option A: Add more task keys to the lifecycle task so the contradiction detector catches when input-validation classification fixes are described in prose. But that's fragile — we'd be playing whack-a-mole with prose patterns.
+
+Option B: Add a `_check_code_already_exists` check that detects when the files the task would modify already contain the fix. But for script-level tasks, this is harder to verify.
+
+Option C: Enhance the contradiction detector's prose understanding in `_line_shows_obsolete_or_reverted` to also match on file paths mentioned in the assessment's "Recent Changes" section. If the assessment says "38-line fix in scripts/append_terminal_state_events.py" and the task's files include that path, and the fix description matches the task objective domain, flag as contradicted.
+
+Actually, looking more carefully at the contradiction detector — there's a `_check_code_already_exists` function at line 718. Let me check what it does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _check_code_already_exists' in scripts/preseed_session_plan.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also look at how `render_task` works and how the seed task_01.md was generated. But I've spent enough time investigating. Let me now plan the actual tasks.
+
+Key decisions:
+
+1. **Seed task_01.md is obsolete**: The 10:36 session already landed the input-validation classification fix in `scripts/append_terminal_state_events.py`. I need to write `task_01_obsolete.md` explaining this.
+
+2. **New task_01.md**: The highest-impact, most-evidence-backed task is improving the preseed contradiction detector in `scripts/preseed_session_plan.py` so it doesn't seed already-completed lifecycle tasks when the assessment describes the fix in prose.
+
+3. **task_02.md**: Issue #135 — Break self-referential planning fallback. This is a previously reverted task. But looking at the assessment evidence more carefully, the 10:36 session already had 2/3 tasks correctly identified as obsolete by the implementation agent. The preseed picker seeded the lifecycle task which was already done. The question is: would fixing the self-referential fallback help?
+
+   Actually, the trajectory shows `task_analysis_only_attempt_count` is not the issue this session. The issue is `task_obsolete_count=2`. The self-referential fallback task (#135) is about when zero candidates match and the fallback returns a self-referential task. But in the current session, the lifecycle task DID match (as a candidate) — it just shouldn't have because the fix was already done.
+
+   So #135 is related but addresses a different failure mode (no candidates at all vs. stale candidates). Let me reconsider.
+
+   Actually wait — let me re-read the trajectory. The 10:36 session had 3 tasks, 1 verified, 2 obsolete. The current session's seed task (task_01.md) is also a lifecycle task that's obsolete. So the same pattern is repeating: the preseed picker selects a lifecycle task that's already done.
+
+   The fix should be: make the contradiction detector recognize when the assessment describes a recent fix in the same files/domain as the candidate task. This is a focused ~20-30 line change to `scripts/preseed_session_plan.py`.
+
+4. **task_02.md**: The state graph hotspot kind filter mismatch ("--kind failure" not matching). But this is LOW priority per the assessment. And it's cosmetic.
+
+Let me think about what tasks maximize impact:
+
+The #1 trajectory pressure is `task_success_rate=0.3333` with dominant cause `task_obsolete_count=2`. The highest-impact thing I can do is prevent the next session from getting another obsolete seed task. That means fixing the contradiction detector.
+
+But wait — can I also make the planning phase itself (i.e., this phase) recognize the seed task is obsolete? The planning instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+So writing task_01_obsolete.md explaining the contradiction, then creating a new task_01.md for the contradiction-detector fix.
+
+For task_02.md: Looking at the trajectory graph pressure more carefully:
+
+Rank 1: "Raise verified task success rate" — dominant failure: task_obsolete_count=2
+Rank 2: "Make source-edit outcomes land or explain reverts" — task_unlanded_source_count=1
+Rank 3: "Require strict verifier evidence for tasks" — task_verification_rate=0.3333
+Rank 4: "Bound failing shell commands before retrying" — bash_tool_error=3
+Rank 5: "Replace stale or already-satisfied tasks" — task_obsolete_count=2
+
+Ranks 1 and 5 are the same underlying issue (obsolete tasks). Rank 2 is about source edits not landing. Rank 4 is about bash reliability.
+
+For a third task (task_03.md), I could address:
+- The source-edit landing gap (rank 2): `task_unlanded_source_count=1`. This could be a fix in `scripts/log_feedback.py` or `scripts/evolve.sh` — but `evolve.sh` is protected. So maybe `scripts/log_feedback.py`.
+- Actually, `task_unlanded_source_count=1` likely comes from the 10:36 session — Task 3 touched `scripts/append_terminal_state_events.py` which is a script file, not a `src/*.rs` file. The "source" here might mean Rust source vs script. Let me check...
+
+Actually, looking at the assessment more carefully, it says "Tasks 1 and 2 were marked obsolete_already_satisfied — the implementation correctly identified they were already done." and "Task 3 landed: 38-line fix in scripts/append_terminal_state_events.py". So the 1 verified task was a script edit. The `task_unlanded_source_count=1` might refer to a task from a previous session that touched `src/*.rs` but the edit wasn't committed.
+
+Hmm, but this is hard to trace without more evidence. Let me focus on the clear, high-signal tasks.
+
+OK, my plan:
+
+**task_01_obsolete.md**: Explain that the seed lifecycle task is already done (Day 150 10:36 session fixed the input-validation classification).
+
+**task_01.md (new)**: Fix the preseed contradiction detector to detect when the assessment's Recent Changes describes a fix in the same files/domain as a candidate task, using file-path matching as an additional signal.
+
+**task_02.md**: Issue #135 — Break self-referential planning fallback. The assessment notes this was reverted due to evaluator timeout (infrastructure), not wrong code. The fix is well-scoped (~5-10 lines) and the assessment confirms the infrastructure is in place. The task should be made smaller than the previous attempt to avoid timeout.
+
+Actually wait, let me reconsider. The preseed contradiction detector fix (task_01) directly addresses `task_obsolete_count`. Issue #135 (self-referential fallback) addresses `task_analysis_only_attempt_count` — a different failure mode. The trajectory currently shows:
+- `task_obsolete_count=2` (active)
+- `task_analysis_only_attempt_count` is not mentioned as active in this session's evidence
+
+So the preseed contradiction detector fix is more evidence-backed for THIS session. Issue #135 may still be valuable but the evidence isn't as strong right now.
+
+For task_03: I could address the bash tool errors (`bash_tool_error=3`). But that's a generic improvement without strong current evidence of a specific reproducible failure. The trajectory says "prefer bounded commands with explicit paths and inspect exit output" — this is general advice, not a specific bug.
+
+Let me go with 2 tasks:
+
+**task_01.md**: Fix preseed contradiction detector to use file-path matching as an additional signal (addresses `task_obsolete_count=2`).
+
+**task_02.md**: A smaller, focused version of Issue #135 — break the self-referential planning fallback (addresses `task_analysis_only_attempt_count`).
+
+These are both in `scripts/preseed_session_plan.py` and both directly address planning precision, which is the dominant failure mode.
+
+Wait, but both tasks touch the same file. Can I make them both fit? Let me think about what each task actually changes:
+
+Task 1: Change `check_task_contradiction()` and/or `_line_shows_obsolete_or_reverted()` to also match on file paths from the assessment's Recent Changes section.
+
+Task 2: Change `choose_task()` no-candidates fallback to use `_healthy_codebase_fallback()` when `analysis_only_active` is True.
+
+These are different functions in the same file. They could be done as separate tasks (different functions, different test assertions).
+
+But wait — if task 1 and task 2 both touch the same file, then task 2's implementation might conflict with task 1's. However, since they're different functions, a careful implementation agent can handle this.
+
+Actually, let me reconsider. The preseed task picker works by scanning the assessment and trajectory for metric keys. For this session, the trajectory says:
+- `task_obsolete_count=2` from the 10:36 session
+
+But the current session's assessment also describes the 10:36 fix. So the lifecycle task is obsolete because the fix is already in. The contradiction detector should have caught this.
+
+The key insight: the contradiction detector checks if the assessment text contains a line with both a task key AND a "Day NNN" prefix. The lifecycle task's keys are metric names like `modelcallcompleted` which don't appear in the prose description of the fix. If I add more descriptive keys like `"input-validation model calls"` or `"classify input-validation"` to the task, the contradiction detector would catch it.
+
+But that's fragile. A better approach: also check if the Recent Changes section mentions a fix in any of the task's files with resolution language. If the assessment says "38-line fix in scripts/append_terminal_state_events.py" and the task's files include that path, that's strong evidence the task domain may already be addressed.
+
+OK, let me finalize and write the task files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. The seed task_01.md is about lifecycle gaps, but the Day 150 (10:36) session already landed the exact fix — input-validation classification in `scripts/append_terminal_state_events.py`. The preseed contradiction detector missed this because the assessment describes the fix in prose ("classify input-validation model calls") while the task's keys are structured metric names (`modelcallcompleted`, `modelcallstarted`) that don't appear in that prose.
+
+This is the `task_obsolete_count=2` pattern in action — the #1 trajectory pressure point. Let me write the plan.
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.2s)
+  ▶ todo ✓ (1.2s)
+  ▶ todo ✓ (1.2s)
+  ▶ todo ✓ (1.2s)
+  4 tools completed in 8.2s (4 ✓)
+
+
