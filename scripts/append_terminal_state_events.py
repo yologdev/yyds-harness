@@ -307,6 +307,32 @@ def find_runs_with_failure_observed_no_completion(
     return missing, diagnostics
 
 
+def collect_input_validation_run_ids(
+    events: list[dict[str, Any]],
+) -> set[str]:
+    """Return the set of run_ids whose RunCompleted payload indicates an
+    input-validation run — a fire-and-forget check that deliberately does not
+    need a matching ModelCallStarted.
+
+    A run is classified as input-validation when its RunCompleted payload has
+    ``status == "error"`` and ``error_detail`` is ``"empty_input"`` or starts
+    with ``"invalid_input:"``.
+    """
+    input_validation_runs: set[str] = set()
+    for event in events:
+        if event_type(event) != "RunCompleted":
+            continue
+        data = payload(event)
+        if data.get("status") != "error":
+            continue
+        detail = str(data.get("error_detail") or "")
+        if detail == "empty_input" or detail.startswith("invalid_input:"):
+            rid = run_id(event, data)
+            if rid:
+                input_validation_runs.add(rid)
+    return input_validation_runs
+
+
 def find_missing_model_call_started(
     events: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -630,14 +656,25 @@ def append_terminal_events(
     # Full-scan for unmatched ModelCallCompleted: find any ModelCallCompleted
     # entries whose run_id has no prior ModelCallStarted.  Emit retroactive
     # ModelCallStarted events to close the model-call lifecycle gap.
+    # Input-validation runs (RunCompleted with error_detail "empty_input" or
+    # "invalid_input:...") are intentionally fire-and-forget — their model
+    # calls deliberately skip the ModelCallStarted step.  Exclude them from
+    # retroactive repair so the unmatched count reflects only real lifecycle
+    # gaps (Day 150).
     # Gated by the ambiguous-reset guard to avoid emitting retroactive
     # events when the events file was reset/rebuilt (same as stale orphan scan).
     model_call_started_appended = 0
     if diagnostics.get("scope") != "ambiguous_reset_full_scan":
         missing_starts, mcs_diag = find_missing_model_call_started(events)
+        input_validation_runs = collect_input_validation_run_ids(events)
+        non_validation_missing = [
+            m for m in missing_starts if m["run_id"] not in input_validation_runs
+        ]
+        mcs_diag["input_validation_unmatched_count"] = len(missing_starts) - len(non_validation_missing)
+        mcs_diag["non_validation_unmatched_count"] = len(non_validation_missing)
         diagnostics["model_call_started_diagnostics"] = mcs_diag
 
-        for entry in missing_starts:
+        for entry in non_validation_missing:
             rid = entry["run_id"]
             payload_mcs: dict[str, Any] = {
                 "model": entry.get("model"),
