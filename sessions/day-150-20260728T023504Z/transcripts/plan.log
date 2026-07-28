@@ -1,0 +1,644 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me assess the situation:
+
+1. No assessment available - but there IS a seeded task_01.md already. I need to check if it exists.
+2. The trajectory and self-issues provide clear evidence of what's broken.
+3. I need to follow the fallback planning rule: first check if session_plan/task_01.md exists.
+
+Let me start by checking what's already in session_plan/ and then plan tasks from the trajectory evidence.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null ✓ (895ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md already exists. Let me read it to understand what was seeded, then refine it and add more tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.3s)
+ ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze what I have:
+
+1. Assessment timed out after 600s (exit code 124). No assessment.md was produced.
+2. task_01.md is seeded by harness, but it's vague — "Fix assessment phase timeout" with Files pointing at `scripts/preseed_session_plan.py`. That doesn't make sense — the timeout is in the assessment phase, not the preseed script.
+
+Looking at the trajectory evidence:
+- Day 148 (most recent productive session): 1/1 tasks ✅ — that was the session that successfully fixed something
+- Three Day 149 sessions: all 0/0 tasks — no tasks attempted
+- Day 148 also had 1/3 ⚠️ session with obsolete_already_satisfied=1, reverted_unverified=1
+- Graph-derived pressures: planner_no_task_count=1, deepseek_model_call_abnormal_completed_count=1, session_success_rate=0.0, task_analysis_only_attempt_count=1, bash_tool_error=3
+
+Key self-issues:
+- #144: Task reverted — Fix false contradiction detection in _check_code_already_exists (Day 148, evaluator timeout). The fix was correct but evaluator timed out. This is the #1 priority because it directly caused the empty sessions.
+- #135: Task reverted — Break self-referential planning fallback (Day 144, evaluator timeout)
+- #134: Task reverted — Close harness-internal model lifecycle gap (Day 143, blocked by agent)
+- #105: Task reverted — Record DeepSeek prompt cache metrics (Day 137, blocked by agent)
+
+Help-wanted:
+- #131: Evaluator timeouts in evolve.sh — human needs to fix. I can't.
+- #90: yoagent Usage struct drops DeepSeek cache fields — human needs to fix. I can't.
+
+The trajectory says:
+- "Make planning failure actionable (planner_no_task_count=1)"
+- Log feedback: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+The most impactful thing I can do with 3 task slots:
+
+**Task 1: Fix false contradiction detection** (#144). This is the root cause of the empty-session streak. The Day 148 task was correct but evaluator timed out. The code change was verified by `python3 scripts/preseed_session_plan.py --test`, the assertion just needed updating. This is a ~3-line fix in `_check_code_already_exists()` that I can scope tightly. The issue says the fix is to restrict the check to `src/*.rs` files only.
+
+**Task 2: Break self-referential planning fallback** (#135). When analysis-only pressure is active and zero candidates match, use `_healthy_codebase_fallback()` instead of "Repair evidence-backed planning." This is also ~5-10 lines in the same file, verified by the same `--test` command.
+
+Wait, but both tasks touch `scripts/preseed_session_plan.py`. That's fine if they're independent changes that don't conflict. Let me think about whether these should be one task or two...
+
+They're both in the same file, but they modify different functions:
+- #144: `_check_code_already_exists()` (line ~644) — restrict file check to src/*.rs
+- #135: `choose_task()` (lines ~993-1022) — wire in `_healthy_codebase_fallback()`
+
+These could be combined into one task since they're in the same file with the same verifier. But the task sizing rules say each task should be completable in 20 minutes. Two small changes in the same file with the same verifier is reasonable as one task.
+
+Actually, let me reconsider. The seeded task_01.md is about the assessment timeout, which is a DIFFERENT problem. The seeded task talks about "reduce assessment scope or increase timeout" — but the Files says `scripts/preseed_session_plan.py`, which doesn't make sense. The assessment is an agent prompt, not the preseed script.
+
+Let me refine the seed task_01.md to be about #144 (the false contradiction detection), since that's the most proven root cause of empty sessions and the trajectory's #1 graph pressure: "Make planning failure actionable."
+
+Then task_02.md can be #135 (breaking the self-referential fallback).
+
+And task_03.md could address one of the other pressures. Let me look at the graph pressures again:
+- "Make planning failure actionable (planner_no_task_count=1)" — addressed by tasks 1+2
+- "Close yyds state and model lifecycle gaps" — #134, but it was blocked by agent, might be too hard
+- "Raise session success rate" — addressed by tasks 1+2
+- "Force analysis-only attempts into action" — addressed by task 2
+- "Bound failing shell commands before retrying (bash_tool_error=3)" — this is a concrete, actionable thing
+
+For task_03, the bash_tool_error=3 pressure is interesting. But I don't have a clear self-issue for it, and investigating it would require reading source code, which the planning rules say to avoid.
+
+Actually, let me re-read the planning rules: "Do not run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+I can do lightweight checks. Let me look at the bash tool errors more carefully from the trajectory, but the trajectory excerpt was truncated.
+
+Let me focus on what I have clear evidence for:
+
+1. Task 1: Fix false contradiction detection (#144) — clear root cause, small scope, same verifier as #135
+2. Task 2: Break self-referential planning fallback (#135) — clear fix, same file, same verifier
+3. Task 3: Maybe address the bash_tool_error pressure or the model lifecycle gap
+
+Actually, wait. Let me reconsider whether #144 and #135 should be separate tasks. They're both in `scripts/preseed_session_plan.py` with the same verifier (`python3 scripts/preseed_session_plan.py --test`). The implementation notes for #144 say it's a ~3-line change. The implementation notes for #135 say it's ~5-10 lines. Combined, they're ~8-13 lines of changes in the same file.
+
+The task sizing rule says each task should be completable in 20 minutes. Combined they'd be maybe 10-15 minutes. But the rule also says "If a task has been reverted before, make it SMALLER than last time." Both #144 and #135 were reverted before. So keeping them separate ensures each is small enough.
+
+However, the issue with having two tasks touching the same file is that they might conflict or one might need to be run before the other. Let me think about whether these are independent...
+
+#144: Modify `_check_code_already_exists()` to restrict file checks to `src/*.rs` only. This changes what `choose_task()` sees as "already done."
+
+#135: Modify `choose_task()` fallback path to use `_healthy_codebase_fallback()` when analysis-only pressure is active. This changes what happens when zero candidates survive filtering.
+
+These are independent — one affects the filtering stage, the other affects the fallback stage. They could be done in either order. But if they're both in the same file, the implementation agent would need to handle both.
+
+I think it's fine to keep them separate. They're small, independent changes.
+
+For task 3, let me check if there's anything else actionable. The bash_tool_error=3 pressure could be addressed, but I don't have specific enough evidence. The model lifecycle gap (#134) was blocked because the agent got lost in analysis — it's a harder problem.
+
+Let me look at the state snapshot more carefully: "recent tool failures: unrecovered=5/18, failed_commands=18". That's a lot but it's historical. The trajectory says bash_tool_error=3 in the graph pressure.
+
+OK, I think 2 tasks is sufficient for this session given the evidence. The planning rules say "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence" — 2 tasks both from trajectory evidence satisfies this.
+
+Let me now refine the seed task_01.md to be the #144 fix, and create task_02.md for #135.
+
+For issue_responses.md:
+- #144: Implement as task_01
+- #135: Implement as task_02
+- #134: Defer — previous attempt was blocked by agent (too much analysis), need narrower scope
+- #105: Defer — blocked on upstream yoagent fix (#90), can't proceed
+- #131: Defer — human needs to fix evolve.sh, I can't
+- #90: Defer — waiting on human with yoagent access
+
+Let me first check what the current code looks like to make sure the task is still valid.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 30.5s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/preseed_session_plan.py  ▶ $ grep -n '_check_code_already_exists\|_healthy_codebase_fallback\|choose_task' sc… ✓ (903ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Lines 998 and 1209 already call `_healthy_codebase_fallback()` in the fallback path. And line 1407 has a comment "no longer checked by _check_code_already_exists (only src/*.rs files)" which suggests both fixes may already be in place. Let me check more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:640..720  ▶ read scripts/preseed_session_plan.py:988..1018 ✓ (1.4s)
+ ✓ (902ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both fixes are already in place:
+
+1. `_check_code_already_exists()` already restricts to `src/*.rs` files (lines 674-677): `if not (fp.startswith("src/") and fp.endswith(".rs")): continue`
+
+2. `choose_task()` already uses `_healthy_codebase_fallback()` when `analysis_only_active` is True (lines 997-998): `if analysis_only_active: return _healthy_codebase_fallback()`
+
+So #144 and #135 have already been implemented! The Day 148 session that had 1/1 tasks ✅ must have landed these fixes. The reverted tasks from Day 143-144 were later re-implemented successfully.
+
+Now I need to figure out what's actually broken. Let me check:
+- Day 149 had three 0/0 sessions — no tasks attempted
+- Day 148 had one 1/1 ✅ session and one 1/3 ⚠️ session
+
+So the fixes didn't prevent the empty sessions. The assessment phase is timing out, which means `choose_task()` is getting called with `assessment_was_missing=True`. Let me check what happens in that path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1018..1098  ▶ $ grep -n 'assessment_was_missing' scripts/preseed_session_plan.py | head -20 ✓ (1.3s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The fixes for #144 and #135 ARE already in place:
+
+1. `_check_code_already_exists()` already restricts to `src/*.rs` (lines 674-677)
+2. `choose_task()` already uses `_healthy_codebase_fallback()` when `analysis_only_active` and zero candidates (lines 997-998)
+
+But the assessment phase keeps timing out (exit code 124, 600s timeout). When `assessment_was_missing=True`, the code path at lines 1030+ constructs a fallback task, but the `assessment_missing_note` path (line 1032) sets `files` to `scripts/preseed_session_plan.py` — which is exactly the self-referential pattern!
+
+Let me trace through what happens:
+1. Assessment times out → `assessment_was_missing=True`
+2. `choose_task()` runs, but with no assessment text, none of the structured TASKS match (they all need assessment keywords)
+3. `candidates` is empty
+4. `analysis_only_active` check — but this depends on `analysis_only_active` being True, which requires gnome data from the assessment. If assessment is empty/missing, there's no gnome data, so `analysis_only_active` may be False
+5. Falls through to the hardcoded fallback at line 1000 — "Repair evidence-backed planning after no-task sessions"
+6. But then `assessment_was_missing` check at line 1030 overrides the files to `scripts/preseed_session_plan.py`
+
+So the fallback is self-referential. And the implementation agent tries to modify `scripts/preseed_session_plan.py` but gets evaluated and reverted.
+
+Wait, let me check the pipeline more carefully. Looking at the `current_evidence_text()` function and how `assessment` is constructed when assessment is missing.
+
+Actually, the key question is: when assessment is missing, what gets passed as the `assessment` argument to `choose_task()`? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2345..2375  ▶ read scripts/preseed_session_plan.py:1097..1127 ✓ (1.4s)
+ ✓ (886ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture clearly:
+
+1. The assessment phase times out (exit code 124, 600s)
+2. `preseed_session_plan.py` is called with `assessment_missing.md` as input
+3. `assessment_was_missing=True` is set
+4. The code constructs a fallback task targeting `scripts/preseed_session_plan.py` (line 1031-1032)
+5. BUT lines 1086-1108 try to enrich the fallback with `src/*.rs` files when gnomes indicate real code problems
+
+The problem: when `assessment_was_missing=True`, the assessment text is the `assessment_missing.md` content, which does NOT contain trajectory gnomes in the format that `numeric_metrics()` would parse. Let me check what `assessment_missing.md` actually contains — I already read it above and it has `guard result` fields but no gnome data.
+
+So `trajectory_gnomes` would be empty (no gnome keys found in the assessment text), `_has_actionable_src_gnome` would be False, `_zero_rate_gnome` would be False, and the files stay as `scripts/preseed_session_plan.py`.
+
+This is the self-referential trap! The assessment times out → the preseed script creates a task to fix `scripts/preseed_session_plan.py` → implementation agent edits the script → evaluator times out (again) → task reverted → next session same thing.
+
+Now I need to figure out what I can actually DO about this during planning. The root cause is:
+1. Assessment phase times out (evolve.sh issue, I can't modify)
+2. When assessment is missing, the fallback task targets `scripts/preseed_session_plan.py` which is self-referential
+
+Wait, but the trajectory shows Day 148 had 1/1 tasks ✅ — the preseed fixes (#144 and #135) landed. That was already a `scripts/preseed_session_plan.py` task. So it's not ALWAYS self-referential — sometimes it works.
+
+The real problem is the assessment phase timing out. Three Day 149 sessions timed out. Why? The trajectory says "assessment_missing" sessions.
+
+I need to think about what tasks are actually actionable:
+
+Looking at the trajectory graph pressures:
+1. "Make planning failure actionable (planner_no_task_count=1)" — this is about the assessment timing out
+2. "Close yyds state and model lifecycle gaps" — model lifecycle issues  
+3. "Raise session success rate (session_success_rate=0.0)" — symptom, not cause
+4. "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)" — already fixed (#135)
+5. "Bound failing shell commands before retrying (bash_tool_error=3)" — this is actionable
+
+And the log feedback says: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+The seed task_01.md is about the assessment timeout. It's a valid task but it's self-referential — modifying `scripts/preseed_session_plan.py` to fix the planning pipeline when the assessment itself times out.
+
+Let me think about what concrete improvements I can make:
+
+Option A: Improve the `assessment_was_missing` path to prefer `src/*.rs` tasks even when no trajectory gnomes are found. Currently it only switches to `src/*.rs` when there are actionable gnomes. But when the assessment is missing, we can't get gnomes from the assessment text. Instead, we should read gnomes from a different source (like the trajectory extractor output, or a state file).
+
+Option B: Fix the bash_tool_error pressure — make bash commands bounded. This is a concrete `src/` change.
+
+Option C: Reduce the assessment scope so it completes within 600s. But I can't modify evolve.sh.
+
+Let me go with Option A: improve the `assessment_was_missing` path so it produces a `src/*.rs` task rather than a self-referential `scripts/preseed_session_plan.py` task. This directly addresses the empty-session streak.
+
+But actually, I realize that `assessment_missing.md` already contains the trajectory evidence! The harness injects YOUR TRAJECTORY into the planning prompt (including into me right now). The assessment_missing.md is generated by the harness guard when the assessment times out. The trajectory data IS available to me as the planner — but it's NOT available to `preseed_session_plan.py` because that script only reads the assessment_missing.md file and the current_evidence_text().
+
+Wait, let me re-read the flow. The harness:
+1. Runs assessment agent → times out
+2. Runs preseed_session_plan.py to seed task_01.md from assessment_missing.md
+3. Runs planning agent (me) with all the evidence
+
+So the preseed script already created task_01.md. I'm the planner. What I produce in session_plan/ will be what the implementation agents execute.
+
+The seeded task_01.md says: "Fix assessment phase timeout after 600s with trajectory evidence" with Files: scripts/preseed_session_plan.py. This is self-referential.
+
+I should replace task_01.md with a concrete `src/*.rs` task. And add task_02.md for something else useful.
+
+But I need to follow the planning rules: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+What evidence do I have? The trajectory shows:
+- Assessment times out → no tasks → empty sessions
+- The preseed fixes already landed (Day 148) but didn't solve the problem
+- bash_tool_error=3 is a pressure point
+- The log feedback lesson: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+The lesson from the trajectory is that modifying `scripts/preseed_session_plan.py` to fix planning when assessment is missing is a dead end — the fixes already landed but assessment still times out, and three more sessions were empty.
+
+I need to pick a different task. Let me look at what concrete `src/*.rs` changes I can make.
+
+Actually, wait. Let me re-read the planning rules more carefully:
+
+"Fallback planning rule:
+- First create session_plan/task_01.md from the trajectory, recent CI, journals, state/gnome feedback, or the assessment-missing failure itself.
+- Do NOT read all source files.
+- Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+I can use the trajectory evidence to pick a task. Let me look at what's in the trajectory more carefully:
+
+Graph pressures:
+1. planner_no_task_count=1 — planning failures
+2. deepseek_model_call_abnormal_completed_count=1 — model lifecycle
+3. session_success_rate=0.0 — symptom
+4. task_analysis_only_attempt_count=1 — analysis-only sessions
+5. bash_tool_error=3 — failing shell commands
+
+For #5, bash_tool_error=3, let me look at what bash errors are occurring. The trajectory says "prefer bounded commands with explicit paths and inspect exit output". This suggests bash commands without proper timeouts or error handling.
+
+But I don't have specific evidence about which commands or which file. I'd need to search, which is against the planning rules (no broad grep).
+
+Let me think about what I CAN do with the evidence I have...
+
+Actually, looking at the situation more carefully: the seeded task_01.md IS about the assessment timeout. While it's self-referential in principle, the actual content is about reducing assessment scope or adding trajectory evidence enrichment. But lines 1097-1108 already do that. So the seed task is mostly already done.
+
+Let me refine the seed task to target something more concrete. The assessment times out because the prompt is too broad. I can't fix the timeout itself (that's in evolve.sh), but I can improve the preseed script to handle the `assessment_was_missing` case better — specifically, to read gnome data from a trajectory file or state event source rather than relying on the (missing) assessment text.
+
+Wait, but that's STILL modifying `scripts/preseed_session_plan.py`. The self-referential loop continues.
+
+OK here's what I'll do. Let me look at the `bash_tool_error=3` pressure. That's a concrete `src/` change. Let me check if there are recent bash tool failures I can address.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'bash_tool_error' scripts/extract_trajectory.py | head -5  ▶ $ python3 -c " (7 lines) ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the Day 148 commits more carefully. The key commit `2b8d78ac` is "Update preseed test assertion for corrected task selection post-#144 fix". That's the fix for the test assertion that was needed after the #144 fix landed.
+
+Let me also look at the recent state events to understand what bash failures are happening.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 | tail -20 ✓ (893ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — the preseed tests pass. So the #144 and #135 fixes are in place and working.
+
+Now, let me think about what to plan. The assessment keeps timing out. The preseed fixes are in. But the sessions are still empty because the assessment times out.
+
+Let me check what `current_evidence_text()` returns when assessment is missing — that's what feeds the preseed script.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def current_evidence_text\|def _parse_assessment_missing_fields\|def nu…  ▶ read scripts/preseed_session_plan.py:1..61 ✓ (458ms)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK let me take stock and plan. Here's what I know:
+
+1. Assessment keeps timing out. I can't fix evolve.sh (protected). The preseed fixes (#144, #135) are already landed.
+2. The self-referential loop is: assessment times out → preseed creates task to fix preseed → implementation edits preseed → evaluator times out (or task succeeds) → next session same assessment timeout.
+
+The real question is: what can I plan that will actually break this cycle?
+
+Looking at the trajectory:
+- `planner_no_task_count=1` — the planning phase produced no tasks in one session
+- `bash_tool_error=3` — bash tool errors
+- `task_analysis_only_attempt_count=1` — one session had analysis-only tasks
+
+And the log feedback says: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+The assessment timing out is a harness infrastructure problem (evolve.sh). But I CAN make the planning phase more resilient to missing assessments.
+
+Option 1: Improve the `assessment_was_missing` path in preseed_session_plan.py to read gnome/trajectory data from a file instead of relying on the missing assessment text. This way, even when assessment times out, the preseed script can produce a `src/*.rs` task rather than a self-referential one.
+
+But wait — the trajectory data IS available. It's injected into my prompt as "YOUR TRAJECTORY". And the preseed script already has the `assessment_missing.md` file. The problem is that `assessment_missing.md` doesn't contain the trajectory gnomes in parseable format.
+
+Actually, let me re-read the flow. The harness:
+1. Writes assessment_missing.md with guard result fields (exit_code=124, timeout=600, etc.)
+2. Runs `python3 scripts/preseed_session_plan.py --assessment session_plan/assessment_missing.md ...` which seeds task_01.md
+3. Runs planning agent (me) which can refine task_01.md and add task_02.md, task_03.md
+
+The preseed script uses `current_evidence_text()` to extract evidence from the assessment. But when assessment is missing, there's no useful text. The `_parse_assessment_missing_fields()` extracts the guard result fields, and `numeric_metrics()` returns empty because assessment_missing.md has no gnome data.
+
+What if I make the preseed script look for trajectory data in a separate file? Like `session_plan/trajectory.md` or read it from a state file?
+
+But that's a big change and might not work reliably. And it's still modifying `scripts/preseed_session_plan.py`.
+
+Let me think differently. What if I just accept that the assessment times out sometimes, and plan a `src/*.rs` task directly? I have the trajectory evidence right in my prompt. I can create task_01.md with a concrete src/ change.
+
+Looking at the trajectory pressures again:
+- `bash_tool_error=3` — "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=3): prefer bounded commands with explicit paths and inspect exit output b..."
+
+This is a `src/` task! It's about improving bash command reliability. The `bash_tool_error=3` means there were 3 bash tool errors in recent sessions.
+
+What kind of fix could improve bash tool reliability? The trajectory says "prefer bounded commands with explicit paths and inspect exit output". This could mean:
+- Adding timeouts to bash commands that currently lack them
+- Improving error messages when bash commands fail
+- Adding explicit path resolution
+
+Let me check which source files handle bash tool execution.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 16.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files src/tools.rs src/safety.rs src/prompt.rs 2>/dev/null  ▶ $ grep -n 'bash_tool_error\|failed_tool_summary\|bash.*error\|StreamingBash' scrip… ✓ (897ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the bash_tool_error pressure looks like more carefully and see if there's a concrete fix I can plan.
+
+Actually, let me step back and think about what I can accomplish in this planning session. The planning rules say:
+
+"ARTIFACT-FIRST REQUIREMENT:
+- If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md."
+
+And: "Do not read all source files. Do not run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+I have the trajectory evidence. Let me create tasks that address the highest-priority graph pressures using the evidence I already have.
+
+The highest graph pressure is `planner_no_task_count=1`. But this is a planning pipeline issue, and the fixes are already in preseed_session_plan.py. The real problem is the assessment timeout.
+
+The second pressure is `deepseek_model_call_abnormal_completed_count=1`. This is about model lifecycle gaps. #134 was about this but was blocked by the agent. Maybe I can make it smaller and more focused.
+
+The third is `session_success_rate=0.0` — symptom.
+
+The fourth is `task_analysis_only_attempt_count=1` — already addressed by #135 fix.
+
+The fifth is `bash_tool_error=3` — this is a concrete `src/` task.
+
+Let me also look at what the state snapshot says: "recent tool failures: unrecovered=5/18, failed_commands=18". That's a lot.
+
+OK let me plan:
+
+Task 1: Refine the seed task_01.md. Instead of "Fix assessment phase timeout" (which requires editing evolve.sh or the assessment prompt, both of which I can't do), let me replace it with a task about making the `assessment_was_missing` path produce a `src/*.rs` task even without trajectory gnomes in the assessment text. The fix: when `assessment_was_missing=True`, read gnome data from the trajectory file or state events, not from the (missing) assessment text.
+
+Wait, but that's still modifying `scripts/preseed_session_plan.py`. And the planning rules say "Prefer tasks that touch src/*.rs files when no-edit pressure is active." But the trajectory says `task_analysis_only_attempt_count=1` — only ONE session had analysis-only tasks. And Day 148 had 1/1 tasks that passed. So the no-edit pressure might not actually be active right now.
+
+Actually, let me look at the `analysis_only_active` check in the code. It depends on `task_analysis_only_attempt_count` and `task_no_edit_revert_count`. Let me check if these values would make `analysis_only_active` True.
+
+From the trajectory, I don't see the exact numeric values for those gnomes. The graph pressure says `task_analysis_only_attempt_count=1` but I don't know the `task_no_edit_revert_count`.
+
+Let me take a different approach. Let me look at what concrete `src/*.rs` change I can plan that addresses a real problem.
+
+The `bash_tool_error=3` pressure suggests there are bash tool failures. Let me check if there are any obvious fixes in `src/tools.rs` or `src/safety.rs`.
+
+Actually wait, I should follow the planning rules strictly. They say I should NOT read source files during planning. I should plan from the trajectory/state evidence I already have. Let me do that.
+
+Here's my plan:
+
+**Task 1: Improve assessment-missing fallback to produce src/*.rs tasks**
+- The assessment times out, the preseed script produces a self-referential task targeting `scripts/preseed_session_plan.py`
+- Fix: when `assessment_was_missing=True`, read trajectory/gnome data from the trajectory extractor output or state events instead of from the missing assessment text
+- Files: `scripts/preseed_session_plan.py`
+- This is a planning-pipeline fix, but it directly reduces the empty-session streak
+
+Actually, I just realized I should NOT create another preseed_session_plan.py task. The Day 148 session already landed the #144 and #135 fixes, and the very next day (Day 149) had 3 empty sessions. The preseed fixes didn't prevent empty sessions because the assessment STILL timed out. The root cause is the assessment timeout, not the preseed logic.
+
+So what DO I plan?
+
+Let me look at this from the trajectory's perspective. The trajectory says:
+
+"Evo readiness: classification=no_task_evidence, can_drive_evolution=false"
+"action: repair planning/task selection so the next run captures selected tasks, attempted tasks, and verifier evidence before scoring evolution"
+
+"Capability fitness feedback: fitness_score: unknown"
+"action: choose tasks that raise fitness gnomes or add held-out coding eval evidence"
+
+"Graph-derived next-task pressure:
+- Make planning failure actionable (planner_no_task_count=1)
+- Close yyds state and model lifecycle gaps
+- Raise session success rate
+- Force analysis-only attempts into action
+- Bound failing shell commands before retrying"
+
+The log feedback says: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+OK, let me just plan two concrete tasks:
+
+1. **Bound failing shell commands** — address `bash_tool_error=3` by improving bash command timeout/error handling in `src/tools.rs`. This is a real `src/*.rs` change.
+
+2. **Close model lifecycle gap** — address `deepseek_model_call_abnormal_completed_count=1`. This was attempted as #134 but blocked by agent (too much analysis). Make it smaller this time.
+
+For task 1, I need specific evidence about which bash commands fail. But I don't have that from the trajectory. Let me look at what I can find without broad searching.
+
+Actually, let me take yet another approach. The planning rules say: "If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP."
+
+But I CAN select implementation work. I have trajectory evidence. Let me plan a concrete task.
+
+Let me go with:
+
+**Task 1: Address bash_tool_error=3 by improving bash command error handling**
+- Trajectory shows bash_tool_error=3 and failed_commands=18
+- Fix: Add better error messages, explicit timeouts, or recovery hints to bash tool
+- Files: `src/tools.rs`, `src/safety.rs`
+
+**Task 2: Close model lifecycle gap (reduced scope from #134)**
+- Trajectory shows deepseek_model_call_abnormal_completed_count=1
+- Fix: Add harness_internal flag to ModelCallCompleted events so queries can filter them
+- Files: `src/state.rs`
+
+But task 2 was blocked before because the agent got lost in analysis. Let me make it much smaller — just add the `harness_internal` boolean field to distinguish harness events from agent model calls. That's a concrete schema change with a clear verifier.
+
+Actually, let me prioritize. I have max 3 slots. Let me use 2:
+
+1. Task 1: Refine seed task_01.md to target a concrete src/*.rs fix for bash_tool_error
+2. Task 2: Model lifecycle gap fix (reduced scope)
+
+For issue_responses.md:
+- #144: Already fixed (Day 148) — note as resolved
+- #135: Already fixed (Day 148) — note as resolved
+- #134: Defer — planning narrower version as Task 2
+- #105: Defer — blocked on upstream yoagent fix (#90)
+- #131: Defer — human needs to fix evolve.sh
+- #90: Defer — waiting on human
+
+Let me now write the task files and issue responses.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 29.0s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'StreamingBashTool\|fn.*bash.*tool\|struct.*Bash' src/tools.rs | head -2…  ▶ $ grep -n 'bash_tool_error\|tool_error\|unrecovered' scripts/log_feedback.py | hea… ✓ (1.8s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what the bash_tool_error pressure actually means and how tool failures are tracked. The trajectory says "bash_tool_error=3" which maps to "Bound failing shell commands before retrying". Let me check what kind of bash errors happen and where they're handled.
+
+Actually, I don't need to deeply investigate. I have enough evidence to plan two concrete tasks. Let me focus on writing the task files.
+
+Let me think about what concrete src/*.rs fixes would actually help:
+
+1. For bash_tool_error=3: The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying". This could mean:
+   - Adding default timeouts to bash commands that don't have explicit timeouts
+   - Improving error detection in bash output
+   - Better recovery hints when bash fails
+
+2. For model lifecycle gap: Add a `harness_internal` boolean to distinguish harness events from agent model calls. This is a concrete `src/state.rs` change that #134 attempted but was too broad.
+
+Let me also check if there are any CI failures I should prioritize.
+
+Actually, let me just check if cargo build/test passes currently. The planning rules say not to run cargo build during planning, but checking CI is different.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.2s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ gh run list --repo yologdev/yyds-harness --workflow=ci.yml --limit=5 --json conc… ✓ (892ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — CI is green. No CI failures to fix.
+
+Now let me finalize my plan. I have clear trajectory evidence and I know what's already fixed (#144, #135) and what's still broken (assessment timeout, bash errors, model lifecycle).
+
+Given the constraints:
+1. I can't fix the assessment timeout (evolve.sh is protected)
+2. The preseed fixes (#144, #135) already landed but didn't fix the root cause
+3. bash_tool_error=3 is a concrete src/ pressure
+4. model lifecycle gap is a concrete src/ pressure
+
+Let me plan 2 tasks:
+
+**Task 1: Address bash_tool_error pressure** - Improve bash tool error handling in src/tools.rs and src/safety.rs. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying". The fix could be adding better exit-code inspection and recovery hints.
+
+**Task 2: Close model lifecycle gap (small scope)** - Add a `harness_internal` boolean to ModelCallCompleted events in src/state.rs so state queries can filter out harness-internal events from real model calls. This was attempted as #134 but the agent got lost in analysis. Make it much smaller: just add the boolean field.
+
+Wait, but I also need to consider: the seeded task_01.md exists. Should I refine it or replace it?
+
+The seeded task is about "Fix assessment phase timeout after 600s with trajectory evidence" targeting `scripts/preseed_session_plan.py`. This is self-referential. The assessment timeout is in the assessment agent's prompt, not in preseed_session_plan.py. So the seed task won't actually fix the problem.
+
+I should replace task_01.md with a concrete src/*.rs task.
+
+Let me write:
+- task_01.md: Replace the seed with a concrete bash_tool_error fix
+- task_02.md: Model lifecycle gap fix (reduced scope from #134)
+- issue_responses.md: Status updates for all issues
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me plan tasks from trajectory evidence. The seed task is self-referential (targets preseed_session_plan.py to fix an assessment timeout that's in evolve.sh). I'll replace it with concrete `src/*.rs` tasks.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (456ms)
+  ▶ todo ✓ (459ms)
+  ▶ todo ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me quickly verify the trajectory evidence about bash errors and model lifecycle before writing tasks.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.7s (3 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -c 'ModelCallStarted\|ModelCallCompleted' src/state.rs  ▶ $ grep -n 'evt-harness\|harness_internal\|retroactive' src/state.rs | head -20  ▶ $ grep -n 'timeout\|TimeoutExpired\|subprocess.*timeout\|exit_code\|exit_status' s… ✓ (1.8s)
+ ✓ (1.8s)
+ ✓ (4.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I have good evidence now. Let me look at the specific areas more carefully:
+
+1. For bash_tool_error: The `StreamingBashTool` already has timeout handling (lines 486-658). It has retry with exponential backoff. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying". This suggests the failures might be about commands that fail (exit code != 0) but aren't properly handled, or commands without explicit timeouts that hit the default 300s.
+
+2. For model lifecycle: `src/state.rs` has `harness_internal_enabled()` at line 3453. There are retroactive RunStarted events. The evt-harness events already exist. The question is whether `ModelCallCompleted` events from harness paths have a way to be filtered.
+
+Let me check what `harness_internal_enabled()` does and whether there's already a way to mark harness-internal events.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.4s (3 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3450..3470  ▶ $ grep -n 'harness_internal\|retroactive' src/state.rs | head -20 ✓ (1.4s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `harness_internal_enabled()` is an env var check. It's used for controlling whether harness-internal events are enabled. But it's not used to mark individual events as harness-internal.
+
+Let me check how ModelCallCompleted events are emitted in the harness path vs the agent path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted\|record.*ModelCall' src/state.rs | head -20 ✓ (894ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 4230 shows where `ModelCallCompleted` events are emitted. Let me see the context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4210..4260 ✓ (440ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's test data, not the actual emission. Let me find where ModelCallCompleted is actually emitted by the harness. Let me search for where record() is called with ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/prompt.rs | head -10  ▶ $ grep -n 'record_cache_metrics\|record_model\|ModelCall' src/prompt.rs | head -20 ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 1092-1099 to see the harness-internal ModelCallCompleted emission.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1075..1115 ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see. This is the harness-internal path (lines 1089-1113): when the event channel closes without `AgentEnd` being observed, the harness emits a `ModelCallCompleted` with terminal_reason="stream_closed_without_agent_end". The payload already includes `model_call_id`, `model`, token counts (from `state.usage`), etc.
+
+The issue #134 says these evt-harness events have `tokens=in:0 out:0 cache_read:0 cache_write:0` — zero tokens. This is because when the stream closes without AgentEnd, `state.usage` might be empty.
+
+But actually, looking at the trajectory evidence more carefully, the `deepseek_model_call_unmatched_completed_count=230` — that's a lot. The evt-harness events with zero tokens are inflating the unmatched count.
+
+The fix could be simple: when the harness emits a `ModelCallCompleted` because the stream closed without AgentEnd, mark it with a field like `"harness_internal": true` in the payload. Then the state query scripts can filter these out.
+
+But wait — this is a change to `src/prompt.rs`, not `src/state.rs`. The `ModelCallCompleted` events are emitted from `prompt.rs`, not `state.rs`. The `state.rs` just defines the `EventType` enum and the `record()` function.
+
+OK, I have enough evidence now. Let me write the task files.
+
+For task_01 (bash_tool_error), let me check what specific improvement would help. The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying". The StreamingBashTool already has timeout handling and retry. The issue might be about:
+1. Commands without explicit timeouts that run too long
+2. Exit code handling when partial output is available
+3. Recovery hints that aren't specific enough
+
+Let me look at what specific failures the log_feedback script reports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:640..700 ✓ (444ms)
+
+
