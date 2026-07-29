@@ -1,0 +1,416 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully:
+
+1. NO ASSESSMENT AVAILABLE - I need to use fallback planning
+2. I have trajectory evidence showing concerning patterns:
+   - Recent sessions: day-150 had 3 sessions, only 1 had partial task success (1/3), 2 had 0/0 tasks
+   - day-149 had 3 sessions, ALL 0/0 tasks
+   - That's 5 out of 6 recent sessions with no tasks attempted
+   - Empty streak is significant
+3. Graph-derived pressures:
+   - Make planning failure actionable (planner_no_task_count=1)
+   - Close state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=22)
+   - Raise session success rate (session_success_rate=0.0)
+   - Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)
+   - Make source-edit outcomes land (task_unlanded_source_count=1)
+
+Let me check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null; cat session_plan/task_01.md 2>/dev/null || ech…  ▶ $ ls ISSUES_TODAY.md 2>/dev/null && wc -l ISSUES_TODAY.md || echo "NO ISSUES_TODAY… ✓ (4.2s)
+ ✓ (4.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read ISSUES_TODAY.md to see trusted owner issues, then assess the trajectory evidence and plan accordingly.
+
+The seed task_01.md is about fixing assessment phase timeout. Let me read what it fully says, then look at the trajectory evidence more carefully to decide:
+1. Whether to keep/refine task_01
+2. What task_02 and task_03 should be
+
+Key trajectory evidence:
+- 5 out of 6 recent sessions had 0/0 tasks (empty sessions)
+- Graph pressures: planner_no_task_count=1, deepseek_model_call_unmatched_completed_count=22, session_success_rate=0.0, task_seed_contradiction_count=1, task_unlanded_source_count=1
+- Evo readiness: "no selected or attempted task evidence captured; can_drive_evolution=false"
+- Log feedback lessons: seeded tasks contradicted assessment, state run lifecycle incomplete, planner produced no usable task
+
+The assessment_missing.md file also exists. Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read ISSUES_TODAY.md  ▶ read session_plan/assessment_missing.md  ▶ read session_plan/task_01.md ✓ (3.1s)
+ ✓ (2.1s)
+ ✓ (7.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. The assessment phase timed out (600s, exit code 124) — assessment_missing.md confirms this
+2. A seed task_01.md was created by the harness
+3. The trajectory shows serious problems: 5/6 recent sessions empty, graph pressures mounting
+4. No trusted owner issues today
+
+Let me analyze the seed task_01.md critically:
+- It says "Fix assessment phase timeout after 600s" but its Files: is `scripts/preseed_session_plan.py` — this is wrong! The preseed script plans tasks, it doesn't control the assessment timeout. The assessment timeout is in `scripts/evolve.sh` which is protected (do-not-modify).
+- The Objective talks about "analyze the harness dispatching logic in evolve.sh" but the Files line says `scripts/preseed_session_plan.py`
+- This seed task is internally contradictory — a planning bug in the seed itself
+
+This is a classic self-referential planning failure (#135, #115 patterns). The seed task tries to fix assessment timeouts by modifying the preseed script, which doesn't control assessment timeouts.
+
+Now let me look at the trajectory more carefully for what to plan:
+
+**Graph-derived pressures (highest priority):**
+1. `planner_no_task_count=1` — Make planning failure actionable
+2. `deepseek_model_call_unmatched_completed_count=22` — Close state and model lifecycle gaps
+3. `session_success_rate=0.0` — Raise session success rate
+4. `task_seed_contradiction_count=1` — Validate seeded tasks against fresh assessment
+5. `task_unlanded_source_count=1` — Make source-edit outcomes land
+
+**Log feedback corrected lessons:**
+1. seeded tasks contradicted the fresh assessment → validate seeded tasks against fresh assessment evidence
+2. state run lifecycle was incomplete → emit RunCompleted events
+3. planner produced no usable task → bound discovery and require selected task artifact
+
+**Agent-self issues (backlog):**
+- #135: Break self-referential planning fallback (targets preseed_session_plan.py) — REVERTED before
+- #134: Close harness-internal model lifecycle gap (targets src/state.rs) — BLOCKED before
+- #105: Record DeepSeek prompt cache metrics (targets src/prompt.rs, src/deepseek.rs, src/state.rs) — BLOCKED before
+
+**Issue #90 (help-wanted):** yoagent Usage drops cache fields — upstream blocker, can't fix here
+**Issue #131 (help-wanted):** Evaluator timeouts — in evolve.sh (protected), can't fix
+
+Now, the seed task_01.md is flawed (pointing at wrong file for assessment timeout fix). I should either:
+a) Refine it to target the right file OR make it obsolete
+b) Replace it with a better task
+
+The problem is that the assessment timeout is controlled by evolve.sh (protected), so I can't make a task to fix that. But I can make the seed task focus on what preseed_session_plan.py CAN do: improve planning when assessment is missing.
+
+But looking at the actual seed task more carefully — its Success Criteria talk about "Fallback planning repair tasks avoid protected implementation files" and "Task manifest warnings make no-task planning failures visible" — this is really about making `preseed_session_plan.py` better at handling the assessment_missing case, which IS a valid goal and correctly scoped to that file.
+
+However, the title "Fix assessment phase timeout after 600s" is misleading — the preseed script can't fix timeouts. Let me refine the task.
+
+Actually wait — let me re-read the Objective: "Analyze the harness dispatching logic in evolve.sh to understand why the assessment prompt took so long." — This is asking the implementation agent to READ evolve.sh (protected) but not EDIT it. And then "Consider reducing assessment scope or increasing the timeout." — increasing timeout is in evolve.sh (protected). Reducing assessment scope IS actionable and could be done through the preseed script or the assessment prompt.
+
+But the more important thing: the Files: line says `scripts/preseed_session_plan.py` only. The task tells the implementation agent to "analyze the harness dispatching logic in evolve.sh" — that's read-only analysis. Then the action is in preseed_session_plan.py.
+
+I think the seed task is confused but salvageable. Let me refine it to be clearer: focus on making the assessment_missing fallback in preseed_session_plan.py produce better, more actionable tasks using trajectory evidence. The current behavior is that when assessment is missing, the preseed script produces a seed task to fix the preseed script itself (self-referential). This is the exact same problem from Day 115's lesson about "Fallback self-reference."
+
+Let me now plan:
+
+**Task 01 (refined from seed):** Make assessment_missing fallback in preseed_session_plan.py produce a trajectory-evidence-backed task instead of a self-referential planning fix. This addresses:
+- Graph pressure: `planner_no_task_count=1` 
+- Log feedback lesson: "planner produced no usable task"
+- Day 115 learning: "Fallback self-reference turns 'nothing broken' into busywork"
+- #135 pattern: self-referential planning fix that never lands
+
+**Task 02:** Close the harness-internal model lifecycle gap (deepseek_model_call_unmatched_completed_count=22). This is the #1 graph pressure by count. Target src/state.rs. Previous attempt (#134) was blocked because the implementation agent got lost in analysis. Need narrower scope.
+
+**Task 03:** Something about session success rate or task verification. But what can I actually do about evaluator timeouts (#131)? evolve.sh is protected. 
+
+Actually, looking again at the graph pressures: `task_seed_contradiction_count=1` — the assessment contradicted a seed task. And `task_unlanded_source_count=1` — a task touched source but didn't land. These might be symptoms of the same assessment-missing problem.
+
+Let me narrow down to 2-3 good tasks:
+
+1. **Task 01 (refine seed):** Fix self-referential fallback in preseed_session_plan.py when assessment is missing. Use trajectory evidence to pick a src/*.rs task instead of "Repair evidence-backed planning." This is essentially #135 but narrowed to the assessment_missing path specifically, with a more focused edit.
+
+2. **Task 02:** Close model lifecycle gap in src/state.rs — the #134 reattempt. But narrower: just add `ModelCallStarted` before each harness-internal `ModelCallCompleted`. The previous attempt got lost analyzing scripts instead of editing src/state.rs.
+
+3. **Task 03:** Maybe not needed. Let me focus on making the first two strong.
+
+Actually, I should be careful about task sizing. Let me think about what's achievable in 20 minutes each.
+
+For Task 01: The change in preseed_session_plan.py is small. The assessment_missing path currently produces the self-referential "Repair evidence-backed planning" fallback. I need to change it to use `_healthy_codebase_fallback()` which produces a src/state.rs task. This is ~10 lines. Doable.
+
+For Task 02: Adding ModelCallStarted before ModelCallCompleted in src/state.rs. Need to find where harness-internal ModelCallCompleted events are emitted and add matching ModelCallStarted. This could be more complex if the event emission is scattered.
+
+Let me check quickly:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 27.2s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted\|ModelCallStarted' src/state.rs | head -30  ▶ $ grep -n 'assessment_was_missing\|assessment_missing\|_healthy_codebase_fallback\… ✓ (2.1s)
+ ✓ (6.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key code paths:
+
+1. In `choose_task()` at line 998: when no candidates match and `analysis_only_active` is True, it already calls `_healthy_codebase_fallback()` — this is the #135 fix that was attempted but reverted (evaluator timeout).
+
+2. At line 1030: when `assessment_was_missing` is True, it constructs a fallback. Let me read this section more carefully to understand what the current fallback produces.
+
+Let me also check the `_healthy_codebase_fallback()` function and the `assessment_was_missing` path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:990..1070  ▶ read scripts/preseed_session_plan.py:1268..1318 ✓ (3.1s)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Let me look at what happens in the assessment_was_missing block more carefully (lines 1030-1209).
+
+The key observation: lines 997-998 show that when `analysis_only_active` is True and no candidates match, it already returns `_healthy_codebase_fallback()`. The #135 fix was already attempted for this path. But the assessment_was_missing path (line 1030+) still produces the self-referential "Repair evidence-backed planning" fallback.
+
+Let me read the rest of the assessment_was_missing block to understand what it produces.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1069..1129 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me read a bit more to see the rest of the function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1128..1228 ✓ (817ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding. Let me plan my three tasks:
+
+**Current state:**
+- seed task_01.md exists and is about "Fix assessment phase timeout after 600s" 
+- The seed task is correctly generated by the `assessment_was_missing` path for exit_code=124 (timeout)
+- But the seed task's Files: is `scripts/preseed_session_plan.py` — it's asking the implementation agent to modify the planning pipeline that produced it. This is the self-referential pattern from Day 115.
+
+**What happened in this specific case:**
+- Assessment timed out (600s, exit code 124)
+- The preseed script detected `assessment_was_missing` and found no trajectory gnomes (the assessment text was empty, so `numeric_metrics(assessment)` returned nothing)
+- Since `_src_gnome_actionable` was False (no gnomes), the files stayed as `scripts/preseed_session_plan.py`
+- The title became "Fix assessment phase timeout after 600s with trajectory evidence"
+- But the trajectory evidence was empty!
+
+So the real problem is: the assessment timeout means no assessment text exists → no trajectory gnomes can be extracted → the seed task can't use trajectory evidence → it falls back to self-referential planning fix.
+
+The fix should be: when assessment_was_missing AND exit_code is a timeout (124) AND no trajectory gnomes found, instead of producing a self-referential "Fix assessment timeout" task, produce a task that uses the trajectory from the PLANNING agent's context (which IS available in YOUR TRAJECTORY section above).
+
+Wait — the preseed script can't access the planning agent's trajectory. But it CAN extract gnomes from it. The trajectory block is in the assessment (assessment.md) which doesn't exist in this case.
+
+Actually, looking more carefully: the preseed script runs BEFORE the planning agent. It's a harness-side seed. It can only work with what's available at that point: the assessment text (if any), the assessment_missing.md file, and the trajectory that was extracted separately.
+
+But the trajectory WAS extracted (YOUR TRAJECTORY above has gnomes). The problem is that the preseed script can only access gnomes from the assessment text, not from the trajectory extract. Unless... the trajectory is available as a separate file.
+
+Let me check if there's a trajectory file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/trajectory*.md 2>/dev/null; ls -la /tmp/yyds-trajectory*.md … ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the trajectory isn't available as a file to the preseed script. But it IS available to me, the planning agent, through the context block.
+
+Now let me think about what tasks to create:
+
+The seed task_01.md exists. It's self-referential (targets preseed_session_plan.py to fix assessment timeouts, but preseed can't fix timeouts). I should REFINE it to be better.
+
+But actually, looking at the trajectory evidence:
+
+Graph pressures:
+1. `planner_no_task_count=1` — Make planning failure actionable
+2. `deepseek_model_call_unmatched_completed_count=22` — #1 by count, state lifecycle gaps
+3. `session_success_rate=0.0`
+4. `task_seed_contradiction_count=1`
+5. `task_unlanded_source_count=1`
+
+The immediate problem is that the current seed task is a self-referential planning fix. The trajectory says `planner_no_task_count=1` and I should make planning produce actionable tasks.
+
+Let me refine task_01.md to be a better version:
+
+**Refined Task 01:** The assessment_missing timeout path in preseed_session_plan.py already has gnome-enrichment logic (lines 1084-1109) but it only activates when trajectory gnomes are detectable from the assessment text. When the assessment timed out, there's no text, so gnomes are empty, and the fallback produces a self-referential planning fix. The fix: when assessment_was_missing and no trajectory gnomes are available, use `_healthy_codebase_fallback()` which produces a src/state.rs task — a verifiable Rust improvement that breaks the self-referential cycle.
+
+This is essentially #135 but scoped to the `assessment_was_missing && no gnomes` path. The existing code at lines 997-998 already does this for `analysis_only_active`. I need to extend it to the assessment_missing case.
+
+**Task 02:** Close the model lifecycle gap. `deepseek_model_call_unmatched_completed_count=22` is the #1 graph pressure. Target src/state.rs. The #134 attempt was blocked because the implementation agent read scripts instead of editing src/state.rs. I need to make the task narrower and more prescriptive about WHAT to edit.
+
+Let me check where harness-internal ModelCallCompleted events are emitted in src/state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'record.*ModelCallCompleted\|emit.*ModelCallCompleted\|append.*ModelCall…  ▶ $ grep -n 'harness_internal\|evt-harness\|retroactive' src/state.rs | head -20 ✓ (1.7s)
+ ✓ (5.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I don't see harness-internal ModelCallCompleted events being emitted directly. Let me search for where ModelCallCompleted events are created in the codebase, specifically those with harness prefixes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'ModelCallCompleted' src/ --include='*.rs' | grep -v 'test\|EventType::… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The ModelCallCompleted event type is defined in state.rs but I don't see where it's emitted (recorded) in the state.rs file itself. Let me search more broadly for where ModelCallCompleted events are actually created/recorded:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'ModelCallCompleted' --include='*.rs' --include='*.py' --include='*.sh'… ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So ModelCallCompleted events are emitted from:
+1. `scripts/append_terminal_state_events.py` line 726 — the retroactive harness-internal events
+2. `scripts/merge_state_delta.py` line 251 — test data
+3. The agent code path in `src/prompt.rs` likely emits them through `record_cache_metrics` or similar
+
+The harness-internal events come from `scripts/append_terminal_state_events.py`, not from `src/state.rs`. This means:
+- #134's Files: was `src/state.rs` but the actual source of unmatched events is `scripts/append_terminal_state_events.py`
+- The #134 implementation agent correctly identified this (it was reading `append_terminal_state_events.py`) but then got lost and never landed changes
+
+So fixing the unmatched ModelCallCompleted count requires changing `scripts/append_terminal_state_events.py` — either adding matching ModelCallStarted events, or adding a `harness_internal` flag so the counting query can filter them out.
+
+However, `scripts/append_terminal_state_events.py` is a large file (779 lines). And the task was blocked because it was too broad. Maybe I should make it narrower.
+
+But wait — looking at the trajectory again: `deepseek_model_call_unmatched_completed_count=22` — this is counted by `scripts/summarize_state_gnomes.py`. The count comes from events where ModelCallCompleted exists but ModelCallStarted doesn't. These are likely the retroactive completions from `append_terminal_state_events.py`.
+
+Let me check if `append_terminal_state_events.py` already adds `retroactive: true` to its events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive\|harness_internal' scripts/append_terminal_state_events.py … ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `append_terminal_state_events.py` already marks retroactive events with `"retroactive": True`. The problem is that `summarize_state_gnomes.py` counts these events as unmatched `ModelCallCompleted` without `ModelCallStarted`, because the retroactive `ModelCallStarted` events are emitted separately and might not be found by the counting logic.
+
+Let me check how `summarize_state_gnomes.py` counts unmatched events — specifically if it filters out retroactive events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive\|unmatched' scripts/summarize_state_gnomes.py | head -20 ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the logic around line 394-405 more carefully to understand how unmatched completed events are counted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:340..400 ✓ (815ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly:
+
+1. `model_call_started_runs` is populated from events whose kind is `ModelCallStarted` and that pass `deepseek_model_payload(data)` check
+2. `model_call_completed_runs` is populated from events whose kind is `ModelCallCompleted` and that pass `deepseek_model_payload(data)` check
+3. `model_unmatched_completed_ids` = completed runs that don't appear in started runs (lines 394-395)
+
+The harness-internal `ModelCallCompleted` events (emitted by `append_terminal_state_events.py`) are retroactive events that close orphaned `ModelCallStarted` cycles. But if those `ModelCallCompleted` events are counted by `model_call_completed_runs`, and the matching retroactive `ModelCallStarted` events are NOT in `model_call_started_runs` because they don't pass the `deepseek_model_payload(data)` filter, then the count would be inflated.
+
+But wait — the retroactive events from `append_terminal_state_events.py` appear to add their own retroactive `ModelCallStarted` events (line 637-643). The question is whether BOTH the retroactive Started and Completed events pass the `deepseek_model_payload()` filter.
+
+Let me check the `deepseek_model_payload` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def deepseek_model_payload' scripts/summarize_state_gnomes.py ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:222..242 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: the `deepseek_model_payload` check requires `deepseek_native: true` OR `model` starts with "deepseek" OR `provider == "deepseek"`. 
+
+Let me check what the retroactive events from `append_terminal_state_events.py` look like. I need to know if they have any of these fields.
+
+Let me check the retroactive ModelCallCompleted event at line ~726:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:630..680 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see — line 656-679 handles the "unmatched ModelCallCompleted" case. Let me read the payload to understand what it emits:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:677..727 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. There are two kinds of retroactive events emitted by `append_terminal_state_events.py`:
+
+1. **Retroactive ModelCallStarted** (lines 677-688): Emitted for ModelCallCompleted entries that have no matching ModelCallStarted. Payload has `model` (from entry), `model_call_id`, `retroactive: True`.
+
+2. **Retroactive ModelCallCompleted** (lines 701-726): Emitted for ModelCallStarted entries that have no matching ModelCallCompleted. Payload has `status`, `model`, `terminal_reason`, `retroactive: True`.
+
+Now, the issue is: the retroactive ModelCallStarted at line 679-683 has `model: entry.get("model")` — what's the model value? It comes from `entry.get("model")` where `entry` is from `find_missing_model_call_started()`. If the original ModelCallCompleted event doesn't have a "model" field that starts with "deepseek", then this retroactive ModelCallStarted won't pass the `deepseek_model_payload()` filter, and it won't be counted in `model_call_started_runs`. But the original ModelCallCompleted (which triggered this repair) DOES have a "model" field with "deepseek-v4-pro" or similar, so it IS counted.
+
+This creates a mismatch: the ModelCallCompleted is counted but the matching retroactive ModelCallStarted is not, inflating the unmatched count.
+
+But wait — the retroactive ModelCallStarted at line 679 DOES set `model: entry.get("model")`. If the entry's model is "deepseek-v4-pro", then it should pass. The issue might be different.
+
+Actually, the problem might be simpler: `append_terminal_state_events.py` runs AFTER the gnome summarization. The gnome counter sees the current state, and the retroactive repairs from the previous run might not have fixed everything. Or the retroactive ModelCallCompleted events (orphaned ModelCallStarted path, lines 701-726) might not include `deepseek_native: true` or a model field that starts with "deepseek".
+
+Looking at line 709-713: the retroactive ModelCallCompleted payload has `"model": entry.get("model")` — if the original ModelCallStarted had a model field, it gets copied. So these should pass the filter.
+
+But what if the original ModelCallStarted didn't have a model field? Then `entry.get("model")` returns None, and the retroactive ModelCallCompleted has no model — it won't pass `deepseek_model_payload()`, and won't be counted in `model_call_completed_runs`. But the retroactive ModelCallCompleted would NOT inflate the unmatched count because it wouldn't be in `model_call_completed_runs` to begin with.
+
+OK, I think the real issue is probably different. Let me check what the trajectory says again: `deepseek_model_call_unmatched_completed_count=22; lifecycle causes include model_completion_without_start=8`. 
+
+The count of 22 seems like it accumulates over time (historical). The trajectory says `model_completion_without_start=8` as a lifecycle cause. These might be events that were emitted before the retroactive repair was added, or events from runs that are excluded from retroactive repair.
+
+I think the task is worth doing but needs to be scoped very narrowly. The evidence in state tail (from #134) showed `evt-harness-*` ModelCallCompleted events with `tokens=in:0 out:0 cache_read:0 cache_write:0` — these are zero-token harness-internal events that don't correspond to real model calls.
+
+Actually, these zero-token harness events might come from a different code path entirely — possibly the `record_cache_metrics` function in `src/state.rs` or some other harness emission. Let me search for where zero-token ModelCallCompleted events are emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'tokens.*in:0\|in:0 out:0\|"in": 0, "out": 0' --include='*.rs' src/ | h… ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where ModelCallCompleted events are emitted in the Rust source (not just defined as an enum variant):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'EventType::ModelCallCompleted\|"ModelCallCompleted"' --include='*.rs' … ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check src/prompt.rs around lines 954 and 1039 to understand how ModelCallCompleted events are emitted from the agent code path:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:945..975  ▶ read src/prompt.rs:1030..1050 ✓ (3.3s)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I understand. The `src/prompt.rs` code at line 945-970 emits a ModelCallStarted before ModelCallCompleted in the agent code path. Day 142 added a structural guard for this pairing. So the agent code path emits proper Started→Completed pairs.
+
+The unmatched events come from `scripts/append_terminal_state_events.py`:
+1. The retroactive ModelCallCompleted events (for orphaned ModelCallStarted) don't emit matching ModelCallStarted — they close orphaned calls
+2. The retroactive ModelCallStarted events (for unmatched ModelCallCompleted) might not always match
+
+Actually wait, lines 656-688 handle the case: "find any ModelCallCompleted entries whose run_id has no prior ModelCallStarted. Emit retroactive ModelCallStarted events." This SHOULD fix the unmatched issue. But the count is still 22.
+
+Let me check `find_missing_model_call_started()`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.4s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def find_missing_model_call_started' scripts/append_terminal_state_even… ✓ (2.5s)
+
+
