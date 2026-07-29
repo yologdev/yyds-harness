@@ -1,0 +1,303 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation. This is Phase A2 (planning) for Day 151. I need to produce task files in `session_plan/`. Let me review the key evidence:
+
+1. **Assessment says**: Build passes. Codebase is healthy. 6 of last 10 sessions landed 0 tasks. Planning pipeline struggles to find actionable work.
+
+2. **Trajectory says**: 0/0 tasks in most recent sessions. Graph-derived next-task pressure:
+   - Make planning failure actionable (planner_no_task_count=1)
+   - Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=173)
+   - Raise session success rate
+   - Validate seeded tasks against fresh assessment
+   - Make source-edit outcomes land or explain reverts
+
+3. **Open agent-self issues**: #135 (planning fallback), #134 (model lifecycle gap), #105 (cache metrics) — all reverted.
+
+4. **The pre-seeded task**: session_plan/task_01.md was mentioned — "The harness may have already created session_plan/task_01.md from assessment evidence before you started."
+
+Let me check if task_01.md already exists, and also check the preseed script's output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "no session_plan dir" ✓ (777ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, task_01.md already exists. Let me read it to understand what was pre-seeded, then I'll refine it or add more tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (483ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md exists. Now I need to:
+
+1. Assess whether this seed task is still valid given the fresh assessment evidence
+2. Add task_02.md and task_03.md based on trajectory/state pressure
+
+Let me analyze:
+
+**Task 01 (seed)**: "Close yyds state and model lifecycle gaps" targeting the scripts. This aligns with trajectory pressure #2 "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=173)". The assessment confirms this gap remains. Day 150's fix addressed input-validation classification but the broader gap remains. The assessment says: "Day 150's fix addressed the input-validation subset but the broader lifecycle gap (173 unmatched) remains."
+
+The seed task targets Python scripts, but the assessment's source architecture squarely identifies `src/state.rs` (8,418 lines) as the "State recording engine, events, SQLite projection". The open agent-self issue #134 targets `src/state.rs` specifically and was reverted for being blocked by the agent (too broad). 
+
+However, the seed task is targeting the *scripts* (Python), not the Rust source. This is a smaller, safer scope. The lifecycle gap exists partly in how events are counted/reported in the Python scripts. This is actually a reasonable scope narrowing for a previously reverted task (#134 was too broad).
+
+But wait — the task says "Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py" but the verifier says `python3 -m unittest scripts.test_append_terminal_state_events scripts.test_task_lineage_feedback` — do those test modules exist?
+
+Let me think about what other tasks to add:
+
+Looking at trajectory pressure:
+1. **Make planning failure actionable** (planner_no_task_count=1) — this is about the task picker in scripts/preseed_session_plan.py
+2. **Close lifecycle gaps** — already seeded as task_01
+3. **Raise session success rate** — too meta, not a concrete task
+4. **Validate seeded tasks against fresh assessment** — this is what I'm doing right now
+5. **Make source-edit outcomes land** — relates to evaluator timeouts (issue #131)
+
+The most impactful next task would be the planning fallback fix (#135). The assessment confirms: "The planning pipeline cannot find actionable tasks when the codebase is healthy — it defaults to empty sessions." And #135 is about wiring `_healthy_codebase_fallback()` into the no-candidates path in `choose_task()`. 
+
+This is a high-impact task because:
+- 6 of last 10 sessions produced 0 tasks
+- The fix is small (~5-10 lines)
+- There's a clear verifier: `python3 scripts/preseed_session_plan.py --test`
+- It was previously reverted due to evaluator timeout, not code error (see issue #131 discussion)
+
+But wait — the assessment also says about #135: "Reverted (Day 144, evaluator timeout)". And the issue body says the evaluator timed out. The task text notes it was correct code killed by infrastructure. So re-attempting with the same scope is reasonable.
+
+However, the task-sizing rules say: "If a task has been reverted before, make it SMALLER than last time." Let me check if #135 was already small... The implementation notes say "Keep the change minimal: ~5-10 lines." That's already small. The issue was evaluator timeout, not scope.
+
+For task_03, I should consider:
+- The assessment notes "state graph hotspots --kind failure returns empty" — this was mentioned as a low-priority bug
+- The model zero-token failures — detectable but not recoverable
+- Or defer task_03 to keep the plan focused
+
+Actually, let me be practical. The trajectory shows 6/10 sessions land 0 tasks. Adding too many tasks won't help if the implementation agents get stuck. Let me focus on 2 high-signal tasks:
+
+1. Task 01 (seed): Refine the lifecycle gaps task — narrow it to a specific concrete fix
+2. Task 02: The planning fallback fix (#135) — break the empty-session cycle
+
+For task_03, I could add something small and verifiable, or skip it. Given the directive says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence", 2 tasks is sufficient. But let me see if there's a third small one.
+
+Actually, looking more carefully at the seed task_01, I notice it has a mismatch. The verifier references test modules that may not exist:
+- `python3 -m unittest scripts.test_append_terminal_state_events`
+- `python3 -m unittest scripts.test_task_lineage_feedback`
+
+Let me check if these test modules exist.
+
+Also, I should verify the seed task isn't contradicted by fresh assessment. The assessment says Day 150 already addressed input-validation classification, so the seed task's success criterion "Pre-agent input-validation exits stay classified separately from non-validation unmatched completions" is already partially satisfied. But the broader lifecycle gap (173 unmatched) remains, so the task is still relevant — just needs to focus on the remaining gap.
+
+Let me verify test file existence and then write the refined tasks.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/test_*.py 2>/dev/null; echo "---"; python3 -c "import scripts.tes… ✓ (899ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`test_append_terminal_state_events` exists, but `test_task_lineage_feedback` does NOT exist. The verifier in the seed task references a non-existent test module. This needs to be fixed.
+
+Also, `test_summarize_state_gnomes` is not in the list either. Let me check for test modules more carefully.
+
+Now let me also verify ownership — does `scripts/summarize_state_gnomes.py` exist?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/summarize_state_gnomes.py 2>/dev/null && echo "EXISTS" || echo "MISSI… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `scripts/summarize_state_gnomes.py` exists, `test_summarize_state_gnomes.py` is MISSING, but `test_task_lineage_feedback.py` EXISTS.
+
+Wait, the output is confusing. Let me re-read: the first `ls` for `test_summarize_state_gnomes.py` returns "MISSING" but the third ls for `test_task_lineage_feedback.py` returns "EXISTS". So:
+- `summarize_state_gnomes.py`: EXISTS
+- `test_summarize_state_gnomes.py`: MISSING
+- `test_task_lineage_feedback.py`: EXISTS
+
+The seed verifier references both. Let me check what test modules exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/test_*.py ✓ (960ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `test_task_lineage_feedback.py` exists but `test_summarize_state_gnomes.py` does not. The seed task's verifier references non-existent modules. I need to fix this.
+
+Now let me also verify the ownership of the key paths mentioned in #135 — `scripts/preseed_session_plan.py` and the function `_healthy_codebase_fallback()`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/preseed_session_plan.py && echo "EXISTS" ✓ (782ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also quickly verify the `_healthy_codebase_fallback` function exists and the `choose_task` no-candidates fallback code is still there:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_healthy_codebase_fallback\|_has_src_files' scripts/preseed_session_pla… ✓ (707ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Looking at the code, `_healthy_codebase_fallback()` is already wired in at line 998 in `choose_task()`. Let me look at the context to see if the self-referential fallback at lines 993-1022 was already replaced:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '990,1025p' scripts/preseed_session_plan.py ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 998 shows that when `analysis_only_active` is True, `_healthy_codebase_fallback()` is already wired in! The code at line 998 already returns the healthy codebase fallback when analysis-only pressure is active. So issue #135 is already fixed — the fallback path at line 998 already does what the issue asked for.
+
+Let me verify this more carefully. The issue #135 says the old code had a self-referential fallback at lines 993-1022, and the fix was to add a condition that returns `_healthy_codebase_fallback()` when `analysis_only_active` is True. Looking at line 998, it's already there.
+
+But wait — let me check the self-test at line 1889 that the issue mentions should be updated:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1880,1910p' scripts/preseed_session_plan.py ✓ (941ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The self-test at line 1902 now asserts `fallback["title"] == "Add a small verifiable improvement to src/"` which is the title from `_healthy_codebase_fallback()`. So the test was already updated to match the new behavior. Lines 2282 (referenced in the test at line 1902) is the test for the self-referential fallback being preserved when `assessment_was_missing` is True (i.e., when the assessment itself failed to generate).
+
+So issue #135 appears to be ALREADY FIXED. The code at line 998 already returns `_healthy_codebase_fallback()` when `analysis_only_active` is True. The test at line 1902 already asserts the correct fallback title.
+
+This means task #135 is obsolete. The planning fallback cycle was already broken. But the trajectory still shows `planner_no_task_count=1` and 6/10 sessions with 0 tasks. If the fix is already in place, why are sessions still empty?
+
+Wait — let me re-read the condition. The code at line 998 runs `_healthy_codebase_fallback()` only when `analysis_only_active` is True AND there are zero matching candidates. But the issue might be that `analysis_only_active` isn't triggering. Let me check how it's computed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'analysis_only_active' scripts/preseed_session_plan.py | head -20 ✓ (993ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `_has_analysis_only_pressure` function to see what triggers it:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_has_analysis_only_pressure' scripts/preseed_session_plan.py ✓ (784ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the function definition:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '866,900p' scripts/preseed_session_plan.py ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `_ANALYSIS_ONLY_METRICS` contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '_ANALYSIS_ONLY_METRICS\|ANALYSIS_ONLY_METRICS' scripts/preseed_session_… ✓ (801ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '859,866p' scripts/preseed_session_plan.py ✓ (947ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the analysis_only pressure triggers when `task_analysis_only_attempt_count > 0`, `task_no_edit_revert_count > 0`, or `reverted_no_edit > 0`.
+
+Now, the trajectory says `planner_no_task_count=1` and 6 of last 10 sessions have 0 tasks. If `analysis_only_active` is True when there are no candidates, the fallback should return a healthy codebase task. But sessions still produce 0 tasks. 
+
+This could mean: the planning phase itself is producing zero task files (the assessment agent writes assessment.md but no task files, and the planner also fails). OR the task picker produces a task but the implementation agent fails to land it. Given that the trajectory shows "tasks 0/0" and "no tasks attempted", the problem seems to be that no task files are being written at all.
+
+Wait — the harness says "tasks attempted 0/0" which means the implementation phase got zero task files. This is a planning pipeline issue, not an implementation issue. The preseed script may produce task_01.md (as it did today), but the planner needs to also produce task files. If the planner writes nothing, the implementation gets nothing.
+
+But issue #135's fix is about `choose_task()` in the preseed script returning a healthy fallback. The preseed script does create task_01.md (evidence: it exists). But the trajectory still shows 0/0 tasks attempted.
+
+OH WAIT — I think the issue is different. The `choose_task()` function is used by the preseed script to generate the seed task. The actual planning phase (where I am now) is supposed to refine/expand that seed. If the planner doesn't produce additional task files, the implementation phase only gets the one seed task. But the trajectory says "tasks 0/0" which means even the seed task wasn't attempted.
+
+Actually, re-reading the assessment: "day-151 (2026-07-29 03:27:41): tasks 0/0 • — no tasks attempted" — this was the earlier 02:41 session which was journal-only. The current session (10:39) may be different.
+
+Let me focus on what I need to do now: produce task files. The seed task_01.md exists but has a broken verifier (references non-existent test module). I need to refine it and add task_02.md.
+
+Given the analysis:
+1. **Task 01 (seed)**: Refine to fix the verifier and narrow scope. The lifecycle gap task is still valid (173 unmatched model completions). But the verifier references non-existent `test_summarize_state_gnomes`. I should fix that.
+2. **Task 02**: Issue #135 is already fixed in code. The `_healthy_codebase_fallback()` is already wired in at line 998. So #135 is obsolete. Skip it.
+3. **Task 03**: Something else from trajectory pressure.
+
+Wait, let me re-check: #135 was reverted on Day 144, but the code at line 998 shows the fix IS in place. This means either:
+- The fix was landed in a later session (maybe Day 150's one landed task?)
+- OR the code was there before and the issue is describing something that already exists
+
+Let me check git log for recent changes to preseed_session_plan.py:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 -- scripts/preseed_session_plan.py ✓ (988ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what changed in that Day 148 commit:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show 2b8d78ac --stat | head -5 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show 2b8d78ac -- scripts/preseed_session_plan.py | head -60 ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the code at line 998 was already there before — `_healthy_codebase_fallback()` was already wired in. The Day 148 commit just updated the test assertions to match the correct behavior. 
+
+So issue #135's fix was already in place (maybe from an earlier session), and the Day 148 test update was about fixing test assertions that were checking for the OLD behavior. The issue #135 description says it was reverted on Day 144, but the code at line 998 was there before Day 148. Let me check when it was actually added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --all --oneline -20 -- scripts/preseed_session_plan.py | head -20 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --all --oneline -- scripts/preseed_session_plan.py | head -20 ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the Day 148 (02:50) commit to see what was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show 9bba46e6 -- scripts/preseed_session_plan.py 2>&1 | head -80 ✓ (895ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This doesn't show the `_healthy_codebase_fallback` addition. Let me check when `_healthy_codebase_fallback` was introduced:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --all -p -- scripts/preseed_session_plan.py | grep -B5 '_healthy_codebas… ✓ (942ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check which commit introduced `_healthy_codebase_fallback`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --all --diff-filter=A -p -- scripts/preseed_session_plan.py | grep -B2 '… ✓ (946ms)
+
+
