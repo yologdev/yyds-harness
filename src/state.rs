@@ -3797,6 +3797,58 @@ mod tests {
     }
 
     #[test]
+    fn bool_parser_all_truthy_values() {
+        for value in &["1", "true", "yes", "on"] {
+            assert!(
+                parse_bool(Some(&value.to_string()), false),
+                "expected {value:?} to be truthy"
+            );
+        }
+    }
+
+    #[test]
+    fn bool_parser_all_falsy_values() {
+        for value in &["0", "false", "no", "off"] {
+            assert!(
+                !parse_bool(Some(&value.to_string()), true),
+                "expected {value:?} to be falsy"
+            );
+        }
+    }
+
+    #[test]
+    fn bool_parser_unknown_returns_default() {
+        assert!(parse_bool(Some(&"maybe".to_string()), true));
+        assert!(!parse_bool(Some(&"maybe".to_string()), false));
+        assert!(parse_bool(Some(&"".to_string()), true));
+        assert!(!parse_bool(Some(&"".to_string()), false));
+        assert!(parse_bool(Some(&"?".to_string()), true));
+        assert!(!parse_bool(Some(&"?".to_string()), false));
+    }
+
+    #[test]
+    fn bool_parser_none_returns_default() {
+        assert!(parse_bool(None, true));
+        assert!(!parse_bool(None, false));
+    }
+
+    #[test]
+    fn bool_parser_trims_whitespace() {
+        assert!(parse_bool(Some(&"  true  ".to_string()), false));
+        assert!(parse_bool(Some(&"\tyes\n".to_string()), false));
+        assert!(!parse_bool(Some(&"  false  ".to_string()), true));
+        assert!(!parse_bool(Some(&"\tno\n".to_string()), true));
+    }
+
+    #[test]
+    fn bool_parser_case_insensitive() {
+        assert!(parse_bool(Some(&"TRUE".to_string()), false));
+        assert!(parse_bool(Some(&"Yes".to_string()), false));
+        assert!(!parse_bool(Some(&"FALSE".to_string()), true));
+        assert!(!parse_bool(Some(&"No".to_string()), true));
+    }
+
+    #[test]
     fn redaction_recurses_through_sensitive_keys_and_strings() {
         let payload = json!({
             "api_key": "sk-testsecret123456789",
