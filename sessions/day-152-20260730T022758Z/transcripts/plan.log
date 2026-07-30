@@ -1,0 +1,801 @@
+warning: skipping corrupted event at line 19215 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 246
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation and plan tasks for Day 152.
+
+## Current State
+
+The assessment shows:
+1. **Codebase is healthy but stagnant** - 5 days, only 106 lines of Python script changes, zero Rust changes
+2. **Zero-token model failures** are burning sessions - detected but not mitigated
+3. **Cache metrics black hole** - yoagent drops cache fields, $300-750/month with zero visibility
+4. **Run lifecycle reuse** - same run_id across multiple cron invocations
+5. **Evaluator timeout issues** still causing false reverts (#131 - human needed)
+6. **Self-referential planning fallback** (#135) keeps getting reverted
+
+## Priority Analysis
+
+From trajectory graph-derived next-task pressure:
+1. Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)
+2. Raise verified task success rate (task_success_rate=0.0)
+3. Require strict verifier evidence (task_verification_rate=0.0)
+4. Bound failing shell commands (bash_tool_error=2)
+5. Close state and model lifecycle gaps (unmatched_completed_count=166)
+
+## What can I actually plan?
+
+**Issue #135 (self-referential planning fallback)**: This has been reverted multiple times. The assessment says the codebase is healthy but the task keeps failing. The issue itself is in `scripts/preseed_session_plan.py`. The task was:
+- Wire `_healthy_codebase_fallback()` into the no-candidates path when analysis_only_active is True
+- This is a small ~5-10 line change
+
+But this has been reverted twice. The evaluator timeout issue (#131) is a factor - even correct code gets reverted because the evaluator times out.
+
+**Issue #134 (model lifecycle gap)**: 166 unmatched completions. The assessment's "Most actionable finding" is fixing run lifecycle reuse. This would be in `src/state.rs`. But the previous attempt got blocked by the agent going in circles reading code.
+
+**Issue #105 (cache metrics)**: Blocked on yoagent upstream (#90). Can't touch.
+
+**Run lifecycle reuse**: The assessment says "Fix the run lifecycle reuse so sessions properly isolate their state runs." This could be a small, verifiable `src/state.rs` change.
+
+Let me think about what tasks are actually achievable given the constraints:
+
+1. **Task: Fix run lifecycle reuse** - A focused `src/state.rs` change that ensures each session gets a fresh run_id. This directly addresses the 166 unmatched completions metric and is a fitness improvement.
+
+2. **Task: Detect and break on zero-token model responses** - The Day 148 fix detects zero-token responses but doesn't mitigate. Adding a retry limit or early-exit when the model returns zero tokens would save sessions.
+
+3. **Task: Wire healthy_codebase_fallback into no-candidates path** - Small change to `scripts/preseed_session_plan.py` but has been reverted twice. Given the evaluator timeout issue, script-only tasks are risky.
+
+Wait, the assessment says:
+- "Most actionable finding: Fix the run lifecycle reuse so sessions properly isolate their state runs, preventing the compounding state gap (166 unmatched completions). This is a small, verifiable src/state.rs change."
+- "Most impactful finding: Wire prompt-cache metrics into the agent path. Currently requires yoagent upstream work..."
+
+The run lifecycle reuse is the best candidate. Let me check if there's an existing task_01.md.
+
+Let me also check what "run lifecycle reuse" means concretely. The assessment says:
+"The same run_id persists across multiple cron invocations (visible in state why timeline), suggesting sessions don't properly close their run lifecycle."
+
+Looking at the state events: 
+- `RunCompleted: error` is the last event in the recent events list
+- Multiple `FailureObserved` events
+
+The fix should be in `src/state.rs` - ensure that when a session ends, the run is properly closed, and a new session gets a fresh run. Or alternatively, in `scripts/evolve.sh` (but that's do-not-modify).
+
+Actually wait - `src/state.rs` was listed as having a `close_orphaned_run_if_needed()` function that was previously added (Day 143, #129) but reverted due to evaluator timeout. So the code was correct but got killed by infrastructure.
+
+Let me think about what's actually planable:
+
+1. **Task 1: Re-land close_orphaned_run_if_needed()** - The code was already written and correct (7 unit tests passed). It was reverted due to evaluator timeout, not code quality. Re-landing it with the same code is a small, verifiable task.
+
+2. **Task 2: Force early scoped edit for implementation tasks** - Address the task_no_edit_revert_count pressure by adding a requirement in the task pipeline that implementation agents must make a scoped edit early.
+
+Actually, wait. Let me re-read the assessment more carefully about what's actually achievable.
+
+The assessment says: "Most actionable finding: Fix the run lifecycle reuse so sessions properly isolate their state runs, preventing the compounding state gap (166 unmatched completions). This is a small, verifiable src/state.rs change."
+
+But issue #134 (the model lifecycle gap task) was reverted because the implementation agent got stuck reading code without making edits. The task was too broad.
+
+Let me check what files already exist in session_plan/.
+
+Let me start by checking if session_plan/task_01.md exists and what's in it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "no session_plan dir"  ▶ $ git ls-files src/state.rs src/prompt.rs src/deepseek.rs scripts/preseed_session_… ✓ (83ms)
+ ✓ (133ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+A seed task_01.md already exists. Let me read it to understand what the harness pre-seeded.
+
+Then I need to:
+1. Evaluate if task_01 is a valid task given current evidence
+2. Decide if I should refine it or add more tasks
+3. Create issue_responses.md
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is the harness-seeded fallback task from `_healthy_codebase_fallback()`. It's a generic "add something to src/state.rs" task. This is exactly the self-referential planning fallback that issue #135 talks about. The assessment says the codebase is healthy, so the fallback gives us a "do something, anything" task.
+
+But now the assessment has provided concrete evidence of actual problems:
+1. Run lifecycle reuse causing 166 unmatched completions
+2. Zero-token model failures burning sessions
+3. The fact that session_plan/task_01 is a generic fallback, not an evidence-driven task
+
+The planning instruction says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The assessment DOES contradict the seed task. The seed says "The assessment found no actionable bugs in src/" but the assessment actually found:
+- Run lifecycle reuse (166 unmatched completions) - actionable in src/state.rs
+- Zero-token model failures - actionable in src/prompt.rs
+
+So I should refine task_01.md into an evidence-backed task, or obsolete it and create a new one.
+
+Let me plan:
+
+**Task 1: Close run lifecycle properly to prevent cross-session run_id reuse** (src/state.rs)
+- This addresses the #1 graph-derived pressure (unmatched_completed_count=166)
+- It's a small, verifiable change
+- The assessment explicitly calls this "Most actionable finding"
+- The previous attempt (#129) had correct code but was reverted by evaluator timeout
+
+**Task 2: Add zero-token model response detection with early circuit-break** (src/prompt.rs)
+- Addresses the zero-token model failure pattern
+- The Day 148 fix already detects zero-token responses; this would add mitigation
+- This maps to Day 116 learning: "Silent failure needs a differential diagnosis"
+
+**Task 3: Wire healthy_codebase_fallback into no-candidates path** (scripts/preseed_session_plan.py)
+- BUT this has been reverted twice (#135) and the assessment says it's self-referential
+- AND script-only tasks have been getting reverted due to evaluator timeout
+- Given these risks, this is a lower priority
+
+Actually, let me think about task sizing. The task sizing rules say:
+- Each task must touch at most 3 source files
+- Each task must be completable in 20 minutes
+- If a task has been reverted before, make it SMALLER than last time
+
+For task 1 (run lifecycle), I need to be specific about what to change. The assessment mentions `close_orphaned_run_if_needed()` was previously added and reverted. Let me check if that code still exists or was removed.
+
+Actually, I shouldn't read source files during planning - the assessment should be enough. Let me focus on what the assessment tells me:
+
+The assessment's "Most actionable finding":
+> Fix the run lifecycle reuse so sessions properly isolate their state runs, preventing the compounding state gap (166 unmatched completions). This is a small, verifiable src/state.rs change.
+
+But I don't have specific enough evidence about what exactly needs changing. The assessment says "small, verifiable" but doesn't specify the exact code path. Let me check quickly with a targeted search.
+
+Actually, the planning instructions say: "You may still use cheap ownership checks before finalizing Files: entries: git ls-files <path>, git grep -n -- <symbol> src/"
+
+Let me check for run lifecycle-related code in src/state.rs.
+
+Let me refine my plan:
+
+**Task 1**: Refine the seed task into a concrete evidence-backed task about run lifecycle. The assessment provides strong evidence: 166 unmatched completions, same run_id across cron invocations. This is the highest-priority graph pressure.
+
+**Task 2**: Zero-token model response circuit breaker in src/prompt.rs. The assessment shows 4 consecutive zero-token responses burning sessions. 
+
+But wait - the task sizing rules say "Prefer tasks that add/modify one thing and can be verified with cargo build && cargo test." Both of these fit.
+
+Let me also consider: can I make a task that's small enough to actually succeed given the evaluator timeout issue? The key insight from the trajectory is that tasks touching src/*.rs have a better chance because cargo build/test provides hard verification.
+
+Let me now write the plan:
+
+1. Refine task_01.md from the generic fallback to a concrete run-lifecycle fix
+2. Create task_02.md for zero-token circuit breaker in src/prompt.rs
+3. Create issue_responses.md
+
+For task_01, I need to identify the specific code that needs changing. Let me do a quick search.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed task is the generic `_healthy_codebase_fallback()` — a do-something-anything task. The assessment now provides concrete evidence contradicting "no actionable bugs." Let me check ownership for evidence-backed tasks.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'close_orphaned_run\|run_id\|fn.*run.*lifecycle\|RunCompleted\|RunStarte…  ▶ $ grep -n 'zero.token\|zero_tokens\|tokens.*in:0.*out:0\|ModelCallCompleted' src/p… ✓ (83ms)
+ ✓ (124ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `close_orphaned_run_if_needed()` function exists at line 324 in `src/state.rs`. It was added on Day 143 but reverted due to evaluator timeout (#129). Looking at the code, it scans for orphaned runs and emits RunCompleted events to close them.
+
+But the assessment says the issue is different: "The same run_id persists across multiple cron invocations (visible in state why timeline), suggesting sessions don't properly close their run lifecycle." This is about the CURRENT session's run lifecycle not being properly closed, not about orphaned runs from previous sessions.
+
+Wait, let me re-read the assessment:
+- "Run lifecycle reuse: The same run_id persists across multiple cron invocations (visible in state why timeline), suggesting sessions don't properly close their run lifecycle."
+- The state events show: `RunCompleted: error` as the last event
+- Plus 166 unmatched completions
+
+So the `close_orphaned_run_if_needed()` already exists and tries to handle this. But the assessment says the problem persists (166 unmatched). Maybe the function works for the most recent orphan but doesn't handle the full scope? Or maybe it's called but not effective?
+
+Actually wait - looking at the grep output more carefully:
+- Line 324: `fn close_orphaned_run_if_needed(` - this function exists
+- It scans backward for orphaned RunStarted events
+- It stops at the first lifecycle event
+
+So the function already exists. The assessment says 166 unmatched completions remain. This means the function either:
+1. Doesn't cover all cases
+2. Isn't being called in all the right places
+3. The problem is deeper than just orphaned runs
+
+Let me look at what `init_global` does with run lifecycle, and where `close_orphaned_run_if_needed` is called.
+
+Actually, I should not read too much source. Let me look at the initialization path.
+
+Let me check: is `close_orphaned_run_if_needed` called from init_global?
+
+Let me also look at the zero-tokens handling in prompt.rs more carefully. Line 954-963 shows it already records ModelCallCompleted with zero-tokens detection. Lines 1932-1965 show tests for it. The detection exists but doesn't mitigate.
+
+Now for my plan:
+
+**Task 1: Fix run lifecycle closure** - The assessment says this is "Most actionable." But `close_orphaned_run_if_needed()` already exists. The issue might be that it's not called properly, or the run initiation doesn't create a clean run boundary. Let me check where it's called.
+
+**Task 2: Zero-token circuit breaker** - Add retry limit or early termination when model returns zero tokens consecutively. The detection code already exists (lines 954-963), we need mitigation.
+
+Actually, let me think about what would be most impactful AND most likely to succeed:
+
+1. The run lifecycle fix (task_01) - This is the assessment's "most actionable" and touches src/state.rs. The code change should be focused. But I'm not sure exactly what to change since `close_orphaned_run_if_needed` already exists.
+
+2. The zero-token circuit breaker (task_02) - Touches src/prompt.rs. Already has detection code, needs mitigation logic. This directly addresses sessions being burned by zero-token failures.
+
+3. I could also refine the seed task into a concrete thing rather than the generic "add something" fallback.
+
+Let me check one more thing - where `close_orphaned_run_if_needed` is called:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'close_orphaned_run' src/state.rs  ▶ $ grep -n 'init_global\|STATE_RUN_STARTED\|run_started_emitted' src/state.rs | hea… ✓ (41ms)
+ ✓ (133ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see:
+1. `close_orphaned_run_if_needed` is called at line 477 inside `init_global`
+2. There's a test `init_global_closes_orphaned_run_from_previous_session` at line 7303
+
+So the infrastructure for closing orphaned runs already exists and is tested. The assessment says there are STILL 166 unmatched completions and run lifecycle reuse. This suggests the problem might be:
+- The function doesn't cover all cases (maybe it only finds the most recent orphan)
+- The function works but the pattern of cross-session run_id reuse is different
+- The runs get `RunCompleted` events but the `model_call` events within those runs don't get properly paired
+
+Let me look at the `close_orphaned_run_if_needed` implementation more carefully to understand its limitations:
+
+Actually, let me look at the test that exists at line 7303 to understand the scenario it handles, and then compare to what the assessment describes.
+
+But wait, I should not read too much source during planning. Let me instead focus on what I DO know:
+
+1. The function exists and handles orphaned runs
+2. The assessment says 166 unmatched remain
+3. The assessment says "same run_id persists across multiple cron invocations"
+
+This might be a different problem than what `close_orphaned_run_if_needed` solves. The function closes *previous* orphaned runs. The assessment describes the *current* run leaking across sessions.
+
+Actually, let me look at the model_call lifecycle specifically. The unmatched completions are about `ModelCallCompleted` without `ModelCallStarted`. This is different from `RunCompleted` without `RunStarted`.
+
+Let me check if there's model_call lifecycle tracking:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallStarted\|model_call_started\|model_call.*lifecycle' src/state.…  ▶ $ grep -n 'record.*ModelCall\|EventType::ModelCall' src/state.rs | head -20 ✓ (42ms)
+ ✓ (139ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `ModelCallStarted` and `ModelCallCompleted` events exist in the state system. The unmatched completions issue is about `ModelCallCompleted` events that exist without matching `ModelCallStarted` events (same run_id).
+
+Looking at the event types in state.rs:
+- Line 127: `ModelCallStarted`
+- Line 128 is likely `ModelCallCompleted`
+
+The assessment says the Day 142 fix added a structural guard in `src/prompt.rs` for agent-code-path ModelCallStarted→ModelCallCompleted pairing. But the harness-internal path still emits ModelCallCompleted without Started. The `append_terminal_state_events.py` script is the source of some of these.
+
+Now, the question is: what's the most effective, small, verifiable task?
+
+Given the constraints:
+1. The seed task_01.md is a generic fallback - not evidence-backed
+2. The assessment clearly identifies run lifecycle as the most actionable finding
+3. But `close_orphaned_run_if_needed` already exists and is tested
+4. The zero-token circuit breaker is a clear, focused change
+
+Let me think about what would actually work:
+
+**Option A: Refine task_01 to close model-call lifecycle gap**
+- The 166 unmatched completions are ModelCallCompleted without ModelCallStarted
+- The fix could be in `append_terminal_state_events.py` to pair them, or in `src/state.rs` to track model-call lifecycle
+- But issue #134 attempted this and got blocked
+
+**Option B: Refine task_01 to add zero-token circuit breaker**
+- Already detected in prompt.rs, just needs mitigation
+- Touches src/prompt.rs
+- Verifiable with cargo test
+- Directly addresses sessions being burned
+- Small, focused change
+
+**Option C: Keep task_01 as a refined version of the seed but with concrete specifics**
+- The seed is too generic ("add one focused unit test")
+- Could be refined to: "Add a unit test for close_orphaned_run_if_needed edge case: cross-session ModelCall lifecycle" 
+- But this is adding test coverage, not fixing the actual problem
+
+**Option D: Task about src/prompt.rs zero-tokens + Task about src/state.rs model-call lifecycle**
+
+Actually, let me think about what the implementation agent could actually succeed at in 20 minutes:
+
+1. **Zero-token circuit breaker in src/prompt.rs**: This is clearly defined. The detection code exists at lines 954-963. Add a counter + early termination when N consecutive zero-token responses occur. This is maybe 20-30 lines of code + tests.
+
+2. **Model-call lifecycle pairing in src/state.rs**: This is more complex. The unmatched completions come from `append_terminal_state_events.py` which emits retroactive events. The fix would need to either: (a) track which runs have had ModelCallStarted in memory, (b) only emit ModelCallCompleted if Started exists, or (c) add retroactive ModelCallStarted before retroactive ModelCallCompleted. This is a bigger change.
+
+I think the zero-token circuit breaker is the most achievable task that addresses a real, observed problem. Let me plan that as task_01 (refining the seed), and if there's room, add a task_02 about model-call lifecycle.
+
+Actually wait, let me re-read the planning instructions more carefully:
+
+"If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The assessment found no actionable bugs in src/" — this is clearly contradicted by the assessment which found run lifecycle reuse and zero-token failures. So I should replace the seed.
+
+Let me create:
+
+**Task 1: Add zero-token model response circuit breaker in prompt.rs**
+- Files: src/prompt.rs
+- Clear evidence: Day 151 had 4 consecutive zero-token responses burning a session
+- Detection code exists, need mitigation
+- Verifiable: cargo test prompt
+
+**Task 2: Ensure harness-internal ModelCallCompleted events have matching ModelCallStarted**
+- Files: src/state.rs, scripts/append_terminal_state_events.py
+- This is a refinement of #134, made smaller
+- The fix: when append_terminal_state_events.py emits retroactive ModelCallCompleted, also emit retroactive ModelCallStarted
+- OR: in src/state.rs, track started model calls and suppress unmatched completions
+- This is harder to scope
+
+Actually, let me be more careful. The assessment says:
+"Most actionable finding: Fix the run lifecycle reuse so sessions properly isolate their state runs"
+
+But my grep shows `close_orphaned_run_if_needed` already exists and is tested. Maybe the issue is that `init_global` calls it but something in the cron setup means init_global doesn't run fresh each time? Or maybe the RunStarted/RunCompleted lifecycle IS properly closed but the MODEL CALL lifecycle within those runs is not?
+
+The assessment specifically says "run lifecycle reuse" and "same run_id across multiple cron invocations." Let me check if there's a run_id generation issue:
+
+Line 285: `run_id: format!("run-{now}-{}", std::process::id())`
+
+The run_id is based on timestamp + PID. So different cron invocations would get different run_ids (different PIDs). But the assessment says the same run_id persists. This might mean the StateRecorder singleton persists across multiple prompt calls within the same process, and the run_id isn't rotated between sessions.
+
+Wait - the cron runs a new process each time. So different run_ids. But maybe within a single cron invocation (which has multiple phases - assessment, planning, implementation, etc.), the same run_id is used across all phases. That would mean one "session" (cron invocation) == one run_id, which is correct. But the assessment says sessions don't properly close their run lifecycle.
+
+Hmm, I think the issue might be more nuanced. Let me focus on what I can actually define well:
+
+The zero-token circuit breaker is the clearest, most achievable task. Let me refine task_01 to this.
+
+For task_02, I could try to address the model-call lifecycle gap, but I need to make it small enough. Let me think...
+
+Actually, the seed task_01 is from `_healthy_codebase_fallback()` which is exactly the self-referential pattern that #135 tries to fix. The fallback generates a generic "add a test" task when nothing is broken. But now we have real evidence, so we should have real tasks.
+
+Let me finalize my plan:
+
+**Task 01: Add zero-token model response circuit breaker** (src/prompt.rs)
+- This is a concrete, small, verifiable task
+- Addresses sessions being burned by zero-token failures
+- Already has detection infrastructure
+
+**Task 02: Close harness-internal ModelCall lifecycle gap** (src/state.rs)
+- This is a refinement of #134, made smaller 
+- Focus specifically on: when a retroactive ModelCallCompleted is emitted (by append_terminal_state_events.py or the panic hook in state.rs), ensure a matching ModelCallStarted exists
+- The simplest fix: in the `record` function or where ModelCallCompleted is emitted, check if a ModelCallStarted exists for that run_id, and if not, emit one first
+
+Actually, let me look at where ModelCallCompleted is emitted in src/state.rs to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 37.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/state.rs | head -20  ▶ $ grep -n 'record_model_call\|fn record_model' src/state.rs src/prompt.rs 2>/dev/n… ✓ (85ms)
+ ✓ (86ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's only one place where ModelCallCompleted is emitted in src/state.rs: line 4230. Let me see the context around it:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4210..4250 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's just a test. The actual emission of ModelCallCompleted happens in prompt.rs (lines 954, 1039, 1099) not in state.rs. The state.rs only defines the event type and serialization.
+
+So the ModelCallCompleted events are emitted from prompt.rs. Let me look at those:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:940..1000 ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the pattern. In prompt.rs:
+- Lines 945-951: If `!model_call_started`, emit ModelCallStarted first
+- Lines 953-970: Then emit ModelCallCompleted
+
+So the agent code path DOES pair them (ModelCallStarted before ModelCallCompleted). The issue is about the harness-internal events from `append_terminal_state_events.py`, which emits retroactive ModelCallCompleted without matching ModelCallStarted.
+
+Now let me look at where these harness-internal events come from:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted\|ModelCallStarted' scripts/append_terminal_state_eve… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture:
+
+1. `append_terminal_state_events.py` has code at lines 656-687 that finds `ModelCallCompleted` entries whose run_id has no prior `ModelCallStarted` and emits retroactive `ModelCallStarted` events. So this case IS handled.
+
+2. It also has code at lines 695-726 for the reverse: orphaned `ModelCallStarted` that get retroactive `ModelCallCompleted`.
+
+3. But the unmatched count of 166 suggests these retroactive events are still being counted as unmatched. Maybe the counting logic doesn't account for retroactive events?
+
+Let me check line 339 - there might be a more recent function that counts unmatched:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:335..415 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the architecture:
+
+1. `find_missing_model_call_started` (line 336) finds ModelCallCompleted without ModelCallStarted
+2. `find_orphaned_model_calls` (line 380) finds ModelCallStarted without ModelCallCompleted
+3. Both are used by `append_terminal_state_events` to emit retroactive events
+
+The retroactive events are emitted by `_maybe_append_event` at lines 687 and 726, with `actor: "harness"`.
+
+Now the question is: does the counting logic in `summarize_state_gnomes.py` or `extract_trajectory.py` filter out these retroactive harness events? Let me check how `deepseek_model_call_unmatched_completed_count` is computed.
+
+Actually, I already saw from the assessment that `summarize_state_gnomes.py` line 394 finds `model_unmatched_completed_ids`. Let me check if it filters by actor.
+
+But wait, I'm spending too much time investigating. Let me focus on what I can plan:
+
+**The most impactful and achievable tasks:**
+
+1. **Zero-token circuit breaker** (src/prompt.rs) - CLEAR, SMALL, VERIFIABLE
+   - Problem: 4 consecutive zero-token responses burn a session
+   - Fix: Add a counter, after N consecutive zero-token responses, stop retrying
+   - Verification: cargo test prompt
+
+2. **Model-call lifecycle gap** - This is complex. The retroactive events exist but the count is still 166. The issue might be in how `summarize_state_gnomes.py` counts unmatched events (not filtering out retroactive harness events). But that's a script change which is risky given evaluator timeout.
+
+Actually, let me focus. The assessment says the most actionable finding is "Fix the run lifecycle reuse." But `close_orphaned_run_if_needed` already exists. Maybe the issue is something else:
+
+Let me look at one more thing - the `init_global` function to understand the run lifecycle:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:469..569 ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture clearly:
+
+1. `init_global` (line 469): calls `close_orphaned_run_if_needed` for PREVIOUS sessions, then starts a new RunStarted
+2. `RunCompletionGuard` (line 524): on Drop, calls `mark_run_completed` which emits RunCompleted
+3. `ensure_run_started` (line 563): if RunStarted was never emitted, emits a retroactive one before RunCompleted
+
+So the Run lifecycle is well-handled. The issue is about MODEL CALL lifecycle (ModelCallStarted/ModelCallCompleted), not Run lifecycle.
+
+The assessment says "166 unmatched completions" - this is about ModelCallCompleted without ModelCallStarted. The `append_terminal_state_events.py` handles this by finding them and emitting retroactive ModelCallStarted. But the count is still 166. 
+
+Possible explanations:
+1. The retroactive events are emitted but the counting script doesn't account for them
+2. The retroactive events aren't being emitted correctly
+3. New unmatched completions keep appearing
+
+Given this complexity, the most achievable and impactful task is:
+
+**Task 1: Zero-token model response circuit breaker** - src/prompt.rs
+- Clear, small, verifiable
+- Addresses actual observed failure (4 consecutive zero-token responses)
+- Already has detection, needs mitigation
+
+For task 2, I need to be more careful. Let me think about what would be small, verifiable, and actually help.
+
+Looking at the assessment again:
+"Most actionable finding: Fix the run lifecycle reuse so sessions properly isolate their state runs, preventing the compounding state gap (166 unmatched completions). This is a small, verifiable src/state.rs change."
+
+But looking at the code, the run lifecycle IS properly handled (close_orphaned_run_if_needed, RunCompletionGuard, ensure_run_started). The issue is model-call lifecycle.
+
+Actually, let me re-read the assessment one more time: "The same run_id persists across multiple cron invocations (visible in state why timeline), suggesting sessions don't properly close their run lifecycle."
+
+The `close_orphaned_run_if_needed` function closes orphaned runs from PREVIOUS sessions. But if the current session's run isn't properly completed (e.g., the RunCompletionGuard doesn't fire because the process crashes in a way that doesn't trigger Drop), then the run stays open.
+
+Let me check: the RunCompletionGuard is on Drop. If the process crashes with SIGKILL or abort, Drop doesn't run. But cron jobs shouldn't be killed that way...
+
+Actually, I think the most productive thing I can do is plan one clear, achievable task rather than trying to figure out the exact root cause of the 166 unmatched completions (which requires deep investigation).
+
+Let me finalize:
+
+**Task 01: Zero-token model response circuit breaker** (src/prompt.rs)
+- Refines/replaces the seed task
+- Evidence-backed from Day 151 session
+- Small, verifiable change
+
+**Task 02: Force implementation agents to make early scoped edit or declare obsolete** (scripts/preseed_session_plan.py)
+- Addresses the graph pressure: task_no_edit_revert_count=1
+- The log feedback corrected lesson says "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker"
+- This adds guidance to the task rendering in preseed_session_plan.py
+- But this is a script change which risks evaluator timeout
+
+Hmm, actually, I think I should keep it simpler. Let me plan:
+
+1. Task 01: Zero-token circuit breaker (src/prompt.rs) - replaces the seed
+2. Task 02: Add model-call lifecycle pairing when state events don't have matching pairs (src/state.rs) - narrowly scoped to ensure that the `record` function pairs ModelCallCompleted with a retroactive ModelCallStarted when one doesn't exist
+
+Actually wait, `record` doesn't do event-type-specific logic. It just appends events. The pairing logic would need to be somewhere else.
+
+Let me take a step back. What's the ONE thing I can plan that will:
+
+1. Be completable in 20 minutes
+2. Pass cargo build && cargo test
+3. Actually improve the harness
+4. Not get reverted by evaluator timeout
+
+The zero-token circuit breaker is the best candidate. It's src/prompt.rs (compiled, tested), small in scope, and directly addresses the burning-sessions problem.
+
+For task 2, let me think about what the assessment identifies as "most impactful": "Wire prompt-cache metrics into the agent path." But this is blocked on yoagent upstream (#90).
+
+OK let me just plan what I can:
+
+**Task 01: Add zero-token model response circuit breaker to prompt loop**
+- Replace the seed task
+- Files: src/prompt.rs
+- Evidence: Day 151 17:16 session had 4 consecutive zero-token responses
+
+**Task 02: Add test coverage for close_orphaned_run_if_needed cross-session boundary**  
+- Files: src/state.rs
+- This is a refinement of the seed's "add a test" idea but with a specific focus
+- Add a test that verifies close_orphaned_run_if_needed correctly handles the pattern described in the assessment
+- But this doesn't fix the problem, it just tests the existing behavior...
+
+Actually, I think I should just go with one strong, evidence-backed task and not force a second one that's weak. The planning instructions say "You have 3 task slots per session" not that I must fill all 3. And the instructions also say: "If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP."
+
+But I CAN select implementation work. I'll plan:
+
+1. Task 01: Zero-token circuit breaker (src/prompt.rs)
+2. Task 02: Address the model-call lifecycle gap narrowly - fix the counting in summarize_state_gnomes.py to exclude harness-internal retroactive events
+
+Wait, task 02 touches Python scripts only, which is risky given evaluator timeout. Let me think...
+
+OK here's my final plan:
+
+**Task 01**: Refine the seed into: "Add zero-token model response circuit breaker" (src/prompt.rs)
+**Task 02**: Refine #134 into a much smaller task: "Suppress duplicate ModelCallCompleted when ModelCallStarted was already recorded" (src/state.rs)
+
+Actually, let me look at whether ModelCallCompleted gets emitted more than once for the same model_call_id:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me check one more thing — whether duplicate ModelCallCompleted events contribute to the unmatched count, and then write the plan.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'model_call_completed\|model_call_started\|model_call_terminal_recorded'… ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the model_call lifecycle logic in prompt.rs:
+
+1. Line 770-772: Track `model_call_started` and `model_call_terminal_recorded` flags
+2. Line 785: `model_call_started = true` is set when the model call starts
+3. Lines 945-971: On AgentEnd, if not started, emit ModelCallStarted, then emit ModelCallCompleted
+4. Lines 1029-1036: On error, if not terminal_recorded, emit ModelCallStarted then ModelCallCompleted
+5. Lines 1089-1096: After the loop, if not terminal_recorded, emit ModelCallStarted then ModelCallCompleted
+
+So in prompt.rs, every ModelCallCompleted is paired with a ModelCallStarted. Good.
+
+The 166 unmatched completions must come from the `append_terminal_state_events.py` script or from the panic hook / error path in state.rs.
+
+Looking at the panic hook (line 61 in state.rs from the earlier grep): "Emit RunCompleted so the run lifecycle is properly closed." And the `ensure_run_started` function at line 563.
+
+Let me check if there's a place where ModelCallCompleted is emitted without ModelCallStarted in state.rs (outside of tests):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/state.rs | grep -v 'test\|EventType::\|"ModelCa… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `ModelCallCompleted` is only emitted from prompt.rs, not from state.rs (except in test code). The harness-internal ModelCallCompleted events come from `append_terminal_state_events.py`.
+
+Now I have enough understanding. Let me finalize my plan and write the task files.
+
+**My plan:**
+
+1. **Task 01**: Refine the seed into an evidence-backed task about zero-token circuit breaker in src/prompt.rs. Replace the generic "add something" with a concrete fix.
+
+2. **Task 02**: Address the model-call lifecycle gap. Based on my analysis, the gap is in `scripts/append_terminal_state_events.py` which emits retroactive events. But I need to make this small and verifiable.
+
+Actually, for Task 02, I realize the issue might be simpler than I thought. The `append_terminal_state_events.py` function `find_missing_model_call_started` (line 336) finds unmatched completions. The script then emits retroactive ModelCallStarted events. But if the script doesn't run for every session, or if the counting in `summarize_state_gnomes.py` or `extract_trajectory.py` doesn't count the retroactive events, the count stays high.
+
+Given the complexity and the risk of touching Python scripts (evaluator timeout), let me focus on what's achievable:
+
+**Task 01**: Zero-token circuit breaker in src/prompt.rs
+**Task 02**: Ensure append_terminal_state_events.py retroactive events pair correctly  
+
+Actually, I just realized I should make task 02 MUCH smaller. The issue #134 was too broad ("Close harness-internal model lifecycle gap"). Let me narrow it to a single, specific fix.
+
+Looking at the evidence: the script at line 656-687 already handles finding unmatched ModelCallCompleted and emitting retroactive ModelCallStarted. So the fix is already in place. The question is why 166 still show as unmatched.
+
+Given this uncertainty, I'll skip task 02 and focus on one solid task. If I have confidence in a second task, I'll add it.
+
+Actually, the planning instructions say "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." So I should try for 2 tasks.
+
+Let me think about a second task that's both evidence-backed and achievable:
+
+The trajectory says:
+- "Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)"
+- "implementation tasks reverted without edits -> force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker"
+
+This is about the task pipeline, which lives in `scripts/evolve.sh` (do-not-modify) and `scripts/preseed_session_plan.py`. The task rendering in preseed_session_plan.py could add stronger guidance about early edits.
+
+But this is a Python script change, and script-only tasks have been getting reverted by evaluator timeout.
+
+OK, let me try a different second task: Looking at the state.rs code more carefully, the `close_orphaned_run_if_needed` function exists and works for Run-level lifecycle. But maybe I could add a similar function for ModelCall-level lifecycle - close orphaned model calls at startup.
+
+Actually, that would be model_call_close_orphaned_if_needed which would:
+1. Scan for ModelCallStarted without ModelCallCompleted
+2. Emit retroactive ModelCallCompleted for them
+
+Wait, `append_terminal_state_events.py` already does this at lines 695-726. So it's already handled.
+
+Let me just focus on what's achievable and impactful:
+
+**Task 01**: Zero-token circuit breaker (src/prompt.rs) - replaces seed
+**Task 02**: Not sure. Let me skip it rather than force a weak task.
+
+Actually wait - the assessment says I should have at least 2 state-driven tasks. Let me look at the graph pressure more carefully:
+
+From trajectory graph-derived next-task pressure:
+1. Force reverted tasks to leave concrete evidence - This is about evolve.sh or task rendering
+2. Raise verified task success rate - This is a meta-goal, not a specific task
+3. Require strict verifier evidence - Meta-goal
+4. Bound failing shell commands - Could be in tool_wrappers.rs or tools.rs
+5. Close yyds state and model lifecycle gaps - Large scope
+
+The "Bound failing shell commands (bash_tool_error=2)" could be a good task. It would be in src/tools.rs or src/tool_wrappers.rs. The fix would be to add better error output capture and bounded retry logic.
+
+But the assessment doesn't give me details about what exact bash commands failed.
+
+I think the best approach is:
+
+**Task 01**: Refine seed into zero-token circuit breaker (src/prompt.rs)
+**Task 02**: Close model-call lifecycle gap - narrow scope: ensure the panic hook in state.rs that emits ModelCallCompleted also emits ModelCallStarted (src/state.rs)
+
+Wait, I already checked - ModelCallCompleted is only emitted from prompt.rs, not from state.rs panic hook. The panic hook emits RunCompleted.
+
+OK, let me try yet another approach. Let me look at the "Bound failing shell commands" pressure more carefully.
+
+Actually, let me just go with:
+
+1. Task 01: Zero-token circuit breaker (src/prompt.rs) - evidence-backed, small, verifiable
+2. Task 02: This is harder. Let me check if there's something specific I can address.
+
+Let me look at one more thing - the `store_run_error` / `stash_diagnostic_error` functions in state.rs, since the assessment mentions RunCompleted: error:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn store_run_error\|fn stash_diagnostic_error\|fn take_diagnostic_error… ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the panic hook and store_run_error to understand if there's a gap:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:45..95 ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting. The panic hook:
+1. Sets `RUN_HAD_ERROR` = true
+2. Emits `FailureObserved`
+3. Calls `mark_run_completed_with_error("rust_panic")` which emits `RunCompleted`
+
+And `mark_run_completed` (line 548) calls `ensure_run_started()` before emitting RunCompleted. So RunStarted is always paired with RunCompleted.
+
+Now, the `mark_run_completed_with_error` function - let me check if it's different from `mark_run_completed`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn mark_run_completed_with_error\|fn mark_run_completed\|fn run_complet… ✓ (46ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Run lifecycle is well-handled. The 166 unmatched completions are about ModelCall lifecycle, and the fix for that is in `append_terminal_state_events.py` which already handles it.
+
+Given all my analysis, I'll focus on the zero-token circuit breaker as my primary task and see if I can squeeze in a second one.
+
+Actually, let me reconsider. The assessment says the seed task_01 is the `_healthy_codebase_fallback()` which returns a generic "Add a small verifiable improvement to src/" task. The assessment evidence now shows concrete problems (zero-token failures, model-call lifecycle gap). I should:
+
+1. Refine task_01 to be the zero-token circuit breaker (evidence-backed, replaces generic fallback)
+2. Consider task_02 for the model-call lifecycle gap, but make it much narrower than #134
+
+For task_02, the narrowest possible fix: The counting in `summarize_state_gnomes.py` includes harness-internal retroactive events. The fix would be to exclude events with `actor: "harness"` and `retroactive: true` from the unmatched count. But this is a Python script change.
+
+Alternatively, task_02 could be: In `src/state.rs`, when ModelCallCompleted is recorded via the `record` function, check if a ModelCallStarted exists for that run and emit one if not. But this requires tracking state across events, which is complex.
+
+OK, let me just go with task_01 and see if I can think of a good task_02.
+
+Actually, there's one thing I noticed: the assessment says "Most impactful finding: Wire prompt-cache metrics into the agent path." This is blocked on yoagent upstream. But the assessment also says "could be worked around at the harness level by extracting cache fields from the raw response."
+
+Could I make a task that works around the yoagent limitation by extracting cache fields from the raw SSE stream? This would be a `src/prompt.rs` or `src/deepseek.rs` change. It would:
+1. Parse cache fields from raw SSE/JSON (similar to how stream-check already does)
+2. Record them via `record_cache_metrics`
+
+But this is similar to issue #105 which has been reverted. And it's a bigger change than 20 minutes.
+
+Let me just go with the zero-token circuit breaker as task_01 and call it. Better one solid task than two weak ones.
+
+Wait, actually, I should add a second task if the assessment explicitly provides evidence for it. Let me re-read the assessment's "Most actionable finding":
+
+"Fix the run lifecycle reuse so sessions properly isolate their state runs, preventing the compounding state gap (166 unmatched completions). This is a small, verifiable src/state.rs change."
+
+Hmm, but my analysis shows the run lifecycle IS properly handled. The assessment might be slightly wrong about the root cause. The 166 unmatched completions are model-call lifecycle, not run lifecycle. And the model-call lifecycle fix already exists in append_terminal_state_events.py.
+
+So maybe the assessment got confused between Run lifecycle (handled) and ModelCall lifecycle (handled by script, but counting might be broken).
+
+Given this uncertainty, let me NOT create a task based on an incorrect assessment claim. Instead, I'll focus on what I KNOW:
+
+1. Zero-token failures ARE burning sessions → task_01
+2. The seed task is a generic fallback that should be refined
+
+Let me write the plan now.
+
+Actually, I just realized I should also address the issue_responses.md. Let me plan what to say for each issue:
+
+- #147: Planning-only session, all tasks reverted. This is the current session's pattern. Task_01 addresses the root cause by preventing zero-token model failures from burning sessions.
+- #135: Self-referential planning fallback. The assessment shows this keeps getting reverted. The fallback generated task_01 (seed), which I'm refining. I'll note that the root cause (evaluator timeout) needs human fix (#131).
+- #134: Model lifecycle gap. Already handled by append_terminal_state_events.py. The 166 count might be a counting artifact. Defer.
+- #105: Cache metrics. Blocked on yoagent upstream (#90). Defer.
+- #131: Evaluator timeout. Need human. Already noted.
+- #90: yoagent cache fields. Need human. Already noted.
+
+OK, let me finalize and write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence. Let me refine the seed task into a concrete, evidence-backed plan and create the task files.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (21ms)
+  ▶ todo ✓ (21ms)
+  ▶ todo ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write task_01.md, replacing the generic fallback with the zero-token circuit breaker task.
+
+For task_02, I need to be specific about the model-call lifecycle gap. Based on my analysis:
+- The fix in `append_terminal_state_events.py` already finds unmatched ModelCallCompleted and emits retroactive ModelCallStarted
+- The 166 count might be coming from a counting issue in `summarize_state_gnomes.py` or `extract_trajectory.py`
+- OR the retroactive events aren't being counted properly
+
+The narrowest fix would be to ensure that when `append_terminal_state_events.py` emits retroactive ModelCallStarted events, the counting in `scripts/summarize_state_gnomes.py` correctly accounts for them. But I need to verify this is actually the issue.
+
+Actually, let me reconsider whether task_02 is even worth it. The assessment says 166 unmatched but doesn't tell me the exact counting bug. Creating a task that says "investigate and fix the counting" is too vague and likely to fail.
+
+Let me skip task_02 and focus on writing a solid task_01 plus issue_responses.md.
+
+Wait, the planning instruction says: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+Let me see if I can find a second task that's achievable. Looking at the trajectory pressure:
+
+"Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=2): prefer bounded commands with explicit paths and inspect exit output before retrying"
+
+This could be addressed by adding a helper in src/tools.rs that wraps bash commands with better error context. Let me think about what a small, focused change would look like...
+
+Actually, this is too vague. I don't know what specific bash commands failed or what the fix should be.
+
+Let me go with just task_01 (zero-token circuit breaker) and task_02 as a narrowed version of the model-call lifecycle issue. But I need to make task_02 small and verifiable.
+
+How about this for task_02: 
+
+"Close harness-internal ModelCall lifecycle gap: ensure the panic/error path in src/state.rs pairs ModelCallCompleted events"
+
+Wait, I already verified that ModelCallCompleted is NOT emitted from src/state.rs (except in tests). It's only emitted from src/prompt.rs where it IS properly paired with ModelCallStarted.
+
+OK so the unmatched completions come from `append_terminal_state_events.py`. The script:
+1. Finds unmatched ModelCallCompleted (line 336-377)
+2. Emits retroactive ModelCallStarted for them (line 656-687)
+3. Also finds orphaned ModelCallStarted and emits retroactive ModelCallCompleted (line 695-726)
+
+But the retroactive events are emitted with `actor: "harness"` and `retroactive: true`. Maybe the counting in `summarize_state_gnomes.py` doesn't filter these out correctly?
+
+Let me check how the gnome is computed:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 16.0s (3 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'unmatched_completed\|model_unmatched\|unmatched_model' scripts/summariz… ✓ (42ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full model-call lifecycle function to understand how `model_unmatched_completed_ids` is computed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:380..450 ✓ (20ms)
+
+
