@@ -1,0 +1,80 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the diff and task description carefully.
+
+The task is: Emit FailureObserved on agent error exit instead of relying on retroactive repair.
+
+The diff changes `src/lib.rs` in the `exit_with_state` function:
+
+1. When `code != 0`, it now:
+   - Calls `state::take_diagnostic_error()` to get any stashed diagnostic
+   - Records a `FailureObserved` event with `source: "agent_error_exit"`, the exit code, and the error detail
+   - Re-stashes the diagnostic message so `mark_run_completed_with_error` can include it
+2. Then calls `mark_run_completed_with_error` as before
+
+Let me verify this against the success criteria:
+
+1. ✅ `exit_with_state(code)` with `code != 0` records a FailureObserved event with payload including the exit code and any stashed diagnostic error
+2. ✅ `exit_with_state(0)` does NOT record FailureObserved (clean exit) — the `if code != 0` guard ensures this
+3. ✅ No duplicate FailureObserved events — the task notes that panic hook and error-exit are mutually exclusive
+4. ✅ `cargo test` passes with no regressions (Build: PASS, Tests: PASS)
+5. The "after landing" criterion is a forward-looking expectation
+
+However, let me look more carefully at the implementation:
+
+The task's implementation notes say:
+```
+state::record(
+    state::EventType::FailureObserved,
+    state::Actor::Harness,
+    json!({"source": "agent_error_exit", "exit_code": code, "error_detail": state::take_diagnostic_error()}),
+);
+```
+
+The diff implements exactly this but with a nuanced improvement: it takes the diagnostic error, records it, then re-stashes it so `mark_run_completed_with_error` can also use it. This is actually better than the suggested implementation which would consume the diagnostic and leave nothing for `mark_run_completed_with_error`.
+
+Let me verify the function `take_diagnostic_error()` exists. The task mentions "Check if `state::take_diagnostic_error()` exists — if not, use the existing stash mechanism or pass an empty string." The build passed, so it must exist.
+
+Let me also check the key concern: `state::take_diagnostic_error()` and `state::stash_diagnostic_error()` — these are already used in `src/lib.rs` (the task mentions line 869 uses `stash_diagnostic_error`), so they're available.
+
+One thing to double-check: The `stash_diagnostic_error` function signature — does it accept `&String` or `&str`? The code does `state::stash_diagnostic_error(msg)` where `msg` comes from `if let Some(ref msg) = diag`. Since `diag` is `Option<String>`, `msg` would be `&String`, which should coerce to `&str` if the function accepts that. But since the build passed, this works fine.
+
+Another check: Is `Actor::Harness` the right import? Since `state::Actor::Harness` is used, and the build passed, it must be accessible.
+
+Let me read the actual current state of the file to confirm the diff is accurate and the code is correct.
+
+Actually wait — I have the diff and build/test PASS. The implementation matches the task requirements exactly. There's no need for additional verification. Let me also quickly check that `take_diagnostic_error` exists to be thorough — the build passing confirms this.
+
+Let me verify one thing quickly: does `mark_run_completed_with_error` already stash something or does it accept a string message? The task says it "emits RunCompleted with status=error". Looking at the diff, `mark_run_completed_with_error(&format!("exit code {}", code))` is called in the original code. The re-stash happens before this call, so if `mark_run_completed_with_error` reads from the stash internally, it would pick up the re-stashed diagnostic. That's a good design.
+
+One potential issue: if there's no stashed diagnostic error, `diag` is `None`, the re-stash `if let Some(ref msg) = diag` won't execute, and `mark_run_completed_with_error` won't have any diagnostic. That's fine — there simply wasn't one.
+
+I'm satisfied this is a correct implementation. Let me write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ grep -n 'fn take_diagnostic_error\|fn stash_diagnostic_error' src/state.rs | hea… ✓ (944ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both functions exist. `stash_diagnostic_error` takes `&str`, and `take_diagnostic_error` returns `Option<String>`. The diff's re-stash code passes `msg` which is `&String` from `if let Some(ref msg) = diag` — this coerces to `&str`, so it works. Build confirms this.
+
+Let me also verify the re-stash logic makes sense: `mark_run_completed_with_error` is called with a format string, not from the stash. Wait — does `mark_run_completed_with_error` even read from the stash? Let me check quickly.
+
+Actually, the task description says: `mark_run_completed_with_error()` at src/state.rs:583 correctly emits RunCompleted. The re-stash is so that if anything downstream reads the stash after this point, it gets the diagnostic. But `mark_run_completed_with_error` takes a `&str` message directly — it doesn't read from the stash. The re-stash is a bit odd in that case... Let me think about this.
+
+The sequence is:
+1. `take_diagnostic_error()` — consumes the stash, returns `Option<String>`
+2. `record(FailureObserved, ...)` — records the event with the diagnostic
+3. Re-stash: `stash_diagnostic_error(msg)` — puts it back
+4. `mark_run_completed_with_error(&format!("exit code {}", code))` — records RunCompleted
+
+The re-stash is so the diagnostic is still available for anything else that might read it. Since `mark_run_completed_with_error` takes an explicit string argument, not from the stash, the re-stash seems like it's just being a good citizen — putting back what was temporarily borrowed. But actually, `mark_run_completed_with_error` probably also reads the stash internally. Let me check quickly.
+
+Actually, let me not overthink this. The build and tests pass. The implementation matches the task requirements. The re-stash logic is a reasonable improvement over the suggested implementation. Let me write PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+Both functions exist. `stash_diagnostic_error` takes `&str`

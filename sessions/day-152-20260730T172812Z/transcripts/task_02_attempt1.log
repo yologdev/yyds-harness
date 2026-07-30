@@ -1,0 +1,364 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill to understand the canonical implementation contract, then examine the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/lib.rs:975..1005 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the current code. The `exit_with_state` function at line 985-993 calls `mark_run_completed_with_error` (which emits RunCompleted) but does NOT emit FailureObserved. The task asks me to add a FailureObserved emission before the error exit.
+
+Let me check a few things:
+1. Does `state::take_diagnostic_error()` exist?
+2. What does `stash_diagnostic_error` look like?
+3. What does the panic hook look like (for reference)?
+4. What does `state::record` look like?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' in src/state.rs  ▶ search 'take_diagnostic_error' in src/state.rs  ▶ search 'stash_diagnostic_error' (*.rs) ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `take_diagnostic_error()` exists and returns `Option<String>`. Let me read the relevant functions in state.rs to understand the interface.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:80..110  ▶ read src/state.rs:575..615 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `record` function signature and `FailureObserved` event type, and also look at the panic hook to see how it records FailureObserved.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src/state.rs  ▶ search 'pub fn record' in src/state.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the panic hook for reference on how it records FailureObserved, and also at the `record` function signature more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:25..75  ▶ read src/state.rs:500..515 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me check what imports are used in lib.rs for the relevant state functions, and see if `json!` is available:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now let me check the imports at the top of `src/lib.rs` and verify `json!` is available:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'use.*serde_json' in src/lib.rs  ▶ search 'json!' in src/lib.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `serde_json::json!` is used with the full path. Now let me also check that the state module exposes `EventType`, `Actor`, and `record`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'pub enum EventType' in src/state.rs  ▶ search 'pub enum Actor' in src/state.rs ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both are public. Let me now also confirm the state module is accessible from lib.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Now let me also look at how `exit_with_state` is called – specifically checking if the caller has already called `mark_run_completed_with_error` before calling `exit_with_state`:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'exit_with_state' in src ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Many callers call `stash_diagnostic_error` before calling `exit_with_state(1)`. Now I can see the implementation plan clearly:
+
+In `exit_with_state`:
+- When `code != 0`, before calling `mark_run_completed_with_error`:
+  - Call `state::record(EventType::FailureObserved, Actor::Harness, payload)` with a payload containing `source: "agent_error_exit"`, the exit code, and any stashed diagnostic error.
+  
+Wait, there's a subtlety: `mark_run_completed_with_error` already calls `take_diagnostic_error()` (consumes it). If I call `take_diagnostic_error()` in `exit_with_state` before calling `mark_run_completed_with_error`, the diagnostic error won't be in the RunCompleted payload anymore.
+
+I need to read the diagnostic error first, then include it in the FailureObserved, but also preserve it for RunCompleted. Let me check if there's a way to peek without consuming... No, there's only `take_diagnostic_error()`. 
+
+Options:
+1. Read the error via `take_diagnostic_error()`, include it in the FailureObserved payload, then re-stash it so `mark_run_completed_with_error` can also consume it.
+2. Just call `take_diagnostic_error()` and include it in FailureObserved only — and let RunCompleted miss it.
+
+Actually wait, looking at `mark_run_completed_with_error`:
+```rust
+pub fn mark_run_completed_with_error(msg: &str) {
+    RUN_HAD_ERROR.with(|c| c.set(true));
+    store_run_error(msg);
+    let error_detail = take_diagnostic_error();
+    ...
+}
+```
+
+It takes the diagnostic error and includes it in the RunCompleted payload. If I take it first for FailureObserved, RunCompleted won't have it.
+
+The cleanest approach: take it once, use it in FailureObserved, and re-stash it before calling `mark_run_completed_with_error`. Or I could read it, stash it back, call `mark_run_completed_with_error`. 
+
+Actually, let me look at this differently. The `mark_run_completed_with_error` function is called by both the panic hook AND by `exit_with_state`. In the panic hook case, the FailureObserved is emitted first (with its own payload including panic info), then `mark_run_completed_with_error` is called.
+
+For `exit_with_state`, I want to:
+1. Emit FailureObserved (with exit_code, source, and diagnostic error if available)
+2. Call `mark_run_completed_with_error` (which also consumes the diagnostic error for RunCompleted)
+
+The solution: take it once, use it in FailureObserved, put it back before calling `mark_run_completed_with_error`.
+
+Let me implement this.
+
+Here's the plan for the edit:
+
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        state::record(
+            state::EventType::FailureObserved,
+            state::Actor::Harness,
+            serde_json::json!({
+                "source": "agent_error_exit",
+                "exit_code": code,
+                "error_detail": state::take_diagnostic_error(),
+            }),
+        );
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+Wait, but if I consume the diagnostic error in FailureObserved, `mark_run_completed_with_error` will get None. Let me re-stash:
+
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        let diag = state::take_diagnostic_error();
+        state::record(
+            state::EventType::FailureObserved,
+            state::Actor::Harness,
+            serde_json::json!({
+                "source": "agent_error_exit",
+                "exit_code": code,
+                "error_detail": diag,
+            }),
+        );
+        // Re-stash for mark_run_completed_with_error to include in RunCompleted
+        if let Some(ref msg) = diag {
+            state::stash_diagnostic_error(msg);
+        }
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+Hmm, this feels a bit clunky with the re-stash. Let me look at this differently. Could I restructure to read the diagnostic error, include it in both places? Actually, the simplest approach: read it once, include in FailureObserved, then if present, stash it back. That's the cleanest.
+
+Actually, even simpler: let me just NOT include error_detail in the FailureObserved, and let `mark_run_completed_with_error` handle it in RunCompleted. The FailureObserved just needs `source` and `exit_code`. The task says:
+> By emitting FailureObserved at the point of exit, the event carries the actual exit code and any stashed diagnostic error context.
+
+But the primary goal is to have `source=agent_error_exit` instead of `source=unknown`. The diagnostic error detail is a nice-to-have. Let me keep it simple and avoid the re-stash complexity. Let me just read it and include it, and if it's None, that's fine. `mark_run_completed_with_error` will get None too but it already has the exit code message.
+
+Actually wait, let me re-read the task more carefully:
+
+> When `code != 0`, before calling `mark_run_completed_with_error()`, emit:
+> ```
+> state::record(
+>     state::EventType::FailureObserved,
+>     state::Actor::Harness,
+>     json!({"source": "agent_error_exit", "exit_code": code, "error_detail": state::take_diagnostic_error()}),
+> );
+> ```
+
+The task explicitly says to call `take_diagnostic_error()` in the FailureObserved payload. It doesn't mention re-stashing. So the task's design is: consume the diagnostic error for FailureObserved, and let RunCompleted have `error_detail: None`. That seems intentional.
+
+But wait, looking at the callers - many of them explicitly call `stash_diagnostic_error` before `exit_with_state` precisely so that `mark_run_completed_with_error` picks it up. If I consume it in FailureObserved, those callers' intent is partly lost. However, the task says this is the design, and the diagnostic error IS captured - just in FailureObserved instead of RunCompleted.
+
+Actually, I think the simpler approach is better. Let me just re-stash it. That way both events get the diagnostic context. It's only 4 extra lines and makes the system more informative.
+
+Let me also check how many lines the change will be. Looking at the current function (lines 985-993), that's 9 lines. The new version will be about 18 lines. The task says "Keep the change under 20 lines total" — that should be fine.
+
+Let me implement this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me also verify the state module is accessible from lib.rs and check the existing test structure:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod state' in src/lib.rs  ▶ search 'fn test' in src/lib.rs ✓ (12ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I'm ready to implement. Let me write the test first, then make the edit. But first, let me check whether there are existing tests that test `exit_with_state` or something closely related. Since `exit_with_state` calls `std::process::exit(code)`, it can't be unit-tested directly (it never returns). 
+
+Looking at the task more carefully: "Verifier: cargo test, cargo build" - so I just need to verify everything still compiles and tests pass.
+
+Let me write a test that validates the behavior indirectly. Actually, the function calls `std::process::exit(code)` which terminates the process, so I can't unit test it directly. But I can write a test that checks the state event is recorded when the function is called.
+
+Wait, actually looking at this more carefully, I should look at how state tests work. Let me check if there's a way to test this.
+
+Actually, looking at the state tests in state.rs, they use `StateRecorder` directly. There's no way to test `exit_with_state` since it calls `std::process::exit()`. 
+
+The task says "Write a test first if possible" — this isn't directly possible because `exit_with_state` calls `process::exit()`. But I can verify:
+1. The function compiles (`cargo build`)
+2. Existing tests pass (`cargo test`)
+3. The logic is correct by construction
+
+Let me just make the edit and verify with build + test.
+
+Actually wait, let me also check the test about panic hook + FailureObserved to see how that's tested in state.rs:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:7130..7180 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture. The state tests demonstrate how `FailureObserved` is recorded. I can't directly test `exit_with_state` since it calls `process::exit()`, but I can verify the code compiles and existing tests pass.
+
+Let me now implement the change. The current `exit_with_state` is:
+
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+New version:
+
+```rust
+fn exit_with_state(code: i32) -> ! {
+    let status = if code == 0 { "completed" } else { "error" };
+    if code != 0 {
+        let diag = state::take_diagnostic_error();
+        state::record(
+            state::EventType::FailureObserved,
+            state::Actor::Harness,
+            serde_json::json!({
+                "source": "agent_error_exit",
+                "exit_code": code,
+                "error_detail": diag,
+            }),
+        );
+        // Re-stash so mark_run_completed_with_error can also include it
+        if let Some(ref msg) = diag {
+            state::stash_diagnostic_error(msg);
+        }
+        state::mark_run_completed_with_error(&format!("exit code {}", code));
+    } else {
+        state::mark_run_completed(status);
+    }
+    std::process::exit(code);
+}
+```
+
+Let me count the lines: the original is 9 lines (985-993). The new version is about 18 lines. Under 20 lines — good.
+
+Now let me make the edit.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the information needed. Let me implement the change. The function `exit_with_state` at lines 985-993 needs to emit `FailureObserved` before calling `mark_run_completed_with_error`. Since `exit_with_state` calls `std::process::exit()`, I can't write a direct unit test — but I can verify compilation and existing tests.
+    fn exit_with_state(code: i32) -> ! {
+        let status = if code == 0 { "completed" } else { "error" };
+        if code != 0 {
+  +         let diag = state::take_diagnostic_error();
+  +         state::record(
+  +             state::EventType::FailureObserved,
+  +             state::Actor::Harness,
+  +             serde_json::json!({
+  +                 "source": "agent_error_exit",
+  +                 "exit_code": code,
+  +                 "error_detail": diag,
+  +             }),
+  +         );
+  +         // Re-stash for mark_run_completed_with_error to include in RunCompleted
+  +         if let Some(ref msg) = diag {
+  +             state::stash_diagnostic_error(msg);
+  +         }
+            state::mark_run_completed_with_error(&format!("exit code {}", code));
+        } else {
+            state::mark_run_completed(status);
+  ✓ Auto-approved: edit: src/lib.rs (9 → 23 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/lib.rs (9 → 23 lines)
+    fn exit_with_state(code: i32) -> ! {
+        let status = if code == 0 { "completed" } else { "error" };
+        if code != 0 {
+  +         let diag = state::take_diagnostic_error();
+  +         state::record(
+  +             state::EventType::FailureObserved,
+  +             state::Actor::Harness,
+  +             serde_json::json!({
+  +                 "source": "agent_error_exit",
+  +                 "exit_code": code,
+  +                 "error_detail": diag,
+  +             }),
+  +         );
+  +         // Re-stash for mark_run_completed_with_error to include in RunCompleted
+  +         if let Some(ref msg) = diag {
+  +             state::stash_diagnostic_error(msg);
+  +         }
+            state::mark_run_completed_with_error(&format!("exit code {}", code));
+        } else {
+            state::mark_run_completed(status);
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit applied. Now let me run cargo build to verify it compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify it compiles:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (14.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passed. Now let me run cargo fmt -- --check and then the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now let me run format check and tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let me run the tests. Let me first run just the state tests since those are the most relevant, then the full test suite:
+────────────────────────────────────────────────────────────────────────────────
+
+Format check passes. Now let me run the tests:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (352ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also run the full test suite (including lib tests and integration tests):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- --test-threads=1… ✓ (9m 36s)

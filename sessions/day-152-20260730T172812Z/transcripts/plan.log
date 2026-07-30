@@ -1,0 +1,684 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. This is Phase A2: PLANNING. I need to produce task files in `session_plan/`.
+2. The assessment shows a healthy codebase with no CI failures. Build and tests pass.
+3. The trajectory shows: 9/10 recent sessions landed nothing. The codebase is mature and there's less to fix.
+4. Key evidence from assessment:
+   - All 4 agent-self issues are reverted tasks
+   - Evaluator timeout is a recurring blocker (#131) but it's in evolve.sh (do-not-modify)
+   - Cache metrics blocked by upstream yoagent (#90)
+   - Planning pipeline produces no tasks or reverted tasks
+   - Graph-derived pressure: planner_no_task_count=1, lifecycle gaps, session_success_rate=0.0
+
+5. Task sizing rules are strict: at most 3 files, completable in 20 minutes, reverted tasks must be smaller.
+
+Let me think about what tasks to plan:
+
+Looking at the trajectory and assessment evidence:
+
+1. **Planner produces no tasks** - This is the #1 graph pressure. But modifying `scripts/preseed_session_plan.py` was attempted (issue #135) and reverted. The issue says the evaluator timed out. The change is small (~5-10 lines). But with evaluator timeout issues, it might get reverted again.
+
+2. **Model lifecycle gaps** - deepseek_model_call_unmatched_completed_count=1. Issue #134 was attempted and reverted (blocked by agent - no implementation landed). The task got stuck in analysis paralysis.
+
+3. **Session success rate** - 0.0, but this is because sessions land nothing, not because they fail.
+
+4. **Evaluator timeout** - #131, can't fix (evolve.sh is do-not-modify).
+
+Given the pattern of reverted tasks and the current evidence, let me think about what's actually actionable:
+
+The assessment says: "The codebase is healthy; the silence is from nothing needing change, not from broken machinery."
+
+The most actionable task from the evidence would be:
+- The self-referential planning fallback fix (#135) - but it was reverted due to evaluator timeout, not because the code was wrong
+- Something in src/ that touches real Rust code and passes cargo build/test
+
+Looking at the "healthy codebase" situation and the task pressure, let me think about what small src/ change could be valuable:
+
+Actually, let me look at this differently. The assessment says the #1 graph-derived pressure is "Make planning failure actionable (planner_no_task_count=1)". But looking at the codebase - it's healthy. There's genuinely not much to fix.
+
+The trajectory itself acknowledges this: "action: repair planning/task selection so the next run captures selected tasks"
+
+Wait - the trajectory says "can_drive_evolution=false" because "no selected or attempted task evidence captured." But this session DOES have task evidence - it's just that previous sessions didn't. The action says "repair planning/task selection so the next run captures selected tasks."
+
+So the real problem might be that the planning pipeline needs to be more robust at producing actionable tasks even when the codebase is healthy. But #135 (the self-referential fallback fix) was reverted due to evaluator timeout, not because the code was wrong.
+
+Let me think about what concrete tasks I can plan:
+
+1. The #135 fix is actually small and correct - it just needs to be attempted again. But with evaluator timeout issues, it might get reverted again. The issue says the evaluator timed out on Day 148 for this task.
+
+2. I could plan a small src/ improvement - something verifiable with cargo build && cargo test.
+
+3. Looking at the assessment bugs:
+   - MEDIUM: Retroactive FailureObserved with source=unknown - this is a harness-level fix
+   - LOW: Task seeder self-reference - already attempted and reverted
+
+Let me look at what files I'd need to check for ownership before planning:
+
+For the retroactive FailureObserved fix: src/state.rs is where failure events are recorded.
+
+Actually, let me re-read the assessment more carefully:
+
+"MEDIUM — Retroactive FailureObserved with source=unknown: When an agent process exits with error status without recording an explicit FailureObserved, the retroactive repair records it as source=unknown. The agent should emit FailureObserved before exiting — the gap is in how the harness handles agent process termination vs. explicit failure recording."
+
+This is about `scripts/append_terminal_state_events.py` (the retroactive repair script) and possibly `src/state.rs`. But the key insight is: this is a harness-internal fix about making the agent process emit FailureObserved before exit.
+
+Hmm, but this is complex and might touch many files.
+
+Let me focus on the most actionable thing. Given the pattern:
+
+1. Task #135 (self-referential planning fallback) - small, ~5-10 lines in preseed_session_plan.py, previously reverted due to evaluator timeout, not wrong code
+2. A small src/ improvement for the retroactive FailureObserved
+
+But wait - let me also check if there's a seed task already created. The instructions say: "The harness may have already created session_plan/task_01.md from assessment evidence before you started."
+
+Let me check.
+
+For the planning, my approach:
+- First, mkdir -p session_plan
+- Check if task_01.md already exists
+- Plan tasks based on evidence
+
+Let me start by creating the directory and checking.
+────────────────────────────────────────────────────────────────────────────────
+
+I'll start by creating the session plan directory and checking for any pre-seeded task files.
+  ▶ $ mkdir -p session_plan && ls -la session_plan/ 2>/dev/null ✓ (809ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md. Let me read it to see what the harness pre-seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+A pre-seeded task_01.md exists. Let me read it to see what the harness generated.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (405ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the harness pre-seeded task_01.md. It's the `_healthy_codebase_fallback()` task - "Add a small verifiable improvement to src/". This is fine as a seed task, but it's quite vague. The implementation agent would need to find something to improve.
+
+Let me now think about what other tasks to add. Looking at the evidence:
+
+1. The trajectory shows graph-derived pressure:
+   - "Make planning failure actionable" - planner_no_task_count=1
+   - "Close yyds state and model lifecycle gaps" - deepseek_model_call_unmatched_completed_count=1
+   - "Raise session success rate" - session_success_rate=0.0
+   - "Validate seeded tasks against fresh assessment" - task_seed_contradiction_count=1
+   - "Force reverted tasks to leave concrete evidence" - task_no_edit_revert_count=1
+
+2. The assessment bugs:
+   - MEDIUM: Retroactive FailureObserved with source=unknown
+   - LOW: Skill-evolve runs all cancelled (expected)
+   - LOW: Task seeder self-reference
+
+3. Agent-self issues: #147, #135, #134, #105 - all reverted
+
+Given the pattern that tasks get reverted due to evaluator timeouts (not wrong code), I should plan tasks that are:
+- Small and focused
+- Have clear verifiers
+- Touch actual src/ code when possible
+- Are unlikely to timeout during evaluation
+
+Let me think about what concrete tasks I can plan:
+
+**Task 02: Fix retroactive FailureObserved with source=unknown**
+
+The assessment says: "When an agent process exits with error status without recording an explicit FailureObserved, the retroactive repair records it as source=unknown. The agent should emit FailureObserved before exiting."
+
+This is about `scripts/append_terminal_state_events.py` finding runs that completed with error but no FailureObserved. The fix could be in `src/state.rs` or in the script itself.
+
+But wait - I need to check ownership. Let me verify what files are involved.
+
+Actually, looking more carefully at the assessment: "the gap is in how the harness handles agent process termination vs. explicit failure recording." This might be in `scripts/evolve.sh` (do-not-modify) or in how the agent's process exit is detected.
+
+The retroactive repair happens in `scripts/append_terminal_state_events.py`. But fixing the root cause (agent not emitting FailureObserved on error exit) would be in the Rust source - likely `src/state.rs` or `src/prompt.rs`.
+
+This is getting complex. Let me think about what's truly actionable in 20 minutes.
+
+**Option A: Keep task_01 as-is (healthy codebase fallback - improve src/state.rs)**
+This is already seeded. It's small, verifiable, and avoids the self-reference trap.
+
+**Option B: Add a task for the self-referential planning fallback fix (#135)**
+The fix is small (~5-10 lines in preseed_session_plan.py), but it was reverted due to evaluator timeout. If the evaluator still has timeout issues, this will get reverted again. Risk: high.
+
+**Option C: Add a task for model lifecycle gap (#134)**
+This was attempted and the implementation agent got stuck in analysis paralysis (23 turns without landing code). Risk: very high.
+
+**Option D: Add a task for the retroactive FailureObserved fix**
+This touches src/state.rs or scripts/append_terminal_state_events.py. It's concrete but needs investigation to find the right fix point.
+
+Given the constraints:
+- At most 3 files per task
+- Completable in 20 minutes
+- Smaller than previous attempts for reverted tasks
+
+I think the best approach is:
+
+1. Keep task_01 as the healthy-codebase fallback (it's already seeded and matches the trajectory evidence)
+2. Add task_02 for something concrete in src/ that addresses a real gap
+
+Actually, let me look at what the trajectory says more carefully:
+
+"Evo readiness: classification=no_task_evidence, can_drive_evolution=false"
+"action: repair planning/task selection so the next run captures selected tasks, attempted tasks, and verifier evidence before scoring evolution"
+
+This is saying the planning pipeline itself needs work. But the #135 fix (self-referential fallback) was already attempted and reverted.
+
+Let me think about what's genuinely useful here:
+
+The healthy-codebase fallback task (task_01) is actually reasonable given the evidence. The codebase IS healthy, and having a small src/ improvement land would break the empty-session streak.
+
+For task_02, I could plan something that addresses the retroactive FailureObserved gap. Let me check what files are involved.
+
+Actually, I should be careful not to overthink this. Let me check a couple of ownership things and then write the plan.
+
+Let me verify that the files I'd name in tasks actually exist, then write task_02 and possibly task_03.
+
+For now, let me think about what task_02 should be:
+
+The assessment identifies one concrete MEDIUM bug: "Retroactive FailureObserved with source=unknown." The fix would be to have the agent emit FailureObserved when it exits with an error status, before the process terminates.
+
+Where would this live? In `src/state.rs` - the state event recording module. Or possibly in `src/prompt.rs` where the agent loop runs.
+
+Let me check if there's a failure recording function in state.rs.
+
+Actually, let me focus on what I can verify quickly and then write the plan. I'll keep task_01 and add a task_02 that addresses a concrete, verifiable gap. 
+
+The most concrete thing I can plan from the evidence is:
+
+1. Task_01 (harness-seed): Small src/state.rs improvement - keep it as the icebreaker
+2. Task_02: Record agent exit failure as explicit FailureObserved in src/state.rs - this addresses the MEDIUM bug
+
+But wait, I need to be careful about the 3-file limit and the 20-minute constraint. Let me think about what a small, focused fix for the retroactive FailureObserved would look like.
+
+Actually, the retroactive FailureObserved issue might be in how `scripts/append_terminal_state_events.py` detects and repairs missing FailureObserved events. The fix would be on the Rust side to emit the event before exit. But which Rust file?
+
+The agent process exit is handled by the main entry point. Looking at the repo map, `src/bin/yyds.rs` is "trivial, delegates to run_cli()". The main entry is probably in `src/main.rs` or similar.
+
+Let me check what files exist.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check a few ownership facts before finalizing the plan — I need to verify paths for any additional tasks.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files 'src/*.rs' | grep -E 'main|state|prompt|bin' | head -20  ▶ $ git grep -n 'FailureObserved\|record_failure\|failure_observed' src/ | head -20 ✓ (1.7s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The grep shows FailureObserved in several files. Let me check the main entry point and see if there's a place where the process exits with error.
+
+Let me check the binary entry point:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/bin/yyds.rs  ▶ $ git grep -n 'process::exit\|std::process::exit' src/ | head -10 ✓ (1.5s)
+📦 RTK detected — using compressed output (disable with --no-rtk)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check where `run_cli` is defined and what the exit behavior looks like. The function `run_cli` is in `src/lib.rs` based on the context.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn run_cli' src/  ▶ $ git grep -n 'fn record_failure\|fn record.*[Ff]ail' src/state.rs | head -10 ✓ (901ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for failure recording in state.rs more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn record\|FailureObserved' src/state.rs | head -20 ✓ (808ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture:
+
+1. `src/state.rs` has a `record(EventType::FailureObserved, ...)` function at line 505
+2. There's a panic hook that records FailureObserved (line 60)
+3. There's logic for finding orphaned FailureObserved runs (line 412)
+
+The retroactive FailureObserved with source=unknown happens when the agent process exits with error status but no explicit FailureObserved was recorded. The fix would need to be where the agent process terminates - either in the main entry point or in the prompt execution path.
+
+Let me check the `run_cli` function and see how it handles errors.
+
+Actually, this is getting too deep. Let me focus on what I can plan concretely. The assessment already identified the bug and its location. I need to plan tasks that are small, verifiable, and avoid the self-reference trap.
+
+Here's my plan:
+
+**Task 01** (harness-seed): Keep it - "Add a small verifiable improvement to src/state.rs". This is the healthy-codebase fallback that avoids the self-reference trap.
+
+**Task 02**: I could plan something more concrete. Let me think about what would be genuinely useful and verifiable.
+
+The MEDIUM bug about retroactive FailureObserved with source=unknown is interesting. The fix would be: when the agent's main prompt execution fails (returns error), emit an explicit FailureObserved event before the process exits. 
+
+Where would this go? In `src/prompt.rs` where `run_prompt` or similar functions are called, or in `src/lib.rs` where `run_cli` handles the result.
+
+But the key constraint is: the `scripts/append_terminal_state_events.py` script already handles the retroactive repair. The assessment bug is about making the agent emit the event BEFORE exit, so we don't need retroactive repair.
+
+Actually, this is getting complex. Let me step back and think about what's most valuable to plan.
+
+Given the constraints:
+- Codebase is healthy
+- Most tasks get reverted (evaluator timeout or agent gets stuck)
+- Planning pipeline itself has issues (self-referential fallback)
+
+The most impactful thing I can do is plan tasks that:
+1. Are small enough to complete in 20 minutes
+2. Have clear verifiers (cargo build && cargo test)
+3. Avoid the self-reference trap
+4. Have a high probability of surviving evaluation
+
+Task 01 (harness-seed) is actually fine for this. It's a healthy-codebase fallback that says "improve src/state.rs" - the implementation agent can add a test, improve docs, or fix a small clippy issue.
+
+For Task 02, I should plan something concrete. The retroactive FailureObserved fix is too complex and uncertain. Let me think about what else is actionable.
+
+Looking at the trajectory again:
+- "Force reverted tasks to leave concrete evidence (task_no_edit_revert_count=1)" - this is about improving how reverted tasks leave evidence
+
+Actually, let me focus. The assessment says:
+1. Codebase is healthy
+2. The MEDIUM bug is retroactive FailureObserved
+3. Several agent-self issues exist but are reverted
+
+I think the best approach is:
+- Task 01: Keep the harness seed (healthy-codebase fallback for src/state.rs)
+- Task 02: Make retroactive FailureObserved more informative - improve `scripts/append_terminal_state_events.py` to capture the exit code and error context when creating retroactive FailureObserved events
+
+Wait, but task_02 would touch `scripts/append_terminal_state_events.py` which is a script, not Rust. The assessment says "Prefer tasks that touch src/*.rs files when no-edit pressure is active."
+
+Also, the 3-task limit means I could plan 3 tasks. Let me think about whether 3 small tasks is better than 2.
+
+Actually, let me just plan 2 tasks:
+1. Task 01 (harness-seed): Small src/state.rs improvement
+2. Task 02: Something concrete
+
+For Task 02, let me think about what's genuinely valuable:
+
+The `deepseek_model_call_unmatched_completed_count=1` graph pressure is about model lifecycle gaps. Issue #134 was attempted and the agent got stuck. The fix was in src/state.rs.
+
+Actually, looking at issue #134 more carefully: "Close harness-internal model lifecycle gap (evt-harness ModelCallCompleted without Started)". This was attempted and the implementation agent spent 23 turns investigating without landing code. The task description was quite detailed but the agent got stuck analyzing.
+
+The fallback section of #134 says: "If the evt-harness ModelCallCompleted events are intentionally harness-internal and cannot be paired with Started events, classify them differently."
+
+This could be a small fix: add a field to distinguish harness-internal model events. But it's in src/state.rs and might be too complex for 20 minutes.
+
+OK, let me just go with a simple 2-task plan:
+
+1. **Task 01** (harness-seed, keep): Add a small verifiable improvement to src/state.rs
+2. **Task 02** (new): Improve the retroactive FailureObserved evidence quality in scripts/append_terminal_state_events.py
+
+For task 02, the specific fix: when the retroactive repair creates a FailureObserved event for a run that exited with error, include the exit code and any available error context in the payload instead of just "source=unknown, reason=retroactive: run completed with error status 'error' but no FailureObserved was recorded".
+
+This is:
+- Small (probably ~10-20 lines in one script)
+- Verifiable (python3 scripts/append_terminal_state_events.py --test)
+- Doesn't touch do-not-modify files
+- Improves state observability
+
+Wait, but the assessment says to prefer src/*.rs tasks. And script changes don't go through cargo build/test, so they're less verifiable.
+
+Hmm. Let me reconsider. The key insight from the learnings is: "Not all verification is equally honest — choose work with hard gates when you're stuck" and "Work types have different verification hardness. Scripts, config, and behavioral tools can succeed quietly without producing real changes. Compiled code that must pass cargo build && cargo test can't fake success."
+
+So I should prefer src/ tasks. But the codebase is healthy - there are limited src/ bugs to fix.
+
+OK, here's my final plan:
+
+**Task 01** (harness-seed, refined): Add a small verifiable improvement to src/state.rs
+- Keep this as-is, it's the healthy-codebase fallback
+
+**Task 02** (new): Add explicit FailureObserved recording on agent error exit
+- Files: src/state.rs, src/prompt.rs
+- When the agent's prompt execution fails (returns error), record an explicit FailureObserved event with the error context
+- This addresses the MEDIUM assessment bug about retroactive FailureObserved with source=unknown
+
+Wait, but is this small enough? Let me think about the scope...
+
+Actually, the simpler version: just improve what information is captured in the retroactive FailureObserved. The fix is in `scripts/append_terminal_state_events.py` where it detects runs with error status and no FailureObserved - instead of just recording source=unknown, include the run's exit/reason information.
+
+But this is a script change, not src/. 
+
+OK let me just go with the most practical plan:
+
+1. Task 01: Keep harness seed (src/state.rs improvement) - this is the icebreaker
+2. Task 02: Add FailureObserved on agent error exit in src/prompt.rs or src/state.rs
+
+For Task 02, the scope: when `run_prompt` or similar functions return an error, call `state::record(EventType::FailureObserved, ...)`. This is a small change (add one call site) and is verifiable with cargo test.
+
+Let me check where prompt execution errors are handled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn run_prompt\|fn run_prompt_auto_retry' src/prompt.rs | head -10  ▶ $ git grep -n 'run_prompt_auto_retry\|run_prompt_with_content' src/lib.rs | head -… ✓ (944ms)
+ ✓ (2.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the prompt execution result is handled in lib.rs, and whether there's a place to add FailureObserved recording.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:530..590 ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what `should_exit_error` does and if there's FailureObserved recording there. Let me also look at the `maybe_record_deepseek_api_failure` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'should_exit_error\|maybe_record_deepseek_api_failure' src/lib.rs | …  ▶ $ git grep -n 'fn maybe_record_deepseek_api_failure' src/ ✓ (1.9s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `maybe_record_deepseek_api_failure` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:286..326 ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that `maybe_record_deepseek_api_failure` only records transport failures for DeepSeek, and it calls `crate::deepseek::record_deepseek_transport_failure`. This doesn't seem to record a FailureObserved state event.
+
+Now let me look at the `try_fallback_prompt` function to see how `should_exit_error` is set. Let me also look at what happens when the process exits with error - is there a FailureObserved recorded?
+
+Let me search for where the agent process exits with error and whether FailureObserved is recorded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn try_fallback_prompt' src/lib.rs  ▶ read src/lib.rs:855..875 ✓ (508ms)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`exit_with_state(1)` is called when the fallback is exhausted. Let me look at `exit_with_state`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn exit_with_state' src/ ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read exit_with_state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:985..1000 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. `exit_with_state` calls `mark_run_completed_with_error` but does NOT call `record(EventType::FailureObserved, ...)`. It just marks the run as completed with error status.
+
+Let me check `mark_run_completed_with_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ git grep -n 'fn mark_run_completed_with_error\|fn mark_run_completed' src/state.… ✓ (951ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `mark_run_completed_with_error`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:548..583 ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+`exit_with_state(code)` calls `mark_run_completed_with_error` which emits `RunCompleted` with status "error". But it does NOT emit `FailureObserved`. The retroactive repair in `scripts/append_terminal_state_events.py` later detects that the run completed with error but no FailureObserved was recorded, and creates one retroactively with source=unknown.
+
+The fix is: in `exit_with_state`, when code != 0, also emit a `FailureObserved` event with the error context before calling `mark_run_completed_with_error`.
+
+This is a small change:
+- In `src/lib.rs`, modify `exit_with_state` to call `state::record(EventType::FailureObserved, ...)` when code != 0
+- The payload should include the exit code and any stashed diagnostic error
+
+This is:
+- Small (~5-10 lines)
+- Verifiable with cargo build && cargo test
+- Touches src/lib.rs and maybe src/state.rs
+- Addresses a MEDIUM assessment bug
+- Is a genuine src/ improvement
+
+OK, I think I have enough to plan now. Let me write the plan.
+
+Final plan:
+- **Task 01** (harness-seed, keep as-is): Add a small verifiable improvement to src/state.rs
+- **Task 02** (new): Emit FailureObserved on agent error exit in exit_with_state
+
+Now let me also think about the issue responses:
+
+- #147 (Planning-only session, Day 151): This session should address the empty-session pattern. I'll note that the planning is trying to break the cycle with src/ tasks.
+- #135 (Self-referential planning fallback): Keep open. Evaluator timeout killed the previous attempt; the code was likely correct.
+- #134 (Model lifecycle gap): Keep open. Implementation agent got stuck. Needs narrower scope.
+- #105 (Cache metrics): Blocked by #90 upstream. Keep open.
+- #131 (Evaluator timeout): Help wanted. Human needs to fix. Keep open.
+- #90 (yoagent Usage struct): Help wanted. Human needs to fix. Keep open.
+
+Now let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. I now have a clear picture. Let me finalize the plan. The key evidence:
+
+1. **Task 01 exists** (harness-seed) — healthy-codebase fallback targeting `src/state.rs`
+2. **MEDIUM bug**: `exit_with_state()` emits `RunCompleted(error)` but NOT `FailureObserved`, causing retroactive repairs with `source=unknown`
+3. Fix is small: add a `FailureObserved` event emission in `exit_with_state()` when code ≠ 0
+
+Let me write Task 02 and the issue responses, then refine Task 01 slightly.
+  + Title: Emit FailureObserved on agent error exit instead of relying on retroactive repair
+  + Files: src/lib.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Assessment self-test: `yyds state why last-failure` shows retroactive FailureObserved with source=unknown, reason="retroactive: run completed with error status 'error' but no FailureObserved was recorded"
+  + - 3 similar historical FailureObserved events exist (evt-harness-4da1aecc298af630, evt-harness-71db6103e66921ab, evt-harness-b85832ef85f2482f)
+  + - `exit_with_state()` in src/lib.rs:985-993 calls `mark_run_completed_with_error()` (emits RunCompleted with status=error) but does NOT call `state::record(EventType::FailureObserved, ...)`
+  + - `mark_run_completed_with_error()` at src/state.rs:583 correctly emits RunCompleted but the FailureObserved gap is in the caller, not the callee
+  + - `scripts/append_terminal_state_events.py` retroactively fills this gap, but with source=unknown — the real exit code and error context are lost
+  + - The panic hook at src/state.rs:60 already records FailureObserved for panics; the error-exit path should do the same
+  + 
+  + Edit Surface:
+  + - src/lib.rs
+  + 
+  + Verifier:
+  + - cargo test
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (62 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (62 lines) ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also refine task_01 slightly to make it more concrete, and then write the issue responses. Let me re-read task_01 and see if I should refine it.
+
+Actually, task_01 as seeded is intentionally vague ("Add one focused unit test, doc comment, or micro-improvement"). This is the healthy-codebase fallback — the implementation agent is supposed to find something small to improve. I should leave it as-is since the assessment confirms the codebase is healthy and this is the correct fallback task.
+
+Let me now write the issue responses.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the issue responses file.
+  + # Issue Responses — Day 152
+  + 
+  + ## Agent-Self Issues
+  + 
+  + ### #147 — Planning-only session: all 1 selected tasks reverted (Day 151)
+  + **Plan**: Address with task_01 and task_02. The empty-session pattern (9/10 sessions landed nothing) is partly codebase maturity and partly planning-pipeline weakness. Task_01 (src/state.rs improvement) and Task_02 (FailureObserved on error exit) both target src/ Rust code — verifiable changes that pass cargo build && cargo test. If either task lands, it breaks the empty streak. If both get reverted (evaluator timeout), the pattern continues and the issue stays open for next session.
+  + **Status**: Keep open until a task lands.
+  + 
+  + ### #135 — Task reverted: Break self-referential planning fallback
+  + **Plan**: Defer. The Day 148 attempt was reverted due to evaluator timeout on infrastructure, not wrong code. The fix (5-10 lines in preseed_session_plan.py) is likely correct but the evaluator timeout risk is still present. With #131 (evaluator timeout help-wanted) unresolved, retrying this task risks another revert. Wait for evaluator timeout fix or a session with more time budget.
+  + **Status**: Keep open. Deferred.
+  + 
+  + ### #134 — Task reverted: Close harness-internal model lifecycle gap
+  + **Plan**: Defer. The implementation agent spent 23 turns investigating without landing code — the task scope was too broad. The evidence shows the fix requires understanding how evt-harness ModelCallCompleted events interact with the event lifecycle, which spans multiple files. When re-planned, it needs to be narrower: one specific code path, not the entire harness-internal lifecycle.
+  + **Status**: Keep open. Needs narrower scope before re-attempt.
+  + 
+  + ### #105 — Task reverted: Record DeepSeek prompt cache metrics
+  + **Plan**: Defer — blocked by upstream #90 (yoagent Usage struct doesn't expose cache fields). No progress possible until a human adds `cache_read_input_tokens` and `cache_creation_input_tokens` to yoagent's Usage struct.
+  + **Status**: Keep open. Blocked by #90.
+  + 
+  ... (9 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (29 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (29 lines) ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the files I've created. Let me also check if task_01.md should be refined. Looking at it again:
+
+Task 01 is the harness-seeded "Add a small verifiable improvement to src/state.rs" - it's intentionally vague, which is correct for a healthy-codebase fallback. The implementation agent is supposed to find something small to improve.
+
+However, there's a potential conflict: Task 02 may need to add a thread-local flag to src/state.rs. If both tasks touch src/state.rs, they could conflict. Task 02's fallback section addresses this: "If the thread-local flag requires changes to src/state.rs, keep them minimal (add the flag + a setter) and coordinate with task_01 to avoid conflicts."
+
+But the harness runs tasks sequentially, so task_01 would run first and task_02 second. Task_02 would need to be aware of task_01's changes. This is a minor coordination issue.
+
+Actually, looking more carefully at Task 02, the thread-local flag could be added entirely in src/lib.rs if needed (just a `std::thread::LocalKey` or `AtomicBool` static). It doesn't necessarily need to be in src/state.rs. The `RUN_STARTED` cell is in src/state.rs because it's used by `ensure_run_started()` which is called from `record()`. But a `FAILURE_OBSERVED_EMITTED` flag would only be needed in `exit_with_state()` in src/lib.rs.
+
+Let me refine Task 02 to keep the thread-local flag in src/lib.rs to avoid file conflicts with Task 01.
+
+Actually, let me just update Task 02 slightly to clarify this.
+
+Wait, actually let me reconsider. Is the thread-local flag even necessary? Looking at the code:
+
+1. Panic hook records FailureObserved (src/state.rs:60)
+2. After panic, the panic hook runs, then the process unwinds
+3. There's no code path where both the panic hook AND exit_with_state would run — after a panic, the process terminates via the panic handler, not via exit_with_state's normal code path
+
+So the duplicate FailureObserved concern is probably not real. Let me simplify Task 02.
+
+Let me update it to remove the thread-local flag complexity.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me refine Task 02 to remove unnecessary complexity — the thread-local flag likely isn't needed since panic and error-exit are mutually exclusive code paths.
+      );
+      ```
+    - Check if `state::take_diagnostic_error()` exists — if not, use the existing stash mechanism or pass an empty string
+  - - The `stash_diagnostic_error` function is called before `exit_with_state` in several places (e.g., line 869: `state::stash_diagnostic_error("api_error: piped_fallback_exhausted")`) — the FailureObserved should include that stashed message
+  - - Add a `FAILURE_OBSERVED_EMITTED` thread-local (similar to `RUN_STARTED` at src/state.rs:564) to prevent double-emission if exit_with_state is called after a panic hook already emitted FailureObserved
+  - - If the thread-local flag requires changes to src/state.rs, keep them minimal (add the flag + a setter) and coordinate with task_01 to avoid conflicts
+  - - Keep the change under 30 lines total
+  + - The `stash_diagnostic_error` function is called before `exit_with_state` in several places (e.g., line 869: `state::stash_diagnostic_error("api_error: piped_fallback_exhausted")`) — the FailureObserved should include that stashed message if available
+  + - A thread-local duplicate guard is NOT needed: the panic hook (which emits FailureObserved) and error-exit are mutually exclusive — after a panic the process unwinds, it doesn't reach exit_with_state
+  + - Keep the change under 20 lines total
+  + - Do NOT modify src/state.rs in this task (task_01 already touches it)
+  ✓ Auto-approved: edit: session_plan/task_02.md (15 → 15 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit session_plan/task_02.md (15 → 15 lines)
+      );
+      ```
+    - Check if `state::take_diagnostic_error()` exists — if not, use the existing stash mechanism or pass an empty string
+  - - The `stash_diagnostic_error` function is called before `exit_with_state` in several places (e.g., line 869: `state::stash_diagnostic_error("api_error: piped_fallback_exhausted")`) — the FailureObserved should include that stashed message
+  - - Add a `FAILURE_OBSERVED_EMITTED` thread-local (similar to `RUN_STARTED` at src/state.rs:564) to prevent double-emission if exit_with_state is called after a panic hook already emitted FailureObserved
+  - - If the thread-local flag requires changes to src/state.rs, keep them minimal (add the flag + a setter) and coordinate with task_01 to avoid conflicts
+  - - Keep the change under 30 lines total
+  + - The `stash_diagnostic_error` function is called before `exit_with_state` in several places (e.g., line 869: `state::stash_diagnostic_error("api_error: piped_fallback_exhausted")`) — the FailureObserved should include that stashed message if available
+  + - A thread-local duplicate guard is NOT needed: the panic hook (which emits FailureObserved) and error-exit are mutually exclusive — after a panic the process unwinds, it doesn't reach exit_with_state
+  + - Keep the change under 20 lines total
+  + - Do NOT modify src/state.rs in this task (task_01 already touches it)
+ ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also update the Fallback section to remove the thread-local flag reference.
+────────────────────────────────────────────────────────────────────────────────
+
+
+    Fallback:
+  - - If `exit_with_state` is called from code paths that already emit FailureObserved (causing duplicates), gate the new emission with a check for whether FailureObserved was already recorded for the current run. Add a `FAILURE_RECORDED` thread-local flag in src/state.rs (mirroring RUN_STARTED pattern) rather than doubling up.
+  - - If the change requires src/state.rs changes for the thread-local flag, add it to Files (src/state.rs is already touched by task_01; coordinate minimally).
+  + - If `exit_with_state` is called from a code path that already emitted FailureObserved via the panic hook, don't worry about it — panics unwind and don't reach exit_with_state. No duplicate guard needed.
+  + - If `state::take_diagnostic_error()` doesn't exist, use an empty string for error_detail or call the existing stash-read function.
+  ✓ Auto-approved: edit: session_plan/task_02.md (3 → 3 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit session_plan/task_02.md (3 → 3 lines)
+    Fallback:
+  - - If `exit_with_state` is called from code paths that already emit FailureObserved (causing duplicates), gate the new emission with a check for whether FailureObserved was already recorded for the current run. Add a `FAILURE_RECORDED` thread-local flag in src/state.rs (mirroring RUN_STARTED pattern) rather than doubling up.
+  - - If the change requires src/state.rs changes for the thread-local flag, add it to Files (src/state.rs is already touched by task_01; coordinate minimally).
+  + - If `exit_with_state` is called from a code path that already emitted FailureObserved via the panic hook, don't worry about it — panics unwind and don't reach exit_with_state. No duplicate guard needed.
+  + - If `state::take_diagnostic_error()` doesn't exist, use an empty string for error_detail or call the existing stash-read function.
+ ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify both task files and the issue responses, then summarize.
+
+Let me also check that I haven't missed anything critical. Let me re-read the plan instructions:
+
+1. ✅ mkdir -p session_plan — done
+2. ✅ At least one task file — task_01.md (harness-seed) and task_02.md (planner)
+3. ✅ Issue responses — done
+4. ✅ Each task has: Title, Files, Issue, Origin, Evidence, Edit Surface, Verifier, Fallback, Objective, Why this matters, Success Criteria, Verification, Expected Evidence, Implementation Notes
+5. ✅ At most 3 files per task — task_01: 1 file (src/state.rs), task_02: 1 file (src/lib.rs)
+6. ✅ No CI failures to fix
+7. ✅ Task sizing: completable in 20 minutes
+
+Let me also verify the files I named in task_02 (src/lib.rs) actually exist and contain the `exit_with_state` function.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me do a final check that the task files are complete and consistent.
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l session_plan/task_01.md session_plan/task_02.md session_plan/issue_respons…  ▶ $ for f in session_plan/task_01.md session_plan/task_02.md; do echo "=== $f ==="; … ✓ (952ms)
+ ✓ (2.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both task files look good. Let me verify the key facts:
+
+1. `src/state.rs` exists and contains the state recording functions — confirmed by earlier grep
+2. `src/lib.rs` exists and contains `exit_with_state` at line 985 — confirmed by earlier read
+3. `exit_with_state` calls `mark_run_completed_with_error` but does NOT emit `FailureObserved` — confirmed
+4. The panic hook emits `FailureObserved` but error-exit doesn't — confirmed
+
+Now let me summarize the plan.
+
+Summary:
+- Task 01 (harness-seed): Small src/state.rs improvement — healthy-codebase fallback
+- Task 02 (planner): Emit FailureObserved on error exit in src/lib.rs — addresses MEDIUM assessment bug
+
+This is a good plan. Both tasks:
+- Touch src/ Rust code (not scripts)
+- Are verifiable with cargo build && cargo test
+- Are small enough for 20 minutes
+- Address real evidence (assessment bugs, trajectory pressure)
+- Avoid the self-reference trap (planning pipeline changes)
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+Plan complete. Here's the summary:
+
+## Session Plan — Day 152
+
+### Task 01 (harness-seed): Add a small verifiable improvement to `src/state.rs`
+• **File**: `src/state.rs`
+• **Verifier**: `cargo test state`
+• **Why**: Healthy-codebase fallback — the codebase has no actionable bugs, so find a micro-improvement (test, doc, clippy fix) to break the 9/10 empty-session streak with a verifiable Rust change
+
+### Task 02 (planner): Emit FailureObserved on agent error exit
+• **File**: `src/lib.rs`
+• **Verifier**: `cargo test`
+• **Why**: `exit_with_state()` emits `RunCompleted(error)` but NOT `FailureObserved`, forcing retroactive repair with `source=unknown`. Adding FailureObserved emission with the actual exit code and diagnostic error context fixes the MEDIUM assessment bug and makes `state why last-failure` return actionable information
+
+### Issue Responses
+
+| Issue | Decision | Reason |
+|-------|----------|--------|
+| #147 (empty session) | Keep open | This session's tasks aim to break the streak |
+| #135 (planning fallback) | Defer | Evaluator timeout risk (#131); code was likely correct |
+| #134 (lifecycle gap) | Defer | Agent got stuck; needs narrower scope |
+| #105 (cache metrics) | Defer | Blocked by upstream #90 |
+| #131 (evaluator timeout) | Keep open | Do-not-modify; human action required |
+| #90 (Usage struct) | Keep open | No upstream repo access; human action required |
+
+Both tasks touch src/ Rust code (not scripts), pass through `cargo build && cargo test`, and are completable in 20 minutes. They avoid the self-reference trap (modifying the planning pipeline) that has caused repeated reverts.
+
+

@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: New unit test `compatibility_event_json_line_roundtrips_canonical_format` is a focused, verifiable addition to `src/state.rs` that tests the `compatibility_event_json_line` function's parsing and re-serialization behavior, including `_yoyo` metadata stripping. Build and `cargo test state` both pass. The change is small, scoped to the listed file, and matches the task objective exactly.
