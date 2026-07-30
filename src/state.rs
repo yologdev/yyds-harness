@@ -3569,6 +3569,43 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_event_json_line_roundtrips_canonical_format() {
+        // Construct a canonical state event JSON line and verify that
+        // compatibility_event_json_line parses it and re-serializes it with
+        // the compatibility format (actor as label string, fields flattened).
+        let line = serde_json::to_string(&json!({
+            "event_id": "evt-canon-test",
+            "event_type": "PatchEvaluated",
+            "schema_version": 1,
+            "timestamp_ms": 4200,
+            "actor": "harness",
+            "run_id": "run-canon",
+            "session_id": null,
+            "trace_id": "trace-canon",
+            "parent_event_ids": ["evt-parent"],
+            "payload": {"verdict": "pass", "suite": "local-smoke"}
+        }))
+        .unwrap();
+
+        let result = compatibility_event_json_line(&line)
+            .expect("compatibility_event_json_line should parse canonical format");
+        let parsed: Value = serde_json::from_str(&result).expect("output should be valid JSON");
+
+        assert_eq!(parsed["event_id"], "evt-canon-test");
+        assert_eq!(parsed["event_type"], "PatchEvaluated");
+        assert_eq!(parsed["actor"], "harness");
+        assert_eq!(parsed["run_id"], "run-canon");
+        assert_eq!(parsed["trace_id"], "trace-canon");
+        assert_eq!(parsed["payload"]["verdict"], "pass");
+        assert_eq!(parsed["payload"]["suite"], "local-smoke");
+        assert_eq!(parsed["parent_event_ids"][0], "evt-parent");
+        assert!(
+            parsed["payload"].get("_yoyo").is_none(),
+            "compatibility output must strip _yoyo metadata"
+        );
+    }
+
+    #[test]
     fn event_append_writes_jsonl() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
