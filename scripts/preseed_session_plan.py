@@ -1276,6 +1276,19 @@ def _assessment_is_healthy_codebase(lower: str, current: str) -> bool:
     return False
 
 
+# Rotation list for healthy-codebase fallback. Each entry is (file_path, test_filter).
+# The test_filter is passed to ``cargo test <filter>`` and should match tests in
+# the corresponding source file. Rotating prevents sessions from repeatedly
+# targeting the same file when no actionable bugs exist.
+_HEALTHY_FALLBACK_FILES: list[tuple[str, str]] = [
+    ("src/state.rs", "state"),
+    ("src/deepseek.rs", "deepseek"),
+    ("src/tool_wrappers.rs", "tool_wrappers"),
+    ("src/prompt.rs", "prompt"),
+]
+_fallback_index: int = 0
+
+
 def _healthy_codebase_fallback() -> dict[str, object]:
     """Return a fallback task that produces a small src/-touching improvement.
 
@@ -1283,15 +1296,23 @@ def _healthy_codebase_fallback() -> dict[str, object]:
     this produces a small, verifiable src/ improvement instead of a
     journal-only observation. This ensures every session has a concrete
     verifiable task that passes ``cargo build && cargo test``.
+
+    Rotates through ``_HEALTHY_FALLBACK_FILES`` so consecutive calls within
+    the same process pick different target files, preventing the self-referential
+    "fix yourself" treadmill where every session targets the same file.
     """
+    global _fallback_index
+    file_path, test_filter = _HEALTHY_FALLBACK_FILES[_fallback_index % len(_HEALTHY_FALLBACK_FILES)]
+    _fallback_index += 1
+
     task: dict[str, object] = {
         "title": "Add a small verifiable improvement to src/",
-        "files": "src/state.rs",
+        "files": file_path,
         "objective": (
-            "Add one focused unit test, doc comment, or micro-improvement to src/state.rs. "
+            f"Add one focused unit test, doc comment, or micro-improvement to {file_path}. "
             "Choose a public function with incomplete test coverage, a function whose "
             "documentation is missing edge-case descriptions, or a small clippy fix. "
-            "Run ``cargo test state`` to verify."
+            f"Run ``cargo test {test_filter}`` to verify."
         ),
         "why": (
             "The assessment found no actionable bugs in src/. Instead of producing a "
@@ -1299,12 +1320,12 @@ def _healthy_codebase_fallback() -> dict[str, object]:
             "a small, verifiable code improvement that passes cargo build && cargo test."
         ),
         "success": [
-            "One src/state.rs improvement lands and passes cargo test state.",
+            f"One {file_path} improvement lands and passes cargo test {test_filter}.",
             "The change is small enough to complete in 20 minutes.",
             "The task avoids modifying planning/assessment scripts (no self-reference).",
         ],
         "verification": [
-            "cargo test state",
+            f"cargo test {test_filter}",
         ],
         "evidence": [
             "Task lineage shows an src/ change from a healthy-codebase fallback.",
@@ -1451,7 +1472,7 @@ lifecycle gnomes: state_run_started_count=18; state_run_completed_count=18; stat
         )
         # Task should be a landable task with source files, not analysis-only.
         # When analysis_only_active is true and no candidates match, the
-        # _healthy_codebase_fallback returns src/state.rs.
+        # _healthy_codebase_fallback returns a rotated src/ file.
         files_str = str(task.get("files", ""))
         assert "scripts/" in files_str or "src/" in files_str, (
             f"Expected landable task with script or src files, got {task.get('files')}"
@@ -1729,8 +1750,10 @@ No clunky friction found in quick tool checks.
         text = render_task(task, "103", "12:53")
         assert "Title:" in text and "Success Criteria:" in text and "Origin: harness-seed" in text
         assert "Evidence:\n-" in text
-        assert "src/state.rs" in str(task["files"]), (
-            "Healthy fallback should target src/ not just journals/"
+        fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+        assert str(task["files"]) in fallback_files, (
+            f"Healthy fallback should target a src/ file in the rotation list, "
+            f"got files: {task.get('files')}"
         )
         assessment = "Assessment phase produced a transcript but did not write session_plan/assessment.md."
         task = choose_task(assessment)
@@ -1980,8 +2003,8 @@ no-edit revert pressure from prior session.
             f"Analysis-only no-candidates fallback should return healthy-codebase task, "
             f"got '{fallback_task['title']}'"
         )
-        assert "src/state.rs" in str(fallback_task.get("files", "")), (
-            f"Healthy-codebase fallback should target src/state.rs, "
+        assert str(fallback_task.get("files", "")) in fallback_files, (
+            f"Healthy-codebase fallback should target a file in the rotation list, "
             f"got files: {fallback_task.get('files')}"
         )
         assert not _has_protected_files(fallback_task), (
@@ -2141,13 +2164,15 @@ bash_tool_error=3
         )
         # --- Assessment-missing fallback specificity tests ---
         # When assessment_was_missing is True and zero candidates match,
-        # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+        # choose_task returns _healthy_codebase_fallback() — a rotated src/
         # task that passes cargo build && cargo test — instead of the
         # self-referential "Repair evidence-backed planning" meta-task.
         # This breaks the cycle: assessment timeout → no assessment →
         # self-referential planning fix → more assessment timeouts.
         # Day 115 learning: "Fallback self-reference turns 'nothing broken'
         # into busywork you can't refuse."
+        # The fallback rotates through _HEALTHY_FALLBACK_FILES to avoid
+        # repeatedly targeting the same file (Day 153 learning).
 
         # Exit 0 + no provider error → healthy codebase fallback
         assessment_zero = """# Assessment Missing - Day 131 (10:55)
@@ -2166,8 +2191,10 @@ Guard result:
         assert task_zero["title"] == "Add a small verifiable improvement to src/", (
             f"assessment_was_missing should produce healthy-codebase fallback, got: {task_zero['title']}"
         )
-        assert "src/state.rs" in str(task_zero.get("files", "")), (
-            f"Healthy-codebase fallback should target src/state.rs, got: {task_zero.get('files')}"
+        fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+        assert str(task_zero.get("files", "")) in fallback_files, (
+            f"Healthy-codebase fallback should target a file in the rotation list, "
+            f"got: {task_zero.get('files')}"
         )
 
         # Exit 0 + trajectory gnomes → still healthy codebase fallback
