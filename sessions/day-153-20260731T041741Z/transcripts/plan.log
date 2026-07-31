@@ -1,0 +1,631 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment available - the assessment agent didn't produce output
+2. I need to create task files from trajectory/state evidence
+3. There's a seed task already mentioned in the planning instructions about session_plan/task_01.md potentially existing
+4. I have trajectory evidence showing:
+   - Day 153: 1/2 strict verified, obsolete_already_satisfied=1
+   - Day 152: 1/2 strict verified, reverted_unverified=1
+   - Multiple empty sessions
+   - Graph pressure points: analysis_only_attempt_count=1, task_verification_rate=0.5, task_obsolete_count=1, shell tool failures
+   - Log feedback score 0.5625 with lesson about shell commands
+
+Let me check if session_plan/task_01.md already exists first.
+
+Key evidence from trajectory:
+- task_analysis_only_attempt_count=1 - sessions landing no code
+- task_verification_rate=0.5 - half of tasks aren't verified
+- task_obsolete_count=1 - stale tasks being served
+- bash_tool_error=6 - shell tool failures
+- evaluator_timeout issue (#131) - ongoing problem
+- Issue #135 (self): reverted task about breaking self-referential planning fallback
+- Issue #105 (self): reverted task about cache metrics (blocked by yoagent #90)
+- Issue #90 (help-wanted): yoagent Usage struct missing cache fields - still blocked
+- Issue #131 (help-wanted): evaluator timeouts - still no fix from human
+
+The planning instructions say: "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md."
+
+Let me check if it exists and then plan from there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ ls session_plan ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing task_01.md and assessment_missing.md to understand what the harness already seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.4s)
+ ✓ (936ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have:
+1. `session_plan/task_01.md` - seeded by harness: "Fix assessment silent failure: write assessment_missing.md with trajectory evidence" targeting `scripts/preseed_session_plan.py`
+2. `session_plan/assessment_missing.md` - artifact noting assessment phase produced a transcript but no assessment.md
+
+Now let me analyze the trajectory evidence to plan tasks:
+
+**Trajectory evidence:**
+- Day 153: tasks 1/2, 1/2 strict verified, obsolete_already_satisfied=1
+- Day 152: tasks 1/2, 1/2 strict verified, reverted_unverified=1
+- Day 152 (empty): no tasks attempted
+- Day 152 (empty): no tasks attempted  
+- Day 151: tasks 0/1, reverted_no_edit=1
+- Day 151 (empty): no tasks attempted
+
+**Graph pressure:**
+1. Force analysis-only attempts into action (task_analysis_only_attempt_count=1)
+2. Raise verified task success rate (outcome_task_success_rate=0.5)
+3. Require strict verifier evidence for tasks (task_verification_rate=0.5)
+4. Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=6)
+5. Replace stale or already-satisfied tasks (task_obsolete_count=1)
+
+**Log feedback:**
+- score=0.5625
+- bash_tool_error=6
+- task_success_rate=0.5
+- task_spec_quality_score=0.8
+
+**Backlog issues:**
+- Issue #135: Reverted task about breaking self-referential planning fallback (Day 144)
+- Issue #105: Reverted task about cache metrics (Day 137) - blocked by #90
+- Issue #90: Help-wanted, blocked on yoagent upstream
+- Issue #131: Help-wanted, evaluator timeouts
+
+Now, the planning instructions say:
+- Task_01 already exists (harness-seed). I should refine it or add task_02/task_03.
+- The seed task_01 targets `scripts/preseed_session_plan.py` - which is an analysis-only task (doesn't touch src/ Rust code). This is exactly the pattern the trajectory warns about!
+- The trajectory says `task_analysis_only_attempt_count=1` and graph pressure says "Force analysis-only attempts into action"
+
+Wait, but the fallback planning rule says: "First create session_plan/task_01.md from the trajectory, recent CI, journals, state/gnome feedback, or the assessment-missing failure itself."
+
+Since task_01.md already exists, I need to decide: refine it, replace it, or add more tasks.
+
+The seeded task_01 targets `scripts/preseed_session_plan.py` - this is a scripts-only task that won't pass strict verification (no src/*.rs changes). Looking at the trajectory, we have `reverted_no_edit=1` and `task_analysis_only_attempt_count=1` — exactly the pattern where script-only tasks get reverted.
+
+But the task is about fixing assessment silent failure, which IS the current problem. And the assessment_missing.md shows the assessment produced a transcript but no assessment.md.
+
+Actually, let me reconsider. The planning instructions say:
+- "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation."
+- There IS no fresh assessment. The seed task is about fixing assessment missing situations. That's self-referential like the Day 115 learning warned about.
+
+But the task IS valid for what's happening right now - assessment is missing. The task targets scripts/preseed_session_plan.py which may not produce src/*.rs changes and could get reverted.
+
+Let me think about what tasks to create:
+
+**Option 1: Keep task_01 as-is (assessment missing fix)**
+- Risk: script-only task, may get reverted as analysis-only
+- But: it directly addresses the current problem
+
+**Option 2: Replace task_01 with something that touches src/*.rs and addresses trajectory**
+- The trajectory shows bash_tool_error=6 - that's a real code issue
+- task_verification_rate=0.5 - but this is mostly evaluator timeout, which is in evolve.sh (do-not-modify)
+- task_analysis_only_attempt_count=1 - this is about planning, same cycle
+
+**Option 3: Keep task_01, add task_02 targeting src/ based on trajectory**
+
+Let me look at the trajectory more carefully. The most actionable signal is:
+- `bash_tool_error=6` with lesson: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This could target `src/tools.rs` or `src/safety.rs` for bash tool improvements.
+
+Also, Issue #135 (self) about breaking the self-referential planning fallback targeting `scripts/preseed_session_plan.py` - this was reverted due to evaluator timeout. The issue says the fix was correct but evaluator timed out. However, this is also scripts-only.
+
+Let me create a plan:
+
+1. **Keep task_01** as the harness-seed but refine it to be more actionable and smaller
+2. **Task_02**: Address bash tool failures (trajectory pressure: bash_tool_error=6) by improving command error recovery in src/tools.rs
+3. **Task_03**: Something from the state graph - maybe improve task verification rate by detecting evaluator timeouts
+
+Wait, task_03 about evaluator timeouts would need to modify evolve.sh which is do-not-modify. I can't do that. And the task about bash tool errors is in src/tools.rs which is a src/*.rs file - good.
+
+Actually, let me think about what would actually land. The trajectory shows:
+- Script-only tasks get reverted (reverted_no_edit=1)
+- Tasks that pass cargo build && cargo test are the ones that survive
+- The evaluator timeout problem (#131) is still active and in evolve.sh
+
+So the smart play is to have at least one task targeting src/*.rs that can pass cargo build && cargo test.
+
+Let me check what specific bash tool issues exist. The trajectory says `bash_tool_error=6` and the lesson is about bounded commands with explicit paths.
+
+Actually, let me also consider Issue #135. The task was reverted because evaluator timed out, not because code was wrong. The issue says the fix was correct. And the trajectory says `task_analysis_only_attempt_count=1` - one of the graph pressures. Issue #135 is about breaking the self-referential planning fallback, which would help reduce analysis-only attempts. But it's scripts-only.
+
+Let me plan:
+
+1. **Task_01** (refine seed): Focus on assessment_missing.md generation. But make it smaller and more concrete. Actually, looking at the Evidence section, it says "The harness reached planning with no task artifacts" - but we DO have task_01.md now. The assessment agent didn't write assessment.md but the harness seeded task_01.md. So the problem is real but the task already has a seed task addressing it. Let me refine it to be more concrete.
+
+2. **Task_02**: Address bash_tool_error from trajectory - improve bash tool error recovery/reliability in src/tools.rs. This touches src/*.rs and can be verified with cargo build && cargo test.
+
+3. **Task_03**: Issue #135 - break self-referential planning fallback. This touches scripts/preseed_session_plan.py. Even though it's scripts-only, it directly addresses the analysis-only loop that the trajectory shows. And it was previously reverted only due to evaluator timeout, not code quality.
+
+Actually wait - I need to be more careful. Let me re-read the constraints:
+
+"Each task MUST touch at most 3 source files."
+"Each task must be completable in 20 minutes by a focused agent."
+"If a task has been reverted before (check agent-self issues above), make it SMALLER than last time."
+
+Issue #135 was reverted. The fix was: when `choose_task()` has zero candidates and `analysis_only_active` is True, return `_healthy_codebase_fallback()` instead of the self-referential fallback. It touches scripts/preseed_session_plan.py.
+
+For task_02 about bash tools, I need to figure out what specifically to fix. The trajectory says bash_tool_error=6. Let me think about what src/tools.rs does...
+
+Actually, I shouldn't overthink this. Let me:
+1. Keep task_01 as the seed (it's already there)
+2. Create task_02 about bash tool error recovery
+3. Create task_03 based on Issue #135 (smaller scope since it was reverted)
+
+Wait, but the planning instructions also say: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+And: "Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+Let me also check: can I refine task_01? The instructions say: "You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+Let me refine task_01 to be more concrete (add actual implementation details from the assessment_missing.md evidence), and create task_02 and task_03.
+
+Actually, I think task_01 as written is fine. The key improvement would be to make it clear that the fix should ensure the assessment agent writes assessment.md or that fallback preserves trajectory evidence. But the task already says that.
+
+Let me focus on creating task_02 and task_03. Let me first do a quick ownership check for bash tool error work.
+
+Let me look at src/tools.rs briefly to understand the bash tool structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 36.8s (2 ✓)
+
+Let me check ownership for bash tool work and understand the task landscape before finalizing the plan.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ head -50 src/tools.rs  ▶ $ grep -n 'fn.*bash\|StreamingBashTool\|fn.*run_command\|exit_code\|stderr' src/to… ✓ (946ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the bash tool error patterns more specifically - the exit code handling and recovery hints.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'exit_code\|Exit code\|exit status\|recovery.hint\|recovery_hint\|with_r…  ▶ $ grep -n 'bash_tool\|RETRY_HINT\|recovery' src/tool_wrappers.rs | head -30 ✓ (942ms)
+ ✓ (2.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the recovery hint for bash tool specifically to understand what recovery hints are given:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'targeted_recovery_hint\|"bash"' src/tool_wrappers.rs | head -20  ▶ $ grep -n 'tool_recovery_hint\|prompt_retry' src/prompt_retry.rs | head -20 ✓ (1.9s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the bash tool recovery hints to understand what's currently there:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:100..130  ▶ read src/tool_wrappers.rs:1018..1068 ✓ (1.4s)
+ ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the rest of the bash recovery hint:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt_retry.rs:126..141 ✓ (582ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I now have a good picture. Let me also check the current state of the self-referential planning fallback in preseed_session_plan.py to understand Issue #135 better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'analysis_only_active\|_healthy_codebase_fallback\|Repair evidence-backe… ✓ (951ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Looking at the code, it seems like Issue #135's fix might already be partially in place. Line 997-998 shows:
+
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+This is the fix that #135 was about! But the task was reverted due to evaluator timeout, meaning the code might have been reverted. Let me check the git log to see if it's currently in the codebase.
+
+Wait, the grep output showed lines 997-998 have the fix! So maybe the code is there but the tests weren't updated, or the revert happened but someone manually restored it.
+
+Let me check if the test at line 1395 still asserts the old title:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1385..1405  ▶ read scripts/preseed_session_plan.py:990..1020 ✓ (1.4s)
+ ✓ (953ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The code has the fix (lines 997-998) but the self-test at line 1395 still asserts the OLD fallback title "Repair evidence-backed planning after no-task sessions". This means the test is wrong — it's testing the case where `analysis_only_active` is False (no analysis-only pressure), so the old fallback should still be returned. But the test doesn't set up analysis-only metrics explicitly.
+
+Let me look at the test at line 1395 more carefully to see what assessment text it's using. Let me look at the section before line 1385.
+
+Actually wait, this is testing a scenario where the assessment has no analysis-only metrics (it's a fallback assessment about self-test results and state snapshots). In that case, `analysis_only_active` would be False (because there are no analysis-only metrics), and the code would hit line 1000's fallback. So the test at line 1395 IS correct — when analysis_only_active is False, the old fallback should be returned.
+
+But does the test at line 1450-1470 test the new behavior when analysis_only_active is True? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.7s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1440..1500 ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the code already has the fix from Issue #135! Lines 997-998 already have `if analysis_only_active: return _healthy_codebase_fallback()`. And the tests at lines 1445-1455 test that when analysis_only_active is True, a landable task is returned.
+
+But wait - the self-test at line 1395 asserts the OLD title "Repair evidence-backed planning after no-task sessions". Let me look at this more carefully. This is in the test before line 1395.
+
+Looking at lines 1394-1395:
+```python
+task = choose_task(assessment)
+assert task["title"] == "Repair evidence-backed planning after no-task sessions", task
+```
+
+The assessment before this (let me see lines around 1380) appears to be a test where `analysis_only_active` is FALSE. So the old fallback is correctly returned. Let me verify by reading a few lines above.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1375..1395 ✓ (444ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the test at line 1394 has an assessment with "Self-Test Results" and "Structured State Snapshot" sections. This assessment doesn't have any analysis-only pressure metrics. So `analysis_only_active` is False, and the code correctly falls through to the old fallback at line 1000-1001. The assert at line 1395 is correct.
+
+But wait - does the test pass? The task was reverted. Let me check the test runner to see if the test passes now.
+
+Actually, Issue #135 says it was reverted by the evaluator timeout, not by test failure. The code might already be correct. Let me verify by running the test.
+
+Actually, the planning policy says: "Do NOT run cargo build, cargo test, clippy, broad grep/search, or long GitHub log commands during planning."
+
+Let me just proceed with planning based on what I've found. The code seems to already have the fix, so Issue #135 might already be resolved in the codebase. Let me verify with git log.
+
+Actually, let me focus on creating the plan. Here's my analysis:
+
+1. **Task_01** (existing seed): Fix assessment silent failure. This targets scripts/preseed_session_plan.py. The task is about ensuring that when assessment.md is missing, the harness generates assessment_missing.md with trajectory evidence. But assessment_missing.md already exists! So the problem is partially addressed. The task_might_ still be valid if there's more to fix.
+
+2. **Task_02**: Address bash_tool_error=6. Target src/tools.rs, src/tool_wrappers.rs. The trajectory evidence shows 6 bash tool errors. The current recovery hints are good but could be improved. The trajectory's lesson says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks."
+
+3. **Task_03**: Issue #135 (if not already fixed) or something else from the trajectory.
+
+Let me check if Issue #135's fix is already in the code by running a quick test.
+
+Actually wait - I should not run tests during planning per policy. Let me instead look at the git log to see if the code was reverted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 -- scripts/preseed_session_plan.py ✓ (950ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the current state. The code at line 997-998 shows the fix is in place. But was it reverted? Let me check the diff around that area.
+
+Actually, the git log shows a commit "Update preseed test assertion for corrected task selection post-#144 fix" on Day 148. So it seems like the fix was re-landed after being reverted.
+
+Let me check: Issue #135 says it was reverted as Day 144 Task 1. Then Day 148 committed a fix for the test assertion. So the code might be in the right state now. Let me verify by checking if there were subsequent reverts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -5 -- scripts/preseed_session_plan.py && echo "---" && git sho… ✓ (943ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the fix for Issue #135 seems to already be in the code. The code at lines 997-998 already has `if analysis_only_active: return _healthy_codebase_fallback()` and the test at line 1395 is testing the case where analysis_only_active is False (which correctly still returns the old fallback).
+
+So Issue #135 appears to be already resolved. Let me now focus on creating the plan.
+
+Here's my plan:
+
+**Task_01** (refine the seed): The harness seed says "Fix assessment silent failure: write assessment_missing.md with trajectory evidence." But `assessment_missing.md` already exists (the harness itself created it). The task needs to be refined. Looking at the assessment_missing.md, it says:
+- assessment_exit_code: 0
+- provider_error_detected: false
+- The assessment phase produced a transcript but did not write assessment.md
+
+This means the assessment agent ran but didn't call write_file. The fix should be in the assessment agent's behavior or in the harness's handling of this case. But the task targets `scripts/preseed_session_plan.py` — that's the planning script, not the assessment agent.
+
+Wait, actually, looking more carefully at the task_01: it says "analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced." But evolve.sh is do-not-modify. And Files says scripts/preseed_session_plan.py.
+
+The existing assessment_missing.md already provides the evidence needed for planning. The harness already created it. So task_01 as written is somewhat confused — it targets preseed_session_plan.py but talks about fixing assessment agent output.
+
+I think the real fix should be in `scripts/preseed_session_plan.py` — making the fallback planning better when assessment is missing. The task should be about improving how preseed_task works when assessment is missing, using the assessment_missing.md evidence.
+
+**Task_02**: Bash tool error recovery. The trajectory shows `bash_tool_error=6`. The lesson says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." I should improve the bash error formatting to include more actionable diagnostic information.
+
+Specifically, I notice that when a bash command fails, the current exit code message is:
+```
+Exit code: {exit_code}. Tip: use explicit paths (./script.sh, not script.sh) and -- to separate flags from positional args.
+```
+
+The improvement could be: when exit code is 141 (SIGPIPE, which we saw in the grep output), explain that's a pipe broken error and suggest using `head` or avoiding piping to `head` that exits early. Exit code 141 appeared in our own grep command!
+
+Let me look at what exit codes we should handle specially. The targeted_recovery_hint already handles codes 1, 2, 126, 127. But 141 (SIGPIPE), 137 (SIGKILL/OOM), 143 (SIGTERM), 124 (timeout) are not handled.
+
+Actually, looking at the trajectory lesson more carefully: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." This is more about the recovery hint message than about code changes. The targeted_recovery_hint function already does a lot. 
+
+Let me think about what concrete src/*.rs improvement would help with bash errors. 
+
+Looking at the exit code handling in src/tools.rs line 683-691, the exit code message could be improved with more specific guidance. Currently it just prints the exit code and a generic tip. Let me add specific exit code meanings there.
+
+Also, looking at the targeted_recovery_hint function (lines 1018-1067), it handles exit codes 1, 2, 126, 127 but not 141 (SIGPIPE), 137 (OOM), 143 (SIGTERM), or 124 (timeout). Adding more exit code interpretations could help.
+
+And the timeout case (line 1048-1053) could be improved to mention the `timeout` parameter of the bash tool itself.
+
+Let me plan:
+
+**Task_02**: Improve bash exit code diagnostics in src/tools.rs - add more specific exit code interpretations (141=SIGPIPE, 137=SIGKILL/OOM, 143=SIGTERM, 124=timeout) to the exit code message and targeted_recovery_hint.
+
+For **Task_03**, let me think about what else from the trajectory is actionable:
+- task_verification_rate=0.5 — evaluator timeouts, but evolve.sh is do-not-modify
+- task_obsolete_count=1 — stale tasks, but this is a planning pipeline issue
+- The assessment missing issue itself
+
+Actually, let me focus on two good tasks and skip task_03 unless I have a strong candidate. The planning policy says I can have fewer than 3.
+
+Let me refine task_01 to be concrete and actionable, then create task_02.
+
+For task_01, let me re-read it more carefully. The task says:
+- "The assessment agent exited successfully (code 0) with no provider error but did not write assessment.md."
+- "Analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced."
+- "Possible causes: the agent wrote to the wrong path, the write_file tool was refused..."
+
+But the Files says `scripts/preseed_session_plan.py` only. So the implementer can only change the planning script.
+
+What can preseed_session_plan.py do about missing assessment? It already has `assessment_was_missing` parameter and `assessment_missing.md` evidence. The task might be about improving the task seeding logic when assessment is missing — using the assessment_missing.md artifact to inject trajectory evidence into the seeded task.
+
+Actually, I think I should refine task_01 to be more specific: when assessment is missing, the preseed_task function should read assessment_missing.md for evidence (transcript path, exit code, timeout info) and use that to generate a better fallback task. Currently, the harness-seed task is generic. It should include concrete evidence from the actual failure.
+
+Let me also look at what `_assessment_was_missing` does in preseed_session_plan.py.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'assessment_was_missing\|assessment.missing\|_build_fallback_task\|_seed… ✓ (962ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me look at lines 1025-1065 to see the `assessment_was_missing` code path:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1025..1075 ✓ (456ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the code already has sophisticated handling for assessment_missing. It reads the assessment_missing.md fields, extracts trajectory gnomes, etc. This is a well-established code path.
+
+Let me now focus on creating the plan. I think the seed task_01 needs to be refined. The current task says to "analyze the harness dispatching logic in evolve.sh" but evolve.sh is do-not-modify and the Files only include preseed_session_plan.py. The code already handles assessment_missing well.
+
+Let me refine task_01 to be about making the seeded fallback task more actionable when assessment is missing — specifically, when the assessment agent produces a transcript but no assessment.md (exit code 0, no provider error), the fallback task should include instructions to read the transcript for evidence rather than saying "No transcript was saved."
+
+Actually wait, looking at lines 1041-1046:
+- If transcript exists: "Check {transcript}"
+- If transcript doesn't exist: "No transcript was saved..."
+
+So when the transcript exists, it says "Check transcripts/assess.log" which is reasonable. But the task_01 as seeded is confused — it says to analyze evolve.sh but targets preseed_session_plan.py.
+
+I think the best approach is:
+1. Refine task_01 to be more concrete and actionable
+2. Create task_02 for bash exit code diagnostics
+
+For task_01 refinement, let me look at what the assessment_missing.md actually says and whether the seeded task properly captures it. The assessment_missing.md says:
+- assessment_exit_code: 0
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+The current preseed code at lines 1030-1074 handles this case: it reads fields, checks transcript existence, enriches with trajectory gnomes. But the task_01 that gets seeded by the harness (at lines 1158-1204) is the generic fallback "Fix assessment silent failure" task.
+
+The problem is: the harness-seed path (lines 1158-1204) creates a generic task even though the assessment_was_missing path (lines 1030-1074) already enriched the fallback with trajectory evidence. These are two different code paths!
+
+Let me trace the flow: `choose_task()` is called with `assessment_was_missing=True`. It should go through lines 1030-1074 to enrich the fallback. But the actual task_01.md that got written has a title of "Fix assessment silent failure: write assessment_missing.md with trajectory evidence" — looking at line 1164, this seems to come from the harness seeding.
+
+Wait, the flow is more complex. Let me check: `choose_task()` returns a dict, and then something else writes task_01.md. The harness seeding might be separate from `choose_task()`.
+
+Let me look at how task_01.md gets written:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def main\|def .*seed\|task_01\|write.*task.*file\|render_task\|_write_t… ✓ (964ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the main function around line 2361 to understand the flow:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2340..2390 ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow. When assessment is missing:
+1. `args.assessment.name == "assessment_missing.md"` → `assessment_was_missing=True`
+2. `choose_task(assessment, assessment_was_missing=True)` is called
+3. The code at lines 1030-1074 enriches the fallback with trajectory evidence
+4. But the fallback at line 1000-1024 is "Repair evidence-backed planning after no-task sessions"
+
+Wait - but lines 997-998 say:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+And then if not analysis_only_active, it falls through to the fallback at 1000. But then at line 1030, it checks `if assessment_was_missing:` and enriches the fallback.
+
+So the flow when assessment is missing AND analysis_only_active is False:
+1. Lines 997: analysis_only_active might be False (no metrics in assessment_missing.md?)
+2. Falls to line 1000: creates the "Repair evidence-backed planning" fallback
+3. Lines 1030-1074: enriches it with assessment_missing fields and trajectory gnomes
+
+But the task_01.md we got has title "Fix assessment silent failure: write assessment_missing.md with trajectory evidence" - let me check where this title comes from.
+
+Looking at line 1164: `"Fix assessment silent failure: write assessment_missing.md with trajectory evidence"` - this is in a different function, probably `_build_fallback_task()`. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1145..1195 ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The assessment_missing.md has exit_code=0 and no provider error. The code at line 1148 checks `exit_code == 0 and not provider_error`. Then at line 1150, it checks `_src_gnome_actionable` — if there are actionable gnomes (like bash_tool_error), it creates a task targeting those. Otherwise (line 1163), it creates the "Fix assessment silent failure" task.
+
+So the question is: does the current assessment_missing.md have actionable gnomes? Let me check what `_src_gnome_actionable` does.
+
+Looking at the flow, the assessment_missing.md content is used as the "assessment" text passed to `choose_task()`. The `numeric_metrics()` function would parse it for trajectory gnomes. But assessment_missing.md only has:
+- assessment_exit_code: 0
+- assessment_timeout_seconds: 600
+- provider_error_detected: false
+- transcript: transcripts/assess.log
+
+There are no trajectory gnomes in assessment_missing.md. So `_src_gnome_actionable` would be False, and the code would go to line 1163-1173, creating the "Fix assessment silent failure" task.
+
+This is what happened! And the task_01.md we got is exactly this. The task targets `scripts/preseed_session_plan.py` and is about making the assessment silent failure handling better.
+
+OK, so the seeded task_01 is actually correct and well-formed given the evidence. The question is: should I refine it or add more tasks?
+
+Let me now think about what tasks to produce:
+
+1. **Keep/refine task_01**: The task is about fixing assessment silent failure. It targets scripts/preseed_session_plan.py. This is scripts-only, which means it might get reverted by strict verification (no src/*.rs changes). But the trajectory shows `task_analysis_only_attempt_count=1` pressure against analysis-only tasks.
+
+2. **Create task_02**: Bash exit code diagnostics in src/tools.rs. This targets src/*.rs and can be verified with cargo build && cargo test. Trajectory shows bash_tool_error=6.
+
+3. **Create task_03**: Something else from trajectory.
+
+Actually, let me re-read the planning instructions: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+Task_01 is from assessment_missing evidence, which is harness infra, not state-driven. Task_02 would be state-driven (bash_tool_error=6 from trajectory).
+
+For task_03, let me look at what other trajectory signals are actionable:
+- task_obsolete_count=1: stale/already-satisfied tasks being planned. This could be fixed in preseed_session_plan.py.
+- task_verification_rate=0.5: evaluator timeouts, but fix is in evolve.sh (do-not-modify)
+
+Actually, the task_obsolete_count=1 is interesting. The trajectory says "Implementation marked selected tasks obsolete or already satisfied; plan fresh tasks with evidence of correctness." This could be an improvement in how preseed_session_plan.py detects stale tasks.
+
+But I'm limited to 3 tasks and the planning says to not over-plan. Let me create 2 solid tasks.
+
+Let me finalize:
+
+**Task_01** (refined seed): Improve assessment_missing fallback to use trajectory evidence more effectively. The current code at line 1148-1173 creates a generic task when no src gnomes are actionable. But we could improve it by: (a) including the transcript contents summary so the planner has more evidence, or (b) having the fallback prefer verifiable src/*.rs tasks even when no specific gnome pressure exists.
+
+Actually, looking more carefully at the code flow, the assessment_missing.md was USED as the assessment text for `choose_task()`. The `numeric_metrics()` function parsed it but found no gnome metrics (because assessment_missing.md only has guard fields). Then `_src_gnome_actionable` returned False, and we get the generic fallback.
+
+The improvement could be: when assessment is missing, also look at the trajectory that the harness provides (in YOUR TRAJECTORY) rather than only parsing the assessment_missing.md for gnomes. But trajectory is injected into the planning prompt, not into preseed_session_plan.py.
+
+Actually, the trajectory IS already in the planning prompt. And the task_01 as written is a reasonable fallback. Let me just keep it.
+
+Let me refine task_01 to be more concrete: instead of a general "Fix assessment silent failure," make it about ensuring that when assessment produces a transcript but no assessment.md, the fallback task includes a concrete instruction to read the transcript and extract actionable findings.
+
+Wait, actually, re-reading the task_01 more carefully: "Analyze the harness dispatching logic in evolve.sh to understand why the output file wasn't produced." This references evolve.sh which is do-not-modify. The task should be refined to focus on what preseed_session_plan.py can actually do: improve the task generated when assessment is missing.
+
+Let me refine task_01 to be:
+- When assessment is missing with exit_code=0 and no provider error, the fallback task should include an instruction to read the assessment transcript (if it exists) and extract findings
+- Additionally, when assessment_missing and analysis-only pressure exists, ensure the fallback produces a src/*.rs task
+
+For task_02: Bash exit code diagnostics improvement in src/tools.rs and src/tool_wrappers.rs.
+
+Let me now create the plan files. First, let me refine task_01.md, then create task_02.md.
+
+Actually, let me think about this differently. The Policy says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+The seed task says: "Fix assessment silent failure: write assessment_missing.md with trajectory evidence." But assessment_missing.md already exists! The harness already wrote it. So the task title is somewhat misleading — the problem it describes (assessment_missing.md not being written) is already solved.
+
+However, the task body describes a deeper problem: the assessment agent ran but didn't write assessment.md, and the planning fallback should be smarter about this. That's still valid.
+
+Let me refine it to: "Improve assessment_missing fallback to read transcript for evidence when assessment agent runs but doesn't write output."
+
+Or even better, let me check if the assessment_missing.md includes trajectory gnomes. Let me re-read assessment_missing.md — it only has guard fields, no gnomes.
+
+The issue is: `_src_gnome_actionable` evaluates to False because assessment_missing.md has no gnome metrics. But the PLANNING PROMPT has trajectory evidence (via YOUR TRAJECTORY). preseed_session_plan.py doesn't have access to this.
+
+So the fix might be: the harness should include trajectory gnomes in assessment_missing.md, OR preseed_session_plan.py should read trajectory separately.
+
+OK, I'm overthinking this. Let me just keep task_01 as is (it's reasonable) and create task_02 and task_03. The harness seed is fine enough for implementation.
+
+Task_02: Improve bash exit code diagnostics
+Task_03: Address task_obsolete_count from trajectory
+
+For task_03, the trajectory says "Replace stale or already-satisfied tasks (task_obsolete_count=1): Implementation marked selected tasks obsolete or already satisfied; plan fresh tasks with evidence of correctness." This is about improving stale task detection in preseed_session_plan.py.
+
+Actually, let me think about what would actually survive strict verification. Tasks touching src/*.rs files survive because they pass cargo build && cargo test. Tasks touching only scripts may get reverted if the evaluator times out or if strict verification rejects them.
+
+The safest bet is to have at least one src/*.rs task. Let me focus on task_02 (bash diagnostics) and task_03 can be a small src/state.rs task.
+
+Wait, actually, the trajectory evidence points to a few things I can address:
+1. bash_tool_error=6 → improve bash diagnostics in src/tools.rs
+2. task_obsolete_count=1 → improve stale task detection in scripts/preseed_session_plan.py
+
+For task_03, let me make it about improving task_obsolete detection. The trajectory shows one task was marked obsolete_already_satisfied. This could mean the stale-seed contradiction detector missed something.
+
+OK, let me finalize and write the files. Let me:
+
+1. Refine task_01.md (keep the harness seed but make it more concrete)
+2. Create task_02.md (bash exit code diagnostics)
+3. Create task_03.md (improve stale task detection OR something small from trajectory)
+4. Create issue_responses.md
+
+Actually, let me keep it to 2 tasks. The policy says "You have 3 task slots per session" but doesn't require all 3. And the trajectory shows that sessions with simpler scopes have better success rates.
+
+Let me create:
+- task_01.md: Refined seed - improve assessment_missing fallback task generation
+- task_02.md: Bash exit code diagnostics - add more specific exit code interpretations
+
+And issue_responses.md.
+
+Let me write these now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me assess the seed task and plan the session.
+
+Key findings:
+• `assessment_missing.md` already exists — the harness guard created it
+• The seed task_01 title is slightly stale (assessment_missing.md IS written) but the core problem (assessment ran, produced transcript, didn't write assessment.md) is real
+• Trajectory shows `bash_tool_error=6` — actionable src/*.rs improvement
+• Issue #135 appears already resolved in code (lines 997-998 handle analysis_only_active fallback)
+• Issues #90/#105/#131 are blocked on upstream/human
+
+I'll refine task_01 to be more concrete, create task_02 for bash diagnostics (src/*.rs), and write issue responses.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write the refined task_01.md and create task_02.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also add creating issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me refine task_01.md. The key improvements:
+
+1. The title should reflect that assessment_missing.md IS already being written
+2. The actual problem is: when assessment agent runs (exit 0, no provider error) but doesn't write assessment.md, the fallback task is generic ("Fix assessment silent failure") rather than using the available transcript
+3. The fix should make the fallback task include an instruction to skim the assessment transcript for findings
+
+Let me also look at whether the assessment transcript actually exists:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la transcripts/assess.log 2>/dev/null && wc -l transcripts/assess.log 2>/dev… ✓ (942ms)
+
+
