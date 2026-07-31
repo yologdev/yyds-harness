@@ -1,0 +1,511 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source files to understand the task and make the change.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:990..1020 ✓ (2.7s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key area. Let me read more context around the `choose_task()` function, particularly the `assessment_was_missing` handling and the `_healthy_codebase_fallback()` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:935..1085  ▶ search 'assessment_was_missing' in scripts/preseed_session_plan.py  ▶ search 'def _healthy_codebase_fallback' in scripts/preseed_session_plan.py ✓ (3.9s)
+ ✓ (3.8s)
+ ✓ (3.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the continuation after line 1084 to understand the rest of the `assessment_was_missing` enrichment, then look at the `_healthy_codebase_fallback()` and the test code.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1084..1164📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read scripts/preseed_session_plan.py:1276..1336  ▶ read scripts/preseed_session_plan.py:1920..2040 ✓ (4.9s)
+ ✓ (3.8s)
+ ✓ (3.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the assessment_was_missing tests, which the task says are around line 1953. Let me search more specifically.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_was_missing.*test' in scripts/preseed_session_plan.py  ▶ read scripts/preseed_session_plan.py:2340..2420 ✓ (1.1s)
+ ✓ (3.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look for tests that use `assessment_was_missing`. Let me search for it more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'assessment_was_missing' in scripts/preseed_session_plan.py ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see all the lines where assessment_was_missing is used:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'assessment_was_missing' scripts/preseed_session_plan.py ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the tests. Let me look at them to understand what's being tested.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2140..2270 ✓ (798ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me also check the test for `assessment_trajectory` and see what happens when there are no matching candidates with `assessment_was_missing=True`.
+
+The task says:
+- When `assessment_was_missing` is True and zero candidates match, `choose_task()` returns the `_healthy_codebase_fallback()` task
+- The fix is: at line 997, after `analysis_only_active` check, add `if assessment_was_missing: return _healthy_codebase_fallback()`
+- This goes BEFORE the fallback dict construction at line 1000
+
+Wait, but there's a complication. The tests at lines 2140+ show that when `assessment_was_missing=True`, many different scenarios (exit 124 timeout, exit 0 with gnomes, etc.) are tested and they expect DIFFERENT fallback titles. If I add a blanket early `return _healthy_codebase_fallback()` when `assessment_was_missing` is True, it would break ALL those tests.
+
+But wait - re-read the task more carefully:
+
+"The change is in `choose_task()` between lines 997-1000: after the `analysis_only_active` early-return check, add a second early-return check for `assessment_was_missing`"
+
+This is about the NO-CANDIDATES path. When no candidates match, we hit line 997. If `analysis_only_active`, we return `_healthy_codebase_fallback()`. If not, we fall through to the self-referential fallback at line 1000.
+
+The task says: when `assessment_was_missing` is True, even if `analysis_only_active` is False, return the healthy codebase fallback instead of the self-referential "Repair evidence-backed planning".
+
+But wait, there's a subtlety: the `assessment_was_missing` block at 1030-1110 enriches the fallback dict. But that only runs when we reach the fallback dict construction. If we return early before line 1000, that enrichment never runs.
+
+But the task says: "The `assessment_was_missing` block at lines 1030-1078 (which enriches the fallback dict with trajectory gnomes) becomes dead code for the no-candidates path but may still be reached when candidates exist — do NOT delete it, just add the early return"
+
+So the task explicitly says: in the zero-candidates, assessment-was-missing case, just return the healthy codebase fallback. Don't use the enriched fallback. This is because when assessment is missing, the self-referential "Repair evidence-backed planning" task is actively harmful - it creates a cycle.
+
+Now, the tests. Let me look at what the tests currently expect. The tests at lines 2153-2165 test when `assessment_was_missing=True` and the assessment text has specific exit codes, timeout, etc. But do those tests also have zero matching candidates? Let me check.
+
+Looking at the assessment texts used in those tests (assessment_zero, assessment_timeout, etc.), they contain text like "# Assessment Missing - Day 131" with guard results. Do any of the TASKS keys match this text?
+
+Let me check the TASKS keys to understand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^TASKS =' in scripts/preseed_session_plan.py ✓ (794ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the TASKS definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^TASKS ' in scripts/preseed_session_plan.py ✓ (875ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'TASKS' scripts/preseed_session_plan.py | head -20 ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the TASKS keys by reading the file at line 62:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:62..142 ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the issue. In the test cases where `assessment_was_missing=True`, the assessment text is e.g. "# Assessment Missing - Day 131" with guard results. The key question is: do any TASKS keys match those assessment texts? If the keys like "sub-agent", "cache metrics absent" etc. don't appear in the "Assessment Missing" text, then no candidates match, and we hit the fallback at line 1000.
+
+Currently at line 1000, when no candidates match and `analysis_only_active` is False, the code constructs the self-referential fallback and then at line 1030 enriches it with `assessment_was_missing` information.
+
+But those tests at line 2153+ expect specific titles based on exit codes, like "silent failure" for exit 0. If we add `if assessment_was_missing: return _healthy_codebase_fallback()` before line 1000, those tests would now get the healthy codebase fallback instead, which has title "Add a small verifiable improvement to src/".
+
+Wait, but the task says: "Update the self-test at line 1953+ if it asserts the old fallback title for the assessment-missing case. The test should now expect the `_healthy_codebase_fallback()` title ("Add a small verifiable improvement to src/") when `assessment_was_missing` is True"
+
+So the task IS proposing to change behavior significantly - ALL assessment-missing, no-candidates cases should return the healthy codebase fallback. The current tests at line 2153+ test cases where candidates don't match (because TASKS keys don't appear in "Assessment Missing" text), and they'd need to be updated.
+
+But wait, let me re-read the task more carefully:
+
+"The change is in `choose_task()` between lines 997-1000: after the `analysis_only_active` early-return check, add a second early-return check for `assessment_was_missing`"
+
+So the change is at line 997-1000, which is specifically the "no candidates matched" path (after the loop doesn't find any matching candidate, and after checking if all candidates were contradicted). This is the zero-candidates fallback path.
+
+But looking at the tests, they pass assessment text like "# Assessment Missing - Day 131\n\nGuard result:\n- status: assessment_missing\n- assessment_exit_code: 0..." - this text likely doesn't match any TASKS keys (since none of the keys contain "guard result", "assessment_missing", etc.), so the candidates list would be empty, and we'd hit the zero-candidates fallback.
+
+So yes, the change would modify behavior for all these test cases. The task says to update the tests.
+
+But wait, I need to think about this more carefully. The task says:
+"When `assessment_was_missing` is True and zero candidates match, `choose_task()` returns the `_healthy_codebase_fallback()` task"
+
+And: "This goes BEFORE the fallback dict construction at line 1000, so the self-referential fallback is never built when assessment is missing"
+
+And: "Update the self-test at line 1953+ if it asserts the old fallback title for the assessment-missing case."
+
+So the task wants me to:
+1. Add `if assessment_was_missing: return _healthy_codebase_fallback()` after line 998 (after the `analysis_only_active` check)
+2. Update the tests that currently expect assessment_was_missing to produce specific fallback titles
+
+But hold on - the tests at line 2140+ tested very specific scenarios: timeout, provider error, exit code 2, silent failure. Those were carefully crafted to provide diagnostic information. The task says to replace all of that with a single healthy codebase fallback.
+
+Looking at the task's reasoning: "The harness reached planning with no assessment, seeded a meta-task about fixing itself, and the cycle continues: assessment timeout → no assessment → self-referential planning fix → more assessment timeouts. Breaking this cycle with `_healthy_codebase_fallback()` produces a `src/state.rs` task that passes `cargo build && cargo test`"
+
+The task's Success Criteria say:
+- "When `assessment_was_missing` is True and zero candidates match, `choose_task()` returns the `_healthy_codebase_fallback()` task"
+- "When `assessment_was_missing` is False (normal flow), existing behavior is preserved — `analysis_only_active` still gates the healthy fallback"
+
+So the task clearly says: when assessment is missing and no candidates match, return healthy codebase fallback. The old diagnostic fallbacks (timeout task, provider error task, etc.) should be replaced by the healthy fallback.
+
+This makes sense - the diagnostic fallbacks were self-referential (fix the assessment phase), and Day 115's learning says this is harmful.
+
+Now, let me also check: when `assessment_was_missing=True` and candidates DO match, what happens? The task says the existing behavior is preserved for that path (the enrichment at lines 1030+ is still reachable when candidates exist). Actually wait, no - if candidates exist, the code returns at line 988 before reaching line 997. Let me trace through again:
+
+1. Lines 938-969: iterate TASKS, build candidates list
+2. Lines 984-988: for each candidate, check contradiction; if not contradicted, return candidate
+3. Lines 990-995: if candidates exist (but all contradicted), return first with annotation
+4. Line 997: check analysis_only_active
+5. Line 1000: build self-referential fallback
+6. Lines 1030-1110: if assessment_was_missing, enrich fallback
+
+So the assessment_was_missing enrichment at 1030+ only runs when no candidates matched. If candidates matched, we return early at step 2 or 3.
+
+With my change, at step 4.5 (after line 998, before line 1000), if `assessment_was_missing`, return `_healthy_codebase_fallback()`. This means the enrichment at 1030+ becomes dead code because we never reach it when `assessment_was_missing=True`.
+
+The task says: "The `assessment_was_missing` block at lines 1030-1078 (which enriches the fallback dict with trajectory gnomes) becomes dead code for the no-candidates path but may still be reached when candidates exist — do NOT delete it, just add the early return"
+
+Wait, that's a contradiction. If the early return at line 997-998 fires, we never reach line 1030. And the candidates-exist path returns at line 988 or 995, also before line 1030. So the code at 1030 IS dead code now. But the task says "may still be reached when candidates exist". That's wrong because the candidates paths return before line 1000.
+
+Hmm, let me re-read: "do NOT delete it, just add the early return". The task is saying: leave the dead code in place, don't bother deleting it. It's future-proofing in case the code structure changes later.
+
+OK, so the plan is clear:
+1. Add `if assessment_was_missing: return _healthy_codebase_fallback()` after line 998
+2. Update the tests to expect the healthy codebase fallback when `assessment_was_missing=True`
+
+Now let me look at all the tests that use `assessment_was_missing=True` and update them.
+
+The tests at lines 2153-2319 use `assessment_was_missing=True`. But do these assessments match any TASKS keys? Let me check.
+
+The assessment texts contain phrases like:
+- "Guard result" 
+- "status: assessment_missing"
+- "assessment_exit_code"
+- "provider_error_detected"
+- "transcript"
+
+None of these match TASKS keys like "sub-agent", "cache metrics absent", "api key", etc. So these assessments produce zero candidates, and all test cases hit the fallback path.
+
+Now with my change, all of these will get `_healthy_codebase_fallback()`. So I need to update all the tests at lines 2140-2319 to expect the healthy codebase fallback instead of their current specific expectations.
+
+But wait - the task says: "Update the self-test at line 1953+ if it asserts the old fallback title for the assessment-missing case. The test should now expect the `_healthy_codebase_fallback()` title ("Add a small verifiable improvement to src/") when `assessment_was_missing` is True"
+
+Line 1953 is the "Analysis-only pressure escape-hatch test". Let me check if line 1953 has assessment_was_missing tests. No, that's just the analysis_only test. The assessment_was_missing tests start at line 2140.
+
+So I need to update the tests from line 2140 to about line 2320.
+
+Let me plan the exact edits:
+
+1. At line 998 (after `return _healthy_codebase_fallback()`), add:
+```python
+    if assessment_was_missing:
+        return _healthy_codebase_fallback()
+```
+
+2. Update the tests - looking at lines 2140-2320, they test various assessment-missing scenarios. All of them now return `_healthy_codebase_fallback()`. I should replace them with a simpler test that validates the behavior.
+
+Actually wait, let me reconsider. Let me re-read the task more carefully:
+
+"Update the self-test at line 1953+ if it asserts the old fallback title for the assessment-missing case."
+
+There might not be tests at line 1953 specifically about assessment_was_missing. The tests are at 2140+. Let me update those tests.
+
+Actually, looking more carefully, I need to understand what the tests at 2140+ are testing. Some of them assert specific fallback titles ("silent failure", "timeout", "provider", "exit code"). These are the diagnostic fallbacks. The task wants to replace ALL of these with the healthy codebase fallback.
+
+But some tests also check `files` - e.g., line 2210 checks that files contain `scripts/preseed_session_plan.py` but not `src/`. With the healthy codebase fallback, the files would be `src/state.rs`.
+
+Let me construct a clean plan:
+
+1. Add the early return at line 998
+2. Replace all the assessment_was_missing tests (lines 2138-2320) with simpler tests that verify:
+   - When `assessment_was_missing=True`, the fallback is `_healthy_codebase_fallback()` (title matches, files contain src/state.rs)
+   - This works regardless of the specific exit code in the assessment text
+
+Let me look at exactly what lines to replace. The tests start at line 2138 (or thereabouts) and go to about line 2320.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see the full test block for `assessment_was_missing`:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2267..2367 ✓ (973ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The tests from line 2140 to line 2322 cover `assessment_was_missing=True` cases. Most of them test specific behaviors (timeout, provider error, etc.) that would be replaced by the healthy codebase fallback. But interestingly, line 2284 already tests and expects `_healthy_codebase_fallback()` for the trajectory gnomes case.
+
+Also line 2319-2322: `task_parsefail = choose_task("garbage text", assessment_was_missing=True)` currently expects the "Repair evidence-backed planning" fallback. With my change, it would get the healthy codebase fallback.
+
+And line 2185-2192 also expects the healthy fallback title.
+
+Now let me plan the exact changes:
+
+**Change 1: Add early return at line 998**
+
+After line 998 (`return _healthy_codebase_fallback()`), add:
+```python
+    if assessment_was_missing:
+        return _healthy_codebase_fallback()
+```
+
+**Change 2: Update tests**
+
+Looking at the test block from lines 2140 to 2322, I need to update them. But wait - some tests (like line 2185-2193, 2281-2289) already test and expect the healthy codebase fallback. Others test specific behaviors that are now dead code paths.
+
+Given that the task says this is a ~2 line code change, the tests should be updated to verify the new behavior. The simplest approach: collapse all the assessment_was_missing tests into a smaller set that just verifies the healthy codebase fallback is returned.
+
+Actually, let me re-read the task: "Update the self-test at line 1953+ if it asserts the old fallback title for the assessment-missing case."
+
+The task is a bit underspecified about tests. Let me just:
+1. Add the two lines of code
+2. Update the tests that currently assert specific fallback behaviors for `assessment_was_missing` to instead assert the healthy codebase fallback
+
+The key tests that need updating are at:
+- Line 2153-2168: task_zero expects "silent failure" → should expect healthy fallback
+- Line 2185-2193: already expects healthy fallback (no change needed)
+- Line 2209-2214: task_zero_benign expects preseed-only files → should expect src/ files
+- Line 2226-2232: task_timeout expects "timeout" → should expect healthy fallback
+- Line 2244-2250: task_provider expects "provider" → should expect healthy fallback
+- Line 2262-2265: task_nonzero expects "exit code 2" → should expect healthy fallback
+- Line 2281-2289: already expects healthy fallback (no change needed)
+- Line 2304-2315: task_nonexistent tests objective content → needs update
+- Line 2319-2322: task_parsefail expects "Repair evidence-backed planning" → should expect healthy fallback
+
+Actually, I think the simplest and cleanest approach is to replace the entire block of assessment_was_missing tests with a concise set that proves the new behavior. Let me look at where the block starts.
+
+Let me find the start of this test block:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2125..2155 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me now implement the changes:
+
+1. Add the early return at line 998
+2. Replace the test block from lines 2139 to 2322 with concise tests
+
+Let me think about the tests that should remain. The tests from 2267-2289 already test the healthy fallback behavior with trajectory gnomes - these tests already pass and expect the right thing. The test at 2318-2322 tests unparseable text.
+
+Actually, I think the cleanest approach:
+- Keep the test at 2139-2168 but update assertions
+- Keep the test at 2170-2193 (already expects healthy fallback)
+- Keep the test at 2195-2214 but update assertions
+- Keep the tests at 2216-2265 but update assertions
+- Keep at 2267-2289 (already expects healthy fallback)
+- Keep at 2292-2315 but update assertions
+- Keep at 2318-2322 but update assertion
+
+But all the assessment_was_missing tests now produce the SAME result. Having 8 different test cases that all verify the same thing is wasteful. Let me collapse them into about 3 test cases:
+
+1. Basic: assessment_missing=True returns healthy fallback
+2. Exit code 124 (timeout): still returns healthy fallback (no more self-referential timeout fix)
+3. Unparseable/garbage: still returns healthy fallback
+
+Actually, I think it's simpler to keep most tests and just update their assertions. This minimizes diff risk. Let me do that.
+
+Wait, but the trajectory enrichment tests at 2267-2289 already expect the healthy fallback. And the trajectory gnome test at 2170-2193 also already expects the healthy fallback. So those two don't need changes.
+
+Let me list what needs changing:
+
+1. Line 2153-2168: task_zero assertions → expect healthy fallback
+2. Line 2209-2214: task_zero_benign assertions → expect src/ files (not preseed only)  
+3. Line 2226-2232: task_timeout → expect healthy fallback
+4. Line 2244-2250: task_provider → expect healthy fallback
+5. Line 2262-2265: task_nonzero → expect healthy fallback
+6. Line 2304-2315: task_nonexistent → update assertions
+7. Line 2319-2322: task_parsefail → expect healthy fallback
+
+All of these need to assert `task["title"] == "Add a small verifiable improvement to src/"` and `"src/state.rs" in str(task["files"])`.
+
+Let me also check if `_healthy_codebase_fallback()` returns `assessment_missing_note` field — it doesn't. So any assertion about `assessment_missing_note` would fail.
+
+Let me now plan a clean edit. Rather than 7 separate edit_file calls, I'll replace the entire test block from line 2139 to 2322 with a concise version.
+
+Actually, the safest approach is to do the minimal code change first, then run the tests to see what breaks, then fix the tests. Let me do that.
+
+Here's my plan:
+1. Edit line 998 to add the early return
+2. Run `python3 scripts/preseed_session_plan.py --test` to see what fails
+3. Update all failing tests
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the change. First, add the early return, then fix the tests.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.1s)
+        if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+  + 
+  +     if assessment_was_missing:
+            return _healthy_codebase_fallback()
+    
+        fallback = {
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 7 lines)
+  ▶ todo ✓ (2.6s)
+  ▶ todo ✓ (813ms)
+  ▶ todo ✓ (896ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me make the first edit.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 8.1s (4 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.0s)
+  ▶ edit scripts/preseed_session_plan.py (4 → 7 lines)
+        if analysis_only_active:
+  +         return _healthy_codebase_fallback()
+  + 
+  +     if assessment_was_missing:
+            return _healthy_codebase_fallback()
+    
+        fallback = {
+ ✓ (949ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the code change is in. Now let me run the self-tests to see what breaks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+Now let me run the tests to see what breaks:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the first test fails as expected. Let me update the tests. I'll replace the whole assessment_was_missing test block.
+────────────────────────────────────────────────────────────────────────────────
+
+The code change works — now the fallback returns `_healthy_codebase_fallback()`. Let me update the tests. First, let me see the exact test block boundaries:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2139..2144  ▶ read scripts/preseed_session_plan.py:2322..2327 ✓ (3.3s)
+ ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full test block from 2142 to 2326 to understand what I'm replacing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2142..2328 ✓ (924ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to replace the entire test block from line 2142 to line 2325. All the assessment_was_missing tests now return the same `_healthy_codebase_fallback()`. I'll replace them with a concise set of tests:
+
+1. Basic: assessment_was_missing=True with any exit code → healthy fallback
+2. Even with specific exit codes (124 timeout, provider error, non-zero) → still healthy fallback  
+3. Even with unparseable/garbage text → still healthy fallback
+
+This is more concise and tests the new behavior correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll replace the entire test block with concise tests matching the new behavior:
+            # --- Assessment-missing fallback specificity tests ---
+  -         # Exit 0 + no provider error → silent failure
+  +         # When assessment_was_missing is True and zero candidates match,
+  +         # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+  +         # task that passes cargo build && cargo test — instead of the
+  +         # self-referential "Repair evidence-backed planning" meta-task.
+  +         # This breaks the cycle: assessment timeout → no assessment →
+  +         # self-referential planning fix → more assessment timeouts.
+  +         # Day 115 learning: "Fallback self-reference turns 'nothing broken'
+  +         # into busywork you can't refuse."
+  + 
+  +         # Exit 0 + no provider error → healthy codebase fallback
+            assessment_zero = """# Assessment Missing - Day 131 (10:55)
+    
+    The assessment phase produced a transcript but did not write `session_plan/assessment.md`.
+  ···
+    - transcript: transcripts/assess.log
+    """
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (184 → 89 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (184 → 89 lines)
+            # --- Assessment-missing fallback specificity tests ---
+  -         # Exit 0 + no provider error → silent failure
+  +         # When assessment_was_missing is True and zero candidates match,
+  +         # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+  +         # task that passes cargo build && cargo test — instead of the
+  +         # self-referential "Repair evidence-backed planning" meta-task.
+  +         # This breaks the cycle: assessment timeout → no assessment →
+  +         # self-referential planning fix → more assessment timeouts.
+  +         # Day 115 learning: "Fallback self-reference turns 'nothing broken'
+  +         # into busywork you can't refuse."
+  + 
+  +         # Exit 0 + no provider error → healthy codebase fallback
+            assessment_zero = """# Assessment Missing - Day 131 (10:55)
+    
+    The assessment phase produced a transcript but did not write `session_plan/assessment.md`.
+  ···
+    - transcript: transcripts/assess.log
+    """
+            task_zero = choose_task(assessment_zero, assessment_was_missing=True)
+  -         assert "silent failure" in task_zero["title"].lower() or "exit 0" in task_zero["title"].lower(), (
+  ... (171 more lines)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me verify the change looks correct by reading the modified function.
+────────────────────────────────────────────────────────────────────────────────
+
+Tests pass. Let me verify the change looks correct:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:997..1017 ✓ (935ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The change is clean:
+1. Line 997-998: analysis_only_active → healthy codebase fallback (existing behavior preserved)
+2. Line 1000-1001: assessment_was_missing → healthy codebase fallback (NEW)
+3. Line 1003+: self-referential fallback only reached when neither condition is true
+
+Now let me update the todo list, verify with `git diff`, and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.0s)
+  ▶ todo ✓ (1.3s)
+  ▶ todo ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify with git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.9s (3 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat ✓ (2.6s)
+
+

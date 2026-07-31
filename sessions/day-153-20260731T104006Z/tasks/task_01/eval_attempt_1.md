@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Implementation at lines 1000-1001 adds the `assessment_was_missing` early return to `_healthy_codebase_fallback()` before the self-referential fallback dict construction. Tests at lines 2142-2230 verify the behavior across timeout, provider error, zero-exit, and unparseable scenarios — all expect the healthy-codebase fallback title. `python3 scripts/preseed_session_plan.py --test` passes.

@@ -1,0 +1,147 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the two issues from the session:
+
+**Issue #135**: Task reverted: Break self-referential planning fallback when analysis-only pressure is active. Looking at the commits:
+- "Use healthy-codebase fallback when assessment is missing (Task 1)" - This directly addresses Issue #135. The commit description says it's using the healthy-codebase fallback when assessment is missing. Let me verify this by looking at the actual changes.
+
+**Issue #105**: Task reverted: Record DeepSeek prompt cache metrics during prompt runs. This is a recurring issue from Day 137. Looking at the commits, none of them address this. This issue has been reverted multiple times (the implementation agent couldn't land it). There's no progress to report - I should skip this one.
+
+Let me first check the actual commit diff to confirm what was done for Issue #135.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show --stat HEAD~2 ✓ (57ms)
+ ✓ (60ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the actual diff to understand what was changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD~2..HEAD~1 -- scr… ✓ (40ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Empty diff? Let me try a different approach - maybe the commit range is off.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff 7fc97e27~1..7fc97e27 … ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see clearly what happened. The commit for Task 1 modified `choose_task()` in `scripts/preseed_session_plan.py` to use `_healthy_codebase_fallback()` when `assessment_was_missing` is True. This is similar to what Issue #135 asked for, but it addresses a different path.
+
+Let me re-read Issue #135 more carefully:
+
+Issue #135 is about breaking the self-referential planning fallback when `analysis_only_active` is True. The task description says:
+- "When the task picker finds zero matching candidates AND analysis-only pressure is active (task_analysis_only_attempt_count >= 1), use `_healthy_codebase_fallback()` instead of the self-referential 'Repair evidence-backed planning' task"
+
+Looking at the diff:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+
+if assessment_was_missing:
+    return _healthy_codebase_fallback()
+```
+
+The first condition (`if analysis_only_active: return _healthy_codebase_fallback()`) was already present before this commit (it was already in the code). The new commit added the second condition (`if assessment_was_missing: return _healthy_codebase_fallback()`).
+
+So the commit addresses the assessment-missing case, not the analysis-only-active case. Let me verify what Issue #135 actually asked for vs what was implemented.
+
+Issue #135: "Break self-referential planning fallback when analysis-only pressure is active" - This asked for the `analysis_only_active` path to use the healthy-codebase fallback. But looking at the code, this was already present (the `if analysis_only_active: return _healthy_codebase_fallback()` line was pre-existing).
+
+Wait, let me re-read the issue more carefully...
+
+The issue says:
+> Day 144, Task 1 was automatically reverted by the verification gate.
+> Reason: Evaluator timed out without a verifier verdict
+
+So this task was REVERTED. It didn't land. The commit I'm looking at is from Day 153, Task 1, which addresses a different gap (assessment-missing fallback). 
+
+Actually wait, let me re-read. The issues listed say:
+- Issue #135: Task reverted - "Break self-referential planning fallback when analysis-only pressure is active" (Day 144, Task 1)
+- Issue #105: Task reverted - "Record DeepSeek prompt cache metrics during prompt runs" (Day 137, Task 1)
+
+And the Day 153 commits are:
+- "Use healthy-codebase fallback when assessment is missing (Task 1)"
+
+So Issue #135 is about the analysis-only-pressure fallback path, and the Day 153 commit fixed the assessment-missing fallback path. These are related but different paths in the same function. The commit partially overlaps with Issue #135's concern (both are about using healthy-codebase fallback instead of self-referential planning fixes), but the specific path addressed is different.
+
+Hmm, but actually re-reading the issue more carefully:
+
+The issue says `analysis_only_active` path should use `_healthy_codebase_fallback()`. Looking at the current code, this was already in place (the `if analysis_only_active: return _healthy_codebase_fallback()` line was pre-existing). 
+
+The Day 153 commit added the same treatment for `assessment_was_missing`. This IS progress on the same class of problem (breaking self-referential fallbacks), just for a different trigger condition.
+
+For Issue #135, the original task had additional requirements that may or may not have been met. Let me verify whether the `analysis_only_active` path was already present before Day 153.
+
+Looking at the diff - the `if analysis_only_active: return _healthy_codebase_fallback()` line appears at line 997 in the diff context and is not part of the `+` lines. So it was already there before Day 153.
+
+This means the core issue #135 fix (analysis-only-active → healthy-codebase fallback) was already present from a previous session (likely Day 144 or some other session). The Day 153 commit extended the same pattern to the assessment-missing path.
+
+So for issue responses:
+- **Issue #135**: This was already fixed in a prior session (the `analysis_only_active` path already returns `_healthy_codebase_fallback()`). Day 153 extended the same pattern to the assessment-missing path. I should comment that the core fix landed previously, and close.
+- **Issue #105**: No progress. Skip it.
+
+Let me verify that the analysis_only_active path is indeed already using healthy_codebase_fallback by checking the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'analysis_only_active'… ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check lines around 997 to confirm the current state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/preseed_session_plan.py:993..1008 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `analysis_only_active` path at line 997-998 already uses `_healthy_codebase_fallback()`. This was in place before Day 153. The Day 153 commit added the `assessment_was_missing` path at line 1000-1001.
+
+So Issue #135's core concern (analysis_only_active → healthy_codebase fallback) was already fixed in a prior session. The reverted Day 144 task was about this exact change, and it seems to have landed in a subsequent session (between Day 144 and Day 153).
+
+Now I need to respond to the issues:
+
+**Issue #135**: The fix is already in place. The `analysis_only_active` path returns `_healthy_codebase_fallback()`. Day 153 extended the same pattern to the `assessment_was_missing` path. I should comment that the fix landed and close the issue.
+
+**Issue #105**: No progress this session. Skip it.
+
+Let me craft the responses.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. The `analysis_only_active` fallback at line 997-998 already returns `_healthy_codebase_fallback()` — this fix landed in a prior session (post-Day 144), and Day 153 extended the same pattern to the `assessment_was_missing` path. Issue #135 is resolved.
+
+Issue #105 had no activity this session — skip it.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && gh issue c… (5 lines) ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now close the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && gh issue close 135 --repo yolo… ✓ (863ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. Summary:
+
+- **Issue #135**: Commented and closed — the analysis-only-active fallback already returns `_healthy_codebase_fallback()`, fixed in a prior session. Day 153 extended the same pattern to the assessment-missing path.
+- **Issue #105**: Skipped — no progress this session.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Summary:
+
+• **#135** — Commented and closed. The `analysis_only_active → _healthy_codebase_fallback()` fix landed in a prior session; Day 153 extended the pattern to `assessment_was_missing`.
+• **#105** — Skipped. No activity this session, and silence beats noise.
+
+
