@@ -1,0 +1,538 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and then reading the relevant files. The task is about breaking a self-referential planning fallback in `scripts/preseed_session_plan.py` when analysis-only pressure is active.
+
+Let me:
+1. Read the evolve skill first
+2. Read the relevant sections of `preseed_session_plan.py`
+3. Understand the current behavior
+4. Make the change
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/preseed_session_plan.py:990..1030 ✓ (1.5s)
+ ✓ (950ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see that at line 997-998, if `analysis_only_active` is True, it already returns `_healthy_codebase_fallback()`. Let me trace the flow more carefully to understand when this code path is reached.
+
+Let me read more context around the `choose_task()` function to understand the full flow — when do we reach the no-candidates path, and is there a case where `analysis_only_active` is True but we still hit the self-referential fallback?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:900..1000 ✓ (394ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is interesting. At line 997-998, when `analysis_only_active` is True and there are zero candidates, it already calls `_healthy_codebase_fallback()`. So the fix appears to already be in place!
+
+But wait — let me check more carefully. The issue says the fallback at lines 993-1022 has the self-referential "Repair evidence-backed planning" task. Let me read lines 1000+ more carefully to see if there's a path where we skip the `analysis_only_active` check and hit the self-referential path.
+
+Actually, looking again at lines 997-998:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+This already handles the case! When there are zero candidates AND analysis_only_active is True, it returns `_healthy_codebase_fallback()`.
+
+But wait — let me check the logic flow more carefully. At line 990-995, if `candidates` is non-empty (all contradicted), it returns the first candidate. At line 996, we only reach line 996 if `candidates` is empty (i.e., zero candidates at all). And at 997, if `analysis_only_active`, we return `_healthy_codebase_fallback()`.
+
+Hmm, but the task says the self-referential fallback persists. Let me re-read the task more carefully...
+
+Actually wait, let me trace the logic more carefully:
+
+1. Lines 938-969: Build `candidates` list
+2. Lines 984-988: For each candidate, check contradiction — return first non-contradicted
+3. Lines 990-995: If candidates non-empty (all contradicted), return first with annotation
+4. Lines 997-998: If no candidates AND analysis_only_active → return `_healthy_codebase_fallback()`
+5. Lines 1000+: If no candidates AND NOT analysis_only_active → return self-referential fallback
+
+This already looks correct! The task says the fix might already be in place. Let me check the fallback section of the task:
+
+> Fallback: If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when `analysis_only_active` is True, mark this task obsolete and explain why the self-test at line ~1891 still asserts the old fallback title.
+
+So let me check:
+1. Is `_healthy_codebase_fallback()` returning a src/*.rs task?
+2. Is the no-candidates path already preferring it when `analysis_only_active`?
+3. What does the self-test at line ~1891 assert?
+
+Let me check these.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1260..1310  ▶ read scripts/preseed_session_plan.py:1885..1985 ✓ (1.5s)
+ ✓ (997ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fix is already in place. Let me verify by looking at what we have:
+
+1. **Lines 997-998**: When `analysis_only_active` is True and there are zero candidates, it already returns `_healthy_codebase_fallback()`.
+
+2. **Lines 1276-1309**: `_healthy_codebase_fallback()` returns a task with `"title": "Add a small verifiable improvement to src/"` and `"files": "src/state.rs"`.
+
+3. **Lines 1969-1983**: The self-test already tests this exact behavior — when `analysis_only_active` is True with no matching candidates, it asserts the fallback task title is "Add a small verifiable improvement to src/" and files include "src/state.rs".
+
+So the fix described in the task is already implemented! According to the task's Fallback:
+
+> If `_healthy_codebase_fallback()` already returns a src/*.rs task and the no-candidates path already prefers it when `analysis_only_active` is True, mark this task obsolete and explain why the self-test at line ~1891 still asserts the old fallback title.
+
+But wait — the self-test at line 1903 also asserts the fallback title when using `choose_task("No known current bug matched this assessment.")`. Let me check that assessment string more carefully.
+
+Line 1902: `fallback = choose_task("No known current bug matched this assessment.")`
+
+This assessment doesn't contain `task_analysis_only_attempt_count`, so `analysis_only_active` would be False for this test case. And when `analysis_only_active` is False and there are zero candidates (because "No known current bug matched this assessment." won't match any TASK keys), we'd hit the self-referential fallback at line 1000.
+
+Wait, let me re-read. When would `analysis_only_active` become True from that string? The function `_has_analysis_only_pressure()` checks for `task_analysis_only_attempt_count` in the metrics. The string "No known current bug matched this assessment." wouldn't have that, so `analysis_only_active` would be False.
+
+So line 1903 says:
+```python
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+If `analysis_only_active` is False, this would hit the self-referential fallback with title "Repair evidence-backed planning after no-task sessions". But the test asserts "Add a small verifiable improvement to src/"... 
+
+Wait, maybe I need to check if that assessment string matches any TASK keys. Let me look...
+
+Actually wait, the assessment says "No known current bug matched this assessment." — this might match some TASK key. Let me check what keys exist...
+
+Actually, the test clearly asserts that the fallback is "Add a small verifiable improvement to src/" at line 1903. But based on my reading of the code, if `analysis_only_active` is False and no candidates match, we'd get the self-referential fallback at line 1000.
+
+Hmm wait, let me re-read more carefully. At line 1902, the assessment is "No known current bug matched this assessment." — could this match a TASK key? Let me check.
+
+Actually, wait. Let me re-read the `choose_task` function more carefully. When `analysis_only_active` is False and no candidates match, we go to line 1000-1029 which returns the self-referential "Repair evidence-backed planning" fallback. But the test at line 1903 expects "Add a small verifiable improvement to src/".
+
+This means EITHER:
+1. The test is wrong/outdated, OR
+2. Some TASK key matches "No known current bug matched this assessment."
+
+Let me check which TASKS exist and their keys.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.8s (2 ✓)
+
+Let me check the TASKS list and trace through the logic more carefully:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TASKS' in scripts/preseed_session_plan.py ✓ (403ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the TASKS list to see their keys.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:62..292 ✓ (487ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand what's happening. Let me trace through the test at line 1902:
+
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+```
+
+This assessment text doesn't contain `task_analysis_only_attempt_count`, so `analysis_only_active` would be False. And "No known current bug matched this assessment." — let me check if this matches any TASK keys...
+
+Looking at the TASK keys:
+- "sub-agent", "sub agent", "api_key_present", "api key", "worker agents"
+- "cache metrics absent", "cache-report returning no metrics", etc.
+- "no state event found"
+- "run_completion_guard", "test lifecycle error", "flaky test", "state::tests::run_completion_guard"
+- "tool-path recovery", "tool path recovery", etc.
+- "force analysis-only attempts into action", "task_analysis_only_attempt_count", etc.
+
+None of these match "No known current bug matched this assessment." — so `candidates` would be empty. And with `analysis_only_active` being False, we'd go to line 1000-1029, which returns the self-referential "Repair evidence-backed planning after no-task sessions" fallback.
+
+But wait, the test at line 1903 asserts: `assert fallback["title"] == "Add a small verifiable improvement to src/"`. 
+
+Hmm, this suggests that the test is already passing. Let me run the test to see.
+
+Actually wait, I need to look more carefully. Could the assessment "No known current bug matched this assessment." trigger `assessment_was_missing`? No, line 1902 calls `choose_task(assessment_text)` with only one argument, so `assessment_was_missing` defaults to False.
+
+Let me just run the test to see if it passes.
+
+Actually, let me re-read the code more carefully. I see at line 997-998:
+```python
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+```
+
+But wait, this is inside the block starting at line 990:
+```python
+# All candidates are contradicted — return the first with annotation
+if candidates:
+    contradicted, reason = check_task_contradiction(candidates[0], assessment)
+    ...
+    return candidates[0]
+
+if analysis_only_active:
+    return _healthy_codebase_fallback()
+
+fallback = {...}
+```
+
+So the flow is:
+1. If candidates non-empty (all contradicted): return first candidate with annotation
+2. If candidates empty AND analysis_only_active: return `_healthy_codebase_fallback()`
+3. If candidates empty AND NOT analysis_only_active: return self-referential fallback
+
+Now for the test at line 1902:
+- Assessment: "No known current bug matched this assessment."
+- No keys match → candidates = []
+- `analysis_only_active` = False (no task_analysis_only_attempt_count in text)
+- So we should hit the self-referential fallback at line 1000
+
+But the test at line 1903 asserts `"Add a small verifiable improvement to src/"`. This means either:
+1. The test is broken (unlikely since it's part of `--test`)
+2. I'm wrong about something
+
+Let me actually run the test to see.
+
+Wait, actually let me look at this more carefully. Line 1902-1903 says:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+But based on the code flow, if analysis_only_active is False and no candidates match, we'd get "Repair evidence-backed planning after no-task sessions". So either the test is failing, or there's something I'm missing.
+
+Let me look more carefully at the flow. Could there be something earlier in the code that I'm not seeing? Let me check lines 996-1025 more carefully.
+
+Actually wait, I need to re-read the section more carefully. The structure of lines 990-1029:
+
+```python
+    # All candidates are contradicted — return the first with annotation
+    if candidates:                          # line 991
+        ...                                  # line 992-995
+        return candidates[0]                 # line 995
+
+    if analysis_only_active:                # line 997
+        return _healthy_codebase_fallback()  # line 998
+
+    fallback = {                             # line 1000
+        "title": "Repair evidence-backed planning after no-task sessions",
+        ...
+    }
+```
+
+Wait, lines 996-998 only execute if `candidates` is empty. And `analysis_only_active` is True → return healthy_codebase_fallback.
+
+For the test at line 1902, `analysis_only_active` would be False (the assessment text doesn't contain `task_analysis_only_attempt_count`), so we'd fall through to line 1000.
+
+So the test at line 1903 expects "Add a small verifiable improvement to src/" but the code at line 1000 would produce "Repair evidence-backed planning after no-task sessions" when analysis_only_active is False AND no candidates match.
+
+This means the test at line 1902-1903 should be FAILING with the current code. Let me run it to confirm.
+
+Actually wait, let me re-check. Maybe the assessment text "No known current bug matched this assessment." DOES match something. Let me check if "bug" matches any TASK key... 
+
+Looking at all TASK keys:
+- "run_completion_guard" includes... no
+- "flaky test" - no
+- None of the keys are just "bug"
+
+Hmm but wait, could there be other TASK entries I haven't seen? Let me scroll through more of the TASKS list. I only read lines 62-291.
+
+Let me also check whether there could be lifecycle metrics present in the assessment... `has_lifecycle_metrics(metrics)` checks for certain keys. "No known current bug matched this assessment." likely doesn't have lifecycle metrics.
+
+OK, let me just run the test and see what happens.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me run the self-test to understand the current state:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (835ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The self-tests pass. So my analysis must be wrong. Let me trace through the code more carefully. The test at line 1902-1903:
+```python
+fallback = choose_task("No known current bug matched this assessment.")
+assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+```
+
+This assertion passes. But based on my reading, when `analysis_only_active` is False and no candidates match any TASK keys, the code should fall through to the self-referential "Repair evidence-backed planning" fallback. So either:
+
+1. "No known current bug matched this assessment." matches some TASK key, OR
+2. `_has_analysis_only_pressure()` returns True for some reason, OR
+3. Something else is going on
+
+Let me add some debugging to understand the flow.
+
+Actually wait, let me look at line 1902 more carefully in context. Maybe there's something earlier in the function that sets up the state differently. Let me re-read lines ~1880-1910.
+
+Actually I already read them. Lines 1885-1907 are all part of the same test block. Let me look for where this test block starts — maybe there's some setup that changes behavior.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1830..1880 ✓ (351ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at what's around line 1902. I already read lines 1885-1984. Let me look at the broader test function to understand how it's structured. Let me look at lines before 1885 to see where this test block begins.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1870..1900 ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the test at line 1902 is in the middle of a larger test block. Let me look at line 1895-1908 again:
+
+```python
+        for candidate in TASKS:
+            protected = [
+                path.strip()
+                for path in str(candidate.get("files") or "").split(",")
+                if path.strip() in PROTECTED_IMPLEMENTATION_FILES
+            ]
+            assert not protected, f"{candidate['title']} includes protected implementation files: {protected}"
+        fallback = choose_task("No known current bug matched this assessment.")
+        assert fallback["title"] == "Add a small verifiable improvement to src/", fallback
+        assert not _has_protected_files(fallback), fallback
+        assert "scripts/preseed_session_plan.py" not in str(fallback["files"]), (
+            "Healthy fallback must not self-reference planning scripts"
+        )
+```
+
+The test passes! So something about "No known current bug matched this assessment." must match a TASK key or trigger `analysis_only_active`. 
+
+Wait... let me look more carefully at `_has_analysis_only_pressure`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_has_analysis_only_pressure' in scripts/preseed_session_plan.py ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_has_analysis_only_pressure` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:866..896 ✓ (461ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check what `_ANALYSIS_ONLY_METRICS` is:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search '_ANALYSIS_ONLY_METRICS' in scripts/preseed_session_plan.py ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_ANALYSIS_ONLY_METRICS` definition.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:859..869 ✓ (440ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `numeric_metrics` to understand what keys it extracts:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def numeric_metrics' in scripts/preseed_session_plan.py ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `numeric_metrics` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:746..796 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `numeric_metrics` extracts `key=value` patterns from text. The test at line 1902 uses `"No known current bug matched this assessment."` — no key=value patterns there. So `metrics` would be empty, and `_has_analysis_only_pressure({})` returns `False`.
+
+So with `analysis_only_active=False` and no candidates matching, we should hit the self-referential fallback at line 1000. But the test at 1903 asserts `"Add a small verifiable improvement to src/"`.
+
+Wait, maybe I need to actually debug this. Let me add a debugging print to see what happens.
+
+Actually wait, maybe I should look at whether there are TASKS after line 291 that might match "No known current bug matched this assessment":
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:291..391 ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+None of these match "No known current bug matched this assessment." — the keys are all very specific.
+
+Wait, let me look at the test more carefully. Maybe I should just run a debug version to understand what's happening.
+
+Actually, let me look more carefully at what happens between lines 1000-1029. There's a call to `_candidate_files_exist(fallback)` at line 1026. But the key question is: when `analysis_only_active=False` and `candidates=[]`, do we reach line 1000?
+
+Actually, I need to look at the whole `choose_task` function flow more carefully. Let me re-read the entire function from line 931.
+
+Hmm wait — maybe I need to look at whether the `current_evidence_text` function could produce something that DOES match a TASK key.
+
+`current_evidence_text(assessment)` at line 932 extracts something from the assessment. Let me check what this function does.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def current_evidence_text' in scripts/preseed_session_plan.py ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `current_evidence_text` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:412..472 ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `current_evidence_text` extracts specific sections. For the test at line 1902, the assessment is `"No known current bug matched this assessment."` which has no `## ` headers, so `current_evidence_text` returns an empty string.
+
+Then at line 933: `lower = (current if current.strip() else assessment).lower()` — if `current` is empty, it uses `assessment.lower()` which is `"no known current bug matched this assessment."`.
+
+At line 934: `metrics = numeric_metrics(lower)` — no key=value patterns, so empty dict.
+At line 936: `analysis_only_active = _has_analysis_only_pressure(metrics)` — returns False.
+
+Then `candidates` is built by iterating through TASKS. The keys are all very specific — none match anything in "no known current bug matched this assessment." So `candidates` stays empty.
+
+Then at lines 984-988: loop over candidates (empty, skip).
+At lines 990-995: `if candidates:` is False (empty).
+At line 997: `if analysis_only_active:` is False.
+At line 1000: return self-referential "Repair evidence-backed planning after no-task sessions".
+
+But the test at line 1903 asserts `"Add a small verifiable improvement to src/"`.
+
+So either:
+1. The test is currently failing (unlikely since the test suite passed), OR
+2. Something else is going on
+
+Let me actually run the test with some debugging to see what's happening.
+
+Wait, actually, let me look at the test suite entry point to see if maybe tests are run in a specific order and some state is being mutated between tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def main' in scripts/preseed_session_plan.py ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me actually just run a quick debug script to understand what's happening with that test case.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me add a debug print to understand what's actually happening:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (25 lines) ✓ (963ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The result IS "Add a small verifiable improvement to src/" with files "src/state.rs". But based on my reading of the code, with `analysis_only_active=False` and no candidates, we should be hitting the self-referential fallback. So something must be matching or I'm wrong about the flow.
+
+Let me trace more carefully. Let me add more debugging to understand which path we're taking.
+
+Wait — let me re-read lines 990-1029 more carefully:
+
+```python
+    # All candidates are contradicted — return the first with annotation
+    if candidates:
+        contradicted, reason = check_task_contradiction(candidates[0], assessment)
+        candidates[0]["validated_against_assessment"] = False
+        candidates[0]["contradiction_reason"] = reason
+        return candidates[0]
+
+    if analysis_only_active:
+        return _healthy_codebase_fallback()
+
+    fallback = {
+        "title": "Repair evidence-backed planning after no-task sessions",
+        ...
+    }
+```
+
+Hmm, but `candidates` is empty and `analysis_only_active` is False based on my debug output. So we should be hitting line 1000. But the result says "Add a small verifiable improvement to src/".
+
+Wait... let me add more debug to trace which path is taken within `choose_task`.
+
+Actually hold on — could there be a candidate that matches? Let me check more carefully. The debug output says no keys matched, but maybe there's something else happening... Let me add direct debugging in the function itself.
+
+Actually wait, maybe I should look at the `current_evidence_text` result more carefully. I showed that it returns empty for this assessment. Then `lower` would be `assessment.lower()`. But wait — `lower = (current if current.strip() else assessment).lower()` — if `current` is `""`, then `current.strip()` is `""` which is falsy, so `lower = assessment.lower()`.
+
+So `lower = "no known current bug matched this assessment."`
+
+Let me check if any TASK key is a substring of this... Actually, the debug already checked and found no matches. And `metrics` is empty.
+
+But the result is "Add a small verifiable improvement to src/"... 
+
+I'm confused. Let me add a deeper debug trace.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (90 lines) ✓ (959ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So based on my manual trace, the code SHOULD return the self-referential fallback, but the actual function returns "Add a small verifiable improvement to src/". This means there's a difference between my manual trace and the actual function execution.
+
+Let me actually look at this more carefully. Wait, maybe I'm looking at wrong version of the code. Or maybe the function I called (`mod.choose_task`) is different from what I traced.
+
+Actually wait, the debug at the start showed `result['title'] = "Add a small verifiable improvement to src/"`. But my manual trace says it should return the self-referential fallback.
+
+Let me instrument the actual function call.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (13 lines) ✓ (946ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The source looks exactly as I expected. So when `analysis_only_active` is False and `candidates` is empty, it should fall through to the self-referential fallback at line 1000. But the actual function returns "Add a small verifiable improvement to src/".
+
+Let me add some print debugging inside the actual function to see what path it takes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (58 lines) ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so with `analysis_only_active=False` and `candidates=0`, the result is still "Add a small verifiable improvement to src/". This doesn't match my reading of the code.
+
+Wait — could the source file on disk be different from what I've been reading? Let me actually read the exact lines around the fallback in the actual file on disk.
+
+Actually no, I already read lines 990-1029 from the file on disk and confirmed the source also shows the self-referential fallback.
+
+Let me check the `_healthy_codebase_fallback()` function execution path. Maybe it's being called from somewhere else in `choose_task`, or maybe `_healthy_codebase_fallback()` itself returns the "healthy" fallback.
+
+Wait, I know `_healthy_codebase_fallback()` returns "Add a small verifiable improvement to src/". But it should only be called when `analysis_only_active` is True (line 997-998).
+
+Hmm, unless the code was already modified in-place and I'm reading the wrong version? Let me check git status to see if there are uncommitted changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff -- scripts/preseed_se… ✓ (946ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No diff, so the file on disk matches what's committed. Let me look more carefully at lines 990-1029 in the actual file to make sure there isn't something I missed.
+
+Wait, maybe I should look at what happens after line 997 — is there maybe some code between 996 and 997 that I'm missing? Let me look at the exact lines with their line numbers.
+
+Actually, I already read them:
+- 990: comment
+- 991: `if candidates:`
+- 992-995: contradicted candidate handling, `return candidates[0]`
+- 996: blank
+- 997: `if analysis_only_active:`
+- 998: `    return _healthy_codebase_fallback()`
+- 999: blank
+- 1000: `fallback = {...`
+- ...
+
+Wait, I had a thought. What if the function has been modified and the version I'm reading is cached? Let me run the actual function, but add a print trace inside it by temporarily editing the file.
+
+Actually no, let me take a completely different approach. Let me run the function and add debug printing inside the actual source by temporarily editing it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (22 lines) ✓ (950ms)
+
+

@@ -1,0 +1,360 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. I need to filter retroactive harness-internal `ModelCallCompleted` events from gnome lifecycle counting in `scripts/summarize_state_gnomes.py`
+2. These events have `event_id` starting with "evt-harness-" or have zero tokens
+3. The fix is ~3 lines in the event loop where ModelCallCompleted events are processed
+
+Let me first read the evolve skill, then examine the target file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/summarize_state_gnomes.py:330..370 ✓ (1.3s)
+ ✓ (804ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the structure. The event loop at line 341 processes `ModelCallCompleted` events. I need to add a guard to skip retroactive harness-internal events. Let me also look at how the event loop works to understand how to access the event_id.
+
+Let me also look at the broader context to understand the event iteration pattern.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:290..340  ▶ search 'event_id' in scripts/summarize_state_gnomes.py ✓ (809ms)
+ ✓ (861ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The event loop iterates over `events` and processes each event. Let me look at how `event` is accessed - I need to understand what fields are available on each event to check for `event_id`. Let me also look at how the retroactive events look in the data.
+
+Let me check the helper functions `event_type`, `payload`, `event_run_id`, and how the raw event is structured.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_type|def payload|def event_run_id' in scripts/summarize_state_gnomes.py ✓ (404ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for these functions differently - they might be imported or defined at module level.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def event_type\|def payload\|def event_run_id\|from.*import.*event_type… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those function definitions to understand the event structure better.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:143..198 ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already an `event_id` function at line 153-154 that gets the event_id. Now I can check the event_id inside the loop.
+
+Now let me look at how retroactive events look to check if they have `event_id` starting with "evt-harness-" or if they have zero tokens. Let me also check the append_terminal_state_events.py to see how these events are generated.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted\|event_id.*evt-harness\|retroactive' scripts/append_… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the retroactive events. Let me look at lines around 580-600 and 670-730 to understand the structure better. The key insight:
+
+1. At line 588-596, the payload has `"retroactive": True` 
+2. At line 681-682, the payload has `"retroactive": True`
+3. At line 712-713, the payload has `"retroactive": True`
+4. At line 726, the event is appended with `"harness"` as the source (not `"yoyo"`)
+
+So the retroactive events have `"retroactive": True` in their payload data. And they're sourced from `"harness"`.
+
+Now, looking at how the events are structured in the loop (line 321-359):
+- `event` is the raw event dict
+- `kind` is the event type
+- `data` is the payload value
+
+The check needs to happen at line 341, before the existing condition. I should check:
+1. If the event_id starts with "evt-harness-", OR
+2. If the payload data has `retroactive: true`
+
+Let me verify the `event_id` function is available. It is - line 153-154. But I'm inside `summarize_state_lifecycle`, so I need to either call the module-level `event_id` function or inline the check.
+
+Let me check if the function is accessible from within the function scope. Since it's a module-level function, I can call `event_id(event)`.
+
+Now let me write the fix. The change is at line 341:
+
+Current:
+```python
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+```
+
+New:
+```python
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+            # Skip retroactive harness-internal ModelCallCompleted events
+            # (generated by append_terminal_state_events.py for state consistency;
+            # not real agent model calls)
+            eid = str(event_id(event) or "")
+            if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+                continue
+```
+
+Wait, let me re-read the task. It says:
+> Add a guard before the existing `elif kind == "ModelCallCompleted" and deepseek_model_payload(data):` block (or as an additional condition) to skip events where:
+> a) The event_id starts with "evt-harness-" (harness-internal prefix), OR
+> b) The payload has `retroactive: true`
+
+So the guard should be INSIDE the block (after the elif), using `continue`. Let me verify by looking at how events flow through.
+
+Actually, looking at the structure more carefully, the existing code at line 341 is:
+```python
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+            model_call_completed += 1
+            ...
+```
+
+I should add the guard as the first lines inside this elif block:
+```python
+        elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+            # Skip retroactive harness-internal ModelCallCompleted events
+            eid = str(event_id(event) or "")
+            if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+                continue
+            model_call_completed += 1
+            ...
+```
+
+This is clean and minimal. Let me verify the `event_id` function call will work. The function at line 153-154 returns `event.get("event_id") or event.get("id")`. Since this is a module-level function, calling it from within `summarize_state_lifecycle` should work fine as they're in the same module.
+
+Now let me implement this. But first, let me verify my approach by checking the actual data format once more.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the retroactive event format more closely to confirm the detection signal:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:580..610  ▶ read scripts/append_terminal_state_events.py:670..700 ✓ (1.4s)
+ ✓ (959ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check lines 710-730 to see the orphaned ModelCallCompleted retroactive events:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:700..730 ✓ (498ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. Retroactive `ModelCallCompleted` events are emitted with `"retroactive": True` in the payload (line 713)
+2. They're also emitted with source `"harness"` (line 726) 
+
+The detection signals I can use:
+- `data.get("retroactive") is True` — most reliable, directly set in the payload
+- `event_id(event)` starts with `"evt-harness-"` — the event_id prefix
+
+Now let me also check what `_maybe_append_event` does to understand the event_id format. Let me check if the event_id starts with "evt-harness-".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def _maybe_append_event' scripts/append_terminal_state_events.py ✓ (942ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:445..475 ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `append_event` to see how the event_id is generated:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def append_event' scripts/append_terminal_state_events.py ✓ (950ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `append_event` function is likely imported. Let me check imports.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'from.*import.*append_event\|import.*append_event' scripts/append_termin… ✓ (961ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'event_id\|evt-harness' scripts/append_state_event.py ✓ (944ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it clearly. Events appended via `append_state_event.py` get an `event_id` starting with `"evt-harness-"`. This is the distinguishing signal.
+
+Now let me also verify the summary of the detection signals:
+
+1. `event_id` starts with `"evt-harness-"` — this is generated in `append_state_event.py` for all harness-internal events
+2. `retroactive: True` in the payload — this is set in `append_terminal_state_events.py` for retroactive events
+
+Both should work. The task says to use either or both. I'll use both for robustness.
+
+Now let me implement the change. It's a surgical edit at line 341.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have full clarity. Let me implement the fix. The retroactive events have:
+1. `event_id` starting with `"evt-harness-"` (generated by `append_state_event.py` line 63)
+2. `"retroactive": True` in the payload (set in `append_terminal_state_events.py` lines 596, 682, 713)
+            elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+  +             # Skip retroactive harness-internal ModelCallCompleted events
+  +             # (generated by append_terminal_state_events.py for state consistency;
+  +             # not real agent model calls — they inflate lifecycle gap counts)
+  +             eid = str(event_id(event) or "")
+  +             if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+  +                 continue
+                model_call_completed += 1
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (2 → 8 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (2 → 8 lines)
+            elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+  +             # Skip retroactive harness-internal ModelCallCompleted events
+  +             # (generated by append_terminal_state_events.py for state consistency;
+  +             # not real agent model calls — they inflate lifecycle gap counts)
+  +             eid = str(event_id(event) or "")
+  +             if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+  +                 continue
+                model_call_completed += 1
+ ✓ (457ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the edit looks correct and run the import check.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the edit:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:335..365 ✓ (442ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The edit looks correct. Now run the verifier: `python3 -c "import summarize_state_gnomes; print('ok')"` from the scripts directory.
+────────────────────────────────────────────────────────────────────────────────
+
+Now run the verifier:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -c "import summarize_state_gnomes; print('ok')" ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import check passes. Now let me also verify with a quick test that the filtering logic works correctly. Let me create a minimal test.
+
+Actually, the task says:
+- Verifier: `python3 -c "import summarize_state_gnomes; print('ok')"` — done, passes.
+- Manual: run the script on state data and verify counts decrease
+
+Let me check if there's a way to run a quick unit test. Let me also run `cargo fmt -- --check` since the task asks for it (though this is a python file). The cargo fmt is for Rust files, so that's fine.
+
+Let me check if there are any existing tests for `summarize_state_gnomes.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def test\|if __name__.*__main__\|run_self_tests' scripts/summarize_stat… ✓ (945ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The script doesn't have self-tests. Let me also verify the change works by writing a quick inline test:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me write a quick sanity test to verify the filtering logic:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -c " (57 lines) ✓ (951ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what keys are in the result dict:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -c " (12 lines) ✓ (945ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The result is nested. The completed count is at `['model_calls']['completed']`. Let me fix the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd scripts && python3 -c " (64 lines) ✓ (957ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All tests pass. Now let me run the format check and then commit. The task says to run `cargo fmt -- --check` first, but this is a Python file so fmt shouldn't matter. Let me still run it to satisfy the gate.
+────────────────────────────────────────────────────────────────────────────────
+
+All 6 sanity tests pass. Now run the format gate:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, cargo fmt passes. Now let me check cargo build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo build 2>&1 | tail -5 ✓ (960ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Let me now verify the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff --name-only ✓ (952ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows only `scripts/summarize_state_gnomes.py`, which matches the task's edit surface. Let me now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — the diff touches exactly the task's edit surface. Committing:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ git add -A && git commit -m "Day 153 (02:52): Filter retroactive harness-interna… ✓ (947ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit succeeded. Let me verify the final state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ git diff HEAD~1 -- scripts/summarize_state_gnomes.py ✓ (949ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Changed:** `scripts/summarize_state_gnomes.py` (+6 lines at line 341)
+
+**What:** Added a guard inside the `ModelCallCompleted` event processing block in `summarize_state_lifecycle()` to skip retroactive harness-internal events. The guard checks two signals:
+
+1. `event_id` starts with `"evt-harness-"` — the prefix used by `append_state_event.py` for harness-generated events
+2. `data.get("retroactive") is True` — the explicit flag set by `append_terminal_state_events.py` when it emits retroactive ModelCallCompleted events for state consistency
+
+Both signals independently prevent these state-repair events from being counted in `model_call_completed`, `model_call_abnormal_completed`, and `model_call_completed_runs`, which flow into `model_unmatched_completed_count` and related metrics.
+
+**Verification:**
+• `python3 -c "import summarize_state_gnomes; print('ok')"` — passes
+• 6 inline sanity tests covering real events counted, evt-harness- events skipped, retroactive flag events skipped, mixed event handling, and unmatched_completed exclusion — all pass
+• `cargo fmt -- --check` — clean
+• `cargo build` — clean
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
