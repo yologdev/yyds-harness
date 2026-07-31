@@ -1,0 +1,496 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand what I'm working with.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:1270..1320 ✓ (1.4s)
+ ✓ (989ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the `render_task` function and the import section to understand the module structure. I also need to check `itertools` availability or figure out the simplest rotation approach.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Let me read the imports, the `render_task` function, and check for `itertools` availability.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py (40 lines)  ▶ read scripts/preseed_session_plan.py:1318..1378 ✓ (1.4s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. Let me also check if `itertools` is available and whether there's already any module-level counter or index being used.
+
+The `render_task` function accesses `task["files"]`, `task["success"]`, `task["verification"]`, `task["evidence"]`, `task["why"]`, `task["title"]`, `task["objective"]`, `task["verification"][0]` — so all these keys must be present.
+
+Now let me plan the edit:
+
+1. Add a module-level list `_HEALTHY_FALLBACK_FILES` with at least 4 files: `src/state.rs`, `src/deepseek.rs`, `src/tool_wrappers.rs`, `src/prompt.rs`.
+2. Add a module-level counter `_fallback_index` (an int initialized to 0).
+3. Modify `_healthy_codebase_fallback()` to:
+   - Pick the current file from the list using `_fallback_index % len(_HEALTHY_FALLBACK_FILES)`
+   - Increment `_fallback_index`
+   - Use `cargo test <module_name>` derived from the file basename
+   - Keep the task template identical except for `files` and the file name in `objective`
+
+Let me verify `src/deepseek.rs` exists first:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ command -v python3 && python3 -c "import itertools; print('itertools available')…  ▶ $ ls src/state.rs src/deepseek.rs src/tool_wrappers.rs src/prompt.rs 2>&1 ✓ (995ms)
+ ✓ (2.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All files exist. Now I'll implement the rotation. Let me keep it simple — no need for itertools.cycle since we need to persist the index across calls within the same process. A simple module-level counter is enough.
+
+Now let me write the edit. I need to:
+
+1. Add module-level constants: `_HEALTHY_FALLBACK_FILES` and `_fallback_index` right above `_healthy_codebase_fallback()`.
+2. Modify the function to use the rotation.
+
+Let me also check: does `cargo test state` work? The convention for cargo test is `cargo test <filter>` and if the module name is `state`, then `cargo test state` would match tests in `src/state.rs`. Let me check if the test module names match the file basenames.
+
+For `src/deepseek.rs`, tests might be `deepseek` (the module name). Let me verify quickly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n '^mod tests\|^#\[cfg(test)\]\|^pub mod' src/state.rs src/deepseek.rs src… ✓ (952ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test modules are all named `tests` in each file, but that's the inner module name. The outer module name is the file basename without `.rs`. So `cargo test state` would match tests in `src/state.rs` (since the module is `state`), `cargo test deepseek` for `src/deepseek.rs`, etc.
+
+Let me verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test state -- --list 2>&1 | head -5 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, `cargo test state` matched `shared_state` and `state`. That's a bit broad but works. Let me check deepseek:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test deepseek -- --list 2>&1 | head -5 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo test deepseek` works — it matches tests containing "deepseek". Good.
+
+Now let me implement the change. I'll add the module-level list and counter just above `_healthy_codebase_fallback()`, then modify the function to use rotation.
+
+The edit:
+1. Add `_HEALTHY_FALLBACK_FILES` list and `_fallback_index` counter above the function
+2. Modify the function body to pick from the rotation
+
+Let me write this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have a clear picture. Let me implement the rotation.
+  + # Rotation list for healthy-codebase fallback. Each entry is (file_path, test_filter).
+  + # The test_filter is passed to ``cargo test <filter>`` and should match tests in
+  + # the corresponding source file. Rotating prevents sessions from repeatedly
+  + # targeting the same file when no actionable bugs exist.
+  + _HEALTHY_FALLBACK_FILES: list[tuple[str, str]] = [
+  +     ("src/state.rs", "state"),
+  +     ("src/deepseek.rs", "deepseek"),
+  +     ("src/tool_wrappers.rs", "tool_wrappers"),
+  +     ("src/prompt.rs", "prompt"),
+  + ]
+  + _fallback_index: int = 0
+  + 
+  + 
+    def _healthy_codebase_fallback() -> dict[str, object]:
+        """Return a fallback task that produces a small src/-touching improvement.
+    
+  ···
+        this produces a small, verifiable src/ improvement instead of a
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (37 → 58 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (37 → 58 lines)
+  + # Rotation list for healthy-codebase fallback. Each entry is (file_path, test_filter).
+  + # The test_filter is passed to ``cargo test <filter>`` and should match tests in
+  + # the corresponding source file. Rotating prevents sessions from repeatedly
+  + # targeting the same file when no actionable bugs exist.
+  + _HEALTHY_FALLBACK_FILES: list[tuple[str, str]] = [
+  +     ("src/state.rs", "state"),
+  +     ("src/deepseek.rs", "deepseek"),
+  +     ("src/tool_wrappers.rs", "tool_wrappers"),
+  +     ("src/prompt.rs", "prompt"),
+  + ]
+  + _fallback_index: int = 0
+  + 
+  + 
+    def _healthy_codebase_fallback() -> dict[str, object]:
+        """Return a fallback task that produces a small src/-touching improvement.
+    
+  ···
+        this produces a small, verifiable src/ improvement instead of a
+        journal-only observation. This ensures every session has a concrete
+        verifiable task that passes ``cargo build && cargo test``.
+  ... (38 more lines)
+ ✓ (486ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me run the verification from the task spec, and also check for self-tests in the file.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the rotation verifier and check for any existing self-tests:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (7 lines)  ▶ $ python3 scripts/preseed_session_plan.py --help 2>&1 ✓ (2.0s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Rotation works — all 4 files appear across 6 calls. Syntax is fine. Let me also run the self-tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+Rotation across all 4 files confirmed. Let me also run the self-tests:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (6 lines) ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No self-tests function. Let me check for the `--test` flag:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 ✓ (950ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's a test inside `main()` that hardcodes the expectation that the fallback targets `src/state.rs`. I need to update that assertion to account for rotation. Let me find the relevant lines.
+────────────────────────────────────────────────────────────────────────────────
+
+There's a hardcoded assertion in `main()` expecting `src/state.rs`. Let me find and fix it:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2180..2210 ✓ (461ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to update the assertion. Since the fallback now rotates, `task_zero` won't always be `src/state.rs`. The assertion should check that the files field is one of the `_HEALTHY_FALLBACK_FILES` entries.
+
+But wait — `_fallback_index` is a module-level counter that persists across calls. When we import the module, the index starts at 0. The first call to `_healthy_codebase_fallback()` returns `src/state.rs`. But `choose_task` may call it on another path — and the test's earlier code may also have called it. Let me look at the test more carefully.
+
+Actually, the assertion is checking that `choose_task(...)` with `assessment_was_missing=True` returns a task with `src/state.rs` in its files. Since `_fallback_index` is module-level, it depends on what happened before this line. The test constructs `assessment_zero` and calls `choose_task` — which is the first test in that section.
+
+But there could be earlier tests before this. Let me check the test infrastructure more broadly. Actually, the simplest fix is: reset `_fallback_index` before this assertion, or change the assertion to check that the files field is one of the rotation candidates.
+
+Let me look at what happens before line 2186 in the test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2140..2190 ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to update the assertion at line 2190. The fix: instead of checking for `src/state.rs` specifically, check that the files field is one of the `_HEALTHY_FALLBACK_FILES` entries. Let me also update the comment at line 2165.
+
+But actually, since `_fallback_index` may have already been incremented by earlier calls in the test suite, the first call in this test block may not return `src/state.rs`. I should make the assertion check that it's in the set of valid fallback files.
+
+Let me also check: does the test at line 2163-2191 run right after the previous tests? Yes, it does. So the fallback index could already be non-zero. Let me update the assertion.
+────────────────────────────────────────────────────────────────────────────────
+
+I need to fix the assertion that checks for `src/state.rs` specifically. Let me update it to check against the rotation list:
+            # --- Assessment-missing fallback specificity tests ---
+            # When assessment_was_missing is True and zero candidates match,
+  -         # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+  +         # choose_task returns _healthy_codebase_fallback() — a rotated src/
+            # task that passes cargo build && cargo test — instead of the
+            # self-referential "Repair evidence-backed planning" meta-task.
+            # This breaks the cycle: assessment timeout → no assessment →
+            # self-referential planning fix → more assessment timeouts.
+            # Day 115 learning: "Fallback self-reference turns 'nothing broken'
+            # into busywork you can't refuse."
+  +         # The fallback rotates through _HEALTHY_FALLBACK_FILES to avoid
+  +         # repeatedly targeting the same file (Day 153 learning).
+    
+            # Exit 0 + no provider error → healthy codebase fallback
+            assessment_zero = """# Assessment Missing - Day 131 (10:55)
+  ···
+            assert task_zero["title"] == "Add a small verifiable improvement to src/", (
+                f"assessment_was_missing should produce healthy-codebase fallback, got: {task_zero['title']}"
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (30 → 34 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (30 → 34 lines)
+            # --- Assessment-missing fallback specificity tests ---
+            # When assessment_was_missing is True and zero candidates match,
+  -         # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+  +         # choose_task returns _healthy_codebase_fallback() — a rotated src/
+            # task that passes cargo build && cargo test — instead of the
+            # self-referential "Repair evidence-backed planning" meta-task.
+            # This breaks the cycle: assessment timeout → no assessment →
+            # self-referential planning fix → more assessment timeouts.
+            # Day 115 learning: "Fallback self-reference turns 'nothing broken'
+            # into busywork you can't refuse."
+  +         # The fallback rotates through _HEALTHY_FALLBACK_FILES to avoid
+  +         # repeatedly targeting the same file (Day 153 learning).
+    
+            # Exit 0 + no provider error → healthy codebase fallback
+            assessment_zero = """# Assessment Missing - Day 131 (10:55)
+  ···
+            assert task_zero["title"] == "Add a small verifiable improvement to src/", (
+                f"assessment_was_missing should produce healthy-codebase fallback, got: {task_zero['title']}"
+            )
+  -         assert "src/state.rs" in str(task_zero.get("files", "")), (
+  ... (6 more lines)
+ ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me also check if there are any other assertions referencing `src/state.rs` from the fallback function. Let me search.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check for any other assertions that might reference the old hardcoded file:
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'src/state.rs' scripts/preseed_session_plan.py ✓ (952ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two more assertions:
+1. Line 1753: `assert "src/state.rs" in str(task["files"])`
+2. Lines 2004-2005: `assert "src/state.rs" in str(fallback_task.get("files", ""))`
+
+And a comment at line 1475: `# _healthy_codebase_fallback returns src/state.rs.`
+
+Let me read these sections to fix them.
+────────────────────────────────────────────────────────────────────────────────
+
+More hardcoded assertions. Let me read and fix them:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1750..1765  ▶ read scripts/preseed_session_plan.py:2000..2015  ▶ read scripts/preseed_session_plan.py:1472..1482 ✓ (1.4s)
+ ✓ (956ms)
+ ✓ (3.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me fix both assertions:
+
+1. Line 1753: Change from `assert "src/state.rs" in str(task["files"])` to check against the rotation list.
+2. Line 2004-2007: Same fix.
+3. Line 1475: Comment update only.
+
+Let me look at the broader context of lines 1740-1755 to understand what `task` is:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.8s (3 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1735..1755 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me fix both assertions. For line 1753: change to check against the rotation list. Same for line 2004.
+
+Let me also look at the context before line 1980 to understand what `fallback_task` is at line 2000:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1985..2005 ✓ (445ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me fix all three assertions:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me fix all the assertions:
+            assert "Evidence:\n-" in text
+  -         assert "src/state.rs" in str(task["files"]), (
+  -             "Healthy fallback should target src/ not just journals/"
+  +         fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+  +         assert str(task["files"]) in fallback_files, (
+  +             f"Healthy fallback should target a src/ file in the rotation list, "
+  +             f"got files: {task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 6 lines)
+  -         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  -             f"Healthy-codebase fallback should target src/state.rs, "
+  +         assert str(fallback_task.get("files", "")) in fallback_files, (
+  +             f"Healthy-codebase fallback should target a file in the rotation list, "
+                f"got files: {fallback_task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 4 lines)
+            # When analysis_only_active is true and no candidates match, the
+  -         # _healthy_codebase_fallback returns src/state.rs.
+  +         # _healthy_codebase_fallback returns a rotated src/ file.
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (2 → 2 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 6 lines)
+            assert "Evidence:\n-" in text
+  -         assert "src/state.rs" in str(task["files"]), (
+  -             "Healthy fallback should target src/ not just journals/"
+  +         fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+  +         assert str(task["files"]) in fallback_files, (
+  +             f"Healthy fallback should target a src/ file in the rotation list, "
+  +             f"got files: {task.get('files')}"
+            )
+  ▶ edit scripts/preseed_session_plan.py (4 → 4 lines)
+  -         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  -             f"Healthy-codebase fallback should target src/state.rs, "
+  +         assert str(fallback_task.get("files", "")) in fallback_files, (
+  +             f"Healthy-codebase fallback should target a file in the rotation list, "
+                f"got files: {fallback_task.get('files')}"
+            )
+  ▶ edit scripts/preseed_session_plan.py (2 → 2 lines)
+            # When analysis_only_active is true and no candidates match, the
+  -         # _healthy_codebase_fallback returns src/state.rs.
+  +         # _healthy_codebase_fallback returns a rotated src/ file.
+ ✓ (2.9s)
+ ✓ (1.9s)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the second assertion had a `fallback_files` variable. The second edit at line 2004 uses `fallback_files` — I defined it earlier in the first edit block. But the `fallback_files` variable may not be in scope at line 2004 if it's in a different test block. Let me check.
+
+The first edit (line 1753) defines `fallback_files` in that block. The second edit (line 2004) uses `fallback_files` but it might not be defined yet in that block. Let me check if these are in the same test function and if `fallback_files` is already defined in scope.
+
+Let me re-read the area around line 2004.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.2s (3 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1750..1760  ▶ read scripts/preseed_session_plan.py:1998..2013 ✓ (1.4s)
+ ✓ (954ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm wait — it looks like my first edit didn't apply correctly. Line 1753 still shows `assert "src/state.rs"` instead of the new code. Let me check if there's a line numbering discrepancy. Let me re-read the file more carefully around that area.
+
+Actually, it seems like there were two places with the same assertion pattern, and the first one (around 1753) wasn't actually updated. Let me re-check. The edit I made should have matched lines 1752-1755... but perhaps the content changed from a prior edit. Let me re-read the current state of lines 1748-1760.
+
+Wait, looking more carefully at the output: line 1753 still shows the old assertion `assert "src/state.rs" in str(task["files"])`. But my edit was supposed to replace that. Let me re-check...
+
+My first edit replaced:
+```
+        assert "Evidence:\n-" in text
+        assert "src/state.rs" in str(task["files"]), (
+            "Healthy fallback should target src/ not just journals/"
+        )
+```
+
+with:
+```
+        assert "Evidence:\n-" in text
+        fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+        assert str(task["files"]) in fallback_files, (
+            f"Healthy fallback should target a src/ file in the rotation list, "
+            f"got files: {task.get('files')}"
+        )
+```
+
+But the current file at line 1753 still shows the old code. Did the edit not apply? Let me verify.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.1s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'src/state.rs' scripts/preseed_session_plan.py ✓ (953ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The first edit didn't take effect! Both lines 1753 and 2004 still show `src/state.rs`. The old_text I provided might not have matched exactly. Let me re-read lines 1750-1756 to get the exact text.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1748..1758  ▶ read scripts/preseed_session_plan.py:2002..2012 ✓ (1.5s)
+ ✓ (952ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The first edit didn't apply. The issue might be that the edit was trying to replace text that didn't exactly match — maybe there's a whitespace discrepancy. Let me try again, this time being very precise with the exact text from the file.
+
+For line 1753-1755:
+```
+        assert "src/state.rs" in str(task["files"]), (
+            "Healthy fallback should target src/ not just journals/"
+        )
+```
+
+For line 2004-2007:
+```
+        assert "src/state.rs" in str(fallback_task.get("files", "")), (
+            f"Healthy-codebase fallback should target src/state.rs, "
+            f"got files: {fallback_task.get('files')}"
+        )
+```
+
+Let me try the edit again:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.7s (2 ✓)
+
+
+            assert "Evidence:\n-" in text
+  -         assert "src/state.rs" in str(task["files"]), (
+  -             "Healthy fallback should target src/ not just journals/"
+  +         fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+  +         assert str(task["files"]) in fallback_files, (
+  +             f"Healthy fallback should target a src/ file in the rotation list, "
+  +             f"got files: {task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 6 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 6 lines)
+            assert "Evidence:\n-" in text
+  -         assert "src/state.rs" in str(task["files"]), (
+  -             "Healthy fallback should target src/ not just journals/"
+  +         fallback_files = {f[0] for f in _HEALTHY_FALLBACK_FILES}
+  +         assert str(task["files"]) in fallback_files, (
+  +             f"Healthy fallback should target a src/ file in the rotation list, "
+  +             f"got files: {task.get('files')}"
+            )
+ ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the first fix applied. Now the second one:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  -         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  -             f"Healthy-codebase fallback should target src/state.rs, "
+  +         assert str(fallback_task.get("files", "")) in fallback_files, (
+  +             f"Healthy-codebase fallback should target a file in the rotation list, "
+                f"got files: {fallback_task.get('files')}"
+            )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (4 → 4 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (4 → 4 lines)
+  -         assert "src/state.rs" in str(fallback_task.get("files", "")), (
+  -             f"Healthy-codebase fallback should target src/state.rs, "
+  +         assert str(fallback_task.get("files", "")) in fallback_files, (
+  +             f"Healthy-codebase fallback should target a file in the rotation list, "
+                f"got files: {fallback_task.get('files')}"
+            )
+ ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+But wait — the `fallback_files` variable was defined in the first block (around line 1753), which is in a different section of the test. The second assertion (around line 2004) is a separate block. The `fallback_files` variable might not be in scope there if these are in different test function scopes.
+
+Let me check the structure. Both are inside `main()`'s test section. Let me verify with a quick grep.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def main\|def test\|^    def \|# ---' scripts/preseed_session_plan.py |… ✓ (956ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All the tests are inside `main()`, which is a single function. So `fallback_files` defined at the first assertion block (around line 1753) should be in scope for the second assertion at line 2004. Both are within the same `main()` function's test block.
+
+But wait — let me verify that the `fallback_files` variable is defined in the same indentation level and not inside any inner block. Let me read a bit more context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1750..1760 ✓ (464ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `fallback_files` is defined at the top level of `main()`. Now let me run the test:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 scripts/preseed_session_plan.py --test 2>&1 ✓ (942ms)
+
+
