@@ -997,6 +997,9 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
     if analysis_only_active:
         return _healthy_codebase_fallback()
 
+    if assessment_was_missing:
+        return _healthy_codebase_fallback()
+
     fallback = {
         "title": "Repair evidence-backed planning after no-task sessions",
         "files": "scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py",
@@ -2137,7 +2140,16 @@ bash_tool_error=3
             f"got contradicted={contradicted8}, reason={reason8}"
         )
         # --- Assessment-missing fallback specificity tests ---
-        # Exit 0 + no provider error → silent failure
+        # When assessment_was_missing is True and zero candidates match,
+        # choose_task returns _healthy_codebase_fallback() — a src/state.rs
+        # task that passes cargo build && cargo test — instead of the
+        # self-referential "Repair evidence-backed planning" meta-task.
+        # This breaks the cycle: assessment timeout → no assessment →
+        # self-referential planning fix → more assessment timeouts.
+        # Day 115 learning: "Fallback self-reference turns 'nothing broken'
+        # into busywork you can't refuse."
+
+        # Exit 0 + no provider error → healthy codebase fallback
         assessment_zero = """# Assessment Missing - Day 131 (10:55)
 
 The assessment phase produced a transcript but did not write `session_plan/assessment.md`.
@@ -2151,23 +2163,14 @@ Guard result:
 - transcript: transcripts/assess.log
 """
         task_zero = choose_task(assessment_zero, assessment_was_missing=True)
-        assert "silent failure" in task_zero["title"].lower() or "exit 0" in task_zero["title"].lower(), (
-            f"Exit-0 no-provider-error should produce 'silent failure' task, got: {task_zero['title']}"
+        assert task_zero["title"] == "Add a small verifiable improvement to src/", (
+            f"assessment_was_missing should produce healthy-codebase fallback, got: {task_zero['title']}"
         )
-        assert "code 0" in str(task_zero["objective"]).lower(), (
-            f"Objective should mention exit 0, got: {task_zero['objective']}"
-        )
-        # Transcript doesn't exist on disk → objective should NOT tell agent to check it
-        assert "Check transcripts/" not in str(task_zero["objective"]), (
-            f"Objective should NOT say 'Check transcripts/' when transcript doesn't exist, "
-            f"got: {task_zero['objective']}"
-        )
-        assert "No transcript was saved" in str(task_zero["objective"]) or \
-            "does not exist" in str(task_zero["objective"]), (
-            f"Objective should indicate transcript is absent, got: {task_zero['objective']}"
+        assert "src/state.rs" in str(task_zero.get("files", "")), (
+            f"Healthy-codebase fallback should target src/state.rs, got: {task_zero.get('files')}"
         )
 
-        # Exit 0 + no provider error + trajectory gnomes → src-biased Files
+        # Exit 0 + trajectory gnomes → still healthy codebase fallback
         assessment_zero_gnomes = """# Assessment Missing - Day 131 (10:55)
 
 Guard result:
@@ -2183,37 +2186,14 @@ task_obsolete_count=1
 task_success_rate=0
 """
         task_zero_gnomes = choose_task(assessment_zero_gnomes, assessment_was_missing=True)
-        assert "src/" in str(task_zero_gnomes.get("files", "")), (
-            f"Exit-0 with actionable gnomes should target src/*.rs, "
-            f"got: {task_zero_gnomes.get('files')}"
-        )
         assert task_zero_gnomes["title"] == "Add a small verifiable improvement to src/", (
-            f"Exit-0 with gnomes should produce src/-improvement fallback title, "
-            f"got: {task_zero_gnomes['title']}"
+            f"Exit-0 with gnomes should produce healthy-codebase fallback, got: {task_zero_gnomes['title']}"
+        )
+        assert "src/" in str(task_zero_gnomes.get("files", "")), (
+            f"Files should include src/*.rs, got: {task_zero_gnomes.get('files')}"
         )
 
-        # Exit 0 + gnomes but none actionable → keep current (no src bias)
-        assessment_zero_benign = """# Assessment Missing - Day 131 (10:55)
-
-Guard result:
-- status: assessment_missing
-- assessment_exit_code: 0
-- assessment_timeout_seconds: 3600
-- provider_error_detected: false
-- transcript: transcripts/assess.log
-
-## Structured State Snapshot
-cache_hit_ratio=94
-prompt_budget_remaining=1200
-"""
-        task_zero_benign = choose_task(assessment_zero_benign, assessment_was_missing=True)
-        assert "scripts/preseed_session_plan.py" in str(task_zero_benign["files"]) and \
-            "src/" not in str(task_zero_benign["files"]), (
-            f"Exit-0 with non-actionable gnomes should keep preseed-only Files, "
-            f"got: {task_zero_benign.get('files')}"
-        )
-
-        # Timeout → timeout-specific task
+        # Timeout (exit 124) → healthy codebase fallback (not self-referential timeout fix)
         assessment_timeout = """# Assessment Missing - Day 131 (10:55)
 
 Guard result:
@@ -2224,14 +2204,11 @@ Guard result:
 - transcript: transcripts/assess.log
 """
         task_timeout = choose_task(assessment_timeout, assessment_was_missing=True)
-        assert "timeout" in task_timeout["title"].lower(), (
-            f"Exit-124 should produce timeout task, got: {task_timeout['title']}"
-        )
-        assert "3600" in str(task_timeout["objective"]), (
-            f"Objective should mention timeout seconds, got: {task_timeout['objective']}"
+        assert task_timeout["title"] == "Add a small verifiable improvement to src/", (
+            f"assessment_was_missing with timeout should produce healthy-codebase fallback, got: {task_timeout['title']}"
         )
 
-        # Provider error → provider-specific task
+        # Provider error → healthy codebase fallback (not self-referential provider fix)
         assessment_provider = """# Assessment Missing - Day 131 (10:55)
 
 Guard result:
@@ -2242,83 +2219,14 @@ Guard result:
 - transcript: transcripts/assess.log
 """
         task_provider = choose_task(assessment_provider, assessment_was_missing=True)
-        assert "provider" in task_provider["title"].lower() or "api" in task_provider["title"].lower(), (
-            f"Provider-error should produce provider task, got: {task_provider['title']}"
-        )
-        assert "api key" in str(task_provider["objective"]).lower() or "provider" in str(task_provider["objective"]).lower(), (
-            f"Objective should mention API key or provider, got: {task_provider['objective']}"
+        assert task_provider["title"] == "Add a small verifiable improvement to src/", (
+            f"assessment_was_missing with provider error should produce healthy-codebase fallback, got: {task_provider['title']}"
         )
 
-        # Non-zero exit (not timeout, no provider error)
-        assessment_nonzero = """# Assessment Missing - Day 131 (10:55)
-
-Guard result:
-- status: assessment_missing
-- assessment_exit_code: 2
-- assessment_timeout_seconds: 3600
-- provider_error_detected: false
-- transcript: transcripts/assess.log
-"""
-        task_nonzero = choose_task(assessment_nonzero, assessment_was_missing=True)
-        assert "exit code 2" in task_nonzero["title"].lower(), (
-            f"Exit-2 should produce exit-code task, got: {task_nonzero['title']}"
-        )
-
-        # --- Trajectory evidence enrichment in assessment_missing fallback ---
-        # Silent failure (exit 0, no provider error) + trajectory gnomes
-        assessment_trajectory = """# Assessment Missing - Day 133 (11:03)
-
-Guard result:
-- status: assessment_missing
-- assessment_exit_code: 0
-- assessment_timeout_seconds: 3600
-- provider_error_detected: false
-- transcript: transcripts/assess.log
-
-## Structured State Snapshot
-Recent trajectory gnomes: task_no_edit_revert_count = 1; task_obsolete_count = 1; task_success_rate = 0; task_verification_rate = 0; task_unlanded_source_count = 1; task_failed_count = 2; bash_tool_error = 3
-"""
-        task_traj = choose_task(assessment_trajectory, assessment_was_missing=True)
-        # #135 _healthy_codebase_fallback returns a fixed src/ improvement task;
-        # trajectory gnomes no longer enrich the fallback evidence field.
-        assert task_traj["title"] == "Add a small verifiable improvement to src/", (
-            f"Trajectory gnomes should produce healthy-codebase fallback, got: {task_traj['title']}"
-        )
-        assert "src/" in str(task_traj["files"]), (
-            f"Files should include src/*.rs, got: {task_traj['files']}"
-        )
-        # --- End trajectory evidence enrichment test ---
-
-        # --- Nonexistent transcript reference: must not leak into objective ---
-        # When the assessment_missing references a transcript that is deep-nonexistent,
-        # the objective must not include instructions to check that path.
-        assessment_nonexistent_transcript = """# Assessment Missing - Day 134 (09:54)
-
-Guard result:
-- status: assessment_missing
-- assessment_exit_code: 0
-- assessment_timeout_seconds: 600
-- provider_error_detected: false
-- transcript: /nonexistent/path/deep/nested/assess.log
-"""
-        task_nonexistent = choose_task(assessment_nonexistent_transcript, assessment_was_missing=True)
-        assert "/nonexistent/path" not in str(task_nonexistent["objective"]), (
-            f"Objective must NOT reference the nonexistent transcript path, "
-            f"got: {task_nonexistent['objective']}"
-        )
-        assert "does not exist" in str(task_nonexistent["objective"]).lower(), (
-            f"Objective should say transcript does not exist, got: {task_nonexistent['objective']}"
-        )
-        # Evidence should still contain trajectory data
-        assert "Trajectory" in str(task_nonexistent["evidence"]) or "trajectory" in str(task_nonexistent["evidence"]).lower(), (
-            f"Evidence should still mention trajectory, got: {task_nonexistent['evidence']}"
-        )
-        # --- End nonexistent transcript test ---
-
-        # Unparseable → generic fallback still works
+        # Unparseable/garbage text → still healthy codebase fallback
         task_parsefail = choose_task("garbage text", assessment_was_missing=True)
-        assert task_parsefail["title"] == "Repair evidence-backed planning after no-task sessions", (
-            f"Unparseable should return generic fallback, got: {task_parsefail['title']}"
+        assert task_parsefail["title"] == "Add a small verifiable improvement to src/", (
+            f"Unparseable assessment_was_missing should produce healthy-codebase fallback, got: {task_parsefail['title']}"
         )
 
         print("preseed_session_plan self-tests passed")
