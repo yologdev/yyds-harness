@@ -1,0 +1,103 @@
+warning: skipping corrupted event at line 54529 of '.yoyo/state/events.jsonl': key must be a string at line 1 column 7616
+warning: skipping corrupted event at line 55149 of '.yoyo/state/events.jsonl': trailing characters at line 1 column 6
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff provided. The task is to close model call lifecycle in the panic path so FailureObserved doesn't leave orphaned ModelCallStarted events. The task requires changes to src/state.rs and src/prompt.rs.
+
+The diff section says "=== CHANGES MADE (git diff) ===" but there's NO actual diff content shown. That's concerning. The build and tests are reported as PASS though.
+
+Let me look at the actual state of the files to verify the changes were made.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:15..95  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff HEAD --stat 2>/dev/nu… ✓ (742ms)
+ ✓ (748ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the changes. Let me now check the public functions (set/clear) and the prompt.rs changes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_model_call_id' in src/state.rs  ▶ search 'set_current_model_call_id|clear_current_model_call_id' in src/prompt.rs ✓ (500ms)
+ ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the search didn't find the calls in prompt.rs. Let me check more carefully - maybe the search tool isn't finding them due to a path issue, or perhaps the prompt.rs changes are different. Let me read the relevant sections.
+
+Actually wait - the git diff stat showed `src/prompt.rs | 4 +++`, so there ARE changes in prompt.rs. Let me search more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'current_model_call_id' in src/prompt.rs  ▶ read src/state.rs:120..140 ✓ (251ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The implementation matches the task description exactly:
+
+1. **Part 1 - src/state.rs thread_local**: `CURRENT_MODEL_CALL_ID` added to the `thread_local!` block (lines 28-33) with documentation
+2. **Part 1 - Public functions**: `set_current_model_call_id` (line 124) and `clear_current_model_call_id` (line 129) added
+3. **Part 2 - Panic hook**: In `install_panic_hook()`, ModelCallCompleted is recorded with `CURRENT_MODEL_CALL_ID.with(|c| c.take())` before FailureObserved (lines 64-82)
+4. **Part 3 - prompt.rs**: 
+   - Line 780: `set_current_model_call_id` called after model_call_id generation (before ModelCallStarted)
+   - Line 974: `clear_current_model_call_id` after normal AgentEnd path
+   - Line 1055: `clear_current_model_call_id` after Ctrl+C interrupt path
+   - Line 1116: `clear_current_model_call_id` at fallback after loop ends
+
+The git diff stat shows 2 files changed, 40 insertions. Build and tests are reported PASS.
+
+The only minor difference from the task spec: the task said to use `Actor::Yoyo` but the implementation uses `Actor::Harness`. Let me check if this matters... The task spec says:
+```
+record(
+    EventType::ModelCallCompleted,
+    Actor::Yoyo,
+```
+
+But the code uses `Actor::Harness`. This is a minor stylistic choice - the task spec was a suggestion, and `Harness` is arguably more appropriate for a panic-hook recording. This wouldn't cause a functional issue.
+
+Let me verify the prompt.rs call sites more carefully to make sure they're in the right places.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+Let me verify the prompt.rs call sites are correctly positioned:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..790  ▶ read src/prompt.rs:965..985  ▶ read src/prompt.rs:1045..1065  ▶ read src/prompt.rs:1106..1126 ✓ (1.8s)
+ ✓ (1.5s)
+ ✓ (1.3s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything checks out perfectly:
+
+1. **Line 780** (`set_current_model_call_id`): Called right after `model_call_id` is generated, before `ModelCallStarted` is recorded. ✓
+
+2. **Line 974** (`clear_current_model_call_id`): Called after `model_call_terminal_recorded = true` and `model_calls_completed += 1`, which happens after the `ModelCallCompleted` record in the normal `AgentEnd` path. ✓
+
+3. **Line 1055** (`clear_current_model_call_id`): Called after `model_calls_completed += 1` in the Ctrl+C interrupt path, after `ModelCallCompleted` with status "interrupted". ✓
+
+4. **Line 1116** (`clear_current_model_call_id`): Called after the fallback `ModelCallCompleted` with status "stream_closed_without_agent_end". ✓
+
+The implementation exactly matches the task description. The only minor deviation is using `Actor::Harness` instead of `Actor::Yoyo` for the panic-hook ModelCallCompleted, but this is a reasonable choice (harness is recording the event, not the agent).
+
+Build and tests are PASS. The changes are correct and complete.
+
+Let me now write the verdict.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 4.8s (4 ✓)
+
+All changes match the task specification exactly. The three parts are implemented correctly:
+
+1. `CURRENT_MODEL_CALL_ID` thread-local added to `src/state.rs` with `set`/`clear` public functions
+2. Panic hook records `ModelCallCompleted(status="interrupted", detail="rust_panic")` before `FailureObserved`
+3. `prompt.rs` sets the ID before `ModelCallStarted` and clears it after all three `ModelCallCompleted` call sites
+
+Build: PASS, Tests: PASS. The only minor deviation is using `Actor::Harness` instead of `Actor::Yoyo` in the panic hook — reasonable since the harness records the event.
+  + Verdict: PASS
+  + Reason: All three parts implemented correctly — CURRENT_MODEL_CALL_ID thread-local with set/clear fns in state.rs, panic hook records ModelCallCompleted before FailureObserved, and prompt.rs sets/clears at all three ModelCallCompleted sites. Build and tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_2.md (2 lines)
