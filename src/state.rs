@@ -25,6 +25,12 @@ thread_local! {
     /// `RunCompletionGuard::drop` so we never emit RunCompleted without a
     /// matching RunStarted, preventing `run_error_without_start` lifecycle gaps.
     static RUN_STARTED: Cell<bool> = const { Cell::new(false) };
+    /// The model_call_id of the currently in-flight model call, if any.
+    /// Set by `handle_prompt_events` in prompt.rs before ModelCallStarted
+    /// is recorded; cleared after ModelCallCompleted. The panic hook reads
+    /// this to close model call lifecycles that would otherwise be left
+    /// dangling when the process panics mid-call.
+    static CURRENT_MODEL_CALL_ID: Cell<Option<String>> = const { Cell::new(None) };
 }
 
 static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -55,6 +61,25 @@ pub fn install_panic_hook() {
                 "panic_location": location,
                 "recorded_at_ms": now_ms(),
             });
+            // Close any in-flight model call so the lifecycle is balanced.
+            // The panic hook runs on a best-effort basis; we do not have
+            // access to the full usage or model info, so we record a
+            // minimal "interrupted" completion.
+            if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+                record(
+                    EventType::ModelCallCompleted,
+                    Actor::Harness,
+                    json!({
+                        "model_call_id": model_call_id,
+                        "model": "",
+                        "status": "interrupted",
+                        "detail": "rust_panic",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "thinking_observed": false,
+                    }),
+                );
+            }
             // fail-soft: the global recorder might not be initialized yet
             RUN_HAD_ERROR.with(|c| c.set(true));
             record(EventType::FailureObserved, Actor::Harness, payload);
@@ -92,6 +117,17 @@ pub fn stash_diagnostic_error(msg: &str) {
 /// Take and clear the last stashed diagnostic error.
 pub fn take_diagnostic_error() -> Option<String> {
     LAST_DIAGNOSTIC_ERROR.with(|cell| cell.take())
+}
+
+/// Set the ID of the currently in-flight model call so the panic hook
+/// can close its lifecycle if the process panics mid-call.
+pub fn set_current_model_call_id(id: String) {
+    CURRENT_MODEL_CALL_ID.with(|c| c.set(Some(id)));
+}
+
+/// Clear the current model call ID after ModelCallCompleted is recorded.
+pub fn clear_current_model_call_id() {
+    CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
 }
 
 static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);

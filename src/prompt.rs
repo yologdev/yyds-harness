@@ -777,6 +777,7 @@ async fn handle_prompt_events(
             .unwrap_or_default()
             .as_nanos()
     );
+    crate::state::set_current_model_call_id(model_call_id.clone());
     crate::state::record(
         crate::state::EventType::ModelCallStarted,
         crate::state::Actor::Yoyo,
@@ -970,6 +971,7 @@ async fn handle_prompt_events(
                         );
                         model_call_terminal_recorded = true;
                         model_calls_completed += 1;
+                        crate::state::clear_current_model_call_id();
                         crate::state::record_cache_metrics(model, &state.usage);
                     }
                     AgentEvent::InputRejected { reason } => {
@@ -1050,6 +1052,7 @@ async fn handle_prompt_events(
                         ),
                     );
                     model_calls_completed += 1;
+                    crate::state::clear_current_model_call_id();
                 }
                 if state.in_text {
                     println!();
@@ -1110,6 +1113,7 @@ async fn handle_prompt_events(
             ),
         );
         model_calls_completed += 1;
+        crate::state::clear_current_model_call_id();
     }
 
     if state.in_text {
