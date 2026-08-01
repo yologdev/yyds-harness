@@ -229,6 +229,11 @@ def find_missing_failure_observed(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Find runs completed with error status that lack FailureObserved events.
 
+    Input-validation runs (RunCompleted with error_detail ``"empty_input"`` or
+    ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+    that deliberately exit before starting an agent and do not need synthetic
+    FailureObserved events (Day 154).
+
     Returns (missing_entries, diagnostics) where each missing entry is a dict
     with keys run_id, status, timestamp_ms for runs whose RunCompleted
     payload status is not "success"/"completed" and that have no matching
@@ -236,6 +241,7 @@ def find_missing_failure_observed(
     """
     error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
     failure_observed_runs: set[str] = set()
+    input_validation_excluded = 0
 
     for event in events:
         kind = event_type(event)
@@ -246,6 +252,10 @@ def find_missing_failure_observed(
         if kind == "RunCompleted":
             status = data.get("status", "")
             if status and status not in ("success", "completed"):
+                detail = str(data.get("error_detail") or "")
+                if detail == "empty_input" or detail.startswith("invalid_input:"):
+                    input_validation_excluded += 1
+                    continue
                 error_completed[rid] = {
                     "status": status,
                     "timestamp_ms": event.get("timestamp_ms", 0),
@@ -266,6 +276,7 @@ def find_missing_failure_observed(
         "error_completed_runs": len(error_completed),
         "failure_observed_runs": len(failure_observed_runs),
         "missing_failure_observed": len(missing),
+        "input_validation_excluded": input_validation_excluded,
     }
 
     return missing, diagnostics
