@@ -1,0 +1,708 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. I need to harden `check_task_contradiction()` in `scripts/preseed_session_plan.py` with a broader completion-language fallback
+2. The function already exists from Day 114 but has a narrow vocabulary
+3. I need to add informal completion patterns, a freshness check, and ensure no false positives
+
+Let me start by:
+1. Reading the evolve skill
+2. Reading the current `check_task_contradiction()` function
+3. Reading existing tests
+4. Making the changes
+
+Let me first check if this task might be obsolete - I need to see if the assessment from this session already describes the problem as resolved or if the detector already covers all patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/preseed_session_plan.py:1..51 ✓ (15ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `check_task_contradiction` function and understand its current implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def check_task_contradiction' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:702.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the helper functions: `_line_shows_resolution`, `_line_shows_obsolete_or_reverted`, `_self_tests_show_resolution`, `_check_fixture_already_exists`, `_check_code_already_exists`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def _line_shows_resolution' in scripts/preseed_session_plan.py  ▶ search 'def _line_shows_obsolete_or_reverted' in scripts/preseed_session_plan.py  ▶ search 'def _self_tests_show_resolution' in scripts/preseed_session_plan.py ✓ (17ms)
+ ✓ (17ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.4s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:498..618 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find `_RESOLUTION_SIGNALS`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_RESOLUTION_SIGNALS' in scripts/preseed_session_plan.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the _RESOLUTION_SIGNALS constant:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:460..510 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the current state. The `_RESOLUTION_SIGNALS` already includes quite a few signals:
+- "made landable" ✓
+- "given enough standalone" ✓
+- "already addressed" ✓
+- "now properly" ✓
+- "no longer" ✓
+- "marked obsolete" ✓
+- "already fixed" ✓
+- etc.
+
+The signals list is more comprehensive than the task description says. Let me check:
+
+The task says the vocabulary is narrow: "matching only 'fixed', 'resolved', 'shipped'". But looking at the code, it already has "made landable", "given enough standalone", "already addressed", "no longer", "marked obsolete", "criteria already satisfied", etc.
+
+The key issue described in the task is that `_line_shows_resolution` requires a task key to appear in the line AND a resolution signal — both must match. But the task says assessment text uses completion language where task keys (metric names like `state_run_incomplete_count`) DON'T appear in the prose.
+
+The task wants a second-pass completion-language fallback. Looking more carefully at the function flow:
+
+1. `_line_shows_resolution` — requires task keys in line + resolution signal
+2. `_line_shows_obsolete_or_reverted` — looks for obsolete/reverted markers, then matches via task keys OR title words
+
+The gap: what if the assessment says "Day 154 handled the input-validation part" without mentioning metric keys like `state_run_incomplete_count`? The `_line_shows_resolution` would fail because task keys aren't in the line. The `_line_shows_obsolete_or_reverted` would fail because it looks for obsolete/reverted markers, not general completion language.
+
+Wait, let me re-read `_line_shows_resolution` more carefully:
+
+```python
+def _line_shows_resolution(line: str, task_keys: tuple[str, ...]) -> bool:
+    lower = line.lower()
+    if not any(key in lower for key in task_keys):
+        return False  # Must have a task key in the line!
+    if re.match(r"day\s+\d+", lower):
+        return True
+    return any(signal in lower for signal in _RESOLUTION_SIGNALS)
+```
+
+So even if the resolution signal is there, it still requires a task key. The `_line_shows_title_resolution` function was added as a semantic fallback but it's NOT called from `check_task_contradiction`! Let me check:
+
+```python
+def check_task_contradiction(task, assessment):
+    ...
+    for line in recent_changes.splitlines():
+        if _line_shows_resolution(line, task_keys):
+            ...
+    for line in recent_changes.splitlines():
+        if _line_shows_obsolete_or_reverted(line, task_keys, str(task.get("title", ""))):
+            ...
+    self_tests = ...
+    if _self_tests_show_resolution(self_tests, task_keys):
+        ...
+```
+
+`_line_shows_title_resolution` exists but is NOT called from `check_task_contradiction`. It was written as a semantic fallback but never wired in! That's the gap.
+
+Let me verify by searching for where `_line_shows_title_resolution` is called:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_line_shows_title_resolution' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`_line_shows_title_resolution` is defined but never called! It's a semantic fallback that was written but never wired into `check_task_contradiction`. This is exactly the gap the task is asking me to fix.
+
+Now let me also check the existing test file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_manifest.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That test file is for `task_manifest.py`, not `preseed_session_plan.py`. The task's verifier says:
+
+```
+python3 -m pytest scripts/test_task_manifest.py -x -q 2>/dev/null || python3 -c "import scripts.preseed_session_plan as m; print('import OK')"
+```
+
+And the fallback is just `import OK`. So there may not be dedicated tests for `check_task_contradiction` in a separate test file. Let me check if the self-tests in preseed_session_plan cover contradiction detection:
+
+The preseed_session_plan.py has built-in self-tests (run via `--test` flag). Let me check those.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'check_task_contradiction' in scripts/preseed_session_plan.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the self-tests around line 2160:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2100..2220 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check for the contradiction-specific self-tests (lines 2060-2108):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:2050..2100 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture:
+
+1. `_line_shows_title_resolution` exists (line 549) as a semantic fallback but is **never called** from `check_task_contradiction`.
+2. The `_RESOLUTION_SIGNALS` already has many signals including "made landable", "given enough standalone", "already addressed", "no longer", etc.
+3. The gap is: `check_task_contradiction` only calls `_line_shows_resolution` (which requires task_key in the line) and `_line_shows_obsolete_or_reverted` (which looks for obsolete/reverted markers). It does NOT call `_line_shows_title_resolution` which uses resolution signals + title words.
+
+The task says: "The completion-vocabulary fallback should be a second pass after the existing keyword check: if the keyword check finds nothing, scan the assessment text for informal completion patterns like..."
+- Session-date + completion verb: "Day NNN made/handled/fixed/resolved/closed/landed this"
+- Standalone-weight phrases: "given enough standalone weight", "adjusted to trigger by itself", "no longer needs"
+- Qualitative closure: "already addressed", "previously fixed", "the fix is in place", "this is done"
+
+The existing `_line_shows_title_resolution` already does part of this — it checks for resolution signals in conjunction with title word matching. But it's not wired in.
+
+However, looking again at `_line_shows_title_resolution`:
+```python
+def _line_shows_title_resolution(line: str, task_title: str) -> bool:
+    lower = line.lower()
+    if re.match(r"day\s+\d+", lower):
+        return True  # Any Day NNN line is considered resolution? That seems too broad!
+    if not any(signal in lower for signal in _RESOLUTION_SIGNALS):
+        return False
+    # Match via significant words from task title
+    title_lower = task_title.lower()
+    title_words = title_lower.split()
+    for phrase_len in (3, 2, 1):
+        for i in range(len(title_words) - phrase_len + 1):
+            phrase = " ".join(title_words[i : i + phrase_len])
+            if len(phrase) > 5 and phrase in lower:
+                return True
+    return False
+```
+
+Wait, the `Day NNN` check triggers for ANY line starting with "day NNN" — that's potentially a false positive for lines like "Day 153 assessment found..." But looking at the original `_line_shows_resolution`, it has the same pattern but requires a task key in the line first. So the `Day NNN` match without a key-based prerequisite is indeed more aggressive.
+
+However, in the context of assessment text in the "Recent Changes" section, lines starting with "Day NNN" are typically descriptions of work done: "Day 153 fixed the input-validation path." The task says to add a session-date + completion verb pattern: "Day NNN made/handled/fixed/resolved/closed/landed this." So the `Day NNN` check in `_line_shows_title_resolution` is reasonable for the assessment Recent Changes context, where Day NNN lines are completion records.
+
+But I need to be careful. Let me think about what changes to make:
+
+1. Wire `_line_shows_title_resolution` into `check_task_contradiction` as a third pass after `_line_shows_resolution` and `_line_shows_obsolete_or_reverted`.
+2. Add completion-verb detection for Day NNN lines (make the Day NNN check also require a completion verb to reduce false positives).
+3. Add more resolution signals to `_RESOLUTION_SIGNALS` if some are missing.
+4. Add a freshness check.
+
+Let me also check what additional resolution signals are missing from `_RESOLUTION_SIGNALS`:
+- "adjusted to trigger by itself" — not in the list
+- "the fix is in place" — not in the list
+- "this is done" — not in the list
+- "previously fixed" — not in the list
+- "made this landable" — already have "made landable"
+- "handled" — not as a standalone, but "Day NNN handled" is the pattern
+
+Actually, let me re-read the existing signals more carefully. They already have:
+- "already addressed" ✓
+- "already fixed" ✓
+- "already in place" ✓ (covers "the fix is in place" partially?)
+- "no longer" ✓
+- "made landable" ✓
+- "given enough standalone" ✓
+- "now properly" ✓
+- "now correctly" ✓
+- "marked obsolete" ✓
+
+What's missing:
+- "this is done" — but this could be a false positive risk ("this is done by running...")
+- "adjusted to trigger by itself" — this is very specific
+- "the fix is in place" — "already in place" would catch "fix is in place" but not "the fix is in place" — actually wait, "already in place" would NOT catch "the fix is in place" since "already" is missing. Hmm.
+- "handled" — "Day NNN handled" pattern
+- "previously fixed" — not in the list
+
+Let me also think about the "Day NNN handled" pattern. Currently `_line_shows_title_resolution` matches any line starting with "day NNN" regardless of what follows. The task says to check for "Day NNN made/handled/fixed/resolved/closed/landed this" — so the Day NNN pattern should be paired with a completion verb.
+
+Now for my implementation plan:
+
+1. **Wire `_line_shows_title_resolution` into `check_task_contradiction`**: Add a third loop in `check_task_contradiction` that iterates through recent_changes and calls `_line_shows_title_resolution` for lines where the previous checks didn't fire.
+
+2. **Tighten the Day NNN check in `_line_shows_title_resolution`**: Instead of matching any line starting with "day NNN", also require a completion verb (handled, fixed, resolved, closed, landed, made, adjusted, shipped, patched, addressed). This prevents matching lines like "Day 153 assessment found nothing."
+
+3. **Add more resolution signals**: Add "this is done", "the fix is in place", "previously fixed", "adjusted to trigger", "handled" to `_RESOLUTION_SIGNALS`.
+
+Wait, let me reconsider. The task says: "if the keyword check finds nothing, scan the assessment text for informal completion patterns." The keyword check = `_line_shows_resolution` + `_line_shows_obsolete_or_reverted`. The "second pass" should be `_line_shows_title_resolution`.
+
+Let me also think about what "freshness check" means. The task says: "Add a freshness check: if the assessment's timestamp is newer than the seed's origin timestamp, and the assessment mentions the seed's topic in past-tense closure language, flag the contradiction."
+
+But `check_task_contradiction` doesn't receive timestamps — it takes `task: dict` and `assessment: str`. There's no seed origin timestamp or assessment timestamp in the function signature. Adding timestamps would be a larger change. Let me keep it simpler and just wire in the title resolution fallback.
+
+Actually, let me re-read the task more carefully:
+
+> Implementation Notes:
+> - The completion-vocabulary fallback should be a second pass after the existing keyword check: if the keyword check finds nothing, scan the assessment text for informal completion patterns like:
+>   - Session-date + completion verb: "Day NNN made/handled/fixed/resolved/closed/landed this"
+>   - Standalone-weight phrases: "given enough standalone weight", "adjusted to trigger by itself", "no longer needs"
+>   - Qualitative closure: "already addressed", "previously fixed", "the fix is in place", "this is done"
+> - Keep patterns specific enough to avoid matching boilerplate like "this assessment covers" or "this session will address."
+> - Add a freshness check: if the assessment's timestamp is newer than the seed's origin timestamp, and the assessment mentions the seed's topic in past-tense closure language, flag the contradiction.
+> - The existing `check_task_contradiction()` function is in preseed_session_plan.py — find it, understand its current logic, and extend it minimally.
+> - Run the existing test suite before and after to confirm no regressions.
+
+Let me focus on the practical changes:
+
+1. Wire `_line_shows_title_resolution` into `check_task_contradiction`
+2. Improve `_line_shows_title_resolution` to require a completion verb with Day NNN
+3. Add missing resolution signals
+4. Add a freshness check
+
+For the freshness check, I can check if the assessment starts with a "Day NNN" header that's newer than any Day NNN references in the task. But actually the task dict doesn't carry a timestamp. Let me look at what `choose_task` receives... Actually the assessment text typically starts with a header like "# Assessment — Day 153 (19:17)". I can extract the day number from there and check if it's newer than the session that's running. But this feels complex.
+
+Let me focus on the minimal changes that achieve the objective. The key insight is: `_line_shows_title_resolution` is already written but not called. Wiring it in is the minimal fix. I should also improve it to be more specific.
+
+Let me now implement:
+
+1. Add `_line_shows_title_resolution` call to `check_task_contradiction` after the `_line_shows_obsolete_or_reverted` loop
+2. Enhance `_line_shows_title_resolution` to require a completion verb alongside Day NNN
+3. Add a few more resolution signals to `_RESOLUTION_SIGNALS`
+
+Let me also run the existing self-tests first to make sure they pass before my changes.
+
+Let me now code this up.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me understand the gap:
+
+1. `_line_shows_title_resolution` (line 549) is defined but **never called** from `check_task_contradiction` — it's dead code
+2. `_RESOLUTION_SIGNALS` already has good coverage but could use a few more patterns
+3. The Day NNN check in `_line_shows_title_resolution` matches ANY line starting with "day NNN" — too broad, needs a completion verb
+
+Let me run the existing self-tests first, then implement the fix.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, existing tests pass. Now let me implement the changes.
+
+My plan:
+1. Wire `_line_shows_title_resolution` into `check_task_contradiction` as a third pass
+2. Tighten `_line_shows_title_resolution` to require a completion verb with Day NNN
+3. Add a few more resolution signals
+
+Let me now make the changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now let me implement. I'll make three focused edits:
+
+**Edit 1**: Wire `_line_shows_title_resolution` into `check_task_contradiction` as a third pass.
+  +     # Third pass: semantic completion-language fallback using task-title words.
+  +     # When task keys (metric names) don't appear verbatim in assessment prose,
+  +     # match resolution signals against significant title words instead.
+  +     # Day 114 added _line_shows_title_resolution for this but never wired it in.
+  +     task_title = str(task.get("title", ""))
+  +     if task_title:
+  +         for line in recent_changes.splitlines():
+  +             if _line_shows_title_resolution(line, task_title):
+  +                 return True, f"assessment shows '{task_title}' problem already resolved (title-word fallback): {line.strip()}"
+  + 
+        self_tests = extract_section(assessment, "self-test results")
+        if _self_tests_show_resolution(self_tests, task_keys):
+            return True, f"assessment Self-Test Results show '{task['title']}' domain already working"
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (5 → 15 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (5 → 15 lines)
+  +     # Third pass: semantic completion-language fallback using task-title words.
+  +     # When task keys (metric names) don't appear verbatim in assessment prose,
+  +     # match resolution signals against significant title words instead.
+  +     # Day 114 added _line_shows_title_resolution for this but never wired it in.
+  +     task_title = str(task.get("title", ""))
+  +     if task_title:
+  +         for line in recent_changes.splitlines():
+  +             if _line_shows_title_resolution(line, task_title):
+  +                 return True, f"assessment shows '{task_title}' problem already resolved (title-word fallback): {line.strip()}"
+  + 
+        self_tests = extract_section(assessment, "self-test results")
+        if _self_tests_show_resolution(self_tests, task_keys):
+            return True, f"assessment Self-Test Results show '{task['title']}' domain already working"
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me tighten `_line_shows_title_resolution` to require a completion verb alongside Day NNN. Currently:
+
+```python
+def _line_shows_title_resolution(line: str, task_title: str) -> bool:
+    lower = line.lower()
+    # Session-date prefix (Day NNN) alone triggers resolution
+    if re.match(r"day\s+\d+", lower):
+        return True
+    if not any(signal in lower for signal in _RESOLUTION_SIGNALS):
+        return False
+    # Match via significant words from the task title
+    ...
+```
+
+The `Day NNN` check is too broad. Let me change it to require a completion verb after the Day NNN pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+**Edit 2**: Tighten `_line_shows_title_resolution` — require a completion verb with Day NNN, and enhance the resolution signals.
+  + _COMPLETION_VERBS = (
+  +     "made ",
+  +     "handled ",
+  +     "fixed ",
+  +     "resolved ",
+  +     "closed ",
+  +     "landed ",
+  +     "shipped ",
+  +     "patched ",
+  +     "addressed ",
+  +     "completed ",
+  +     "finished ",
+  +     "adjusted ",
+  + )
+  + 
+  + 
+    def _line_shows_title_resolution(line: str, task_title: str) -> bool:
+        """Return True if line shows resolution language related to task title.
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (24 → 44 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (24 → 44 lines)
+  + _COMPLETION_VERBS = (
+  +     "made ",
+  +     "handled ",
+  +     "fixed ",
+  +     "resolved ",
+  +     "closed ",
+  +     "landed ",
+  +     "shipped ",
+  +     "patched ",
+  +     "addressed ",
+  +     "completed ",
+  +     "finished ",
+  +     "adjusted ",
+  + )
+  + 
+  + 
+    def _line_shows_title_resolution(line: str, task_title: str) -> bool:
+        """Return True if line shows resolution language related to task title.
+    
+  ···
+  ... (15 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add more resolution signals to `_RESOLUTION_SIGNALS`. Looking at the task description for patterns that should be detected:
+
+- "the fix is in place" — not yet covered
+- "this is done" — not yet covered  
+- "previously fixed" — not yet covered
+- "adjusted to trigger by itself" — not yet covered (though "adjusted" as a standalone verb might be too broad)
+
+Actually wait, let me look at the existing signals again:
+```
+"now properly",
+"now correctly",
+"already fixed",
+"already addressed",
+"already resolved",
+"already in place",
+"already done",
+"already complete",
+"already completed",
+"no longer",
+"no longer needed",
+"no longer required",
+"no longer necessary",
+"has been fixed",
+"has been resolved",
+"fixed ",
+"resolved ",
+"patched ",
+"shipped ",
+"landed ",
+"closed ",
+"addressed ",
+"made landable",
+"given enough standalone",
+"marked obsolete",
+"obsolete —",
+"obsolete -",
+"criteria already satisfied",
+"already satisfied",
+"reverted without",
+"reverted — no edit",
+"reverted_no_edit",
+```
+
+I should add:
+- "the fix is in place" — or more broadly "fix is in place" — but "already in place" already matches some cases. Actually "the fix is in place" would match "already in place" if... no it wouldn't. Let me add "fix is in place" as a separate signal.
+- "this is done" — risky for false positives. Maybe skip.
+- "previously fixed" — add this
+- "adjusted to trigger" — add this
+- "no longer needs" — "no longer" already covers this
+- "Day NNN handled" — the completion verb pattern already handles this via the Day NNN + "handled" check
+
+Actually, let me be conservative with new signals. The main fix is wiring in `_line_shows_title_resolution`. Let me add just a few well-scoped signals.
+────────────────────────────────────────────────────────────────────────────────
+
+**Edit 3**: Add a few more resolution signals that the task specifically calls for.
+        "addressed ",
+        "made landable",
+        "given enough standalone",
+  +     "adjusted to trigger",
+  +     "the fix is in place",
+  +     "previously fixed",
+        "marked obsolete",
+  -     "obsolete —",
+  +     "obsolete \u2014",
+        "obsolete -",
+        "criteria already satisfied",
+        "already satisfied",
+        "reverted without",
+  -     "reverted — no edit",
+  +     "reverted \u2014 no edit",
+        "reverted_no_edit",
+    )
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (34 → 37 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (34 → 37 lines)
+        "addressed ",
+        "made landable",
+        "given enough standalone",
+  +     "adjusted to trigger",
+  +     "the fix is in place",
+  +     "previously fixed",
+        "marked obsolete",
+  -     "obsolete —",
+  +     "obsolete \u2014",
+        "obsolete -",
+        "criteria already satisfied",
+        "already satisfied",
+        "reverted without",
+  -     "reverted — no edit",
+  +     "reverted \u2014 no edit",
+        "reverted_no_edit",
+    )
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, I changed the em-dash characters from `—` (U+2014) to `\u2014` (which is still U+2014 but expressed as an escape). Let me check if this matters. Actually in the original source, the em-dash was literals `—`. My escaped version `\u2014` would be interpreted by Python as the same character. Let me verify this doesn't break anything by running the tests.
+
+Actually wait — I changed `"obsolete —"` and `"reverted — no edit"` from literal em-dash characters to `\u2014` escape sequences. In Python source, `\u2014` inside a string literal is the same as the literal `—` character. So this should be fine.
+
+But wait — did the original file have literal em-dash characters or were they already escaped? Let me check. Looking at the original:
+
+```
+    "obsolete —",
+    "obsolete -",
+    ...
+    "reverted — no edit",
+```
+
+Those were literal em-dash characters. My change replaced them with `\u2014` which is semantically identical. This should be fine.
+
+Now let me also check if there's a subtle issue: I also added `"adjusted to trigger"` and `"the fix is in place"` and `"previously fixed"`. These are fine.
+
+Let me run the tests now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the self-tests:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/preseed_sessio… ✓ (156ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, existing tests pass. Now let me write a targeted test to verify the new behavior works. Let me test with the scenarios from the task:
+
+1. Assessment says "Day 154 made this landable with the panic-path fix" — should match a task like "Close lifecycle gaps" because "made" is a completion verb and "Day NNN" is present. But wait — `_line_shows_title_resolution` requires a title word match too. "Close lifecycle gaps" — would any of these words appear in "Day 154 made this landable with the panic-path fix"? Probably "close" wouldn't match, "lifecycle" wouldn't match, "gaps" wouldn't match...
+
+Hmm, wait. Let me re-read `_line_shows_title_resolution`:
+
+```python
+if re.match(r"day\s+\d+", lower):
+    if any(verb in lower for verb in _COMPLETION_VERBS):
+        return True
+```
+
+When Day NNN + completion verb are both present, it returns True **without requiring title word match**. That's the behavior I want — the Day NNN + completion verb pattern is strong enough evidence by itself.
+
+And the second path:
+```python
+if not any(signal in lower for signal in _RESOLUTION_SIGNALS):
+    return False
+# Match via significant words from the task title
+...
+```
+
+This path requires BOTH a resolution signal AND a title word match.
+
+So "Day 154 made this landable" would match because:
+1. `re.match(r"day\s+\d+", lower)` matches "day 154"
+2. `any(verb in lower for verb in _COMPLETION_VERBS)` — "made " is in the line — yes!
+
+Good. And "given enough standalone weight to trigger by itself" would match through:
+1. `re.match(r"day\s+\d+", lower)` — no Day NNN prefix
+2. `any(signal in lower for signal in _RESOLUTION_SIGNALS)` — "given enough standalone" is a signal — yes!
+3. Title word matching — would need at least one significant word from task title
+
+Let me write a quick verification script.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also verify the new patterns work with the task's explicit test case:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (96 lines) ✓ (130ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Test 1 failed. The Day NNN + "made " completion verb didn't match. Let me debug.
+
+The task title is "Close yyds state and model lifecycle gaps"
+The assessment line is: "Day 154 made this landable with the panic-path fix."
+
+In `check_task_contradiction`, the flow is:
+1. `_check_fixture_already_exists` — no fixture references, returns False
+2. `_check_code_already_exists` — checks if keys appear in tracked files, probably not
+3. `_line_shows_resolution` — checks if task keys ("state_run_incomplete_count", "deepseek_model_call_incomplete_count") appear in the line. They don't. Returns False.
+4. `_line_shows_obsolete_or_reverted` — checks for obsolete/reverted markers. "made this landable" doesn't have any of those markers. Returns False.
+5. `_line_shows_title_resolution` — this is the fallback.
+
+Let me trace through `_line_shows_title_resolution` for the line "Day 154 made this landable with the panic-path fix.":
+
+```python
+lower = "day 154 made this landable with the panic-path fix."
+# Day NNN check
+re.match(r"day\s+\d+", lower)  # matches "day 154"
+any(verb in lower for verb in _COMPLETION_VERBS)
+```
+
+Let me check `_COMPLETION_VERBS`:
+```python
+_COMPLETION_VERBS = (
+    "made ",
+    "handled ",
+    ...
+)
+```
+
+"made " — is "made " in "day 154 made this landable with the panic-path fix."?
+Yes! The line contains "made " (with a space after "made").
+
+Wait, let me check if the function is even being called. The issue might be in `check_task_contradiction` — perhaps `_check_code_already_exists` is returning True before we get to the title resolution fallback.
+
+Let me check `_check_code_already_exists`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (23 lines) ✓ (38ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `_line_shows_title_resolution` works when called directly. The issue is that `check_task_contradiction` is returning False before reaching it. Let me trace through `check_task_contradiction` step by step.
+
+The flow in `check_task_contradiction`:
+1. `_check_fixture_already_exists(task)` — checks if task references existing fixtures
+2. `_check_code_already_exists(task)` — checks if code already exists
+3. `task_keys = tuple(task.get("keys", ()))` — gets task keys
+4. If no keys, return False
+5. Loop through recent_changes, call `_line_shows_resolution`
+6. Loop through recent_changes, call `_line_shows_obsolete_or_reverted`
+7. **My new code**: Loop through recent_changes, call `_line_shows_title_resolution` ← should be here
+8. self_tests check
+9. Return False
+
+Wait, but `_check_code_already_exists` checks if task keys appear in tracked source files via git grep. The task has keys `('state_run_incomplete_count', 'deepseek_model_call_incomplete_count')`. These are metric names that might appear in dashboard or feedback scripts! Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (15 lines) ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, not that. Let me trace through the full function to see where it's returning False.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (54 lines) ✓ (44ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! All three functions return False for the first line. Let me trace through `_line_shows_title_resolution` manually:
+
+Line: "- Day 154 made this landable with the panic-path fix. The input-validation piece"
+
+```python
+lower = "- day 154 made this landable with the panic-path fix. the input-validation piece"
+re.match(r"day\s+\d+", lower)  # Does this match?
+```
+
+The regex `day\s+\d+` with `re.match` only matches at the beginning of the string! The line starts with `"- "`, not `"day"`. So `re.match` fails because it's anchored to the start.
+
+The fix: use `re.search` instead of `re.match` for the Day NNN pattern, since assessment lines often have list item prefixes like "- " or "* ".
+
+Let me also check the original `_line_shows_resolution` — it has the same issue! But it works in practice because when the line starts with "- Day NNN", the `any(key in lower for key in task_keys)` check fails first (since keys are metric names), so `_line_shows_resolution` never reaches the `re.match` call for those lines.
+
+Let me fix `_line_shows_title_resolution` to use `re.search` instead of `re.match`.
+────────────────────────────────────────────────────────────────────────────────
+
+Found it! The `re.match` anchors to string start, but the assessment lines have list-item prefixes like `"- Day 154..."`. I need `re.search` instead.
+        # e.g. "Day 154 made this landable", "Day 153 handled the input-validation part"
+        # Must have both a Day NNN prefix AND a completion verb to avoid matching
+        # boilerplate like "Day 153 assessment found nothing."
+  -     if re.match(r"day\s+\d+", lower):
+  +     # Use search (not match) — assessment lines may have list-item prefixes like "- ".
+  +     if re.search(r"day\s+\d+", lower):
+  ✓ Auto-approved: edit: scripts/preseed_session_plan.py (6 → 7 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/preseed_session_plan.py (6 → 7 lines)
+        # e.g. "Day 154 made this landable", "Day 153 handled the input-validation part"
+        # Must have both a Day NNN prefix AND a completion verb to avoid matching
+        # boilerplate like "Day 153 assessment found nothing."
+  -     if re.match(r"day\s+\d+", lower):
+  +     # Use search (not match) — assessment lines may have list-item prefixes like "- ".
+  +     if re.search(r"day\s+\d+", lower):
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check if the existing `_line_shows_resolution` has the same issue:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:498..510 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The existing `_line_shows_resolution` also uses `re.match`, but it has a guard: it first checks `any(key in lower for key in task_keys)`. For lines like "- Day 154 made this landable", the task keys are metric names like "state_run_incomplete_count", which won't be in the line. So `_line_shows_resolution` correctly returns False at line 504, before reaching the `re.match`. The `re.match` only triggers when a task key IS in the line — and in that case, the line is more likely to not have list-item prefixes.
+
+So the existing code is fine for `_line_shows_resolution`. The bug only manifests in `_line_shows_title_resolution` because it doesn't have the task-key guard.
+
+Let me now re-run the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the fix:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (102 lines) ✓ (137ms)
+
+

@@ -1,0 +1,633 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill for the full contract, then quickly examine the three target files and the test files to plan my implementation. I need to get to an edit quickly - the instructions say by my 5th tool turn I must have written a test, edited a file, or written a blocked/obsolete note.
+
+Let me read the key files in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/append_terminal_state_events.py (100 lines)  ▶ read scripts/test_append_terminal_state_events.py (80 lines) ✓ (26ms)
+ ✓ (21ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the key functions in append_terminal_state_events.py to understand the structure, especially `find_missing_failure_observed`, `find_stale_orphaned_runs`, and the main `append_terminal_events` function.
+
+I also need to look at what the test file has for input-validation tests (from Day 154 Task 1).
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.7s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:100..  ▶ search 'test_input_validation' in scripts/test_append_terminal_state_events.py  ▶ search 'find_missing_failure_observed' in scripts/append_terminal_state_events.py ✓ (11ms)
+ ✓ (23ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `find_missing_failure_observed` function and the `collect_input_validation_run_ids` function to understand the pattern already in place.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:227..347  ▶ read scripts/append_terminal_state_events.py:500..600 ✓ (16ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key patterns. Let me continue reading the `append_terminal_events` function to see how it handles cancelled runs:
+
+1. `find_missing_failure_observed` - already excludes input-validation runs. I need to add exclusion for cancelled runs (status == "cancelled").
+
+2. In `append_terminal_events`, lines 597-599 already check `if status == "cancelled"` and set `reason_text`. So there's already partial cancellation handling. But `find_missing_failure_observed` doesn't exclude these runs from being counted as "missing failure observed" - it adds them to the `error_completed` dict regardless of status being "cancelled", so the downstream code still creates a FailureObserved.
+
+Let me read lines 595-630 to see the full handling.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:595..655  ▶ read scripts/append_terminal_state_events.py:655..735 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The current code at lines 595-612 already partially handles cancelled runs - it detects `status == "cancelled"` and gives a different reason text, but it still appends a `FailureObserved` event. The problem is that cancelled runs should not get a FailureObserved at all.
+
+The fix needs to happen in `find_missing_failure_observed` - the function should exclude runs with `status == "cancelled"` from the `error_completed` dict. Currently it only excludes input-validation runs.
+
+OK let me now plan:
+
+1. **`find_missing_failure_observed`**: Add a `cancelled_excluded` counter and skip runs with `status == "cancelled"` just like it skips input-validation runs.
+
+2. **`append_terminal_events`**: The `if status == "cancelled"` check at line 598 becomes unreachable (good - these runs won't be in `missing_failures` anymore), but for safety I'll leave it. Actually, I should remove the condition or just leave it as dead code that's never reached - harmless.
+
+3. **`summarize_state_gnomes.py`**: Need to check how it computes lifecycle gnomes and exclude cancelled runs.
+
+4. **`log_feedback.py`**: Need to check for lifecycle analysis that penalizes cancelled runs.
+
+Let me also check the test file for existing tests relevant to this change, and look at summarize_state_gnomes.py and log_feedback.py for the relevant functions.
+
+Given the checkpoint says "by your 5th tool turn, you must have written a test, edited a file, or written blocked/obsolete", I need to act fast. Let me read the gnome file and log_feedback quickly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_incomplete' in scripts/summarize_state_gnomes.py  ▶ search 'run_incomplete' in scripts/log_feedback.py  ▶ read scripts/test_append_terminal_state_events.py:80..130 ✓ (5ms)
+ ✓ (28ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the summarize_state_gnomes.py to understand the lifecycle function, and look for tests in the test file that test the `find_missing_failure_observed` function directly. I need to also check for the test file's search for "cancelled" to see if there are existing tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:400..480  ▶ search 'cancelled' in scripts/test_append_terminal_state_events.py  ▶ search 'find_missing_failure' in scripts/test_append_terminal_state_events.py ✓ (12ms)
+ ✓ (23ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the test for cancelled runs to understand the current behavior:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.8s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1129..1209  ▶ read scripts/summarize_state_gnomes.py:478..538 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan the changes:
+
+### Key insight:
+The existing test `test_cancelled_run_gets_specific_failure_observed_reason` expects a `FailureObserved` event to be appended for cancelled runs. But the task says we should NOT add retroactive FailureObserved for cancelled runs.
+
+This means I need to:
+1. Modify `find_missing_failure_observed` to exclude runs with `status == "cancelled"` (alongside the existing input-validation exclusion).
+2. Update the test that currently expects FailureObserved for cancelled runs to instead expect NO FailureObserved.
+3. The dead code at lines 598-599 becomes unreachable but I'll clean it up.
+
+For `summarize_state_gnomes.py`, the lifecycle gnome computation at line 400-475 computes `run_incomplete_ids`. Cancelled runs that have RunStarted but no RunCompleted would appear as incomplete. But once the `append_terminal_state_events.py` closes them with RunCompleted (via the stale orphan scan), they wouldn't be incomplete anymore. However, the stale orphan scan at line 549-575 closes orphans with `status: "error"`, which would then trigger `find_missing_failure_observed` to flag them.
+
+Wait, but if we skip cancelled runs in `find_missing_failure_observed`, they still get closed as orphans (with `status: "error"`), and this RunCompleted event would still show up in the event file. The issue is that the orphan closure creates a RunCompleted with `status: "error"` even for cancelled runs.
+
+Hmm, but how would we know a stale orphan was cancelled vs errored? The events file wouldn't have a RunCompleted with `status: "cancelled"` for the orphan - that's the whole problem (the run was killed externally). So we can't classify the orphan as cancelled.
+
+Actually wait, let me re-read. The scenario is:
+1. Session starts, writes RunStarted, ModelCallStarted
+2. GitHub Actions cancels the session (SIGTERM). No RunCompleted, no ModelCallCompleted, no FailureObserved.
+3. Next session runs `append_terminal_state_events.py` which:
+   a. The stale orphan scan finds RunStarted without RunCompleted → writes RunCompleted(status="error")
+   b. The `find_missing_failure_observed` finds RunCompleted(status="error") with no FailureObserved → writes FailureObserved
+
+The problem is in step 3b. The `find_missing_failure_observed` can't distinguish between "this run errored" and "this run was cancelled" because the stale orphan scan wrote `status: "error"` for both cases.
+
+But for runs that were properly cancelled by the script (where the RunCompleted has `status: "cancelled"`), the `find_missing_failure_observed` already sees `status == "cancelled"` and should not flag it. The existing behavior at lines 598-599 just gives it a different reason text but still creates FailureObserved.
+
+So there are two cases:
+1. **Properly cancelled runs** (RunCompleted has `status: "cancelled"`): `find_missing_failure_observed` sees this and should skip it entirely (no FailureObserved).
+2. **Stale orphan runs that were cancelled**: We can't distinguish them from stale orphan runs that errored. The orphan scan writes `status: "error"` for both.
+
+For case 2, we'd need a way to detect cancellation from the event history. But the task says: "If the cancellation detection signal (exit reason, run duration, or GitHub Actions concurrency marker) is not reliably available in the state events, document what was tried and mark the task blocked — do not add fragile heuristics."
+
+So the practical approach is:
+1. For case 1 (properly cancelled with `status: "cancelled"` in RunCompleted): skip in `find_missing_failure_observed`.
+2. For case 2 (stale orphans): we can't detect cancellation without fragile heuristics, so we leave them as-is but add a comment documenting the limitation.
+3. `summarize_state_gnomes.py`: exclude runs with `status: "cancelled"` from incomplete counts.
+4. `log_feedback.py`: recognize cancelled runs in lifecycle analysis.
+
+Actually, wait. Let me reconsider. The task says the detection signal for cancelled vs errored runs is: check error_detail, exit reason, duration. "A run killed by SIGTERM typically has no error_detail (or 'signal: 15') and was mid-execution."
+
+For stale orphans closed by the script, the RunCompleted has `terminal_reason: "orphaned_previous_session"` and `status: "error"`. We could add an additional check: if the run had ModelCallStarted but no ModelCallCompleted AND no FailureObserved, it was likely cancelled (the model call was in-flight when killed). A genuinely errored run would typically have recorded a FailureObserved before the RunCompleted.
+
+But the task says "do not add fragile heuristics." So let me focus on the clear case first: runs with `status: "cancelled"` in RunCompleted.
+
+Let me also check: how does a run get `status: "cancelled"` in its RunCompleted? Looking at `evolve.sh`... Let me search for where cancellation RunCompleted events are written.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 21.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cancelled' in scripts/evolve.sh  ▶ read scripts/summarize_state_gnomes.py:340..380 ✓ (5ms)
+ ✓ (21ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the key line. Let me look at line 367:
+
+```python
+run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+```
+
+This computes `run_incomplete_ids` as runs that have RunStarted but no RunCompleted. For cancelled runs with `status: "cancelled"` in RunCompleted, they'd already have a RunCompleted and wouldn't be in `run_incomplete_ids`. Good.
+
+But what about stale orphans that the script later closes? Those would get a retroactive RunCompleted (from the stale orphan scan in append_terminal_state_events). Once closed, they also wouldn't be in `run_incomplete_ids`.
+
+So the gnome-level issue might be more subtle. Let me now think about what the log_feedback.py needs.
+
+Let me search in log_feedback.py for how it uses the lifecycle gnomes:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete_count' in scripts/log_feedback.py  ▶ search 'deepseek_model_call_incomplete' in scripts/log_feedback.py ✓ (12ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of log_feedback.py around those lines:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2135..2185  ▶ read scripts/log_feedback.py:260..300 ✓ (5ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of all three files. Let me now plan the minimal, focused change:
+
+## Plan
+
+### 1. `scripts/append_terminal_state_events.py` - `find_missing_failure_observed`
+Add a check: if RunCompleted payload has `status == "cancelled"`, skip it (same pattern as the existing input-validation exclusion). Add a `cancelled_excluded` diagnostic counter.
+
+This means runs with RunCompleted `status: "cancelled"` will NOT get retroactive FailureObserved events.
+
+### 2. `scripts/test_append_terminal_state_events.py` - Update test
+Change `test_cancelled_run_gets_specific_failure_observed_reason` to expect NO FailureObserved for cancelled runs (not even one with a cancellation-specific reason). The test currently expects exactly 1 FailureObserved - it should now expect 0.
+
+### 3. `scripts/summarize_state_gnomes.py` - `summarize_state_lifecycle`
+In the lifecycle function, exclude cancelled runs from incomplete counts. But looking at the code, `run_incomplete_ids` is computed from runs that have RunStarted but no RunCompleted. Cancelled runs with RunCompleted would already have a RunCompleted. Stale orphans (cancelled runs where the script hasn't run yet to close them) would show as incomplete until the next script run closes them.
+
+The more relevant fix for summarize_state_gnomes would be to recognize cancelled runs separately - but the task says "exclude cancelled-run lifecycle gaps from gnome counts (or flag them separately as 'cancelled' rather than 'incomplete')". 
+
+Actually, I think the main benefit for gnomes is: when `find_missing_failure_observed` no longer adds FailureObserved for cancelled runs, the gnome counters for failure-related metrics won't be inflated. The lifecycle gnomes (run_incomplete_count, etc.) already work correctly - cancelled runs with RunCompleted are not counted as incomplete.
+
+For `summarize_state_gnomes.py`, I should add a cancelled run counter that flags runs with `status: "cancelled"` separately. Let me add a new gnome `state_run_cancelled_count` that counts RunCompleted events with `status: "cancelled"`.
+
+Actually wait, let me reconsider. The gnome keys are a fixed set. Adding a new one requires changes in `log_feedback.py` too (it has the gnome keys list). Let me keep it simpler.
+
+Actually, the task's edit surface says: "exclude cancelled-run lifecycle gaps from gnome counts (or flag them separately as 'cancelled' rather than 'incomplete')"
+
+The simplest approach: in `summarize_state_lifecycle`, when computing `run_incomplete_ids`, exclude runs whose RunCompleted has `status: "cancelled"`. But as I noted, these already have a RunCompleted and wouldn't be in `run_incomplete_ids`...
+
+Unless the cancelled RunCompleted is UNMATCHED (has no RunStarted). In that case, it would be in `run_unmatched_completed_ids`. But that's different from `run_incomplete_ids`.
+
+Let me step back and think about what's actionable and minimal:
+
+**Core change**: In `find_missing_failure_observed`, exclude runs with `status: "cancelled"` → these won't get retroactive FailureObserved. This is the main fix.
+
+**summarize_state_gnomes.py**: The `lifecycle_gnomes` function computes gnome values from the `summarize_state_lifecycle` result. The lifecycle already excludes properly-cancelled runs from "incomplete" (they have RunCompleted). So the core fix might be enough.
+
+But the task also wants to handle the case where stale orphans (cancelled sessions with no RunCompleted) get closed with `status: "error"` by the orphan scan, which then triggers `find_missing_failure_observed` to add FailureObserved. For these, we can't detect cancellation reliably without fragile heuristics.
+
+Wait, but the `find_missing_failure_observed` check is on the RunCompleted event. The orphan scan writes:
+```python
+payload = {
+    "status": "error",
+    "terminal_reason": "orphaned_previous_session",
+    ...
+}
+```
+
+So `status` is "error", not "cancelled". The `find_missing_failure_observed` would still flag it. We can't distinguish orphaned-by-cancellation from orphaned-by-error.
+
+This is where the task's fallback applies: "If the cancellation detection signal is not reliably available in the state events, document what was tried and mark the task blocked."
+
+But wait - the task says: "The detection signal for 'cancelled' vs 'errored' runs: check the run's error_detail, exit reason, or duration. A run killed by SIGTERM typically has no error_detail (or 'signal: 15') and was mid-execution."
+
+For the stale orphan scan, when it closes orphans, the script could CHECK if the orphan has a ModelCallStarted that was mid-execution (no ModelCallCompleted) at the time of closure. This is a possible heuristic but it's fragile.
+
+Actually, I think the practical approach is:
+
+1. Handle the clear case: runs with `status == "cancelled"` in RunCompleted → don't add FailureObserved.
+2. For stale orphans (no RunCompleted at all), the closure writes `status: "error"` and `terminal_reason: "orphaned_previous_session"`. This IS somewhat misleading for cancelled runs. But we can't reliably detect the difference without fragile heuristics.
+
+The task's fallback says: "document what was tried and mark the task blocked." But I think the clear case (properly cancelled runs with `status: "cancelled"`) is worth fixing. The stale orphan case is a known limitation.
+
+Let me go ahead and implement the clear fix, updated test, and add comments documenting the limitation for stale orphans.
+
+Actually, wait. Let me re-read the task more carefully:
+
+> `scripts/append_terminal_state_events.py` — detect cancelled/externally-killed runs and skip them (do not add retroactive FailureObserved or ModelCallCompleted for runs that were killed, not errored)
+
+So I need to also handle the stale orphan case. Let me think about this...
+
+For stale orphans caught by `find_stale_orphaned_runs`: this function finds runs with RunStarted but no RunCompleted. We could add a check: if the run has a ModelCallStarted that was mid-execution at the time it was killed, it might be cancelled. But we don't have the "time of kill" signal.
+
+Actually, re-reading more carefully:
+
+> `scripts/append_terminal_state_events.py` — detect cancelled/externally-killed runs and skip them
+
+The detection signal:
+- `status == "cancelled"` in RunCompleted → clear case
+- For stale orphans: we could check if the run's last event was mid-execution (ModelCallStarted without ModelCallCompleted) - this is a weaker signal
+
+But the task explicitly warns: "do not add fragile heuristics."
+
+OK, let me take a pragmatic approach. I'll:
+1. Fix `find_missing_failure_observed` to exclude `status: "cancelled"` runs.
+2. Update the stale orphan scan to not close orphans that show signs of cancellation (but this is fragile, so I'll add a comment about the limitation instead).
+3. Update the test.
+4. For summarize_state_gnomes, add a cancelled runs counter.
+
+Actually, let me keep it minimal. The core fix is in `find_missing_failure_observed`. Let me implement that and the test update. For gnomes and log_feedback, I'll check if the current behavior is already correct enough.
+
+For `summarize_state_gnomes.py`, let me look at what lifecycle gnomes are computed and whether cancelled runs inflate anything. The main lifecycle function computes `run_incomplete_ids` - runs with RunStarted but no RunCompleted. Cancelled runs with RunCompleted won't be in this set. Good.
+
+For `log_feedback.py`, the lessons at line 2141 and 2157 check if `state_run_incomplete_count > 0` and `deepseek_model_call_incomplete_count > 0`. These would be non-zero if there are stale orphans that haven't been closed yet. But once the next session's `append_terminal_state_events` runs, these would be zero again. So the issue is more about the timing of when gnomes are computed vs when the script runs.
+
+I think the most impactful and clean change is:
+1. `find_missing_failure_observed`: exclude `status: "cancelled"` runs from missing_failures.
+2. Test: update to expect no FailureObserved for cancelled runs.
+3. `summarize_state_gnomes.py`: add a `state_run_cancelled_count` to the lifecycle gnome computation.
+4. `log_feedback.py`: add the new gnome key to the recognized set.
+
+Actually, adding a new gnome key is more invasive. Let me keep it even more minimal:
+
+1. `find_missing_failure_observed`: exclude `status: "cancelled"` runs.
+2. Test: update.
+3. `summarize_state_gnomes.py`: in lifecycle, when computing incomplete counts, check if the last event for an incomplete run indicates cancellation. But this is hard without the RunCompleted...
+
+OK, I'm overthinking this. Let me focus on the core change and test, then look at gnomes.
+
+Let me now implement the changes. For gnomes, the simplest thing is: in the lifecycle function, track cancelled runs separately and include `state_run_cancelled_count` in the output. Then `lifecycle_gnomes` can surface this. And `log_feedback.py` can note it without penalizing.
+
+Actually, let me look at how `lifecycle_gnomes` works:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 36.0s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def lifecycle_gnomes' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the lifecycle_gnomes function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:270..305 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I have full clarity. Let me implement the changes:
+
+### 1. `scripts/append_terminal_state_events.py` — `find_missing_failure_observed`
+- Add `cancelled_excluded` counter
+- Skip runs with `status == "cancelled"` (same as input-validation skip)
+- Add `cancelled_excluded` to diagnostics dict
+
+### 2. `scripts/test_append_terminal_state_events.py` — update test
+- Change `test_cancelled_run_gets_specific_failure_observed_reason` to expect NO FailureObserved for cancelled runs
+- Rename to reflect new behavior: `test_cancelled_run_skips_failure_observed`
+
+### 3. `scripts/summarize_state_gnomes.py` — `summarize_state_lifecycle`
+- Track cancelled runs separately in the lifecycle computation
+- Add `state_run_cancelled_count` to the run summary and gnome output
+
+Actually wait, I realize adding a new gnome key to `summarize_state_gnomes.py` is a bigger change because `log_feedback.py` has a hardcoded list of gnome keys. Let me check if that list is used for filtering or just for reference.
+
+Looking at line 256-274 of log_feedback.py - that's the GNOME_KEYS list. Let me check how it's used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:250..270 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how the GNOME_KEYS list is used - is it just for reference, or does it filter?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'GNOME_KEYS' in scripts/log_feedback.py ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`GNOME_KEYS` is used at line 1094 to filter metrics to known keys. If I add a new gnome key like `state_run_cancelled_count` to `summarize_state_gnomes.py`, I need to also add it to this list in `log_feedback.py`.
+
+But actually, let me reconsider the scope. The task says:
+
+> `scripts/log_feedback.py` — recognize cancelled sessions in lifecycle analysis and don't penalize their missing terminal events as harness bugs
+> `scripts/summarize_state_gnomes.py` — exclude cancelled-run lifecycle gaps from gnome counts (or flag them separately as "cancelled" rather than "incomplete")
+
+Adding a new gnome key requires changes to `lifecycle_gnomes`, `GNOME_KEYS`, and potentially more code. This is getting complex. 
+
+Let me focus on the most impactful minimal change:
+
+1. **`find_missing_failure_observed`**: Exclude `status == "cancelled"` runs → no retroactive FailureObserved. This is the core fix.
+2. **Test**: Update to match new behavior.
+3. **`summarize_state_gnomes.py`**: In `summarize_state_lifecycle`, add a `cancelled` count to the runs dict and expose it in the gnomes.
+4. **`log_feedback.py`**: Add the new key to `GNOME_KEYS`.
+
+Let me implement this now. I need to be fast - by the 5th tool turn I need an edit. Let me start making changes.
+
+Actually, let me simplify even further. The task's most critical issue is: "append_terminal_state_events.py no longer adds retroactive FailureObserved for runs that were externally cancelled." Let me do just this change in `find_missing_failure_observed` and the test.
+
+For `summarize_state_gnomes.py`, the key insight is that `run_incomplete_ids` already correctly excludes runs with RunCompleted (including cancelled ones). The `model_incomplete_ids` could be affected if a cancelled run had ModelCallStarted but no ModelCallCompleted. But the stale orphan scan would produce a ModelCallCompleted for it eventually.
+
+Actually, let me look at `model_incomplete_ids` computation more carefully. It's computed from ModelCallStarted events that have no matching ModelCallCompleted. If a cancelled run has ModelCallStarted but no ModelCallCompleted, it would show as incomplete. Once the orphan scan adds a retroactive ModelCallCompleted, it would be complete. So the gnome would fluctuate.
+
+For now, let me focus on the core fix (no FailureObserved for cancelled runs) and update the test. I'll also add the cancelled count to the summarize_state_gnomes lifecycle computation. This is a measured, minimal change.
+
+Let me now implement:
+
+1. Edit `find_missing_failure_observed` to exclude `status == "cancelled"` 
+2. Edit test to expect no FailureObserved
+3. Run tests to verify
+
+Let me do it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me implement the changes. I'll start with the core fix in `find_missing_failure_observed` and update the test.
+        ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+        that deliberately exit before starting an agent and do not need synthetic
+        FailureObserved events (Day 154).
+  + 
+  +     Cancelled runs (RunCompleted with status ``"cancelled"``) are excluded —
+  +     they were killed by external signals (SIGTERM, GitHub Actions concurrency)
+  +     and missing terminal events are expected behavior, not harness bugs
+  +     (Day 154 17:00).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  -     payload status is not "success"/"completed" and that have no matching
+  -     FailureObserved event.
+  +     payload status is not "success"/"completed"/"cancelled" and that have no
+  +     matching FailureObserved event.
+        """
+        error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+        failure_observed_runs: set[str] = set()
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (56 → 66 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (56 → 66 lines)
+        ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+        that deliberately exit before starting an agent and do not need synthetic
+        FailureObserved events (Day 154).
+  + 
+  +     Cancelled runs (RunCompleted with status ``"cancelled"``) are excluded —
+  +     they were killed by external signals (SIGTERM, GitHub Actions concurrency)
+  +     and missing terminal events are expected behavior, not harness bugs
+  +     (Day 154 17:00).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  -     payload status is not "success"/"completed" and that have no matching
+  -     FailureObserved event.
+  +     payload status is not "success"/"completed"/"cancelled" and that have no
+  +     matching FailureObserved event.
+        """
+        error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+        failure_observed_runs: set[str] = set()
+        input_validation_excluded = 0
+  +     cancelled_excluded = 0
+  ... (21 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me update the test to expect no FailureObserved for cancelled runs:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the test:
+  -     def test_cancelled_run_gets_specific_failure_observed_reason(self):
+  -         """Cancelled RunCompleted yields a specific cancellation reason in FailureObserved."""
+  +     def test_cancelled_run_skips_failure_observed(self):
+  +         """Cancelled RunCompleted does NOT trigger a retroactive FailureObserved.
+  + 
+  +         Externally cancelled runs (SIGTERM, GitHub Actions concurrency kill)
+  +         have status ``"cancelled"`` in their RunCompleted.  Missing terminal
+  +         events are expected behavior for cancelled sessions, not harness bugs
+  +         — so no synthetic FailureObserved should be appended (Day 154 17:00).
+  +         """
+            with tempfile.TemporaryDirectory() as tmp:
+                events = Path(tmp) / "events.jsonl"
+                after_line = 0
+  ···
+                    row for row in rows
+                    if row["event_type"] == "FailureObserved" and row["run_id"] == "cancelled-run"
+                ]
+  -             self.assertEqual(len(fo_rows), 1)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (35 → 44 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (35 → 44 lines)
+  -     def test_cancelled_run_gets_specific_failure_observed_reason(self):
+  -         """Cancelled RunCompleted yields a specific cancellation reason in FailureObserved."""
+  +     def test_cancelled_run_skips_failure_observed(self):
+  +         """Cancelled RunCompleted does NOT trigger a retroactive FailureObserved.
+  + 
+  +         Externally cancelled runs (SIGTERM, GitHub Actions concurrency kill)
+  +         have status ``"cancelled"`` in their RunCompleted.  Missing terminal
+  +         events are expected behavior for cancelled sessions, not harness bugs
+  +         — so no synthetic FailureObserved should be appended (Day 154 17:00).
+  +         """
+            with tempfile.TemporaryDirectory() as tmp:
+                events = Path(tmp) / "events.jsonl"
+                after_line = 0
+  ···
+                    row for row in rows
+                    if row["event_type"] == "FailureObserved" and row["run_id"] == "cancelled-run"
+                ]
+  -             self.assertEqual(len(fo_rows), 1)
+  -             reason = fo_rows[0]["payload"].get("reason", "")
+  -             self.assertIn("cancelled by next hourly session", reason,
+  ... (10 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, both edits applied. Now let me run the specific tests to verify the changes work.
+
+Let me also clean up the dead code in `append_terminal_state_events.py` at lines 595-612, where the `if status == "cancelled"` check is now unreachable (cancelled runs won't be in `missing_failures` anymore). Actually, it's not unreachable if the `find_missing_failure_observed` has the exclusion. Let me verify: the function now excludes `status == "cancelled"` at the inner level, so `missing_failures` won't contain cancelled entries. The code at lines 595-604 is now dead code for the cancelled case. I should clean it up.
+
+Wait, actually, let me first run the tests to make sure the change works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (110ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me run the broader test suite to make sure nothing is broken:
+────────────────────────────────────────────────────────────────────────────────
+
+Good, test passes. Let me now run the full test suite:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (90ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+One test failure: `test_detects_and_closes_orphaned_run_from_previous_session` expects 8 rows but got 9. This is because the stale orphan scan now includes the `ModelCallStarted` retroactive event or some other additional event. Let me check this test.
+
+Wait, actually - let me re-read the test. The test creates an orphaned run from a previous session. The stale orphan scan closes it with RunCompleted(status="error"), and then `find_missing_failure_observed` should find it and add FailureObserved. But the test now expects 8 rows. Let me read the test to understand.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:370..430 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full test to understand the initial events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:340..380 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the test creates 7 original events:
+1. RunStarted "orphaned-run"
+2. ModelCallStarted "orphaned-run" 
+3. FileEdited "orphaned-run"
+4. RunStarted "current-run"
+5. ModelCallStarted "current-run"
+6. ModelCallCompleted "current-run"
+7. RunCompleted "current-run" (status: "completed")
+
+And then `append_terminal_events` should produce:
+1. RunCompleted for "orphaned-run" (stale orphan closure)
+2. FailureObserved for "orphaned-run" (because RunCompleted status is "error")
+
+So that's 7 + 2 = 9 rows total. But the test expects 8 rows.
+
+Wait, actually - the `find_missing_failure_observed` function would find the orphaned-run's RunCompleted has status "error" (not "cancelled"), so it should still generate FailureObserved. The orphan closure writes `status: "error"`, not `status: "cancelled"`.
+
+BUT - there's now a `ModelCallStarted` retroactive for the orphaned-run? Let me check: the orphaned-run has a ModelCallStarted (line 366) but no ModelCallCompleted. So the orphan scan for model calls (lines 712-734 in append_terminal_state_events.py) would find it and add a ModelCallCompleted.
+
+Actually wait, the test has `ModelCallStarted` but no `ModelCallCompleted` for "orphaned-run". The code at lines 712+ finds orphaned model calls and adds ModelCallCompleted. But the orphan scan is gated by the ambiguous-reset check. In this test, it shouldn't be ambiguous.
+
+Let me trace: the stale orphan scan produces a RunCompleted for orphaned-run. Then the `find_missing_failure_observed` finds the RunCompleted(status="error") and returns it as missing. Then A FailureObserved is appended. Then `find_orphaned_model_calls` finds ModelCallStarted without ModelCallCompleted and adds a ModelCallCompleted.
+
+So total events: 7 original + RunCompleted + FailureObserved + ModelCallCompleted = 10? No... let me count again.
+
+Actually, the test expects 8 rows. With my change, I need to figure out why it's 9 instead of 8. Let me count:
+- Original: 7 events
+- Stale orphan RunCompleted: 1 → 8
+- FailureObserved for "orphaned-run": 1 → 9
+- ModelCallCompleted for orphaned model call: 1 → 10?
+
+Wait, the test expects 8 but gets 9. Let me trace more carefully.
+
+Looking at the code flow:
+1. `completed_models` starts empty, `completed_runs` starts empty.
+2. Stale orphan scan: finds "orphaned-run" → appends RunCompleted(status="error"), adds to completed_runs.
+3. `find_missing_failure_observed`: finds RunCompleted(status="error") for orphaned-run → this should still return it because the status is "error", not "cancelled". So append FailureObserved.
+4. `find_orphaned_model_calls`: finds ModelCallStarted without ModelCallCompleted for orphaned-run → append ModelCallCompleted.
+
+That's 7 + 3 = 10. But the test says old expected was 8, new actual is 9.
+
+Wait, maybe `find_orphaned_model_calls` is gated differently. Let me look again...
+
+Looking at the code: at line 713-734, the `orphaned_model_calls` code appends ModelCallCompleted for orphaned model calls. But it's gated by `ambiguous_reset_full_scan`. In this test, the scope should be "requested_after_line" (not ambiguous), so this code runs.
+
+Hmm, but the old expected count was 8, meaning only 1 additional event was being created. Let me think about what happened. 
+
+Original: 7 events
+Old behavior: 
+- Orphan RunCompleted (1) + FailureObserved (1) = 9 total
+
+But the test expects 8. So maybe the old behavior was: Orphan RunCompleted (1) + NO FailureObserved. Why would FailureObserved not be created? 
+
+Oh wait - maybe previously the FailureObserved was being skipped because it already existed? No, there's no existing FailureObserved for orphaned-run.
+
+Actually, let me look at the exact old behavior. The `find_missing_failure_observed` scans ALL events. The orphaned-run RunCompleted is added by the stale orphan scan. Then `find_missing_failure_observed` scans events again and finds this RunCompleted with status "error". So it should have added FailureObserved. Unless the scan excludes it for some reason...
+
+Hmm, wait. Let me look at the test more carefully. The orphaned run has RunStarted and ModelCallStarted, but no ModelCallCompleted. When the orphan closure happens, the RunCompleted is written with status "error". Then `find_missing_failure_observed` should flag it.
+
+But wait - the RunCompleted is only written if `find_stale_orphaned_runs` finds the orphan. Let me check: `find_stale_orphaned_runs` requires the run to have at least one ModelCallStarted. The orphaned-run has exactly that (line 366). So it would be found.
+
+And then `find_missing_failure_observed` would find the new RunCompleted and create FailureObserved. So total = 7 + RunCompleted + FailureObserved = 9.
+
+But the test expects 8. This means something changed. Before my change, the test expected 8 and that was passing? Let me look at this...
+
+Wait, actually, the test was passing before my change. The old expected was 8. Let me re-read the failure: "AssertionError: 9 != 8". This means before my change it was 8 rows, and after my change it's 9 rows.
+
+How did my change ADD a row? My change only ADDED an exclusion in `find_missing_failure_observed` - it didn't add any new event creation. So the row count should be the same or fewer.
+
+Unless... the `ModelCallStarted` retroactive for `unmatched ModelCallCompleted` scan is now appending something it wasn't before? That doesn't make sense.
+
+Wait, the diff with 9 != 8 could mean there's now 9 rows instead of 8. Let me check if there was a `ModelCallCompleted` retroactive for orphaned-run that wasn't there before? No, my change doesn't affect that.
+
+Or maybe the FailureObserved was skipped before FOR A DIFFERENT REASON? Let me check if the orphaned-run's RunCompleted was somehow excluded before my change. No - my change only adds `status == "cancelled"` exclusion. The orphaned-run's RunCompleted has status "error", not "cancelled". So it should have been flagged before AND after my change.
+
+Actually wait... let me re-read the old flow. Before my change:
+1. Stale orphan scan: adds RunCompleted for orphaned-run (status="error")
+2. `find_missing_failure_observed`: finds it, returns as missing_failure
+3. The code at lines 595-612 appends FailureObserved
+
+So total before: 7 + RunCompleted + FailureObserved = 9
+
+But the test expected 8 and was passing. This is confusing.
+
+Let me look at whether the `find_stale_orphaned_runs` was maybe NOT finding the orphan before... No, the test checks `orphan_diag["full_scan_orphaned_runs"] == 1` and `"orphaned-run" in result["completed_runs"]`, so the orphan was being found.
+
+Hmm, let me think differently. Maybe before my change, something else was preventing the FailureObserved from being created. Perhaps the orphaned-run RunCompleted wasn't in `find_missing_failure_observed`'s scan because the events were modified before the scan...
+
+Actually, maybe I'm wrong about the events count. Let me count more carefully. The test writes:
+1. write_event(events, "RunStarted", "orphaned-run")
+2. write_event(events, "ModelCallStarted", "orphaned-run", ...)
+3. write_event(events, "FileEdited", "orphaned-run", ...)
+4. after_line = len(...) = 3
+5. write_event(events, "RunStarted", "current-run")
+6. write_event(events, "ModelCallStarted", "current-run", ...)
+7. write_event(events, "ModelCallCompleted", "current-run", ...)
+8. write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+So original lines = 7.
+
+After append_terminal_events:
+- The orphan scan finds orphaned-run, writes RunCompleted → +1 = 8
+- find_missing_failure_observed scans all events, finds RunCompleted(status="error") for orphaned-run → writes FailureObserved → +1 = 9
+- The orphaned model call scan: orphaned-run has ModelCallStarted but no ModelCallCompleted. `find_orphaned_model_calls` should find this and add ModelCallCompleted → +1 = 10
+
+But the test expects 8. So maybe the stale orphan scan IS adding RunCompleted AND the code is ALSO not adding FailureObserved or ModelCallCompleted for some reason I'm not seeing.
+
+Wait, let me check if `find_orphaned_model_calls` is looking at `model_call_id` vs `run_id`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:200..260 ✓ (6ms)
+
+
