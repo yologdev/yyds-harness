@@ -484,13 +484,16 @@ _RESOLUTION_SIGNALS = (
     "addressed ",
     "made landable",
     "given enough standalone",
+    "adjusted to trigger",
+    "the fix is in place",
+    "previously fixed",
     "marked obsolete",
-    "obsolete —",
+    "obsolete \u2014",
     "obsolete -",
     "criteria already satisfied",
     "already satisfied",
     "reverted without",
-    "reverted — no edit",
+    "reverted \u2014 no edit",
     "reverted_no_edit",
 )
 
@@ -546,6 +549,22 @@ def _line_shows_obsolete_or_reverted(
     return False
 
 
+_COMPLETION_VERBS = (
+    "made ",
+    "handled ",
+    "fixed ",
+    "resolved ",
+    "closed ",
+    "landed ",
+    "shipped ",
+    "patched ",
+    "addressed ",
+    "completed ",
+    "finished ",
+    "adjusted ",
+)
+
+
 def _line_shows_title_resolution(line: str, task_title: str) -> bool:
     """Return True if line shows resolution language related to task title.
 
@@ -556,9 +575,14 @@ def _line_shows_title_resolution(line: str, task_title: str) -> bool:
     significant words from the task title.
     """
     lower = line.lower()
-    # Session-date prefix (Day NNN) alone triggers resolution
-    if re.match(r"day\s+\d+", lower):
-        return True
+    # Session-date prefix (Day NNN) with a completion verb:
+    # e.g. "Day 154 made this landable", "Day 153 handled the input-validation part"
+    # Must have both a Day NNN prefix AND a completion verb to avoid matching
+    # boilerplate like "Day 153 assessment found nothing."
+    # Use search (not match) — assessment lines may have list-item prefixes like "- ".
+    if re.search(r"day\s+\d+", lower):
+        if any(verb in lower for verb in _COMPLETION_VERBS):
+            return True
     if not any(signal in lower for signal in _RESOLUTION_SIGNALS):
         return False
     # Match via significant words from the task title
@@ -735,6 +759,16 @@ def check_task_contradiction(
             line, task_keys, str(task.get("title", ""))
         ):
             return True, f"assessment shows '{task['title']}' problem domain already obsolete/reverted: {line.strip()}"
+
+    # Third pass: semantic completion-language fallback using task-title words.
+    # When task keys (metric names) don't appear verbatim in assessment prose,
+    # match resolution signals against significant title words instead.
+    # Day 114 added _line_shows_title_resolution for this but never wired it in.
+    task_title = str(task.get("title", ""))
+    if task_title:
+        for line in recent_changes.splitlines():
+            if _line_shows_title_resolution(line, task_title):
+                return True, f"assessment shows '{task_title}' problem already resolved (title-word fallback): {line.strip()}"
 
     self_tests = extract_section(assessment, "self-test results")
     if _self_tests_show_resolution(self_tests, task_keys):
