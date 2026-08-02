@@ -224,6 +224,86 @@ def find_stale_orphaned_runs(
     return orphaned_runs, orphaned_session_runs, diagnostics
 
 
+def _is_run_externally_cancelled(run_id: str, events: list[dict[str, Any]]) -> bool:
+    """Return True if *run_id* was externally cancelled (SIGTERM / GitHub Actions
+    concurrency kill), not a genuine harness or model error.
+
+    Detection signals, in priority order:
+
+    1. **Explicit cancelled status.**  Any RunCompleted event for this run
+       carries ``status == "cancelled"`` — the harness lifecycle wrapper
+       recorded the cancellation explicitly.  This is the highest-confidence
+       signal and requires no heuristics.
+
+    2. **Rust panic with no error detail.**  RunCompleted ``status == "error"``
+       with an empty or missing ``error_detail`` AND at least one event for
+       the same run carries ``error == "rust_panic"``.  SIGTERM triggers the
+       panic hook in ``src/prompt.rs`` / ``src/state.rs`` before emitting
+       RunCompleted, producing an error-without-diagnostic signature that is
+       distinct from a genuine harness bug (which would populate error_detail).
+
+    3. **Long-duration heuristic (conservative, last resort).**  If the run
+       spans more than 2.5 hours and has no terminal evidence (RunCompleted
+       or FailureObserved), it was likely killed by the next hourly cron slot.
+       This signal is intentionally weak and should only be used as a
+       supplementary hint, never as the sole trigger.
+
+    The function is deliberately conservative: when uncertain, it returns
+    ``False``.  False negatives (cancelled runs still flagged) are less
+    harmful than false positives (real errors silently ignored).
+    """
+    # Collect relevant events for this run_id
+    run_events: list[dict[str, Any]] = []
+    for event in events:
+        data = payload(event)
+        rid = run_id(event, data)
+        if rid == run_id:
+            run_events.append(event)
+
+    # Signal 1: Explicit cancelled status in RunCompleted
+    for event in run_events:
+        if event_type(event) == "RunCompleted":
+            data = payload(event)
+            if data.get("status") == "cancelled":
+                return True
+
+    # Signal 2: Rust panic with no error detail
+    has_rust_panic = False
+    has_run_completed_error_no_detail = False
+    for event in run_events:
+        kind = event_type(event)
+        data = payload(event)
+        if kind == "RunCompleted":
+            if (data.get("status") == "error"
+                    and not str(data.get("error_detail") or "").strip()):
+                has_run_completed_error_no_detail = True
+        if data.get("error") == "rust_panic":
+            has_rust_panic = True
+    if has_rust_panic and has_run_completed_error_no_detail:
+        return True
+
+    # Signal 3: Long-duration heuristic (> 2.5 hours, no terminal evidence)
+    # Only fire when signals 1 and 2 are absent AND run duration is abnormally
+    # long (suggesting the next cron slot killed it).
+    has_terminal = False
+    timestamps: list[int] = []
+    for event in run_events:
+        ts = event.get("timestamp_ms")
+        if isinstance(ts, (int, float)) and ts > 0:
+            timestamps.append(int(ts))
+        kind = event_type(event)
+        if kind in ("RunCompleted", "FailureObserved"):
+            has_terminal = True
+    if timestamps and not has_terminal:
+        min_ts = min(timestamps)
+        max_ts = max(timestamps)
+        duration_hours = (max_ts - min_ts) / (1000.0 * 3600.0)
+        if duration_hours > 2.5:
+            return True
+
+    return False
+
+
 def find_missing_failure_observed(
     events: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -234,6 +314,10 @@ def find_missing_failure_observed(
     that deliberately exit before starting an agent and do not need synthetic
     FailureObserved events (Day 154).
 
+    Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+    are excluded — the missing terminal events are expected behaviour when a
+    session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
+
     Returns (missing_entries, diagnostics) where each missing entry is a dict
     with keys run_id, status, timestamp_ms for runs whose RunCompleted
     payload status is not "success"/"completed" and that have no matching
@@ -242,6 +326,7 @@ def find_missing_failure_observed(
     error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
     failure_observed_runs: set[str] = set()
     input_validation_excluded = 0
+    cancelled_excluded = 0
 
     for event in events:
         kind = event_type(event)
@@ -255,6 +340,9 @@ def find_missing_failure_observed(
                 detail = str(data.get("error_detail") or "")
                 if detail == "empty_input" or detail.startswith("invalid_input:"):
                     input_validation_excluded += 1
+                    continue
+                if status == "cancelled":
+                    cancelled_excluded += 1
                     continue
                 error_completed[rid] = {
                     "status": status,
@@ -277,6 +365,7 @@ def find_missing_failure_observed(
         "failure_observed_runs": len(failure_observed_runs),
         "missing_failure_observed": len(missing),
         "input_validation_excluded": input_validation_excluded,
+        "cancelled_excluded": cancelled_excluded,
     }
 
     return missing, diagnostics
