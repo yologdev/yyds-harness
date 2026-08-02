@@ -1,0 +1,402 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully.
+
+The assessment says:
+- Build passes, tests pass
+- No CI failures (priority 0 is clear)
+- Recent trajectory shows cancelled sessions and 2 tasks reverted (Day 155 02:50 had 1/2 verified with reverted_unlanded_source_edits=1)
+- Graph-derived pressure points to several things, but the highest signal ones are:
+  1. `planner_no_task_count=1` - planner produced no concrete task files
+  2. `deepseek_model_call_unmatched_completed_count=22` - lifecycle gaps
+  3. `session_success_rate=0.0` - cancelled sessions distorting the metric
+  4. `task_seed_contradiction_count=1` - seed contradiction
+  5. `evaluator_unverified_count=1` - evaluator timeout
+
+The assessment also mentions:
+- Issue #152 (cancelled-run lifecycle detection) — was reverted due to evaluator timeout. The fix is still needed.
+- Issue #105 (cache metrics from agent runs) — blocked on upstream yoagent change (#90)
+- Issue #90 (upstream yoagent cache fields) — needs human intervention
+
+Let me think about what tasks to pick:
+
+1. **#152 - Distinguish cancelled runs from error exits**: This is the highest-signal task. The assessment confirms it's still live. The trajectory shows `deepseek_model_call_unmatched_completed_count=22` and `session_success_rate=0.0` which this task would improve. The task was reverted due to evaluator timeout, not because it was wrong. The task scope: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py.
+
+2. The assessment also mentions seed contradiction detection was partially addressed but fragile. However, the trajectory shows `planner_no_task_count=1` — meaning the planner itself had issues. But I am the planner now, and I can produce tasks.
+
+3. Evaluator timeout (#131) — this is in evolve.sh which is do-not-modify. I can't fix this.
+
+Let me check if session_plan/task_01.md already exists.
+
+Actually, let me first check for the seed task file. The assessment mentions that the harness may have already created session_plan/task_01.md. Let me check.
+
+Let me plan my approach:
+
+**Task 01**: #152 - Distinguish cancelled runs from error exits. This directly addresses the graph pressure (`deepseek_model_call_unmatched_completed_count=22`, `session_success_rate=0.0` shrinks as cancelled runs stop being counted as failures). It was reverted due to evaluator timeout, not wrong code. The assessment confirms it's still a live problem.
+
+**Task 02**: Maybe another harness improvement. Let me look at what the assessment says is actionable. The trajectory mentions `evaluator_unverified_count=1` and `task_seed_contradiction_count=1`. 
+
+Actually, let me first check what exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls -la session_plan/  ▶ $ ls session_plan/task_*.md 2>/dev/null || echo "no task files" ✓ (995ms)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md seed. Let me read it to understand what the harness seeded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (448ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01 is a generic lifecycle gap task. It's blending several things together (run lifecycle, model-call lifecycle, input-validation exits). The assessment gives me much more specific evidence pointing at a concrete, actionable subtask: distinguishing cancelled runs from genuine errors. 
+
+The #152 reverted task had a very specific, well-scoped objective: "Distinguish cancelled runs from error exits in lifecycle terminal events" with the same files (scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py). 
+
+I should refine task_01 to be the more specific #152 task (cancelled-run lifecycle detection), since:
+1. It was reverted due to evaluator timeout, not wrong code
+2. The assessment confirms it's still live
+3. The trajectory shows `deepseek_model_call_unmatched_completed_count=22` and `session_success_rate=0.0` as active pressure
+4. It's the same files, narrower scope, better evidence
+
+Then I should add task_02 for something else actionable from the assessment.
+
+What about task_02? Let me look at the other graph pressures:
+- `planner_no_task_count=1` - the planner produced no tasks. But I'm the planner now, and I'm producing tasks. This is self-referential.
+- `task_seed_contradiction_count=1` - seed contradiction. The Day 155 02:50 session patched this but it was reverted. The Day 154 patch survived. This could be fragile but it's partially addressed.
+- `evaluator_unverified_count=1` - evaluator timeout. Can't fix (evolve.sh is do-not-modify).
+
+Looking at the assessment's Capability Gaps:
+1. Cache observability (HIGH) - blocked on upstream #90
+2. Cancelled-run noise (MEDIUM) - this is task_01 (#152)
+3. Planning reliability (MEDIUM) - `planner_no_task_count` 
+
+For task_02, I could look at the assessment's "Bugs / Friction Found":
+- Seed contradiction detection is partially addressed but fragile. The Day 155 patch was reverted. But this is a self-referential planning improvement...
+
+Actually, let me look more carefully. The assessment says:
+- "Seed contradiction detection — Two recent sessions (Day 155 02:50, Day 154 17:00) patched preseed_session_plan.py for this. The Day 155 patch (completion-language fallback) was reverted. The Day 154 patch survived. This is partially addressed but fragile."
+
+This is the preseed_session_plan.py contradiction detector. The Day 154 patch survived, the Day 155 patch was reverted. The trajectory shows `task_seed_contradiction_count=1` still. This could be a task_02: re-do the completion-language fallback in a smaller, more targeted way, perhaps just adding a few more completion phrases.
+
+Actually wait, let me check the Day 154 patch that survived vs what was reverted. Let me check git log quickly.
+
+Actually, I should not spend too much time reading source. Let me think about what's most impactful:
+
+1. Task 01: Refine to the specific #152 cancelled-run lifecycle detection (same files, narrower scope, concrete evidence)
+2. Task 02: Maybe improve preseed_session_plan.py seed contradiction detection - the Day 155 patch was reverted, but the assessment says the problem is "partially addressed but fragile."
+
+Or, looking at the graph pressure again: `planner_no_task_count=1`. The trajectory says "Make planning failure actionable." But this is truly self-referential and confusing - I'm the planner and I'm producing tasks.
+
+Let me go with:
+- Task 01: Refine to #152 cancelled-run lifecycle detection
+- Task 02: Improve preseed_session_plan.py contradiction detection (the reverted Day 155 patch, but smaller scope)
+
+Actually, let me look at this more broadly. The assessment says "Codebase is healthy." The main issues are:
+1. Cancelled-run noise (which I'm making task 01)
+2. Seed contradiction detection fragility (which I could make task 02)
+3. Cache observability (blocked upstream)
+4. Evaluator timeouts (blocked on evolve.sh being do-not-modify)
+
+For task 02, the seed contradiction detection in preseed_session_plan.py - let me check what the reverted patch was about. The assessment says "completion-language fallback" was reverted. The Day 154 patch survived. Let me check git log to understand what was attempted.
+
+Actually, let me not read source. Let me check git log for recent commits to understand what survived and what was reverted.
+
+Let me plan my approach:
+1. Refine task_01.md to be the specific cancelled-run lifecycle detection task (essentially #152)
+2. Check git log briefly for the preseed_session_plan.py changes
+3. Write task_02.md if there's a concrete, narrow improvement to make
+4. Write issue_responses.md
+
+Let me proceed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -15 -- scripts/preseed_session_plan.py  ▶ $ git log --oneline -15 -- scripts/append_terminal_state_events.py scripts/log_fee… ✓ (943ms)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what the Day 155 (02:50) changes were for append_terminal_state_events.py and the Day 154 (10:00) task about input-validation exits. The Day 155 wrap-up might have reverted something.
+
+Let me also check the Day 155 (02:50) session more carefully - the assessment says "Day 155 (02:50): record_cache_metrics_direct zero-vs-none edge case tests (src/state.rs); seed contradiction detection hardening (scripts/preseed_session_plan.py)" and "1/2 strict verified; task states: reverted_unlanded_source_edits=1".
+
+So Task 1 survived (cache metrics), Task 2 was reverted (seed contradiction). Let me see what the Day 155 seed contradiction patch was.
+
+Actually, wait - looking at git log, the Day 154 (17:00) commit says "Harden seed contradiction detection with completion-language fallback (Task 2)". And the Day 155 (02:50) assessment says "seed contradiction detection hardening (scripts/preseed_session_plan.py)" was Task 2 that was reverted.
+
+So the Day 154 (17:00) patch to preseed_session_plan.py survived (commit 1bbefa62), and the Day 155 (02:50) follow-up patch was reverted. Let me check what the surviving Day 154 patch did vs what was attempted and reverted in Day 155.
+
+Let me look at the diff of the surviving commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show --stat 1bbefa62  ▶ $ git diff 1bbefa62^..1bbefa62 -- scripts/preseed_session_plan.py | head -80 ✓ (1.2s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the Day 154 (17:00) patch that survived. It added:
+1. More resolution signals (like "adjusted to trigger", "the fix is in place", "previously fixed")
+2. A `_COMPLETION_VERBS` tuple
+3. A semantic fallback in `check_task_contradiction` that checks for completion verbs combined with task title words
+4. Modified the session-date prefix check to require a completion verb alongside
+
+Now, the Day 155 (02:50) patch was reverted. The assessment says it was "completion-language fallback" that was reverted. Maybe the Day 155 patch tried to extend this further and failed?
+
+Actually, looking at this more carefully, the Day 154 patch already did the completion-language fallback. If the Day 155 patch was also about completion-language fallback and was reverted, maybe the Day 154 patch wasn't enough? Or maybe the Day 155 patch was redundant or over-extended.
+
+The assessment says: "The Day 155 patch (completion-language fallback) was reverted. The Day 154 patch survived. This is partially addressed but fragile."
+
+So the surviving patch already handles completion-language fallback. The issue might be that it's not comprehensive enough, or the reverted patch tried to do something different.
+
+Let me now focus on what tasks to produce. Let me think about what's highest-impact given the evidence:
+
+**Task 01**: #152 cancelled-run lifecycle detection. This is well-evidenced:
+- `deepseek_model_call_unmatched_completed_count=22` 
+- `session_success_rate=0.0` partially caused by cancelled sessions
+- `state why last-failure` shows retroactive FailureObserved from cancelled runs
+- The task was reverted due to evaluator timeout, not wrong code
+- Day 154 (10:00) Task 1 already laid groundwork (input-validation exits)
+- Same files as the seed task
+
+I should refine the seed task_01 to be this specific task, referencing #152.
+
+**Task 02**: What else? Let me look at the graph pressures again. `evaluator_unverified_count=1` - I can't fix evolve.sh. `planner_no_task_count=1` - self-referential (I am the planner). `task_seed_contradiction_count=1` - the Day 154 patch already addressed this partially. 
+
+What about the `shell tool commands failed` lesson? The trajectory says "Historical unrecovered tool-failure categories: shell tool commands failed... This is a recurring pattern but was noted as recently addressed — not current pressure without reproduction evidence." So not actionable right now.
+
+The assessment says "Codebase is healthy." The main actionable gaps are:
+1. Cancelled-run lifecycle (task 01)
+2. Seed contradiction (partially addressed, fragile)
+
+For task 02, I could refine the preseed_session_plan.py contradiction detection. But the assessment says the Day 154 patch survived and the Day 155 patch was reverted. The surviving patch seems decent. I'm not sure what more to add without reading source.
+
+Actually, let me look at the graph pressure more carefully. The trajectory says:
+- "Make planning failure actionable (planner_no_task_count=1): The planner produced no concrete task files."
+
+This is about a previous planning phase that failed to produce tasks. But since I'm the planner now and I'll produce tasks, this isn't actionable for implementation.
+
+- "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=22)"
+
+This is task 01.
+
+- "Raise session success rate (session_success_rate=0.0)"
+
+This is partially addressed by task 01 (cancelled runs won't count as failures).
+
+- "Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)"
+
+This is about preseed_session_plan.py contradiction detection. The Day 154 patch addressed this.
+
+- "Bound evaluator checks so verdicts are not skipped (evaluator_unverified_count=1)"
+
+Can't fix evolve.sh.
+
+I think two tasks is reasonable:
+1. Task 01: #152 cancelled-run lifecycle detection (same files as seed but more specific)
+2. Task 02: Maybe something smaller... Let me think.
+
+Actually, let me check the `record_cache_metrics_direct` test that landed in Day 155 (02:50). The assessment mentions it: "record_cache_metrics_direct zero-vs-none edge case tests (src/state.rs)". This was the task that survived. So cache metrics testing is in good shape.
+
+What about the `planner_no_task_count`? The trajectory has it as graph pressure, but it's truly self-referential since I am the planner. However, I could look at why the Day 155 (10:43) session was a quiet session with no tasks. The assessment says: "Day 155 (09:57): Quiet session; journal entry only." This could be because the codebase was healthy and the planner (preseed + assess) found nothing actionable. If the task selection is too conservative, that's something I could address in the fallback task picker.
+
+But honestly, with "Codebase is healthy" and the main actionable work being cancelled-run lifecycle detection, I think 1-2 tasks is plenty. Let me refine task_01 and see if there's a solid task_02.
+
+Actually, looking more carefully at the assessment, there's also this:
+"Bugs / Friction Found: 3. Cache metrics from agent runs — Known (#90). Not fixable within yyds alone without yoagent upstream changes."
+
+The assessment's Capability Gaps says "Cache observability (HIGH)" but it's blocked. I should note this in issue_responses.md.
+
+Let me draft the plan:
+
+**Task 01**: Refine the seed task to be specifically about #152 - distinguishing cancelled runs from error exits. The seed task is too generic ("Close yyds state and model lifecycle gaps"). I'll make it concrete.
+
+**Task 02**: I could either:
+a) Skip it (one good task is better than two weak ones)
+b) Make a small improvement to preseed_session_plan.py's contradiction detection
+c) Something else
+
+Actually, I'm going to go with just Task 01 as a refined task, and not force a second task. The assessment says the codebase is healthy and the main actionable work is the cancelled-run lifecycle detection. Forcing a second task would risk producing something low-quality.
+
+Wait, but the rules say "state-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." It says SHOULD, not MUST. Let me see if I can find a solid task_02.
+
+Looking at the trajectory's "Graph-derived next-task pressure":
+1. Make planning failure actionable - self-referential
+2. Close lifecycle gaps - task 01
+3. Raise session success rate - addressed by task 01
+4. Validate seeded tasks - partially addressed, could refine
+5. Bound evaluator checks - can't fix
+
+The "Validate seeded tasks against fresh assessment" could be a task_02 if I can scope it narrowly. The Day 154 patch added completion-language fallback. The Day 155 patch was reverted. Maybe there's a specific, narrow improvement: add more completion phrases that the surviving detector misses.
+
+But I'd need to read the actual assessment text to find what phrases are being missed. Let me not go down that rabbit hole. The assessment says it's "partially addressed but fragile" which is vague.
+
+OK let me just do task_01 (refined #152) and task_02 as a small preseed improvement if I can scope it. Otherwise just task_01.
+
+Actually, let me look at this from a different angle. The `record_cache_metrics_direct` test was added in Day 155 (02:50). Maybe there's a follow-up test or edge case. But the assessment says this task survived and is in good shape.
+
+Let me also check: is there a concrete `evaluator_unverified_count` fix I can do that doesn't involve editing evolve.sh? The issue is in `scripts/evolve.sh` which is do-not-modify. So no.
+
+OK, my plan:
+1. Refine task_01.md → specific #152 cancelled-run lifecycle detection
+2. Write task_02.md → improve preseed_session_plan.py contradiction detection with narrower scope (since the previous attempt was reverted)
+3. Write issue_responses.md
+
+For task_02, let me think about what specifically to improve. The Day 154 patch added completion-language fallback. The Day 155 patch was also completion-language fallback but was reverted. Maybe it was too broad. A narrower task would be: add a specific set of completion phrases that the current detector misses, backed by actual assessment evidence.
+
+Actually, without reading the assessment text that triggered the contradiction, I can't know what phrases are missing. Let me skip task_02 and just do task_01 really well. The rules say "at least 2 slots SHOULD" but if the evidence doesn't support a second task, forcing one is worse than leaving the slot empty.
+
+Let me refine task_01.md now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1m 57s (2 ✓)
+
+Now let me refine the seed task to be more specific, aligned with the #152 reverted task and current evidence. Let me also check what the recent append_terminal_state_events.py changes look like.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git show --stat 2c9d6198 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The Day 154 (10:00) Task 1 added input-validation exit handling. The #152 task builds on this — it adds cancelled-run detection on top of the input-validation classification.
+
+Now let me refine task_01.md to be the specific #152 task. I'll keep the same files (scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py) since they match #152's edit surface.
+
+Let me also quickly check if there are tests for these scripts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/test_*.py 2>/dev/null ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the test files exist. Now let me refine task_01.md to be the specific #152 cancelled-run lifecycle detection task. Let me also think about whether to include a task_02.
+
+Considering the evidence:
+- The trajectory shows `deepseek_model_call_unmatched_completed_count=22` and `session_success_rate=0.0`
+- #152 was reverted due to evaluator timeout, not wrong code 
+- The Day 154 (10:00) Task 1 already added input-validation exit classification — the cancelled-run detection extends this pattern
+- This is the highest-signal actionable work
+
+For task_02, I'll look at the preseed_session_plan.py situation. The Day 154 patch survived, the Day 155 patch was reverted. The assessment says "partially addressed but fragile." Without reading the actual failing case, I can't scope a narrow improvement. Let me skip task_02 rather than force something weak.
+
+Actually wait — let me reconsider. The trajectory's graph pressure also says `planner_no_task_count=1`. While this is self-referential (I am the planner), there might be a concrete thing I can do: ensure the fallback task picker in preseed_session_plan.py works better when the assessment finds nothing actionable. But this is exactly the kind of self-referential cycle the Day 115 lesson warned about ("Fallback self-reference turns 'nothing broken' into busywork you can't refuse"). Given the codebase is healthy, this isn't the right time for that.
+
+Let me go with just task_01, well-specified. I'll write the refined task file and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me refine task_01.md to be the specific #152 cancelled-run lifecycle detection task, backed by current evidence.
+  - Title: Close yyds state and model lifecycle gaps
+  + Title: Distinguish cancelled runs from error exits in lifecycle terminal events
+    Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Issue: #152
+  + Origin: planner (refined from harness-seed)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - `yyds state why last-failure` shows retroactive FailureObserved for a cancelled run (run-1781372620921-38655) — the run was externally killed (GitHub Actions concurrency SIGTERM) but append_terminal_state_events.py treated it as a genuine error and added a retroactive FailureObserved.
+  + - Trajectory shows `deepseek_model_call_unmatched_completed_count=22` — many of these are from cancelled sessions where model calls couldn't close because the process was killed, not because of a code bug.
+  + - Trajectory shows `session_success_rate=0.0` — cancelled sessions pollute this metric because they count as failures even though no code was wrong.
+  + - 3 of 8 recent completed runs in the assessment's evolution history were cancelled in the 17:xx UTC time slot, each ~2.5hr duration — consistent concurrency-kill pattern.
+  + - Day 154 (10:00) Task 1 (commit 2c9d6198) already added input-validation exit classification in append_terminal_state_events.py — this task extends the same pattern to add a "cancelled" category.
+  + - The Day 154 (10:00) Task 2 (src/prompt.rs + src/state.rs) closed model-call lifecycle in the Rust panic path, but SIGTERM kills can't fire Rust panic hooks — the script-level terminal-event doctor is the right layer.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (52 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (52 lines) ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md. Let me think about what to say for each issue:
+
+- #152: Implement as task_01 (this session)
+- #105: Blocked on upstream #90. Defer.
+- #131: Evaluator timeouts in evolve.sh — do-not-modify. Keep waiting for human. Defer.
+- #90: Upstream yoagent change needed. Keep waiting for human. Defer.
+
+I should also note that #152 is being re-attempted as task_01. The original attempt was reverted due to evaluator timeout, not wrong code.
+
+Let me write the issue_responses.md now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the issue responses.
+  + # Issue Responses — Day 155 (17:00)
+  + 
+  + ## #152 — Task reverted: Distinguish cancelled runs from error exits in lifecycle terminal events
+  + **Action: Re-implement as task_01 (this session)**
+  + 
+  + The original attempt was reverted due to evaluator timeout, not wrong code. The evidence is stronger now than it was on Day 154: trajectory shows `deepseek_model_call_unmatched_completed_count=22` and `session_success_rate=0.0`, both inflated by cancelled-run noise. Day 154 (10:00) Task 1 already laid the groundwork with input-validation exit classification — this task extends the same pattern.
+  + 
+  + Same files (scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py), same objective, narrower detection signal. Going again.
+  + 
+  + ## #105 — Task reverted: Record DeepSeek prompt cache metrics during prompt runs
+  + **Action: Defer (blocked on upstream #90)**
+  + 
+  + Still blocked. yoagent's `Usage` struct drops `cache_read_input_tokens` and `cache_creation_input_tokens` from DeepSeek chat completion responses. The diagnostic paths (`stream-check`, `fim-complete`) prove the data exists — they parse raw JSON and report cache ratios correctly. But agent chat completions go through yoagent's `Usage` struct which strips the fields.
+  + 
+  + The Day 155 (02:50) session added `record_cache_metrics_direct` edge case tests to src/state.rs, so the yyds-side pipeline is solid. The entire observability stack is gated on a two-field change in yoagent.
+  + 
+  + ## #131 — Help wanted: Evaluator timeouts in evolve.sh cause false task reverts on correct code
+  + **Action: Defer (do-not-modify territory)**
+  + 
+  + Still can't touch `scripts/evolve.sh`. The pattern keeps repeating — #152 was the latest casualty (reverted due to evaluator timeout on code that passed `cargo build && cargo test`). The fix is straightforward: either bump the evaluator timeout or collect early verdicts so a passing build/test gets recorded before the timeout window closes.
+  ... (9 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (29 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (29 lines) ✓ (493ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify: I have session_plan/task_01.md and session_plan/issue_responses.md. The task file is specific, evidence-backed, and references #152 with concrete signals from the trajectory. The files match a plausible ownership check (the scripts exist and have tests).
+
+Should I add a task_02? Let me think again...
+
+The assessment says "Codebase is healthy." The trajectory's graph pressure points are:
+1. planner_no_task_count=1 — self-referential (I am the planner)
+2. deepseek_model_call_unmatched_completed_count=22 — covered by task_01
+3. session_success_rate=0.0 — partially addressed by task_01
+4. task_seed_contradiction_count=1 — Day 154 patch already addressed this
+5. evaluator_unverified_count=1 — can't fix evolve.sh
+
+The only other actionable thing from the assessment is the "partially addressed but fragile" seed contradiction detection. But without reading the specific assessment text that triggers the false negative, I can't scope a narrow improvement. The Day 154 patch already added completion-language fallback. Adding more phrases blindly could introduce false positives.
+
+I think one well-specified task is better than one good task + one vague task. Let me finalize.
+
+Let me verify the plan looks good and stop.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan files are complete and correct.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l session_plan/task_01.md session_plan/issue_responses.md && echo "---" && h… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me also verify the Files: line matches actual files in the repo, and that the verifier tests exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/append_terminal_state_events.py scripts/log_feedback.py scr… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All files exist. The plan is solid. Let me summarize what I did.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's the summary:
+
+**session_plan/task_01.md** — Refined from the generic harness-seed to the specific #152 task: *Distinguish cancelled runs from error exits in lifecycle terminal events*. Same 3 files (append_terminal_state_events.py, log_feedback.py, summarize_state_gnomes.py), but now backed by concrete trajectory evidence (`deepseek_model_call_unmatched_completed_count=22`, `session_success_rate=0.0`, `state why last-failure` showing retroactive FailureObserved for a cancelled run).
+
+**No task_02** — The codebase is healthy. The remaining graph pressures are either covered by task_01 (lifecycle gaps, session success rate), blocked upstream (#90, #105), in do-not-modify territory (#131, evaluator timeouts), or self-referential (planner_no_task_count). The partially-fragile seed contradiction detection was already patched by Day 154 and doesn't have fresh reproduction evidence.
+
+**session_plan/issue_responses.md** — #152 implemented as task_01. #105 and #90 deferred (blocked on upstream yoagent). #131 deferred (do-not-modify, evaluator timeout still needs human fix).
+
+
