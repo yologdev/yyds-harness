@@ -8403,6 +8403,70 @@ mod tests {
     }
 
     #[test]
+    fn record_cache_metrics_direct_writes_asymmetric_zero() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        // Only cache_hit is zero, cache_miss has data — should NOT be skipped
+        record_cache_metrics_direct("deepseek-v4-pro", Some(0), Some(100));
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("CacheMetricsRecorded"),
+            "asymmetric zero (hit=0, miss=100) should record: {raw}"
+        );
+        assert!(
+            raw.contains(r#""prompt_cache_hit_tokens":0"#),
+            "should contain zero cache hit: {raw}"
+        );
+        assert!(
+            raw.contains(r#""prompt_cache_miss_tokens":100"#),
+            "should contain cache miss data: {raw}"
+        );
+    }
+
+    #[test]
+    fn record_cache_metrics_direct_writes_alternate_deepseek_model() {
+        let _guard = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        // deepseek-chat should pass the starts_with("deepseek") gate
+        record_cache_metrics_direct("deepseek-chat", Some(100), Some(50));
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+        assert!(
+            raw.contains("CacheMetricsRecorded"),
+            "deepseek-chat model should record cache metrics: {raw}"
+        );
+        assert!(
+            raw.contains(r#""model":"deepseek-chat""#),
+            "should contain deepseek-chat model: {raw}"
+        );
+        assert!(
+            raw.contains(r#""prompt_cache_hit_tokens":100"#),
+            "should contain cache hit: {raw}"
+        );
+    }
+
+    #[test]
     fn agent_exit_reason_event_is_recorded() {
         let _guard = state_global_test_lock();
         reset_global_recorder_for_test();
