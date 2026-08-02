@@ -1,0 +1,496 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. The task is about modifying `scripts/log_feedback.py` to distinguish evaluator timeouts from implementation failures
+2. I need to read the evolve skill first, then the relevant files
+3. I need to add detection for evaluator timeouts and adjust scoring accordingly
+
+Let me start by reading the evolve skill and the key files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/log_feedback.py ✓ (1.5s)
+ ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the log_feedback.py file, particularly around the scoring and evaluation functions. I need to find `explicit_pass()`, `explicit_fail()`, `score_assessment()`, and related functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def explicit_pass' in scripts/log_feedback.py  ▶ search 'def explicit_fail' in scripts/log_feedback.py  ▶ search 'def score_assessment' in scripts/log_feedback.py  ▶ search 'evaluator_timed_out\|evaluator_timeout\|EVALUATOR_TIMEOUT' in scripts/log_feedback.py ✓ (2.0s)
+ ✓ (2.0s)
+ ✓ (2.0s)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the key functions: `explicit_pass`, `explicit_fail`, `score_assessment`, and the areas around evaluator timeout detection.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.5s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:310..360  ▶ read scripts/log_feedback.py:1835..1985 ✓ (1.5s)
+ ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand the scoring flow better. Let me read the `SCORE_FAILURE_WEIGHTS` and understand how evaluator timeouts are currently handled. Let me also look at how `parse_log` deals with evaluator timeouts, and how the task verification works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'SCORE_FAILURE_WEIGHTS' in scripts/log_feedback.py  ▶ search 'evaluator_unverified' in scripts/log_feedback.py ✓ (993ms)
+ ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the SCORE_FAILURE_WEIGHTS dict and the area around the evaluator_unverified stuff more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:275..310  ▶ search 'def fully_verified_success_metrics' in scripts/log_feedback.py ✓ (996ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! I see there are already some evaluator-timeout-related weights:
+- `evaluator_unverified_count`: 1.0
+- `evaluator_timeout_with_verdict_count`: 2.0
+- `evaluator_timeout_with_passing_impl_count`: 1.0
+
+But the task says I need to teach log_feedback.py to recognize evaluator-timeout scenarios and score them as **infrastructure failures** rather than implementation failures. Currently, the scoring treats evaluator timeouts similarly to other failures. The key issue is that when a task has a passing implementation but the evaluator times out, the task is counted as "not succeeded" which drags down `task_success_rate`.
+
+Let me understand the flow better. When evaluator times out:
+1. The task gets reverted
+2. `session_reverted` becomes true
+3. `task_success_rate` goes down
+4. The score_assessment punishes this
+
+The fix should be: when a task's implementation evidence shows build+test passing but the evaluator timed out, the task should be scored less harshly.
+
+Let me look at the `fully_verified_success_metrics` function and then the `corrected_task_spec_quality_score` and `corrected_coding_log_score` (mentioned in the dashboard).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1669..1749  ▶ search 'def corrected_coding_log_score' in scripts/log_feedback.py ✓ (1.0s)
+ ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `corrected_` patterns in log_feedback.py to see how corrections work.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def corrected_' in scripts/log_feedback.py ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and understand how corrections happen.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1389..1489 ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading this function to understand how evaluator timeouts are currently handled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1488..1608 ✓ (488ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the full picture. The code already has:
+1. `evaluator_timeout_with_passing_impl_count` - counts tasks where the evaluator timed out but the implementation passed build+test
+2. `evaluator_timeout_with_verdict_count` - counts tasks where the evaluator timed out after producing a verdict
+3. These are already in `SCORE_FAILURE_WEIGHTS`
+
+The issue is in `score_assessment()` where `task_success_rate` uses `counted_succeeded` which is `strict_succeeded` (tasks that passed strict verification). When the evaluator times out, the task isn't `strict_verified`, so it doesn't count as succeeded. This drags down `task_success_rate`.
+
+Let me look at the `_implementation_passed_build_and_test` function and how things flow through to `task_success_rate`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _implementation_passed_build_and_test' in scripts/log_feedback.py  ▶ read scripts/log_feedback.py:1910..2010 ✓ (506ms)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me read `_implementation_passed_build_and_test`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:377..417 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me also look at the `_cargo_test_passed` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _cargo_test_passed' in scripts/log_feedback.py ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:360..385 ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me trace through the problem:
+
+1. When a task is implemented correctly (build+test passes), but the evaluator times out without a verdict, the task gets `evaluator_unverified` status and is NOT counted as `strict_verified`. 
+
+2. The `task_success_rate` in `build_assessment` uses `counted_succeeded` which equals `strict_succeeded` (when there's task evidence). So a task with evaluator timeout has `strict_succeeded=0`, dragging down `task_success_rate`.
+
+3. The `evaluator_timeout_with_passing_impl_count` is already counted, and it's in `SCORE_FAILURE_WEIGHTS` with weight 1.0 - so it DOES contribute to failure_pressure. But it doesn't help with `task_success_rate`.
+
+4. The `score_assessment` function's `outcome` component uses `task_success_rate` which is dragged down by evaluator timeouts.
+
+The task says:
+- "Teach log_feedback.py to recognize evaluator-timeout scenarios and score them as infrastructure failures rather than implementation failures"
+- "Tasks with evaluator timeouts are scored less harshly than tasks with genuine implementation failures"
+- "The scoring adjustment is visible in the log_feedback JSON output (a new field or adjusted score)"
+
+Looking at the code more carefully, I see there's already `evaluator_timeout_with_passing_impl_count` being counted in `task_artifact_metrics`. The issue is that these tasks with evaluator timeout + passing implementation still:
+1. Are not counted in `counted_succeeded` (which feeds `task_success_rate`)
+2. Still contribute to `evaluator_unverified_count` (weight 1.0 in SCORE_FAILURE_WEIGHTS)
+3. Still contribute to `session_reverted` (weight 1.0 in outcome part of score)
+
+The key changes needed:
+1. `task_success_rate`: Tasks with evaluator timeout AND passing implementation should be partially credited. We need an `adjusted_task_success_rate` that counts these as partial successes.
+2. In `score_assessment`, we need to adjust the scoring to not penalize evaluator-timeout-with-passing-impl tasks as harshly.
+
+Let me think about what the minimal change should be:
+
+**Option A**: Add an `adjusted_task_success_rate` field that counts `evaluator_timeout_with_passing_impl` tasks at a partial rate (e.g., 0.5 or 0.75). Use this in `score_assessment` instead of raw `task_success_rate`.
+
+**Option B**: In `score_assessment`, reduce the penalty for `session_reverted` when the only reason for reversion is evaluator timeouts.
+
+**Option C**: Add a new field `infrastructure_timeout_task_count` and use it in the scoring.
+
+I think the cleanest approach is:
+1. In `build_assessment`, compute an `adjusted_task_success_rate` that counts tasks with `evaluator_timeout_with_passing_impl` at a partial success rate (e.g., 0.75).
+2. In `score_assessment`, use this adjusted rate instead of the raw rate.
+3. Add a dedicated field like `infrastructure_timeout_penalty_adjustment` to the output.
+
+But wait, let me re-read the task more carefully. The task says "log_feedback.py recognizes when a task's terminal evidence shows passing build/test but the evaluator timed out" - this is already done via `evaluator_timeout_with_passing_impl_count`. What's missing is the scoring adjustment.
+
+Looking at the scoring flow:
+- `score_assessment` is called with `metrics` which contains `task_success_rate`
+- `task_success_rate` is computed from `counted_succeeded / attempted`
+- `counted_succeeded = strict_succeeded` (when there's task evidence)
+
+The fix: compute a `task_implementation_success_rate` that counts `evaluator_timeout_with_passing_impl` tasks as partial successes. Then use that in `score_assessment`.
+
+Let me also look at how `session_reverted` is used in outcome calculation. If the session was reverted ONLY because of evaluator timeouts (and the implementation was correct), that should be less harsh.
+
+Actually, let me think about this differently. The simplest change that matches the task requirements:
+
+1. Add an `evaluator_timeout_implementation_passed` check function (or reuse the existing count)
+2. In `build_assessment`, compute `infrastructure_timeout_adjustment` based on `evaluator_timeout_with_passing_impl_count`
+3. Adjust `task_success_rate` to count these tasks at a partial rate
+4. The adjustment should be visible in the output
+
+Let me also check if there are any tests for this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls scripts/test_log_feedback.py 2>/dev/null; git ls-files scripts/test_log_feedb… ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No test file exists. Let me now plan my changes carefully. Let me also look at the `corrected_coding_log_score` function in `build_evolution_dashboard.py` to understand how the score is corrected there - since the task says dashboard should also benefit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def corrected_coding_log_score' in scripts/build_evolution_dashboard.py ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3508..3588 ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand both `score_assessment` and `corrected_coding_log_score` and they're essentially the same logic. Both use `task_success_rate` which is computed from `strict_succeeded`.
+
+The key insight: when a task has `evaluator_timeout_with_passing_impl` = true, the implementation was correct (build+test passed) but the evaluator infrastructure failed. This should be counted differently than a genuine implementation failure.
+
+Here's my plan:
+
+1. In `build_assessment()`, add an `adjusted_task_success_rate` that counts `evaluator_timeout_with_passing_impl` tasks as partial successes (say, 0.75 weight instead of 0).
+
+2. In `score_assessment()`, use the adjusted rate for scoring.
+
+3. Also adjust the `session_reverted` penalty: if the session was reverted ONLY because of evaluator timeouts (with passing implementations), the penalty should be reduced.
+
+4. Add a new field like `infrastructure_timeout_adjustment` to metrics.
+
+Wait, but looking at this more carefully, `counted_succeeded` feeds into `session_success` check: `counted_succeeded >= attempted`. So a task with evaluator timeout that would have succeeded otherwise makes `session_success = False`, which feeds into the outcome calculation.
+
+Let me think about the minimal change...
+
+The simplest approach that achieves the task's objective:
+1. Compute `infrastructure_adjusted_succeeded = counted_succeeded + evaluator_timeout_with_passing_impl_count`
+2. Compute `adjusted_task_success_rate = infrastructure_adjusted_succeeded / attempted`
+3. Use adjusted rate in score_assessment
+
+But I should be careful - eval_timeout tasks with passing impl are still not "succeeded" in the strict sense. They should get partial credit, not full credit. Let me use 0.75 weight.
+
+Actually, wait. Let me re-read the task's success criteria:
+- "Tasks with evaluator timeouts are scored less harshly than tasks with genuine implementation failures"
+- "The scoring adjustment is visible in the log_feedback JSON output (a new field or adjusted score)"
+
+So they want:
+1. A way to distinguish these tasks
+2. These tasks to get better scores than implementation failures
+3. A visible field in the output
+
+The simplest approach:
+
+1. In `build_assessment`, add `adjusted_task_success_rate` that counts `evaluator_timeout_with_passing_impl` tasks at 0.75 weight
+2. Have `score_assessment` use `adjusted_task_success_rate` if available, falling back to `task_success_rate`
+3. Add `infrastructure_timeout_count` and `infrastructure_timeout_penalty_adjustment` fields
+
+But wait, I also need to think about `session_reverted`. If all tasks were reverted due to evaluator timeouts (not code bugs), `session_reverted` is still true. The outcome calculation penalizes this 100%. Should I adjust that too?
+
+Looking at the outcome calculation in `score_assessment`:
+```python
+outcome_parts = [
+    1.0 if metrics.get("workflow_success") else 0.0,
+    1.0 if metrics.get("session_success") else 0.0,
+    float(task_rate) if isinstance(task_rate, (int, float)) else 0.5,
+    1.0 if not metrics.get("session_reverted") else 0.0,
+]
+```
+
+If session was reverted ONLY because of evaluator timeouts, `session_reverted` is true, so the 4th part is 0.0. This seems too harsh. But adjusting this is more complex.
+
+Let me start with the simpler approach: adjust `task_success_rate`. The `adjusted_task_success_rate` would count `evaluator_timeout_with_passing_impl` tasks at some partial rate.
+
+Wait, I should also check: does `evaluator_timeout_with_passing_impl_count` already exist in the metrics output? Let me check what `task_artifact_metrics` returns.
+
+From the code I read (line 1606):
+```python
+"evaluator_timeout_with_passing_impl_count": evaluator_timeout_with_passing_impl,
+```
+
+Yes, it's already there. So the metrics dictionary already has this field. The issue is just that `score_assessment` doesn't use it.
+
+Here's my plan:
+
+1. In `build_assessment()`, compute `adjusted_task_success_rate`:
+   - `adjusted_succeeded = counted_succeeded + 0.75 * evaluator_timeout_with_passing_impl_count`
+   - `adjusted_task_success_rate = adjusted_succeeded / attempted`
+
+2. In `score_assessment()`, prefer `adjusted_task_success_rate` over `task_success_rate` when available.
+
+3. Add an `infrastructure_timeout_task_adjustment` field to make the adjustment visible.
+
+Let me also consider whether to adjust the `session_reverted` penalty. I think I should, because if all tasks were evaluator timeouts with passing implementations, the session was reverted for infrastructure reasons, not code reasons.
+
+Let me also check if there's a `SCORE_FAILURE_WEIGHTS` in build_evolution_dashboard.py that should also be updated.
+
+OK let me now implement this. The minimal changes in `scripts/log_feedback.py`:
+
+1. In `build_assessment()`, after computing `task_success_rate`:
+   ```python
+   evaluator_timeout_passing = int(artifact_metrics.get("evaluator_timeout_with_passing_impl_count") or 0)
+   adjusted_succeeded = counted_succeeded + evaluator_timeout_passing * 0.75
+   adjusted_task_success_rate = ratio(adjusted_succeeded, attempted)
+   ```
+
+2. In `score_assessment()`, use `adjusted_task_success_rate` when available:
+   ```python
+   adjusted_rate = metrics.get("adjusted_task_success_rate")
+   if isinstance(adjusted_rate, (int, float)) and not isinstance(adjusted_rate, bool):
+       task_rate = adjusted_rate
+   else:
+       task_rate = metrics.get("task_success_rate")
+   ```
+
+3. Add a field `infrastructure_timeout_count` and `adjusted_task_success_rate` to metrics.
+
+4. Also add a check for evaluator_timeout in the `score_assessment` outcome part: if session was reverted but ALL tasks were evaluator_timeout_with_passing_impl, don't count `session_reverted` as harshly.
+
+Wait, but I need to be more careful. Let me think about what adjustments actually make sense:
+
+- `adjusted_task_success_rate`: counts eval-timeout tasks at 0.75
+- `session_reverted` adjustment: if session was reverted only because of evaluator timeouts, the `session_reverted` penalty should be 0.25 instead of 1.0
+
+Actually, for `session_reverted`, I should check: is the session reverted AND all attempted tasks were evaluator_timeout_with_passing_impl? In that case, the reversion is purely infrastructure.
+
+Let me look at how `session_reverted` feeds into the outcome more carefully:
+
+```python
+outcome_parts = [
+    1.0 if metrics.get("workflow_success") else 0.0,
+    1.0 if metrics.get("session_success") else 0.0,
+    float(task_rate) if isinstance(task_rate, (int, float)) else 0.5,
+    1.0 if not metrics.get("session_reverted") else 0.0,
+]
+```
+
+If session_reverted is true, the 4th part is 0.0. If the reversion was purely infrastructure, this is too harsh. I could make it so that when all reverted tasks are evaluator_timeout_with_passing_impl, the penalty is reduced:
+
+```python
+eval_timeout_only = (
+    metrics.get("session_reverted") 
+    and int(metrics.get("tasks_attempted") or 0) > 0
+    and int(metrics.get("evaluator_timeout_with_passing_impl_count") or 0) >= int(metrics.get("tasks_attempted") or 0)
+)
+revert_penalty = 0.0 if not metrics.get("session_reverted") else (0.25 if eval_timeout_only else 1.0)
+```
+
+Hmm, but that changes the scoring quite a bit. Let me be more conservative and just do the `adjusted_task_success_rate` plus reduce the weight of `evaluator_timeout_with_passing_impl_count` in `SCORE_FAILURE_WEIGHTS` from 1.0 to 0.25.
+
+Actually, the task says: "Tasks with evaluator timeouts are scored less harshly than tasks with genuine implementation failures."
+
+The simplest approach that directly addresses this: compute an adjusted task_success_rate. That's the main metric. The SCORE_FAILURE_WEIGHTS already has `evaluator_timeout_with_passing_impl_count` at 1.0, which seems reasonable - it's a real problem, just not as bad as broken code.
+
+Let me focus on `adjusted_task_success_rate`. Here's my minimal plan:
+
+1. In `build_assessment()`, after computing `task_success_rate`, add:
+   ```python
+   evaluator_timeout_passing = int(artifact_metrics.get("evaluator_timeout_with_passing_impl_count") or 0)
+   adjusted_succeeded = counted_succeeded + evaluator_timeout_passing * 0.75
+   adjusted_task_success_rate = ratio(adjusted_succeeded, attempted)
+   metrics["adjusted_task_success_rate"] = adjusted_task_success_rate
+   metrics["infrastructure_timeout_count"] = evaluator_timeout_passing
+   ```
+
+2. In `score_assessment()`, use `adjusted_task_success_rate` when available.
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (505ms)
+  ▶ todo ✓ (508ms)
+  ▶ todo ✓ (490ms)
+  ▶ todo ✓ (489ms)
+  ▶ todo ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me mark task #1 as done (I've already analyzed the code) and start implementing.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.5s (5 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (506ms)
+  ▶ todo ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement the changes. First, let me add `adjusted_task_success_rate` and `infrastructure_timeout_count` in `build_assessment()`. I need to find the exact location where `task_success_rate` is set in the metrics dict.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.5s (2 ✓)
+
+First, let me add `adjusted_task_success_rate` to the metrics in `build_assessment()`. After `task_success_rate` is computed (around line 1931), and the metrics dict is built (around line 1960-1988), I'll add the adjustments.
+        counted_succeeded = strict_succeeded if attempted and has_task_evidence else succeeded
+        task_success_rate = ratio(counted_succeeded, attempted)
+  +     evaluator_timeout_passing = int(artifact_metrics.get("evaluator_timeout_with_passing_impl_count") or 0)
+  +     adjusted_succeeded = counted_succeeded + evaluator_timeout_passing * 0.75
+  +     adjusted_task_success_rate = ratio(adjusted_succeeded, attempted)
+        workflow_success = workflow_conclusion.lower() in {"success", "passed"}
+  ✓ Auto-approved: edit: scripts/log_feedback.py (3 → 6 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (3 → 6 lines)
+        counted_succeeded = strict_succeeded if attempted and has_task_evidence else succeeded
+        task_success_rate = ratio(counted_succeeded, attempted)
+  +     evaluator_timeout_passing = int(artifact_metrics.get("evaluator_timeout_with_passing_impl_count") or 0)
+  +     adjusted_succeeded = counted_succeeded + evaluator_timeout_passing * 0.75
+  +     adjusted_task_success_rate = ratio(adjusted_succeeded, attempted)
+        workflow_success = workflow_conclusion.lower() in {"success", "passed"}
+ ✓ (548ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the new fields to the metrics dict.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the new fields to the metrics dict:
+            "task_success_rate": task_success_rate,
+  +         "adjusted_task_success_rate": adjusted_task_success_rate,
+  +         "infrastructure_timeout_count": evaluator_timeout_passing,
+  ✓ Auto-approved: edit: scripts/log_feedback.py (1 → 3 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (1 → 3 lines)
+            "task_success_rate": task_success_rate,
+  +         "adjusted_task_success_rate": adjusted_task_success_rate,
+  +         "infrastructure_timeout_count": evaluator_timeout_passing,
+ ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `score_assessment` to use the adjusted rate. Let me do that.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (303ms)
+  ▶ todo ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update `score_assessment()` to prefer `adjusted_task_success_rate`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Now update `score_assessment()` to use the adjusted rate:
+    def score_assessment(metrics: dict[str, Any]) -> float:
+        task_rate = metrics.get("task_success_rate")
+  +     adjusted_rate = metrics.get("adjusted_task_success_rate")
+  +     if isinstance(adjusted_rate, (int, float)) and not isinstance(adjusted_rate, bool):
+  +         task_rate = adjusted_rate
+        outcome_parts = [
+  ✓ Auto-approved: edit: scripts/log_feedback.py (3 → 6 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (3 → 6 lines)
+    def score_assessment(metrics: dict[str, Any]) -> float:
+        task_rate = metrics.get("task_success_rate")
+  +     adjusted_rate = metrics.get("adjusted_task_success_rate")
+  +     if isinstance(adjusted_rate, (int, float)) and not isinstance(adjusted_rate, bool):
+  +         task_rate = adjusted_rate
+        outcome_parts = [
+ ✓ (460ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I also need to update the `score_assessment` to handle the `session_reverted` penalty when the reversion was purely infrastructure-related (all tasks were evaluator timeouts with passing impls). Let me do that.
+────────────────────────────────────────────────────────────────────────────────
+
+Now adjust the `session_reverted` penalty for infrastructure-only reversions:
+            1.0 if metrics.get("workflow_success") else 0.0,
+            1.0 if metrics.get("session_success") else 0.0,
+            float(task_rate) if isinstance(task_rate, (int, float)) else 0.5,
+  -         1.0 if not metrics.get("session_reverted") else 0.0,
+  +         1.0 if not metrics.get("session_reverted") else _infrastructure_revert_penalty(metrics),
+        ]
+  ✓ Auto-approved: edit: scripts/log_feedback.py (6 → 6 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (6 → 6 lines)
+            1.0 if metrics.get("workflow_success") else 0.0,
+            1.0 if metrics.get("session_success") else 0.0,
+            float(task_rate) if isinstance(task_rate, (int, float)) else 0.5,
+  -         1.0 if not metrics.get("session_reverted") else 0.0,
+  +         1.0 if not metrics.get("session_reverted") else _infrastructure_revert_penalty(metrics),
+        ]
+ ✓ (604ms)
+
+
