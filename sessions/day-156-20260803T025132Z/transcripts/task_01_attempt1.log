@@ -1,0 +1,532 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. First, read the evolve skill for the canonical implementation contract
+2. Read src/tool_wrappers.rs to understand the RecoveryHintTool
+3. Add pattern-matched recovery hints for bash failures
+4. Write tests, verify, commit
+
+Let me begin by reading the evolve skill and the relevant source file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'RecoveryHint' (*.rs) ✓ (996ms)
+ ✓ (993ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant sections of tool_wrappers.rs to understand the RecoveryHintTool implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:940..1060  ▶ read src/tool_wrappers.rs:3170..3250 ✓ (1.5s)
+ ✓ (998ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the targeted_recovery_hint function to see its full implementation.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1059..1179 ✓ (492ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of the RecoveryHintTool's execute method:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1178..1238 ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the existing code. The `targeted_recovery_hint` function already has several pattern-matched recovery hints for bash tools:
+
+1. "exit code" / "exit status" / "command failed" — exit code analysis with specific codes (1, 2, 126, 127)
+2. "timed out" — timeout advice
+3. "failed to spawn" — binary missing advice
+4. "no such file or directory" — path verification
+5. "permission denied" — permission advice
+6. "command not found" — PATH check advice
+7. "argument list too long" — E2BIG advice
+8. "broken pipe" — EPIPE advice
+9. Catch-all for unrecognized errors
+
+But looking at the task's success criteria more carefully:
+- "command not found" → "use ./script.sh for local scripts" — already exists but says "Install the missing tool or use apt-get install / brew install as appropriate." The task wants it to also mention `./` for local scripts.
+- "No such file or directory" → "the file path may have changed; use ls to verify" — already exists but says "Verify with ls <path> or find . -name '<filename>' to locate the correct file."
+- "timed out" → "add --timeout N to increase the limit" — already exists but says "Try reducing scope: limit file traversal depth, add a timeout wrapper, or split the work into smaller sequential commands."
+
+So it looks like the recovery hints already exist for all three patterns mentioned in the task. The question is: are these hints good enough, or do they need refinement?
+
+Let me re-read the task more carefully:
+- "At least 3 new pattern-matched recovery hints are added"
+- "Existing recovery hints continue to work"
+- "All tests in src/tool_wrappers.rs pass (or new tests are added for the new hints)"
+
+But the Fallback says: "If bash recovery hints already cover all common patterns, add a test proving coverage and mark complete."
+
+Looking at the current implementation, it already has:
+1. "command not found" — ✅ covered
+2. "No such file or directory" — ✅ covered
+3. "timed out" — ✅ covered
+
+The fallback applies: "If bash recovery hints already cover all common patterns, add a test proving coverage and mark complete."
+
+But wait - the task says "The RecoveryHintTool in src/tool_wrappers.rs provides post-failure guidance but current hints are generic ("check the exit code") rather than pattern-matched to the specific stderr output." But looking at the code, they ARE pattern-matched already. The targeted_recovery_hint function already matches specific error patterns.
+
+So the task's evidence might be stale. Let me check if the RecoveryHintTool is actually wired into the agent builder. If it's not wired, then the existing code doesn't actually help in practice.
+
+Let me check agent_builder.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'with_recovery_hints' (*.rs)  ▶ search 'RecoveryHint' (*.rs) ✓ (1.0s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `with_recovery_hints` is imported in `tools.rs` and actually wired in! Let me check how it's being used:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tools.rs:1350..1430 ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - `with_recovery_hints` is indeed wired into all tools including bash. The existing `targeted_recovery_hint` function already has pattern-matched hints. So the existing code already covers the patterns mentioned in the task.
+
+Per the fallback: "If bash recovery hints already cover all common patterns, add a test proving coverage and mark complete."
+
+Let me look at the existing tests more carefully to see what test coverage exists and what I can add:
+
+1. `test_targeted_recovery_hint_no_match_returns_none` - tests non-matching tools and bash generic fallback
+2. `test_recovery_hint_with_targeted_hint_appended` - tests bash with exit code error
+3. `test_recovery_hint_no_targeted_for_non_matching_error` - tests no targeted hint for non-matching
+
+But I need to check if there are tests that cover ALL the specific bash patterns. Let me look more carefully.
+
+Actually, wait. Let me re-read the task's requirements more carefully:
+
+"Add at minimum these patterns:
+1. "command not found" / "not found" in stderr → check PATH, use ./ for local scripts
+2. "No such file or directory" → the target path doesn't exist; verify with ls
+3. Timed out / "timed out" → increase the timeout parameter or simplify the command"
+
+And:
+"- Do not modify the tool trait signature — add hint logic within the existing wrapper."
+
+The existing code already handles:
+1. "command not found" → "The command was not found in PATH..." - but doesn't mention `./` for local scripts
+2. "No such file or directory" → "A file path doesn't exist. Verify with ls <path>..." - already good
+3. "timed out" → "The command timed out. Try reducing scope..." - already good, but doesn't mention `--timeout N`
+
+So the improvement is that:
+1. The "command not found" hint should also suggest using `./` for local scripts
+2. The "timed out" hint should mention `--timeout N` parameter specifically
+
+But wait - looking at the task's success criteria: "At least 3 new pattern-matched recovery hints are added". Since hints already exist for all 3, the fallback says to add a test proving coverage.
+
+However, reading more carefully, I think the task is actually asking me to refine the hints AND add tests. The existing hints are close but could be improved by:
+1. Adding `./` mention to "command not found" hint
+2. Adding `--timeout N` mention to "timed out" hint
+3. Adding the `./script.sh` pattern specifically for when a bash command fails with "not found" and the command looks like a local script name
+
+Also, I should check if the "command not found" pattern in the targeted_recovery_hint catches the case where stderr says `/bin/bash: line 1: ./some-script: No such file or directory` or similar. The current check is `msg_lower.contains("command not found")`, but what about when stderr says just "not found" without "command"? The task says match "not found" too. Wait, that could be too broad.
+
+Let me look at the existing implementation again - the "command not found" hint at line 1075-1081 says:
+```
+"The command was not found in PATH. Check with `which <cmd>` or `command -v <cmd>`. 
+Install the missing tool or use `apt-get install` / `brew install` as appropriate."
+```
+
+This doesn't address the case where someone types `script.sh` instead of `./script.sh`. The improvement would be to add: "If it's a local script, use `./script.sh` instead of `script.sh`."
+
+Similarly, the "timed out" hint at line 1049-1052 says:
+```
+"The command timed out. Try reducing scope: limit file traversal depth, 
+add a `timeout` wrapper, or split the work into smaller sequential commands."
+```
+
+It mentions "add a `timeout` wrapper" but doesn't specifically say "add --timeout N to increase the limit" which is what the task asks for.
+
+So I should:
+1. Improve the "command not found" hint to include `./` for local scripts
+2. Improve the "timed out" hint to mention `--timeout N`
+3. Add tests for all the pattern-matched hints
+
+Let me now plan my changes:
+
+For the "command not found" hint, the current text is:
+```
+"The command was not found in PATH. Check with `which <cmd>` \
+or `command -v <cmd>`. Install the missing tool or use \
+`apt-get install` / `brew install` as appropriate."
+```
+
+New text should include: "... If it's a local script, use `./script.sh` (not `script.sh`) to run it from the current directory."
+
+For the "timed out" hint, the current text is:
+```
+"The command timed out. Try reducing scope: limit file traversal depth, \
+add a `timeout` wrapper, or split the work into smaller sequential commands."
+```
+
+New text should include: "... Increase the `--timeout N` parameter (in seconds) or simplify the command."
+
+Now let me also look at what tests exist and plan my test improvements. I need to add tests that prove all patterns are covered.
+
+Let me look at the complete test module for this:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3160..3260 ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the full test block to find a good place to add new tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test_targeted_recovery_hint' (*.rs) ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the start of the targeted_recovery_hint tests to understand the full test organization:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2940..3160 ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete picture. The test coverage for the `targeted_recovery_hint` function is actually quite comprehensive. It covers:
+
+1. **Bash exit codes**: exit code 1, 2, 126, 127, unknown (42), negative (-1)
+2. **Bash timed out**: tested
+3. **Bash failed to spawn**: tested
+4. **Bash no such file or directory**: tested
+5. **Bash permission denied**: tested
+6. **Bash command not found**: tested
+7. **Bash catch-all unrecognized error**: tested
+8. **Bash argument list too long**: tested
+9. **Bash broken pipe**: tested
+10. **Search regex parse errors**: tested
+11. **File tools errors**: tested
+12. **Case insensitivity**: tested
+13. **Non-file tools no match**: tested
+
+So the patterns ARE already covered. The fallback applies: "If bash recovery hints already cover all common patterns, add a test proving coverage and mark complete."
+
+But wait - let me re-examine the task's specific improvement requests:
+
+1. "command not found" hint should mention `./` for local scripts - The current hint says "The command was not found in PATH. Check with `which <cmd>` or `command -v <cmd>`. Install the missing tool or use `apt-get install` / `brew install` as appropriate." It doesn't mention using `./` for local scripts. Let me improve it.
+
+2. "timed out" hint should mention `--timeout N` - The current hint says "The command timed out. Try reducing scope: limit file traversal depth, add a `timeout` wrapper, or split the work into smaller sequential commands." It says "add a `timeout` wrapper" which could mean the `timeout` command, but the task wants it to specifically say `--timeout N` parameter. Let me improve it.
+
+3. "No such file or directory" hint - The current hint says "A file path doesn't exist. Verify with `ls <path>` or `find . -name '<filename>'` to locate the correct file. Check for typos in the path." This is already good, but the task says "the file path may have changed; use ls to verify". Let me see if it needs refinement. It does already mention `ls` and `find`.
+
+Actually, let me re-read the task more carefully. The task says:
+
+"At least 3 new pattern-matched recovery hints are added (e.g., "command not found" → "use ./script.sh for local scripts", "No such file or directory" → "the file path may have changed; use ls to verify", "timed out" → "add --timeout N to increase the limit")"
+
+These are already implemented, but the task's evidence says "bash_tool_error=5 across recent sessions with corrective lesson 'prefer bounded commands with explicit paths and inspect exit output before retrying broader checks'" and "current hints are generic ('check the exit code') rather than pattern-matched to the specific stderr output."
+
+Wait - maybe the task was written against an earlier version of the code that didn't have these hints, and since then the hints have been added? Let me check git log for when the targeted recovery hints were added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all -- src… ✓ (997ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the RecoveryHintTool was added on Day 75 and tested on Day 78. The patterns I see are already well-implemented. The task was likely written before these additions, or it was written with evidence from sessions that had the hints but they weren't being surfaced effectively.
+
+Wait - maybe the issue isn't that the hints don't exist, but that the "command not found" hint doesn't include `./` for local scripts, and the "timed out" hint doesn't mention `--timeout N`. Let me improve those two hints and add stronger test coverage.
+
+Also, looking at the test for "command not found":
+```rust
+fn test_targeted_recovery_hint_bash_command_not_found() {
+    let hint = targeted_recovery_hint("bash", "command not found: foo");
+    assert!(hint.is_some());
+    let hint = hint.unwrap();
+    assert!(hint.contains("which"));
+    assert!(hint.contains("command -v"));
+}
+```
+
+It checks for "which" and "command -v" but not for "./" for local scripts. After I improve the hint, I should update this test.
+
+Similarly, the timed out test:
+```rust
+fn test_targeted_recovery_hint_bash_timed_out() {
+    let hint = targeted_recovery_hint("bash", "Command timed out after 300s");
+    assert!(hint.is_some());
+    let hint = hint.unwrap();
+    assert!(hint.contains("reducing"));
+    assert!(hint.contains("timeout"));
+}
+```
+
+It checks for "timeout" but not for "--timeout N". After improving, I should update this.
+
+OK, here's my plan:
+1. Improve the "command not found" hint to include `./` for local scripts
+2. Improve the "timed out" hint to mention `--timeout N` explicitly
+3. Update the corresponding tests
+4. Add a comprehensive test that verifies all bash patterns are covered (to satisfy the fallback requirement)
+5. Verify with cargo test tool_wrappers and cargo build
+
+Let me do this now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (489ms)
+  ▶ todo ✓ (496ms)
+  ▶ todo ✓ (506ms)
+  ▶ todo ✓ (490ms)
+  ▶ todo ✓ (498ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edits. First, improve the "command not found" hint:
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.5s (5 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me improve the "command not found" hint to include `./` for local scripts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                } else if msg_lower.contains("command not found") {
+                    Some(
+  -                     "The command was not found in PATH. Check with `which <cmd>` \
+  -                      or `command -v <cmd>`. Install the missing tool or use \
+  -                      `apt-get install` / `brew install` as appropriate."
+  +                     "The command was not found in PATH. If it's a local script, use `./script.sh` \
+  +                      (not just `script.sh`) to run it from the current directory. \
+  +                      Otherwise check with `which <cmd>` or `command -v <cmd>`. \
+  +                      Install the missing tool with `apt-get install` / `brew install` as appropriate."
+                            .to_string(),
+                    )
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 8 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 8 lines)
+                } else if msg_lower.contains("command not found") {
+                    Some(
+  -                     "The command was not found in PATH. Check with `which <cmd>` \
+  -                      or `command -v <cmd>`. Install the missing tool or use \
+  -                      `apt-get install` / `brew install` as appropriate."
+  +                     "The command was not found in PATH. If it's a local script, use `./script.sh` \
+  +                      (not just `script.sh`) to run it from the current directory. \
+  +                      Otherwise check with `which <cmd>` or `command -v <cmd>`. \
+  +                      Install the missing tool with `apt-get install` / `brew install` as appropriate."
+                            .to_string(),
+                    )
+ ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now improve the "timed out" hint to mention --timeout N:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                } else if msg_lower.contains("timed out") {
+                    Some(
+  -                     "The command timed out. Try reducing scope: limit file traversal depth, \
+  +                     "The command timed out. Increase the `--timeout N` parameter (in seconds, \
+  +                      default 300, max 600), or reduce scope: limit file traversal depth, \
+                         add a `timeout` wrapper, or split the work into smaller sequential commands."
+                            .to_string(),
+                    )
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (6 → 7 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (6 → 7 lines)
+                } else if msg_lower.contains("timed out") {
+                    Some(
+  -                     "The command timed out. Try reducing scope: limit file traversal depth, \
+  +                     "The command timed out. Increase the `--timeout N` parameter (in seconds, \
+  +                      default 300, max 600), or reduce scope: limit file traversal depth, \
+                         add a `timeout` wrapper, or split the work into smaller sequential commands."
+                            .to_string(),
+                    )
+ ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the tests. First the "command not found" test to assert the new `./` for local scripts, then the "timed out" test to assert `--timeout N`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (503ms)
+  ▶ todo ✓ (486ms)
+  ▶ todo ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+            let hint = hint.unwrap();
+            assert!(hint.contains("which"));
+            assert!(hint.contains("command -v"));
+  +         assert!(
+  +             hint.contains("./script.sh") || hint.contains("`./script.sh`"),
+  +             "command not found hint should mention ./ for local scripts: {hint}"
+  +         );
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 11 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 11 lines)
+            let hint = hint.unwrap();
+            assert!(hint.contains("which"));
+            assert!(hint.contains("command -v"));
+  +         assert!(
+  +             hint.contains("./script.sh") || hint.contains("`./script.sh`"),
+  +             "command not found hint should mention ./ for local scripts: {hint}"
+  +         );
+        }
+ ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the "timed out" test to assert `--timeout`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            let hint = hint.unwrap();
+            assert!(hint.contains("reducing"));
+            assert!(hint.contains("timeout"));
+  +         assert!(
+  +             hint.contains("--timeout"),
+  +             "timed out hint should mention --timeout N parameter: {hint}"
+  +         );
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (8 → 12 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (8 → 12 lines)
+            let hint = hint.unwrap();
+            assert!(hint.contains("reducing"));
+            assert!(hint.contains("timeout"));
+  +         assert!(
+  +             hint.contains("--timeout"),
+  +             "timed out hint should mention --timeout N parameter: {hint}"
+  +         );
+        }
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add a comprehensive test that proves all bash patterns are covered:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (489ms)
+  ▶ todo ✓ (488ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to add a comprehensive test. Let me find a good place to insert it - after the last `test_targeted_recovery_hint_bash_broken_pipe` test and before the file-tool tests would be logical. Let me read around line 3125 to see the exact location.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+I need to add a comprehensive test that proves all bash patterns are matched by the targeted_recovery_hint function. Let me find the right insertion point:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3118..3133 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert my comprehensive coverage test right after the broken pipe test, before the file-tool tests. Let me see the exact line after the broken pipe test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3128..3143 ✓ (488ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll insert the comprehensive test between the broken pipe test and the read_file test (between lines 3136 and 3138):
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(hint.contains("pipeline"));
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_all_patterns_covered() {
+  +         // Verify all common bash failure patterns produce a non-None targeted hint.
+  +         // If a new bash error category is added to targeted_recovery_hint,
+  +         // it must be added to this test so coverage stays provable.
+  +         let patterns: &[(&str, &str)] = &[
+  +             ("exit code", "Exit code: 1"),
+  +             ("exit status", "Process exited with exit status 2"),
+  +             ("command failed", "command failed: permission denied"),
+  +             ("timed out", "Command timed out after 300s"),
+  +             ("failed to spawn", "Failed to spawn: No such file"),
+  +             ("no such file or directory", "No such file or directory"),
+  +             ("permission denied", "Permission denied"),
+  +             ("command not found", "command not found: foo"),
+  +             ("argument list too long", "/bin/ls: Argument list too long"),
+  +             ("broken pipe", "error writing to stdout: Broken pipe"),
+  +             ("catch-all unrecognized", "something went wrong"),
+  ... (11 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (5 → 32 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (5 → 32 lines)
+            assert!(hint.contains("pipeline"));
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_all_patterns_covered() {
+  +         // Verify all common bash failure patterns produce a non-None targeted hint.
+  +         // If a new bash error category is added to targeted_recovery_hint,
+  +         // it must be added to this test so coverage stays provable.
+  +         let patterns: &[(&str, &str)] = &[
+  +             ("exit code", "Exit code: 1"),
+  +             ("exit status", "Process exited with exit status 2"),
+  +             ("command failed", "command failed: permission denied"),
+  +             ("timed out", "Command timed out after 300s"),
+  +             ("failed to spawn", "Failed to spawn: No such file"),
+  +             ("no such file or directory", "No such file or directory"),
+  +             ("permission denied", "Permission denied"),
+  +             ("command not found", "command not found: foo"),
+  +             ("argument list too long", "/bin/ls: Argument list too long"),
+  +             ("broken pipe", "error writing to stdout: Broken pipe"),
+  +             ("catch-all unrecognized", "something went wrong"),
+  ... (11 more lines)
+ ✓ (509ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests. First let me check that it compiles:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (504ms)
+  ▶ todo ✓ (487ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers 2>&1 ✓ (36.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test assertion `hint.contains("reducing")` fails because my new hint text says "Increase the `--timeout N` parameter" instead of "Try reducing scope". The new hint still mentions "reduce scope" later, but it appears a bit differently now. Let me check the exact text:
+────────────────────────────────────────────────────────────────────────────────
+
+The test is failing because the assertion checks for "reducing" but the hint text changed. Let me view the actual hint text to fix the test:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1048..1058 ✓ (508ms)
+
+
