@@ -1089,17 +1089,20 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
             } else if msg_lower.contains("broken pipe") {
                 Some(
                     "A pipe closed before the writer finished (EPIPE / SIGPIPE). \
-                     Use `set -o pipefail` to detect pipeline failures, and consider \
-                     restructuring the pipeline to buffer output or handle early termination."
+                     This often happens when piping into `head -n N` — head closes after N \
+                     lines and the writer gets SIGPIPE. Use `tail`, `sed -n`, or redirect \
+                     to a file instead. Use `set -o pipefail` to detect pipeline failures, \
+                     and consider restructuring the pipeline to buffer output or handle \
+                     early termination."
                         .to_string(),
                 )
             } else {
                 Some(
-                    "The shell command failed. Check `$?` immediately for the exit code, \
-                     use explicit paths (`./script`, not `script`), and retry with a \
-                     simpler bounded command. Break pipelines into individual steps to \
-                     isolate the failure. Inspect both stdout and stderr for clues, and \
-                     add bounded limits (`head -n 50`, `tail -n 20`) to keep output manageable."
+                    "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
+                     to test the command shape before running unbounded. Then check `$?` \
+                     immediately for the exit code and use explicit paths (`./script`, not \
+                     `script`). Break pipelines into individual steps to isolate the \
+                     failure. Inspect both stdout and stderr for clues."
                         .to_string(),
                 )
             }
@@ -3087,7 +3090,7 @@ mod tests {
         let hint = hint.unwrap();
         assert!(hint.contains("$?"));
         assert!(hint.contains("explicit path"));
-        assert!(hint.contains("bounded command"));
+        assert!(hint.contains("bounded version"));
         assert!(hint.contains("individual steps"));
         // New: stdout and stderr inspection
         assert!(
@@ -3123,6 +3126,8 @@ mod tests {
         assert!(hint.contains("pipefail"));
         assert!(hint.contains("SIGPIPE"));
         assert!(hint.contains("pipeline"));
+        assert!(hint.contains("head -n N"));
+        assert!(hint.contains("sed -n"));
     }
 
     #[test]
