@@ -1,0 +1,452 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the target file `scripts/append_terminal_state_events.py`
+3. Read the test file `scripts/test_append_terminal_state_events.py`
+4. Implement the feature to detect orphaned ModelCallCompleted events and create synthetic ModelCallStarted events
+5. Verify with tests
+
+Let me start by reading the evolve skill and the target files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the target files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (2.5s)
+ ✓ (1.0s)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the append_terminal_state_events.py file to understand the full structure, especially the `find_stale_orphaned_runs`, `find_missing_failure_observed`, `collect_input_validation_run_ids`, `find_missing_model_call_started`, `find_orphaned_model_calls`, and `append_terminal_events` functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.6s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:97..297 ✓ (536ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the file to understand the full structure, especially the find_missing_model_call_started, find_orphaned_model_calls, and the append_terminal_events function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:296..496 ✓ (410ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the `find_orphaned_model_calls` function and the main `append_terminal_events` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:495..795 ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the `append_terminal_events` function and the `main()` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:794..894 ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me understand what's already there vs. what needs to be added.
+
+**What already exists:**
+1. `find_missing_model_call_started()` (line 436-477) - Finds ModelCallCompleted entries whose run_id has no prior ModelCallStarted. It uses run_id-based matching.
+2. In `append_terminal_events()` (lines 756-793), there's already code that:
+   - Calls `find_missing_model_call_started(events)` to find unmatched completions
+   - Filters out input-validation runs via `collect_input_validation_run_ids()`
+   - Creates retroactive `ModelCallStarted` events for non-validation runs
+
+**The gap:**
+The task says there are 8 `model_completion_without_start` cases — ModelCallCompleted events with no matching ModelCallStarted. But looking at the current code, `find_missing_model_call_started` already does exactly this: it finds ModelCallCompleted events whose run_id has no matching ModelCallStarted, and `append_terminal_events` already creates retroactive `ModelCallStarted` events.
+
+But wait — let me re-read the task more carefully.
+
+The task says:
+- "Trajectory shows 42 unmatched model call completions, 8 specifically from model_completion_without_start"
+- "This targets 8 of the 42 unmatched completions."
+
+And the existing code at lines 756-793 already:
+1. Finds ModelCallCompleted with no matching ModelCallStarted by run_id
+2. Creates synthetic ModelCallStarted events
+
+So... does the code already do this? Let me check more carefully.
+
+Looking at `find_missing_model_call_started` (line 436-477):
+- It tracks `model_started_runs: set[str]` by run_id
+- It tracks `model_completed_entries: dict[str, dict[str, Any]]` by run_id
+- It returns completions whose run_id is NOT in model_started_runs
+
+But wait — this matches by `run_id`, not by `model_call_id`. In production events, `ModelCallStarted` and `ModelCallCompleted` have a `model_call_id` field that uniquely identifies the specific model call. The current code only checks if the run had ANY ModelCallStarted — it doesn't check if a specific ModelCallCompleted matches a specific ModelCallStarted.
+
+However, the task description says: "The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set."
+
+So the task wants model_call_id-level matching, not run_id-level. This is more precise.
+
+But wait, let me re-check. Looking at the task again:
+- "Detect ModelCallCompleted events that have no matching ModelCallStarted in the state event log"
+- "create synthetic ModelCallStarted events to close the lifecycle gap"
+
+And the expected behavior:
+- "For each orphaned completion, a synthetic ModelCallStarted event is added with the same model_call_id and session_id, marked with a "synthetic: model_completion_without_start" provenance field."
+
+Now, the current code at lines 756-793 already handles `find_missing_model_call_started`. But this is using run_id-based matching. The task wants model_call_id-based matching.
+
+Actually wait, let me re-read the code more carefully. The `find_missing_model_call_started` function:
+
+```python
+model_started_runs: set[str] = set()
+model_completed_entries: dict[str, dict[str, Any]] = {}
+...
+if kind == "ModelCallStarted":
+    model_started_runs.add(rid)
+elif kind == "ModelCallCompleted":
+    model_completed_entries[rid] = {...}
+...
+missing = [
+    {"run_id": rid, **info}
+    for rid, info in model_completed_entries.items()
+    if rid not in model_started_runs
+]
+```
+
+This only uses `run_id`, not `model_call_id`. So if a run has multiple model calls and one of them is missing its start event, this scan wouldn't catch it because it would see that the run has *some* ModelCallStarted and not flag it.
+
+But the task's specific scenario is about `model_completion_without_start` — completions with NO matching start at all, not just within the same run. The current run_id-based matching might actually work for this case too IF the run_id uniquely identifies the model call (which it does in the production events since there's generally one model call per run).
+
+Hmm, but looking at the trajectory metric: `deepseek_model_call_unmatched_completed_count=42` and `model_completion_without_start=8`. The 42 is the total unmatched completions, and 8 are specifically from completion-without-start.
+
+The current code's `find_missing_model_call_started` already handles the case where a ModelCallCompleted has no matching ModelCallStarted (by run_id). If this is already working, then the task might be saying the code already handles it...
+
+But the task says "same pattern as Day 154 Task 1's input-validation skip" — that was about adding a classification helper + skip. The task wants me to add a similar pattern for `model_completion_without_start`.
+
+Wait, let me re-read the implementation notes:
+- "Use the same classification pattern as Day 154 Task 1's input-validation skip: a helper function that scans the event log for orphaned completions, then a repair loop that adds synthetic start events."
+- "The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set."
+
+So the task is asking for model_call_id-based matching, which is more precise than the existing run_id-based matching. The `find_orphaned_model_calls` function (line 480-542) already uses model_call_id-based matching, but in the opposite direction (finding ModelCallStarted without matching ModelCallCompleted).
+
+So the new code should be similar to `find_orphaned_model_calls` but in the opposite direction: find ModelCallCompleted events whose model_call_id has no matching ModelCallStarted. And it would replace or complement the existing `find_missing_model_call_started`.
+
+Actually, let me look at this more carefully. The current code already handles this case at lines 756-793. It calls `find_missing_model_call_started` which finds completions without matching starts. It then creates synthetic ModelCallStarted events. This is already working.
+
+So maybe the task is saying: the current code exists but has a gap — it uses run_id matching, not model_call_id matching. In production, model_call_id is the natural key and model_call_id matching would be more precise.
+
+But wait, I need to check whether this code change would actually close the 8 gaps. The current code might already close them during its regular operation. The task is from a planner that looked at the trajectory and saw 42 unmatched completions. The current code might not have been running (or might be using run_id matching which works at run-level but not at model_call_id level).
+
+Let me think about what the actual gap is:
+
+Looking at the existing `find_missing_model_call_started`:
+```python
+model_started_runs: set[str] = set()
+model_completed_entries: dict[str, dict[str, Any]] = {}
+for event in events:
+    ...
+    if kind == "ModelCallStarted":
+        model_started_runs.add(rid)
+    elif kind == "ModelCallCompleted":
+        model_completed_entries[rid] = {...}
+```
+
+It tracks by run_id. In production, ModelCallStarted and ModelCallCompleted have a `model_call_id` field. The `rid` variable comes from `run_id(event, data)` which returns the run_id. So this matches by run_id, not model_call_id.
+
+The issue: In production events, ModelCallStarted and ModelCallCompleted both have the same `run_id`, so run_id-based matching works in the common case. But what if a run has multiple model calls? More importantly, what if the `model_call_id` field is what's used to pair them in the gnome metrics?
+
+Let me look at how gnome metrics compute `deepseek_model_call_unmatched_completed_count`. Looking at `scripts/summarize_state_gnomes.py`:
+
+Actually, the task says the metric shows 42 unmatched completions, and specifically 8 from `model_completion_without_start`. The task's goal is to close those 8 gaps by adding synthetic ModelCallStarted events.
+
+The current code in `append_terminal_events` already does this at lines 756-793, using `find_missing_model_call_started`. But wait — looking at the code flow:
+
+1. Lines 756-793 only run if scope != "ambiguous_reset_full_scan"
+2. It calls `find_missing_model_call_started(events)` which matches by run_id
+3. It filters out input_validation_runs
+4. It creates retroactive ModelCallStarted events
+
+If the current code is already correct and handles these cases, then the task should be obsolete. Let me verify by looking at the test file to see if there are already tests for this scenario.
+
+Looking at the test file (scripts/test_append_terminal_state_events.py), let me search for test methods that test the missing model call started scenario.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_started|find_missing_model_call' in scripts/test_append_terminal_state_events.py ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, the search didn't find any matches. Let me try a more specific search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "model_call\|ModelCall\|missing_model\|unmatched" scripts/test_append_te… ✓ (994ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 142 matches. Let me look at the specific test cases related to `model_call_started_appended` and `find_missing_model_call_started`. Let me look for test methods that specifically test the missing model call started feature.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n "def test.*model\|def test.*miss\|def test.*unmatch\|def test.*orphan" s… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it! There are already tests for:
+- `test_retroactive_model_call_started_for_unmatched_completed` (line 786) — tests the `find_missing_model_call_started` feature
+- `test_no_retroactive_model_call_started_when_all_matched` (line 834)
+- `test_retroactive_model_call_started_skips_ambiguous_reset` (line 871)
+
+So the feature already exists! Let me read these test cases to understand what's already implemented.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:786..906 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the feature already exists! The code already has:
+
+1. `find_missing_model_call_started()` function
+2. Tests for retroactive ModelCallStarted for unmatched completions
+3. The repair loop in `append_terminal_events()` that creates synthetic ModelCallStarted events
+
+The existing code already handles the scenario described in the task. The question is: is there something missing?
+
+Looking at the task more carefully:
+- "The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set."
+
+The current `find_missing_model_call_started` uses `run_id` matching, not `model_call_id` matching. The task wants `model_call_id`-based matching.
+
+Looking at the existing `find_orphaned_model_calls` (line 480-542), it uses `model_call_id`-based matching (with fallback to run_id). The task wants the same approach in the reverse direction.
+
+So the change is: make `find_missing_model_call_started` use `model_call_id`-based matching (like `find_orphaned_model_calls` does) instead of just `run_id`-based matching. This would be more precise and would close the remaining 8 `model_completion_without_start` gaps that the current run_id-based approach might be missing.
+
+Wait, but how would model_call_id-based matching find MORE cases than run_id-based? If a ModelCallCompleted and ModelCallStarted share the same run_id, the current code would find them. The only case where model_call_id matching would find something different is:
+
+1. If a run has multiple model calls with different model_call_ids, and one specific completion has no matching start, but the run has other starts. In this case, run_id matching would miss it, but model_call_id matching would catch it.
+
+2. If the events use model_call_id as the key and run_id differs between the start and completion (unlikely in practice).
+
+Actually, wait. In the production events, each ModelCallStarted and ModelCallCompleted carry a `model_call_id` field. The gnome metric `deepseek_model_call_unmatched_completed_count` probably matches by `model_call_id`. So the current code's run_id matching might be matching at a coarser level.
+
+But honestly, the current code is already quite functional for the described scenario. Let me look at the test fixtures more carefully to understand the current test coverage gap.
+
+Actually, let me re-read the task description very carefully:
+
+"Detect ModelCallCompleted events that have no matching ModelCallStarted in the state event log and create synthetic ModelCallStarted events to close the lifecycle gap."
+
+The current code already does this but uses run_id matching. 
+
+"Implementation Notes:
+- Use the same classification pattern as Day 154 Task 1's input-validation skip: a helper function that scans the event log for orphaned completions, then a repair loop that adds synthetic start events.
+- The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set.
+- Synthetic events should include: event_type="ModelCallStarted", model_call_id matching the orphaned completion, a "synthetic": true and "synthetic_reason": "model_completion_without_start" in the payload."
+
+The key differences from what exists:
+1. Use `model_call_id` instead of `run_id` for matching
+2. Add `"synthetic": true` and `"synthetic_reason": "model_completion_without_start"` to the payload
+3. Use the actual `model_call_id` from the completion, not a synthetic `"retroactive-{run_id}"` 
+
+So this is an improvement on the existing feature: use model_call_id-based matching and add better provenance fields.
+
+Let me now look at what the existing `find_orphaned_model_calls` function does for the model_call_id pattern and adapt it.
+
+Current `find_orphaned_model_calls` approach:
+- For ModelCallStarted events, use `model_call_id` as key, fallback to `run_id`
+- For ModelCallCompleted events, collect `model_call_id` keys
+- Find started entries whose key is not in completed keys
+
+The new `find_missing_model_call_started` should do the reverse:
+- For ModelCallStarted events, collect `model_call_id` keys (with run_id fallback)
+- For ModelCallCompleted events, use `model_call_id` as key, fallback to `run_id`
+- Find completed entries whose key is not in started keys
+
+Let me also check what the "model_completion_without_start" classification means in the existing gnome code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how the gnome metrics classify `model_completion_without_start` to understand the exact gap:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_completion_without_start' ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the classification code in `build_evolution_dashboard.py` to understand how `model_completion_without_start` is classified.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2530..2590 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. `model_completion_without_start` is classified when the last event of an open run is `ModelCallCompleted` — meaning a run that has a ModelCallCompleted event without a matching ModelCallStarted. The classification is in `lifecycle_cause()`.
+
+The existing code in `append_terminal_state_events.py` already handles this via `find_missing_model_call_started()` and the repair loop. But it uses `run_id` matching. Let me check if the production events actually use `model_call_id` differently from `run_id`.
+
+Let me look at the state_graph_tools.py classification as well:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/state_graph_tools.py:860..890 ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `model_completion_without_start` classification means: a run's lifecycle has a `ModelCallCompleted` as its last event but no matching `ModelCallStarted`. This happens when the model completed but the start event was never emitted (or was lost).
+
+The existing code in `append_terminal_state_events.py` already has:
+1. `find_missing_model_call_started()` - finds ModelCallCompleted without matching ModelCallStarted (by run_id)
+2. A repair loop that creates synthetic ModelCallStarted events
+
+So the feature already exists! But the task asks for model_call_id-level matching (which is more precise than run_id-level). The existing `find_orphaned_model_calls` already uses model_call_id-level matching.
+
+Let me check whether the existing tests are passing and whether there's actually a gap that needs to be filled here. Let me run the existing tests first:
+
+Actually wait — let me re-read the task more carefully. It says:
+
+"If the existing test file doesn't already have a test fixture with orphaned ModelCallCompleted events, add one."
+
+But looking at the test file, it already has:
+- `test_retroactive_model_call_started_for_unmatched_completed` (line 786)
+- `test_no_retroactive_model_call_started_when_all_matched` (line 834)
+- `test_retroactive_model_call_started_skips_ambiguous_reset` (line 871)
+
+So these tests already exist. The feature already exists. The question is: is the feature complete or is there still a gap?
+
+The task says model_call_id-based matching should be used, while the current code uses run_id-based matching. In the current tests, the fixtures don't use model_call_id at all (they use run_id). In production, the events DO carry model_call_id.
+
+The key improvement would be:
+1. Update `find_missing_model_call_started` to use model_call_id-based matching (like `find_orphaned_model_calls` already does)
+2. Update the synthetic event payload to include `"synthetic": true` and `"synthetic_reason": "model_completion_without_start"` (currently uses `"retroactive": True`)
+3. Add tests that use model_call_id-based fixtures
+
+Actually wait, let me re-read the task description one more time. The task says:
+
+"The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set."
+
+But looking at the current `find_missing_model_call_started`:
+```python
+model_started_runs: set[str] = set()
+model_completed_entries: dict[str, dict[str, Any]] = {}
+...
+if kind == "ModelCallStarted":
+    model_started_runs.add(rid)
+elif kind == "ModelCallCompleted":
+    model_completed_entries[rid] = {...}
+```
+
+It matches by run_id, not model_call_id. The task wants model_call_id matching.
+
+Let me check: in the production events, are model_call_id and run_id different? Let me search for actual event structures:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the actual production event structure to understand the model_call_id vs run_id distinction:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_id' in src/state.rs ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the state.rs code around line 1810 to understand how model_call_id is used in production events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1800..1840 ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how the gnome summary handles model_call_id matching. Let me search in `scripts/summarize_state_gnomes.py`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_id|model_call_started|model_call_completed' in scripts/summarize_state_gnomes.py ✓ (509ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `deepseek_model_call_unmatched_completed_count` is computed in the gnomes. It might be in `build_evolution_dashboard.py` or `state_graph_tools.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'deepseek_model_call_unmatched_completed' ✓ (510ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at `scripts/summarize_state_gnomes.py` around line 280-290 to understand how `unmatched_completed` is computed. This is the source of truth for the gnome metric.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:270..310 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading `summarize_state_lifecycle` to understand how matched/unmatched model calls are computed:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:306..406 ✓ (493ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `summarize_state_lifecycle` in `summarize_state_gnomes.py` computes `model_unmatched_completed_ids` by run_id matching: ModelCallCompleted events whose run_id is not in model_call_started_runs.
+
+2. The gnome metric `deepseek_model_call_unmatched_completed_count` counts these.
+
+3. The `append_terminal_state_events.py` code already has `find_missing_model_call_started()` which does the same thing - finds ModelCallCompleted without matching ModelCallStarted by run_id - and creates synthetic ModelCallStarted events.
+
+So the feature already exists! The code at lines 756-793 of append_terminal_state_events.py already handles this exact scenario.
+
+But wait, let me re-read the task one more time. It says the trajectory shows 42 unmatched completions and 8 specifically from model_completion_without_start. If the code already handles this, why are there still 8 unmatched?
+
+Possible reasons:
+1. The code was recently added and hasn't run on all historical data yet
+2. The code's run_id matching might produce different results than the gnome's run_id matching
+3. The code is only called from certain invocation paths
+
+Actually, looking at the gnome code again at lines 340-348:
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    eid = str(event_id(event) or "")
+    if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+        continue
+```
+
+The gnome skips retroactive events. So when `append_terminal_state_events.py` creates synthetic ModelCallStarted events with `"retroactive": True`, the gnome WON'T count those as real starts! This means the repair loop doesn't actually close the gap from the gnome's perspective.
+
+Wait, but looking at line 345-346: it skips ModelCallCompleted events with `evt-harness-` prefix or `retroactive=True`. But the repair loop creates ModelCallStarted events, not ModelCallCompleted. The gnome code at line 335-338 doesn't have the same skip for ModelCallStarted.
+
+Actually wait - let me re-check. The gnome code at lines 335-340:
+```python
+if kind == "ModelCallStarted" and deepseek_model_payload(data):
+    model_call_started += 1
+    if run_id:
+        model_call_started_runs[run_id] = data
+```
+
+There's NO skip for retroactive ModelCallStarted events! So synthetic ModelCallStarted events DO get counted by the gnome. But wait - they might also get filtered by `deepseek_model_payload(data)`.
+
+Let me check what `deepseek_model_payload` does:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def deepseek_model_payload' in scripts/summarize_state_gnomes.py ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:222..242 ✓ (506ms)
+
+

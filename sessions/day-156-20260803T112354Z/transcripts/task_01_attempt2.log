@@ -1,0 +1,579 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to modify `scripts/append_terminal_state_events.py` to detect `ModelCallCompleted` events that lack a matching `ModelCallStarted` event
+2. For each orphaned completion, create a synthetic `ModelCallStarted` event
+3. The goal is to close 8 of the 42 unmatched model call completions
+
+The previous attempt found that the code already has a `find_missing_model_call_started()` function. Let me verify this and understand why there are still 8 unmatched completions.
+
+Let me start by reading the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ search 'find_missing_model_call_started' in scripts/append_terminal_state_events.py ✓ (992ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the existing `find_missing_model_call_started` function and its call site to understand what it already does.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:436..516  ▶ read scripts/append_terminal_state_events.py:750..830 ✓ (1.5s)
+ ✓ (997ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the code already has:
+1. `find_missing_model_call_started` - finds ModelCallCompleted whose run_id has no matching ModelCallStarted
+2. The main function already calls this and creates synthetic ModelCallStarted events with `retroactive: True` and `model_call_id: f"retroactive-{rid}"`
+
+But wait - there's a key detail. The detection uses `run_id` matching, not `model_call_id` matching. And the synthetic event uses `f"retroactive-{rid}"` as the `model_call_id`. 
+
+Now let me check how `summarize_state_gnomes.py` computes the unmatched count:
+
+Looking at the gnome code:
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    eid = str(event_id(event) or "")
+    if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+        continue
+```
+
+So the gnome skips ModelCallCompleted events that are retroactive. But `find_missing_model_call_started` creates synthetic ModelCallStarted events, not ModelCallCompleted. The gnome shouldn't skip those...
+
+But wait, the gnome matches by `run_id`:
+```python
+if kind == "ModelCallStarted" and deepseek_model_payload(data):
+    model_call_started += 1
+    if run_id:
+        model_call_started_runs[run_id] = data
+```
+
+And then later:
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    ...
+    if run_id:
+        if run_id in model_call_started_runs:
+            ...
+        else:
+            model_unmatched_completed_ids.append(event_id(event))
+```
+
+So the gnome uses `run_id` matching. The synthetic ModelCallStarted events created by `append_terminal_state_events.py` use the same `run_id` as the orphaned ModelCallCompleted, so they SHOULD be matched by the gnome.
+
+But wait - can there be orphaned ModelCallCompleted events that DON'T have matching ModelCallStarted because the Event ID starts with `evt-harness-`? Let me look at the gnome skipping logic again:
+
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    eid = str(event_id(event) or "")
+    if eid.startswith("evt-harness-") or data.get("retroactive") is True:
+        continue
+```
+
+This skips ModelCallCompleted events where:
+1. The event_id starts with "evt-harness-" (synthetic events)
+2. Or the payload has `retroactive: True`
+
+But it doesn't skip at the matching stage - it skips counting them entirely. So a ModelCallCompleted with `retroactive: True` wouldn't be counted as unmatched because it's skipped before the matching check.
+
+Hmm, but what about the synthetic ModelCallStarted events? They don't have a skip check in the gnome code:
+
+```python
+if kind == "ModelCallStarted" and deepseek_model_payload(data):
+    model_call_started += 1
+    if run_id:
+        model_call_started_runs[run_id] = data
+```
+
+No skip for `retroactive` or `evt-harness-` prefix on ModelCallStarted. So synthetic ModelCallStarted events should be counted.
+
+But wait - maybe the problem is that there are ModelCallCompleted events where no corresponding ModelCallStarted exists, and the `find_missing_model_call_started` function should have caught them but didn't? Let me check the `deepseek_model_payload` function to understand what qualifies:
+
+```python
+def deepseek_model_payload(data):
+```
+
+Let me read that function.
+
+Actually, the key issue might be simpler. The task says there are 42 unmatched completions, 8 from `model_completion_without_start`. The existing code should handle these, but maybe:
+1. The code was added recently (Day 150) and hasn't been run on all historical data
+2. OR there's a filtering issue where the gnome detects them but `append_terminal_state_events.py` misses them
+
+Let me read the `deepseek_model_payload` function and check the main function flow to understand why the 8 are still unmatched.
+
+Actually, wait. Let me re-read the task more carefully:
+
+> Evidence: "...Trajectory shows 42 unmatched model call completions, 8 specifically from model_completion_without_start..."
+> "Day 154 10:00 Task 2 (src/prompt.rs) closed model-call lifecycle in the panic path going forward, but historical orphaned events need post-hoc repair."
+
+So the forward fix is in src/prompt.rs (Day 154), and this task is about post-hoc repair of historical orphaned events. The existing `find_missing_model_call_started` function should handle this, but maybe it hasn't been run yet, or there's a bug in it.
+
+Let me read the `deepseek_model_payload` function and understand the full pipeline.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:222..247  ▶ read scripts/summarize_state_gnomes.py:330..375 ✓ (1.5s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the gnome code to see how model_unmatched_completed_ids is computed:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:374..404 ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow:
+
+1. **Gnome** (`summarize_state_gnomes.py`): Computes `model_unmatched_completed_ids` as ModelCallCompleted runs whose `run_id` is not in the set of ModelCallStarted runs. This creates the `deepseek_model_call_unmatched_completed_count` metric.
+
+2. **append_terminal_state_events.py**: Already has `find_missing_model_call_started()` which does the SAME thing — finds ModelCallCompleted runs whose `run_id` has no matching ModelCallStarted, and writes synthetic ModelCallStarted events with `retroactive: True`.
+
+So the question is: why are there still 8 unmatched completions if the code already fixes them?
+
+Possible reasons:
+1. The code was added recently and hasn't been run in CI on all historical data
+2. The synthetic ModelCallStarted events ARE being written, but the gnome has a different detection methodology
+
+Wait, actually let me re-read the gnome code more carefully. The gnome checks `deepseek_model_payload(data)` — this requires `deepseek_native: True`, or model starts with "deepseek", or provider is "deepseek". 
+
+Now let me check: in the synthetic events created by `append_terminal_state_events.py`, the payload includes:
+```python
+payload_mcs: dict[str, Any] = {
+    "model": entry.get("model"),
+    "model_call_id": f"retroactive-{rid}",
+    "retroactive": True,
+}
+```
+
+It passes the `model` from the original ModelCallCompleted event. If that model is a deepseek model, the synthetic start will be counted by the gnome, and the match will be found. BUT — there might be cases where the original ModelCallCompleted has a model that doesn't pass `deepseek_model_payload` but the gnome matches it by `deepseek_native: True` or `provider: "deepseek"`.
+
+Wait no — `find_missing_model_call_started` doesn't filter by `deepseek_model_payload`. It finds ALL ModelCallCompleted without matching ModelCallStarted, regardless of model/provider. Then it creates synthetic start events. If the ModelCallCompleted wasn't a deepseek call, the synthetic start won't be counted by the gnome either, and the mismatch persists.
+
+Actually, that's not quite right either. Let me think more carefully...
+
+The gnome:
+1. Collects ModelCallStarted runs (filtered by `deepseek_model_payload`)
+2. Collects ModelCallCompleted runs (filtered by `deepseek_model_payload`, skipping retroactive events)
+3. Reports mismatches
+
+The `append_terminal_state_events.py`:
+1. Finds ModelCallCompleted runs WITHOUT matching ModelCallStarted (NOT filtered by deepseek_model_payload)
+2. Creates synthetic ModelCallStarted events with `retroactive: True`
+
+So if there's a non-deepseek ModelCallCompleted that also doesn't have a matching ModelCallStarted, the synthetic start event would be created but the gnome wouldn't count it (because it's not a deepseek call). This doesn't explain the remaining 8 though, since they're specifically deepseek_model_call_unmatched_completed.
+
+Let me think about this differently. Maybe the issue is simpler: maybe the `append_terminal_state_events.py` script hasn't actually been run on the production state files yet. The cron evolution pipeline runs it, but maybe it's not running in the right order or on all files.
+
+But actually, looking at the task more carefully - the previous attempt spent 21 turns reading code and didn't produce any edits. The checkpoint says I need to produce an edit by my 3rd tool turn.
+
+Let me look at the test file to understand what tests exist, and then see if I need to add a test for the `model_completion_without_start` classification specifically.
+
+The task says: "Use the same classification pattern as Day 154 Task 1's input-validation skip: a helper function that scans the event log for orphaned completions, then a repair loop that adds synthetic start events."
+
+But the code already has `find_missing_model_call_started` which does exactly this! 
+
+Let me check whether the problem is that the existing code IS correct but isn't being called properly, or if there's a subtle bug in the detection.
+
+Actually, let me look at the test file to see what tests exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_completion_without_start' in scripts/test_append_terminal_state_events.py  ▶ search 'find_missing_model_call_started' in scripts/test_append_terminal_state_events.py ✓ (991ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test file doesn't test `find_missing_model_call_started` at all. Let me look at what the test file does test, and also check whether `find_missing_model_call_started` is actually correct in its logic.
+
+Let me also look at what the gnome-predicted lifecycle causes are. The task says "model_completion_without_start=8". Let me look at `summarize_state_lifecycle` in `summarize_state_gnomes.py` to see how it classifies lifecycle causes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:400..450  ▶ search 'model_completion_without_start' in scripts/summarize_state_gnomes.py ✓ (1.0s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The string "model_completion_without_start" doesn't exist in the codebase. Let me search more broadly:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'lifecycle_cause' in scripts/summarize_state_gnomes.py  ▶ search 'model_completion_without_start' in scripts ✓ (1.0s)
+ ✓ (992ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it. `model_completion_without_start` is a lifecycle cause classification used in `build_evolution_dashboard.py` and `state_graph_tools.py`. Let me read how it's classified:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2540..2580  ▶ read scripts/state_graph_tools.py:865..905 ✓ (1.5s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `lifecycle_cause(last_event)` in both `build_evolution_dashboard.py` and `state_graph_tools.py` classifies orphaned lifecycle gaps. When `kind == "ModelCallCompleted"`, it returns `"model_completion_without_start"`.
+
+2. These are the last events of runs that are in `model_unmatched_completed_ids` from the gnome's `summarize_state_lifecycle`.
+
+3. The gnome has 42 total unmatched completions. 8 of them are classified as `model_completion_without_start` — meaning their last_event has kind "ModelCallCompleted".
+
+4. The existing `find_missing_model_call_started` in `append_terminal_state_events.py` already finds and fixes these by creating synthetic ModelCallStarted events.
+
+But wait — the task says there are still 8 of these. The existing code already handles them. So what's broken?
+
+Let me think... maybe the issue is that `find_missing_model_call_started` uses `run_id` to match, but the gnome also does the same. So if both use `run_id` matching, the synthetic events should close the gap.
+
+Unless... the synthetic events are being written but the gnome output hasn't been regenerated after they were written? Or the synthetic events are written but the gnome skips them somehow?
+
+Wait, let me look at this more carefully. The gnome skips ModelCallCompleted events with `retroactive: True`, but the synthesis creates ModelCallStarted events (not ModelCallCompleted). And the gnome doesn't skip retroactive ModelCallStarted events (no check in the ModelCallStarted branch at line 335).
+
+So the gap SHOULD be closed. Let me think about what could go wrong...
+
+Actually, maybe I should just look at whether the test file already tests this, and add a test. Let me read the test file.
+
+Actually wait - let me re-read the task instruction. It says:
+
+> "Success Criteria:
+> - append_terminal_state_events.py detects orphaned ModelCallCompleted events that lack a matching ModelCallStarted.
+> - For each orphaned completion, a synthetic ModelCallStarted event is added with the same model_call_id and session_id, marked with a "synthetic: model_completion_without_start" provenance field."
+
+But the existing code uses `retroactive: True` and `model_call_id: f"retroactive-{rid}"`. The task asks for `"synthetic": true` and `"synthetic_reason": "model_completion_without_start"`.
+
+Hmm, but the task also says: "Existing tests (including Day 154 input-validation skip tests) continue to pass." So the pattern should be compatible.
+
+Let me look at what the gnome does with the synthetic ModelCallStarted events:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.6s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:330..390 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly:
+
+At line 335: `if kind == "ModelCallStarted" and deepseek_model_payload(data):`
+
+The `deepseek_model_payload` check requires `deepseek_native: True`, model starts with "deepseek", or provider is "deepseek".
+
+Now look at the synthetic ModelCallStarted events created by `find_missing_model_call_started`:
+
+```python
+payload_mcs: dict[str, Any] = {
+    "model": entry.get("model"),
+    "model_call_id": f"retroactive-{rid}",
+    "retroactive": True,
+}
+```
+
+The `model` comes from the original ModelCallCompleted event. If the original event had `deepseek_native: True` or a deepseek model, this would pass.
+
+BUT — the original ModelCallCompleted itself only passed `deepseek_model_payload` because it had those fields. So the synthetic start SHOULD also pass.
+
+Wait, but actually the gnome only counts ModelCallCompleted events that pass `deepseek_model_payload`. So the `model_unmatched_completed_ids` set only contains runs of deepseek ModelCallCompleted events. And `find_missing_model_call_started` finds ALL ModelCallCompleted without matching starts — it doesn't filter by deepseek. So for non-deepseek completions, it creates synthetic starts too. But the gnome wouldn't have counted those anyway.
+
+Hmm, so the existing code should work. Let me think about what's really wrong.
+
+Wait - maybe the issue is timing. The `append_terminal_state_events.py` script writes synthetic events to the JSONL file. But the gnome runs on a different `summary.json` that was generated BEFORE the synthetic events were appended. Let me check the pipeline order.
+
+Actually, let me just look at what the test file has and whether I can add a meaningful test.
+
+Let me also check: does the current `find_missing_model_call_started` use `model_call_id` or `run_id` for matching? Looking at lines 445-469:
+
+```python
+model_started_runs: set[str] = set()
+...
+for event in events:
+    ...
+    if kind == "ModelCallStarted":
+        model_started_runs.add(rid)
+    elif kind == "ModelCallCompleted":
+        model_completed_entries[rid] = {...}
+```
+
+It uses `run_id` (from `run_id(event, data)`). And the gnome also uses `run_id` for matching at lines 335-365. So they're consistent.
+
+But wait - the task says to use `model_call_id` matching:
+> "The detection logic: collect all model_call_ids from ModelCallStarted events, then find ModelCallCompleted events whose model_call_id is not in that set."
+
+The existing `find_missing_model_call_started` uses `run_id`, not `model_call_id`. 
+
+There's also `find_orphaned_model_calls` (the reverse direction) which uses `model_call_id` as the primary key. But `find_missing_model_call_started` only uses `run_id`.
+
+So maybe the issue is that some ModelCallCompleted events have a different `run_id` than their ModelCallStarted counterpart, but share the same `model_call_id`? If the run_id doesn't match but model_call_id does, both the gnome and `find_missing_model_call_started` would count them as unmatched.
+
+Actually, that seems unlikely. The run_id should be consistent.
+
+Let me take a step back. The task says "This targets 8 of the 42 unmatched completions." The 8 are classified as "model_completion_without_start" — meaning ModelCallCompleted events without matching ModelCallStarted. The existing `find_missing_model_call_started` already handles this exact case.
+
+Maybe the real issue is that `find_missing_model_call_started` was added recently (Day 150 based on the comment at line 764) and the 8 orphaned completions are from BEFORE that code was added, and the cron hasn't run the script on those historical state files yet.
+
+Or maybe the issue is different: the existing code handles this, but the task wants me to add a test proving it works. The task says "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test."
+
+Let me verify this hypothesis by running the existing tests first, then adding a test for the `find_missing_model_call_started` function.
+
+Actually, let me re-read the task more carefully:
+
+> "Success Criteria:
+> - append_terminal_state_events.py detects orphaned ModelCallCompleted events that lack a matching ModelCallStarted.
+> - For each orphaned completion, a synthetic ModelCallStarted event is added with the same model_call_id and session_id, marked with a "synthetic: model_completion_without_start" provenance field."
+
+The existing code already detects orphaned completions and adds synthetic start events. But it uses `retroactive: True` not `synthetic: True` / `synthetic_reason: "model_completion_without_start"`.
+
+However, changing the provenance field name could break other things. Let me check what consumes these fields.
+
+Actually wait - the gnome has a check for `data.get("retroactive") is True` on ModelCallCompleted events (line 346). If I change from `retroactive: True` to `synthetic: True`, the gnome's skip wouldn't work for ModelCallCompleted events with `synthetic: True`. But... the synthetic START events aren't checked for retroactive anywhere in the gnome code (lines 335-340 have no skip).
+
+So the question is: does anything consume `retroactive: True` on ModelCallStarted events? Let me search.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'retroactive' in scripts ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `retroactive` field is used throughout `append_terminal_state_events.py` and its test file. If I change the scheme from `retroactive: True` to `synthetic: True`, it would break existing tests and potentially gnome processing.
+
+The task says to mark with `"synthetic: model_completion_without_start"` but the existing code uses `retroactive: True`. These are different provenance conventions.
+
+Let me re-read the task requirement more carefully:
+
+> "For each orphaned completion, a synthetic ModelCallStarted event is added with the same model_call_id and session_id, marked with a "synthetic: model_completion_without_start" provenance field."
+
+I think the task is asking me to ADD the `"synthetic"` and `"synthetic_reason"` fields IN ADDITION to the existing fields, not to replace them. Or maybe the task is using "synthetic" as a generic term, not a literal field name.
+
+Actually, looking at it more carefully, I think the task description of the payload is a suggestion, not a spec. The key requirement is:
+1. Detect orphaned ModelCallCompleted without matching ModelCallStarted
+2. Add synthetic ModelCallStarted events to close the gap
+
+The existing code already does this. So the task might already be satisfied by the existing code.
+
+But the trajectory still shows 8 unmatched completions. Why?
+
+Let me check: does the cron actually run `append_terminal_state_events.py`? Let me look at the evolve.sh pipeline.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'append_terminal_state_events' in scripts/evolve.sh ✓ (512ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `append_terminal_state_events.py` is called from `evolve.sh`. Let me see the context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:255..285 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `append_terminal_state_events.py` is called with `--run-id`, `--session-id`, `--run-status`, `--model-status`, `--reason`, etc. This is for appending terminal events after a run. The full-scan repair (including `find_missing_model_call_started`) should be part of this script.
+
+Let me read the main function to see what flows are called:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:830..950 ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The script is called as a CLI with `--events`, `--after-line`, etc. The full-scan repair (including `find_missing_model_call_started`) happens inside `append_terminal_events()`. Let me find the start of that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def append_terminal_events' in scripts/append_terminal_state_events.py ✓ (510ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function signature and its early part:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:567..667 ✓ (347ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me continue reading past line 666 to see the `find_missing_model_call_started` call:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:666..746 ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. The `append_terminal_events` function already has:
+
+1. `find_missing_model_call_started` (line 768) - finds ModelCallCompleted without matching ModelCallStarted by run_id, creates synthetic starts
+2. `find_orphaned_model_calls` (line 803) - finds ModelCallStarted without matching ModelCallCompleted by model_call_id, creates synthetic completions
+3. `find_missing_failure_observed` (line 681) - finds error runs without FailureObserved
+4. `find_runs_with_failure_observed_no_completion` (line 708) - finds FailureObserved without RunCompleted
+5. Stale orphaned runs scan (line 638)
+6. And more
+
+The existing code already handles the exact scenario described in the task. The `find_missing_model_call_started` function at line 436 does exactly what the task asks for:
+- Finds ModelCallCompleted events without matching ModelCallStarted
+- Creates synthetic ModelCallStarted events with the same run_id
+
+So why are there still 8 unmatched? The questions are:
+1. Is the code running? Yes, it's called from evolve.sh.
+2. Does the code work correctly? Let me test.
+3. Is there a bug in the detection?
+
+Let me look at the test file to see what tests exist and whether I can add a test that proves the feature works (or find a bug):
+
+Actually, the task says: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test."
+
+So the right approach is: add a regression test that verifies `find_missing_model_call_started` correctly detects and creates synthetic ModelCallStarted events for orphaned ModelCallCompleted.
+
+Let me read the test file to understand the existing test patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1..81 ✓ (447ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for existing tests of `find_missing_model_call_started` in the test file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_model_call_started\|MissingModelCallStarted\|mi…' in scripts/test_append_terminal_state_events.py ✓ (450ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no tests for `find_missing_model_call_started`. The code already exists but has no tests. This is a perfect opportunity for a regression test.
+
+But wait - I need to also verify that the existing code actually works. Let me write a test for `find_missing_model_call_started` and then run it.
+
+Let me also check: does the existing `find_missing_model_call_started` use `deepseek_model_payload` filtering? If not, it might be finding non-deepseek completions too, which isn't a problem but might create unnecessary synthetic events.
+
+Looking at lines 436-477:
+```python
+def find_missing_model_call_started(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ...
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "ModelCallStarted":
+            model_started_runs.add(rid)
+        elif kind == "ModelCallCompleted":
+            model_completed_entries[rid] = {
+                "model": data.get("model"),
+                "timestamp_ms": event.get("timestamp_ms", 0),
+            }
+```
+
+It doesn't filter by `deepseek_model_payload`. It finds ALL ModelCallCompleted without matching ModelCallStarted, regardless of model/provider. This means it might create synthetic starts for non-deepseek calls too. Not harmful, but might be noisy.
+
+But actually, looking at the gnome code - the gnome only reports unmatched completions for deepseek calls. So if the existing code already fixes all unmatched completions (including non-deepseek), the gnome should report 0 deepseek unmatched. Unless there's a bug.
+
+Let me think about what could go wrong:
+
+1. The code IS creating synthetic starts, but the gnome hasn't been re-run after they were appended
+2. The synthetic starts have `retroactive: True` but the gnome doesn't skip them (no skip at line 335), so they should be counted
+3. The synthetic starts have the same `run_id` as the orphaned completions, so the gnome should match them
+
+Actually, wait. Let me re-read the gnome matching more carefully...
+
+At line 335:
+```python
+if kind == "ModelCallStarted" and deepseek_model_payload(data):
+    model_call_started += 1
+    if run_id:
+        model_call_started_runs[run_id] = data
+```
+
+The `deepseek_model_payload` check requires `deepseek_native: True`, or model starts with "deepseek", or provider is "deepseek".
+
+The synthetic start has payload:
+```python
+payload_mcs: dict[str, Any] = {
+    "model": entry.get("model"),
+    "model_call_id": f"retroactive-{rid}",
+    "retroactive": True,
+}
+```
+
+The `model` comes from the original ModelCallCompleted event. If the original completion was from a deepseek call, it should have `deepseek_native: True` or a deepseek model name. So the synthetic start should pass the filter.
+
+BUT — what if the original ModelCallCompleted doesn't have `deepseek_native: True` or a deepseek model? In that case, the gnome wouldn't have counted it as an unmatched completion in the first place (because the gnome also filters ModelCallCompleted by `deepseek_model_payload` at line 341).
+
+So the logic seems correct. If the gnome counted it as unmatched, the synthetic start should close the gap.
+
+Unless... the issue is that the script runs but the events file path is different from what the gnome reads?
+
+OK, I'm spending too much time analyzing. Let me just verify the existing code works with a test, and check if there's a subtle bug.
+
+Let me write a focused test for `find_missing_model_call_started`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture: the existing `find_missing_model_call_started` in `append_terminal_state_events.py` (lines 436-477) already detects orphaned ModelCallCompleted events and the main function (lines 756-793) already creates synthetic ModelCallStarted events. The feature exists but has no regression test.
+
+Let me add a test. First, let me see how the test file is structured near the end to know where to add:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1150..1200 ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I know the test structure. Let me also look at some tests that test the full-scan repair logic to get the pattern right. Let me search for tests that deal with input validation:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'input_validation' in scripts/test_append_terminal_state_events.py ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests that test the model_call_started aspect:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_started_appended' in scripts/test_append_terminal_state_events.py ✓ (350ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read those tests to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:795..865 ✓ (361ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:864..904 ✓ (398ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern. Let me look at the test at line 775-832 more carefully - it's the one that tests the retroactive ModelCallStarted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:770..810 ✓ (456ms)
+
+

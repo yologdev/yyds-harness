@@ -1,0 +1,518 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment is available (planning fallback)
+2. I need to create session_plan/task_01.md using trajectory, state evidence, journals, or issues
+3. The trajectory shows several actionable signals
+4. There are agent-self issues about reverted tasks
+5. There's a help-wanted issue about evaluator timeouts
+
+Let me check what's already in session_plan/ and the trajectory signals:
+
+From trajectory:
+- Graph-derived next-task pressure:
+  1. Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=42)
+  2. Preserve assessment artifacts (assessment_artifact_missing_count=1) 
+  3. Break recurring log failure fingerprints (recurring_failure_count=1)
+  4. Bound failing shell commands before retrying (bash_tool_error=5)
+  5. Reconcile state-only tool failures (state_only_failed_tool_count=20)
+
+From agent-self issues:
+- #154: Planning-only session: all tasks reverted (Day 155) - suggests smaller incremental changes
+- #152: Task reverted: Distinguish cancelled runs from error exits - evaluator timeout
+- #105: Task reverted: DeepSeek prompt cache metrics - blocked by upstream yoagent
+
+The help-wanted issue #131 about evaluator timeouts is also relevant but I can't fix evolve.sh.
+
+Let me check if task_01.md already exists first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ ls session_plan  ▶ $ git status --short session_plan/ 2>&1 || echo "session_plan/ does not exist or i… ✓ (1.5s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and an assessment_missing.md. Let me read both.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.5s)
+ ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment timed out (exit code 124, 600s timeout). I have a harness-seed task_01.md that is a generic "add something small to src/state.rs" — this is exactly the kind of self-referential busywork that past lessons warn against (Day 115: "Fallback self-reference turns 'nothing broken' into busywork you can't refuse").
+
+Let me now check what the trajectory actually says. Key pressure signals:
+
+1. **deepseek_model_call_unmatched_completed_count=42** — this is the top graph pressure. Model lifecycle gaps: model completion without start events. This is the #1 ranked task pressure.
+
+2. **assessment_artifact_missing_count=1** — the assessment artifact wasn't preserved. This literally just happened (this session's assessment timed out).
+
+3. **bash_tool_error=5** — shell commands failing.
+
+4. **state_only_failed_tool_count=20** — state events showing failed tools without transcript evidence.
+
+Let me also look at recent session outcomes:
+- day-156 (05:16): 1/1 tasks, 1/2 strict verified, 1 no touched files
+- day-156 (04:50): 0/2 tasks, reverted_unlanded_source_edits=2
+- day-155 (17:50): 0/1 tasks, reverted_unlanded_source_edits=1
+- day-155 (10:43): 0/0 tasks — no tasks attempted
+- day-155 (04:56): 1/2 tasks, reverted_unlanded_source_edits=1
+- day-154 (18:25): 1/2 tasks, reverted_unlanded_source_edits=1
+
+The pattern: many tasks are being reverted with "reverted_unlanded_source_edits" — this means the implementation agent is making changes but they're not landing (possibly due to evaluator timeouts per issue #131).
+
+The top graph-derived pressure is:
+1. Close model lifecycle gaps (42 unmatched completed events) — this is actionable and the append_terminal_state_events.py script is the right layer.
+
+Issue #152 was about distinguishing cancelled runs from error exits — it got reverted due to evaluator timeout. But that's a different angle on the lifecycle problem.
+
+Let me think about what tasks to create:
+
+**Task 01**: Replace the generic seed task with something evidence-backed. The #1 graph pressure is "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=42)". However, #152 already tried this and got reverted. The lesson from #154 says "Focus on smaller, more incremental changes."
+
+Let me check what the model lifecycle gap actually means. The trajectory says: "Lifecycle causes: model_incomplete/model_completion_without_start=8" — so 8 of the 42 are "model completion without start" events.
+
+What's the smallest verifiable improvement I can make?
+
+Actually wait — let me look at recent gnome feedback more carefully. The log feedback says:
+- "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- "state run lifecycle was incomplete: state_incomplete/open_after_tool_call=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+Also, the trajectory shows `bash_tool_error=5` as graph pressure.
+
+Let me think about what's the most actionable task:
+
+1. For the model lifecycle gap (#1 pressure): The issue is that model_call_completed events exist without matching model_call_started events. This could be from cancelled sessions where model calls were in-flight when SIGTERM arrived. The append_terminal_state_events.py script already handles some of this. A small, focused task could add detection for these orphaned ModelCallCompleted events and either pair them with synthetic start events or classify them as cancellation artifacts.
+
+2. For assessment artifact preservation (#2 pressure): The assessment literally just timed out. A task to preserve assessment_missing.md as a recognized artifact in the dashboard could be valuable and small.
+
+3. For shell command failures (#4 pressure): A task to improve bash recovery hints or add more bounded commands.
+
+But I need to follow the planning rules: task_01.md already exists from the harness seed. I should refine it or create task_02. Let me make the seed task more evidence-backed.
+
+Actually, let me re-read the trajectory graph pressures more carefully:
+
+1. "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=42): Lifecycle causes: model_incomplete/model_completion_without_start=8;..."
+
+So the lifecycle gap is specifically about ModelCallCompleted events without matching ModelCallStarted events (8 out of 42). This is the most specific, actionable signal.
+
+Let me refine task_01.md away from the generic "add a test" toward something evidence-backed. Then create task_02.md from the next priority.
+
+Actually, thinking about it more carefully — the harness seed task_01.md says "add a small verifiable improvement to src/state.rs." The trajectory says the #1 pressure is model lifecycle gaps with 42 unmatched completions, 8 of which are model_completion_without_start. The log feedback lesson says "emit RunCompleted events for every started run, including timeout and API-error exits."
+
+Let me check: is the model_completion_without_start issue already addressed by any pending changes?
+
+Let me look at what model lifecycle events exist and what append_terminal_state_events.py currently does.
+
+Let me refine task_01 to address the model lifecycle gap, which is the top graph pressure. I'll keep it small — focus on just the model_completion_without_start case (8 of the 42 unmatched completions).
+
+But actually, #152 was already about lifecycle gaps and got reverted. The lesson from past sessions says: "If a task has been reverted before, make it SMALLER than last time."
+
+The #152 task tried to:
+- Detect cancelled runs in append_terminal_state_events.py
+- Update log_feedback.py
+- Update summarize_state_gnomes.py
+
+That's 3 files. Let me make it smaller — focus on just one file.
+
+What about the assessment artifact missing count? That's literally this session's assessment timing out. A task to preserve the assessment_missing.md artifact could be very small and useful. But it touches planning scripts, which could be self-referential.
+
+Let me go with two tasks:
+1. Task 01: Refine the harness seed to target the #1 graph pressure — close a specific lifecycle gap (model_completion_without_start=8) by having append_terminal_state_events.py create synthetic ModelCallStarted events for orphaned ModelCallCompleted events. Single file. Small scope.
+
+2. Task 02: Address the assessment_artifact_missing_count=1 pressure — preserve assessment phase artifacts (including assessment_missing.md) in the dashboard/state pipeline so the dashboard doesn't lose evidence when assessment times out.
+
+Actually, wait. Let me reconsider. The planning rules say:
+- "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists."
+- "If task_01.md is not written by your third tool turn, stop exploration and write it immediately from the trajectory/state evidence you already have."
+
+Task_01.md already exists from the harness seed. I'm on my 2nd tool turn. I should refine or add.
+
+Let me refine task_01.md to be evidence-backed and add task_02.md. Let me also check what edit surface would be needed.
+
+For the model lifecycle gap task, I need to check: does append_terminal_state_events.py own the model_call lifecycle detection? Let me verify quickly.
+
+Actually, let me just verify the file exists and then write the refined tasks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.3s (2 ✓)
+
+The harness seed task_01.md is a generic "add a small test" — a self-referential fallback. The trajectory shows concrete graph pressure (#1: model lifecycle gaps with 42 unmatched completions, 8 as `model_completion_without_start`). Let me refine task_01 to address real evidence and create task_02.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/append_terminal_state_events.py scripts/log_feedback.py scr… ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, all files exist. Now let me write the refined tasks:
+
+Task 01: Close the model_completion_without_start lifecycle gap. This is 8 specific orphaned ModelCallCompleted events that have no matching ModelCallStarted. The smallest fix: in append_terminal_state_events.py, detect orphaned ModelCallCompleted events and either create synthetic ModelCallStarted events or classify them. This is a single-file change, smaller than the reverted #152 which touched 3 files.
+
+Task 02: Preserve assessment artifacts. The assessment literally just timed out (exit code 124) and assessment_missing.md exists but isn't preserved in the dashboard/artifact pipeline. A small task to preserve this as a recognized state artifact.
+
+Let me check if there's an existing mechanism for preserving assessment artifacts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'assessment_artifact_missing\|assessment_missing\|assessment\.md' script… ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The dashboard already has support for assessment_missing artifacts. The issue isn't that the dashboard can't handle it — it's that the artifact count is 1. Let me check what the graph pressure actually means.
+
+Looking at build_evolution_dashboard.py line 3891: `assessment_missing` is detected when `assessment_missing_file_present` or the manifest shows it. So the dashboard already recognizes missing assessments.
+
+The graph pressure says "assessment_artifact_missing_count=1" — this is a counter metric. Let me check where this metric comes from.
+
+Actually, let me step back. The trajectory says:
+"Preserve assessment artifacts (assessment_artifact_missing_count=1): Assessment evidence exists but tasks/assessment.md was not preserved"
+
+So the issue is that the session's assessment artifact wasn't preserved in the audit-log branch's task artifacts. This is an evolve.sh concern (do-not-modify territory). Let me skip this task for now.
+
+Let me focus on what I CAN do:
+
+Task 01 (refined from seed): Address the #1 graph pressure — model lifecycle gaps. The smallest, most verifiable piece: in append_terminal_state_events.py, detect orphaned ModelCallCompleted events (those without matching ModelCallStarted) and create synthetic ModelCallStarted events to close the lifecycle gap. This is a single-file change, focused on the `model_completion_without_start` cause (8 of 42 unmatched completions).
+
+Task 02: Address the bash_tool_error=5 pressure. Improve bash recovery hints or add timeouts/bounds to common failure patterns.
+
+Actually, let me look at what the bash_tool_error means more carefully. The trajectory says: "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+And the log feedback says: "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This could be a small improvement to recovery hints in the bash tool safety system. Let me check if src/safety.rs or similar owns bash recovery hints.
+
+Let me search for "RecoveryHint" or recovery hints in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'RecoveryHint\|recovery_hint\|recovery hint' src/ --include='*.rs' -l 2… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so recovery hints are spread across multiple files. Let me focus on what bash safety analysis looks like:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'recovery_hint\|RecoveryHint\|tool_failure_hint\|bash.*hint\|hint.*bash'… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No matches in safety.rs. Let me check tool_wrappers.rs for RecoveryHintTool.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'RecoveryHint\|recovery_hint' src/tool_wrappers.rs | head -20 ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The `targeted_recovery_hint` function at line 1018 provides targeted hints for bash failures. The graph pressure says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." This could be improved by adding more targeted recovery hints for common bash failure patterns.
+
+But wait — the trajectory says `bash_tool_error=5`. That's only 5 occurrences. Is this a strong enough signal to warrant a task? Let me reconsider.
+
+The #1 pressure is model lifecycle gaps (42 unmatched completions). This is a much stronger signal. Let me focus on that.
+
+Let me write task_01.md: address model_completion_without_start lifecycle gaps.
+
+For the second task, let me look at what other pressure is strong:
+- assessment_artifact_missing_count=1 (weak, only 1 occurrence)
+- recurring_failure_count=1 (weak)
+- bash_tool_error=5 (moderate)
+- state_only_failed_tool_count=20 (strong!)
+
+state_only_failed_tool_count=20: "State events contained failed tool actions without matching transcript evidence." This is a significant count. These are tool failures recorded in state events but with no transcript trace — meaning we can't debug them.
+
+Let me check what state_only_failed_tool_count means. It could mean the tool failure was recorded in state but the transcript wasn't preserved, or it could mean the failure happened in a sub-agent or diagnostic path.
+
+This could be a task to reconcile state-only tool failures. But it's a broad investigation that could exceed 3 files.
+
+Let me go with:
+1. Task 01: Model lifecycle gaps (model_completion_without_start=8) — single file append_terminal_state_events.py
+2. Task 02: Bash tool recovery hints — improve targeted_recovery_hint in src/tool_wrappers.rs to add bounded-command and explicit-path hints for common bash failure patterns
+
+Actually, wait. Let me reconsider whether task_02 is high enough priority. The bash_tool_error=5 is ranked #4 in graph pressure. Let me check the state_only_failed_tool_count (#5) — 20 occurrences is significant.
+
+But I can't open a broad investigation. Let me think about what a small, focused task for state-only tool failures would look like.
+
+Actually, the state_only_failed_tool_count might be from sub-agents where the transcript isn't captured. That's a known limitation. A task to mark these as "sub_agent" or "diagnostic" failures rather than "unmatched" would be small but useful.
+
+Hmm, but I don't know enough about where this metric is computed. Let me focus on what I can do with confidence:
+
+1. Task 01: Refine the seed task to address model lifecycle gaps — the #1 graph pressure with clear evidence (42 unmatched completions, 8 model_completion_without_start)
+
+2. Task 02: Address bash recovery hints — add bounded-command and explicit-path hints to targeted_recovery_hint in src/tool_wrappers.rs. This is a small, single-file change that addresses the bash_tool_error=5 pressure.
+
+3. Task 03: Maybe skip — I only need at least 2 tasks and I don't have a strong 3rd candidate.
+
+Let me write these now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough evidence to write the task files. The #1 graph pressure is model lifecycle gaps (42 unmatched completions). Let me refine task_01 and create task_02.
+  - Title: Add a small verifiable improvement to src/
+  - Files: src/state.rs
+  + Title: Close model_completion_without_start lifecycle gaps in terminal state events
+  + Files: scripts/append_terminal_state_events.py
+    Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Origin: planner (refined from harness-seed)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found no actionable bugs in src/. Instead of producing a journal-only observation that wastes an evolution cycle, this task produces a small, verifiable code improvement that passes cargo build && cargo test.
+  + - Graph-derived next-task pressure #1: "Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=42): Lifecycle causes: model_incomplete/model_completion_without_start=8"
+  + - Trajectory shows 42 unmatched model call completions, 8 specifically from model_completion_without_start — ModelCallCompleted events with no matching ModelCallStarted.
+  + - Day 154 10:00 Task 2 (src/prompt.rs) closed model-call lifecycle in the panic path going forward, but historical orphaned events need post-hoc repair.
+  + - Day 154 10:00 Task 1 added input-validation classification to append_terminal_state_events.py — the same pattern (classification helper + skip/repair) is the right approach.
+  + - This is a narrower, single-file version of the reverted #152 which touched 3 files and timed out. Focus only on model_completion_without_start, not all lifecycle gaps.
+    
+    Edit Surface:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (47 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (47 lines) ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write task_02.md. I'll use the bash_tool_error=5 pressure since that's actionable and can be addressed in a single file.
+
+Actually, let me reconsider. Looking at the graph pressures again:
+- #3: "Break recurring log failure fingerprints (recurring_failure_count=1)" — only 1 occurrence
+- #4: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=5)" — 5 occurrences
+- #5: "Reconcile state-only tool failures (state_only_failed_tool_count=20)" — 20 occurrences
+
+The #5 pressure (state_only_failed_tool_count=20) is much stronger. But I don't know enough about where this metric is computed or what file to change.
+
+Let me search for where state_only_failed_tool_count is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'state_only_failed_tool\|state_only.*failed.*tool' scripts/ --include='… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is a dashboard/trajectory metric, not a source-level fix. The state_only_failed_tool_count=20 means there are 20 state events showing tool failures without matching transcript entries. This is more of a diagnostic metric than something I can fix in a single task. It could mean sub-agent tool failures that don't have transcript capture, or it could mean the transcript parsing is missing some tool failure patterns.
+
+Let me go with the bash recovery hints instead — that's clearly actionable in src/tool_wrappers.rs.
+
+Actually, let me think about what's the most impactful task for a second slot. Looking at the session outcomes:
+
+- Day 156 05:16: 1/2 strict verified, 1 no touched files
+- Day 156 04:50: 0/2, reverted_unlanded_source_edits=2
+- Day 155 17:50: 0/1, reverted_unlanded_source_edits=1
+- Day 155 10:43: 0/0, no tasks attempted
+- Day 155 04:56: 1/2, reverted_unlanded_source_edits=1
+
+The pattern of "reverted_unlanded_source_edits" is concerning — tasks are being implemented but reverted. The help-wanted issue #131 says this is because of evaluator timeouts. But I can't fix evolve.sh.
+
+What about the "no tasks attempted" session (Day 155 10:43)? That could be a planning failure or the seed task was marked obsolete.
+
+Looking at the corrected log feedback lessons:
+- "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- "state run lifecycle was incomplete: state_incomplete/open_after_tool_call=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+Day 154 10:00 Task 2 already addressed the panic-path for model call lifecycle in src/prompt.rs and src/state.rs. The remaining open_after_tool_call issue might be about runs, not model calls. This is a different lifecycle gap.
+
+Let me create Task 02 to address the "open_after_tool_call" run lifecycle gap — emitting RunCompleted for runs that exit after tool calls without explicit completion. This is a 1-occurrence pressure though, very weak.
+
+OK, let me just go with the bash recovery hints task. It's small, focused, single-file, and addresses a clear signal (bash_tool_error=5).
+
+Wait, actually I should look at what the recent sessions have been attempting. The trajectory shows:
+- Day 156 05:16: 1 task, partial verification
+- Day 156 04:50: 2 tasks, both reverted
+- Day 155 17:50: 1 task, reverted
+
+These recent reverted tasks were about lifecycle fixes. The reversion is due to evaluator timeout (#131). So the code might actually be correct but gets reverted anyway.
+
+Let me focus on tasks that are:
+1. Very small (single file, minimal changes)
+2. Have fast verification (python tests are faster than cargo test)
+3. Don't rely on long-running evaluator checks
+
+Task 01 (append_terminal_state_events.py) with python tests fits this.
+Task 02 could be the bash recovery hints in src/tool_wrappers.rs — but cargo test is slower.
+
+Actually, let me make task 02 about something different. Let me look at what the recent session Day 156 05:16 accomplished. It says "1/2 strict verified; 1 no touched files" — one of the two tasks had no files touched but still got strict-verified. That's strange.
+
+Let me focus on creating a second task. Given the rule "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence," I should pick from the graph pressures.
+
+Let me go with the bash tool recovery hints task. It's clear, single-file, and has a concrete improvement (add bounded-command + explicit-path hints).
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn targeted_recovery_hint' src/tool_wrappers.rs ✓ (904ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function to understand its current behavior before writing the task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1018..1148 ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The targeted_recovery_hint function already has good hints. The trajectory pressure says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks." Looking at the current hints, they already mention explicit paths and exit code checking. But the "bounded commands" advice could be made more prominent.
+
+However, I notice the hints are already quite comprehensive. The real issue might not be the hints themselves but that agents aren't following them. 
+
+Let me think about whether this is actually worth a task. The bash_tool_error=5 is only 5 occurrences across sessions. It's a weak signal. And the existing hints already cover the advice the trajectory suggests.
+
+Let me instead look at whether there's a stronger, more concrete task I can create. Let me look at the log feedback more carefully.
+
+The log feedback says:
+- "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- "state run lifecycle was incomplete: state_incomplete/open_after_tool_call=1 -> emit RunCompleted events for every started run, including timeout and API-error exits"
+
+The second one (open_after_tool_call=1) is a run lifecycle gap. Let me check if this is already addressed by Day 154 Task 2 (panic path in src/prompt.rs).
+
+Actually, looking at the Day 154 evidence: "Day 154 10:00 Task 2 (src/prompt.rs + src/state.rs) closed model-call lifecycle in panic path going forward." That's model-call lifecycle, not run lifecycle. The log feedback mentions "state run lifecycle was incomplete" — this is about Runs, not ModelCalls.
+
+The Day 154 Task 2 might have also handled runs. Let me check.
+
+Actually, I don't need to open source files. Let me just go with the bash recovery hints task — it's small, verifiable, and addresses a concrete signal. Even if it's only 5 occurrences, improving the hints is low-risk.
+
+Alternatively, let me think about what else could be useful. The help-wanted issue #131 (evaluator timeouts) is not actionable for me (evolve.sh is do-not-modify). Issue #90 (yoagent Usage struct) is also not actionable.
+
+Let me just write task_02 for bash recovery hints and create the issue_responses.md.
+
+Actually wait — let me reconsider. The planning rules say: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+The #1 trajectory pressure is model lifecycle gaps — that's task_01. The #2 is assessment artifact missing, which I can't fix (evolve.sh concern). The #3 is recurring failure fingerprints (1 occurrence). The #4 is bash errors (5 occurrences). The #5 is state-only tool failures (20 occurrences).
+
+For task_02, let me pick the #5 pressure: state_only_failed_tool_count=20. But I need to know where to fix it.
+
+Let me search for where state_only_failed_tool_count is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'state_only_failed_tool' scripts/extract_trajectory.py | head -20 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The state_only_failed_tool_count comes from `recent_action_evidence_summary` which is computed by `build_evolution_dashboard.py`. This is a dashboard-level metric — the actual data comes from comparing state events against transcript actions. The fix would be in either:
+- build_evolution_dashboard.py (how the metric is computed)
+- Or the underlying state/transcript collection (evolve.sh, which is do-not-modify)
+
+This is too broad for a focused task. Let me go with the bash hints task instead, or pick something else.
+
+Actually, let me reconsider the whole approach. The trajectory has very specific pressure and the #1 is clearly model lifecycle gaps. Let me create task_02 from another concrete signal.
+
+Looking at the agent-self issue #154: "Planning-only session: all 1 selected tasks reverted (Day 155)" — this says to focus on smaller, more incremental changes. I'm already doing that with task_01 (single file).
+
+What about the "no tasks attempted" session (Day 155 10:43)? That's a planning gap. The preseed script might have failed to find a task. Let me check what happened.
+
+Actually, I should stop analyzing and just write task_02. Let me go with the bash recovery hints — it's small, focused, and addresses a real signal. Even if only 5 occurrences, the improvement is concrete.
+
+But wait, I should also consider: should I just write one task? The rules say "at least 2 slots SHOULD come from state evidence." "SHOULD" means it's a recommendation, not a hard requirement. Given that the assessment timed out and I only have trajectory evidence, one well-scoped task might be better than two mediocre ones.
+
+Actually, the rule also says "3 task slots per session" and I should use them. Let me create two tasks:
+
+1. Task 01: Model lifecycle gaps (model_completion_without_start) — already written
+2. Task 02: Bash recovery hints improvement — add more specific bounded-command advice
+
+Let me write task_02 and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add bounded-command and pipe-safety recovery hints for bash tool failures
+  + Files: src/tool_wrappers.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Graph-derived next-task pressure #4: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=5): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+  + - Corrected log feedback lesson: "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+  + - The targeted_recovery_hint function in src/tool_wrappers.rs already has bash failure hints but could be more specific about: (a) pipe failures (SIGPIPE / broken pipe) and (b) the general fallback case suggesting bounded commands.
+  + - The current general fallback (line 1096-1104) already mentions bounded limits but buried in a long paragraph — making it more prominent and adding pipe-specific advice would help agents recover faster.
+  + 
+  + Edit Surface:
+  + - src/tool_wrappers.rs
+  + 
+  + Verifier:
+  + - cargo test tool_wrappers
+  + 
+  + Fallback:
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (46 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (46 lines) ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md. I need to address:
+- #154: Planning-only session reverted (Day 155) — agent-self
+- #152: Task reverted: cancelled runs lifecycle — agent-self
+- #105: Task reverted: cache metrics — agent-self
+- #131: Help wanted: evaluator timeouts — help-wanted
+- #90: Help wanted: yoagent Usage struct — help-wanted
+
+For each:
+- #154: I'm addressing this by making tasks smaller (task_01 is single-file, task_02 is hint-only). Not closing the issue yet — let's see if this session lands.
+- #152: The cancelled-run detection task was reverted due to evaluator timeout (#131). task_01 addresses a narrower piece (model_completion_without_start). #152 stays open as context.
+- #105: Still blocked by upstream yoagent (#90). No progress possible.
+- #131: I can't fix evolve.sh. Still waiting on human.
+- #90: Still waiting on upstream yoagent. Re-confirmed blocked.
+
+Let me write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 156 (2026-08-03 11:23)
+  + 
+  + ## Issue #154 — Planning-only session: all 1 selected tasks reverted (Day 155)
+  + **Status:** Acknowledged. This session's tasks are deliberately smaller:
+  + - task_01: Single-file (scripts/append_terminal_state_events.py), Python tests only
+  + - task_02: Textual hint changes only (src/tool_wrappers.rs), no logic changes
+  + 
+  + Both are scoped for 20-minute implementation with fast verification. If these land, the "smaller task" hypothesis is validated and #154 can close. If they still revert (likely due to evaluator timeout #131), the problem is infrastructure, not task sizing.
+  + 
+  + ## Issue #152 — Task reverted: Distinguish cancelled runs from error exits
+  + **Status:** Deferred. The full 3-file version was reverted due to evaluator timeout (#131). task_01 in this session addresses a narrower piece of the same lifecycle domain (model_completion_without_start, single file). If task_01 lands, the classification pattern is proven; the remaining cancelled-run work can follow in a future task.
+  + 
+  + ## Issue #105 — Task reverted: DeepSeek prompt cache metrics
+  + **Status:** Still blocked. Upstream yoagent `Usage` struct doesn't expose `cache_read_input_tokens` / `cache_creation_input_tokens`. See #90. No progress possible until upstream ships.
+  + 
+  + ## Issue #131 — Help wanted: Evaluator timeouts
+  + **Status:** Still waiting. Three tasks reverted in the past week from evaluator timeouts on correct code. The fix lives in `scripts/evolve.sh` (do-not-modify): bump timeout or collect early verdicts. Task sizing helps but doesn't fix the root cause — a 20-minute task can still time out if the evaluator takes 240s to reach a verdict. Waiting on human.
+  + 
+  + ## Issue #90 — Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + **Status:** Still waiting. Two fields. `cache_read_input_tokens` and `cache_creation_input_tokens`. The entire DeepSeek cache observability pipeline is gated on this upstream change. Blocking #105 and all cost-optimization work. Waiting on human with yoagent repo access.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (20 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (20 lines) ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify the task files are complete and properly formatted. Let me also do a quick sanity check that the files referenced in the tasks actually exist.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ echo "=== session_plan contents ===" && ls -la session_plan/ && echo "" && echo … ✓ (851ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything checks out:
+- session_plan/ contains task_01.md, task_02.md, issue_responses.md, and assessment_missing.md
+- Each task has exactly 1 Files: line
+- All referenced files exist in the repo
+- Tasks are small, single-file, with clear verifiers
+
+Let me now summarize the plan.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Two task files and issue responses written:
+
+**session_plan/task_01.md** — Close `model_completion_without_start` lifecycle gaps (8 of 42 unmatched model completions). Single-file fix in `scripts/append_terminal_state_events.py`: detect orphaned ModelCallCompleted events and create synthetic ModelCallStarted events to close the lifecycle. Python test verification. This is the #1 trajectory graph pressure, narrowed from the reverted #152.
+
+**session_plan/task_02.md** — Improve bash recovery hints in `src/tool_wrappers.rs`. Add pipe-safety advice (head/tail SIGPIPE) and make bounded-command guidance more prominent in the general fallback. Purely textual — no logic changes. Addresses the `bash_tool_error=5` pressure.
+
+**session_plan/issue_responses.md** — All five open issues acknowledged:
+• #154 (reverted tasks): testing smaller-task hypothesis this session
+• #152 (cancelled runs): deferred, task_01 addresses narrower piece
+• #105 (cache metrics): still blocked by upstream #90
+• #131 (evaluator timeouts): still waiting on human
+• #90 (yoagent Usage struct): still waiting on human
+
+

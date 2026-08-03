@@ -1,0 +1,357 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source file to understand the current state of the recovery hints.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tool_wrappers.rs:1070..1130 ✓ (1.5s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear view of the current code. Let me see the full function to understand its structure better, and also look at the test file to understand existing test coverage.
+
+The task wants me to:
+1. Extend the broken pipe hint (line 1089-1095) to mention `head -n N` as the common cause
+2. Reorganize the general fallback (line 1096-1104) to lead with bounded-command advice
+
+Let me read more context and find the tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'targeted_recovery_hint' in src/tool_wrappers.rs  ▶ search 'test.*recovery.*hint|recovery.*hint.*test' (*.rs) ✓ (1.0s)
+ ✓ (989ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full function from around line 1018 to understand the full structure, and also look at the tests around line 3177.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1018..1108  ▶ read src/tool_wrappers.rs:3160..3240 ✓ (1.5s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also check if there are tests for the broken pipe case specifically.
+
+Let me search for tests that exercise the broken pipe hint.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'broken pipe|broken_pipe|pipefail' in src/tool_wrappers.rs ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the broken pipe hint has no test coverage. Let me now plan my changes:
+
+1. **Broken pipe hint** (line 1089-1095): Extend to mention `head -n N` as the common cause.
+2. **General fallback** (line 1096-1104): Reorganize to lead with bounded-command advice.
+
+The task says the change is purely textual — no logic changes. Let me make both edits.
+
+Let me also check the full function to see the entire structure and make sure I understand the flow.
+
+Now let me make the edits:
+
+For the broken pipe hint:
+Current:
+```
+"A pipe closed before the writer finished (EPIPE / SIGPIPE). \
+ Use `set -o pipefail` to detect pipeline failures, and consider \
+ restructuring the pipeline to buffer output or handle early termination."
+```
+
+New:
+```
+"A pipe closed before the writer finished (EPIPE / SIGPIPE). \
+ This often happens when piping into `head -n N` — head closes after N \
+ lines and the writer gets SIGPIPE. Use `tail`, `sed -n`, or redirect \
+ to a file instead. Use `set -o pipefail` to detect pipeline failures, \
+ and consider restructuring the pipeline to buffer output or handle \
+ early termination."
+```
+
+For the general fallback:
+Current:
+```
+"The shell command failed. Check `$?` immediately for the exit code, \
+ use explicit paths (`./script`, not `script`), and retry with a \
+ simpler bounded command. Break pipelines into individual steps to \
+ isolate the failure. Inspect both stdout and stderr for clues, and \
+ add bounded limits (`head -n 50`, `tail -n 20`) to keep output manageable."
+```
+
+New (put bounded-command advice first):
+```
+"Start with a bounded version: add `| head -n 20` or `--max-results 5` \
+ to test the command shape before running unbounded. Then check `$?` \
+ immediately for the exit code and use explicit paths (`./script`, not \
+ `script`). Break pipelines into individual steps to isolate the \
+ failure. Inspect both stdout and stderr for clues."
+```
+
+Now I also need to check if the integration test that asserts `head -n` will still pass, and I should add a test for the broken pipe hint. Let me add a test.
+
+Wait, the task says "The change is purely textual (hint strings only) — no logic changes." And "All existing tests continue to pass." Also, the task says "Write a test first if possible."
+
+Let me add a test for the broken pipe hint. But the existing tests for targeted_recovery_hint are unit tests directly calling the function, so I can add a simple one.
+
+Let me plan my approach:
+1. Edit the broken pipe hint (line 1089-1095)
+2. Edit the general fallback (line 1096-1104)
+3. Add a test for the broken pipe hint
+4. Run cargo test tool_wrappers
+5. Run cargo build
+6. Commit
+
+Let me do this now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture of the code. Let me make the three changes: (1) extend the broken pipe hint, (2) reorganize the general fallback to lead with bounded commands, and (3) add a test for the broken pipe case.
+                } else if msg_lower.contains("broken pipe") {
+                    Some(
+                        "A pipe closed before the writer finished (EPIPE / SIGPIPE). \
+  -                      Use `set -o pipefail` to detect pipeline failures, and consider \
+  -                      restructuring the pipeline to buffer output or handle early termination."
+  +                      This often happens when piping into `head -n N` — head closes after N \
+  +                      lines and the writer gets SIGPIPE. Use `tail`, `sed -n`, or redirect \
+  +                      to a file instead. Use `set -o pipefail` to detect pipeline failures, \
+  +                      and consider restructuring the pipeline to buffer output or handle \
+  +                      early termination."
+                            .to_string(),
+                    )
+                } else {
+                    Some(
+  -                     "The shell command failed. Check `$?` immediately for the exit code, \
+  -                      use explicit paths (`./script`, not `script`), and retry with a \
+  -                      simpler bounded command. Break pipelines into individual steps to \
+  -                      isolate the failure. Inspect both stdout and stderr for clues, and \
+  -                      add bounded limits (`head -n 50`, `tail -n 20`) to keep output manageable."
+  +                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
+  ... (6 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (16 → 19 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (16 → 19 lines)
+                } else if msg_lower.contains("broken pipe") {
+                    Some(
+                        "A pipe closed before the writer finished (EPIPE / SIGPIPE). \
+  -                      Use `set -o pipefail` to detect pipeline failures, and consider \
+  -                      restructuring the pipeline to buffer output or handle early termination."
+  +                      This often happens when piping into `head -n N` — head closes after N \
+  +                      lines and the writer gets SIGPIPE. Use `tail`, `sed -n`, or redirect \
+  +                      to a file instead. Use `set -o pipefail` to detect pipeline failures, \
+  +                      and consider restructuring the pipeline to buffer output or handle \
+  +                      early termination."
+                            .to_string(),
+                    )
+                } else {
+                    Some(
+  -                     "The shell command failed. Check `$?` immediately for the exit code, \
+  -                      use explicit paths (`./script`, not `script`), and retry with a \
+  -                      simpler bounded command. Break pipelines into individual steps to \
+  -                      isolate the failure. Inspect both stdout and stderr for clues, and \
+  -                      add bounded limits (`head -n 50`, `tail -n 20`) to keep output manageable."
+  +                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
+  ... (6 more lines)
+ ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit applied. Now let me add a test for the broken pipe hint. Let me find a good location — right after the existing targeted_recovery_hint tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test for the broken pipe hint. Let me find a good insertion point:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3140..3170 ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the right place to insert a test for broken pipe. I'll add it near other bash-related hint tests. Let me search for bash-specific tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_targeted_recovery_hint_bash' in src/tool_wrappers.rs ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a test for broken pipe! Let me look at it.
+────────────────────────────────────────────────────────────────────────────────
+
+There's already a broken pipe test at line 3122. Let me read it:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3122..3142 ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's an existing test for the broken pipe hint. I should extend this test to also check for the new `head -n N` content. And I should also verify the integration test at line 3182 still passes since it checks for `head -n` in the hint output.
+
+Let me also check the integration test again to make sure my new general fallback still contains what it asserts:
+- `$?` - yes, my new text has "check `$?` immediately"
+- `set -x` - my new text doesn't mention `set -x` anymore! This could break the test.
+- `stdout` - yes
+- `stderr` - yes
+- `head -n` - yes, "| head -n 20"
+
+Wait, the integration test at line 3182 fires a bash error with "Exit code: 42\ncommand not found: foo". This would match the first branch (exit code/exit status/command failed) case, not the general fallback. So the integration test hits the exit code branch (lines 1022-1047), which I didn't change. My changes are only to the broken pipe branch and the general fallback. Let me verify: the error "command not found" would match the specific `command not found` branch first before reaching the general fallback, but actually looking at the code flow — it matches the first `if` because it contains "command failed" in "command not found". Wait, let me re-read...
+
+The error_msg is "Exit code: 42\ncommand not found: foo". The first check is:
+`msg_lower.contains("exit code") || msg_lower.contains("exit status") || msg_lower.contains("command failed")`
+
+"exit code" is in the message, so it goes to the exit code branch, which I didn't change. Good.
+
+But wait, that branch also contains "set -x" which the test asserts. Let me verify the test still passes after my change. My edits were only to the broken pipe and general fallback branches — the exit code branch is unchanged. So the integration test should still pass.
+
+Now, for the existing broken pipe test, I should extend it to also check for the new `head -n N` content. Let me update it.
+
+Let me also check if the integration test at line 3182 checks for "head -n" — yes it does, but that's in the exit code branch which mentions `head -n 50` and `--max-results`. My changes don't affect that.
+
+OK, so my plan:
+1. Extend the existing broken pipe test to check for the new `head -n N` content
+2. Run the tests
+3. Build and commit
+
+Let me do that.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — there's already a test for broken pipe. I need to extend it to verify the new `head -n N` content. Let me update it:
+            assert!(hint.contains("pipefail"));
+            assert!(hint.contains("SIGPIPE"));
+            assert!(hint.contains("pipeline"));
+  +         assert!(hint.contains("head -n N"));
+  +         assert!(hint.contains("sed -n"));
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (8 → 10 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (8 → 10 lines)
+            assert!(hint.contains("pipefail"));
+            assert!(hint.contains("SIGPIPE"));
+            assert!(hint.contains("pipeline"));
+  +         assert!(hint.contains("head -n N"));
+  +         assert!(hint.contains("sed -n"));
+        }
+ ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests. First cargo fmt, then the focused test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Now run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (37.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test `test_targeted_recovery_hint_bash_catch_all_unrecognized_error` asserts that the hint contains "bounded command", but my new general fallback text doesn't use those exact words — it uses "bounded version" instead. Let me look at that test:
+────────────────────────────────────────────────────────────────────────────────
+
+One test failure — it asserts "bounded command" in the general fallback. Let me check the test and fix it:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3085..3105 ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test expects "bounded command" but my new text says "bounded version". I should update the test to match the new text: "bounded version" instead of "bounded command". Also let me check if the test also asserts "individual steps" — yes, and my new text has "Break pipelines into individual steps" so that's fine.
+
+Let me update the test assertion.
+────────────────────────────────────────────────────────────────────────────────
+
+The test checks for the old phrase "bounded command" — I need to update it to match the new text "bounded version":
+  -         assert!(hint.contains("bounded command"));
+  +         assert!(hint.contains("bounded version"));
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (1 → 1 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (1 → 1 lines)
+  -         assert!(hint.contains("bounded command"));
+  +         assert!(hint.contains("bounded version"));
+ ✓ (600ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the full test to make sure all assertions still align with my new text. Let me also check the next few lines after 3104 to see if there are more assertions.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also check if there are more assertions that may need updating:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3104..3119 ✓ (545ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the `head -n` assertion should still pass since my new text has `| head -n 20`. Now let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, the `head -n` assertion should still pass. Let me re-run:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (37.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 118 tests pass. Now let me run cargo build and then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 118 tests pass. Let me now build and commit:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (849ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me check the diff before committing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (898ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only src/tool_wrappers.rs is changed, which matches the task's Edit Surface. Let me see the diff content to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/tool_wrappers.rs ✓ (841ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct:
+1. Extended the broken pipe hint with `head -n N` and `sed -n` advice
+2. Reorganized the general fallback to lead with "Start with a bounded version"
+3. Updated the test assertion from "bounded command" to "bounded version"
+4. Added test assertions for `head -n N` and `sed -n` in the broken pipe test
+
+Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff looks clean — only `src/tool_wrappers.rs` changed, matching the task Edit Surface. Let me commit:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (997ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit succeeded. Let me summarize what was done.
+
+Changes made:
+1. **Broken pipe hint** (line 1089-1095): Extended to mention `head -n N` as the common cause of SIGPIPE, and suggests using `tail`, `sed -n`, or redirecting to a file instead.
+2. **General fallback hint** (line 1096-1104): Reorganized to lead with bounded-command advice ("Start with a bounded version: add `| head -n 20` or `--max-results 5` to test the command shape before running unbounded.") before mentioning exit codes and paths.
+3. **Test updates**: 
+   - Extended `test_targeted_recovery_hint_bash_broken_pipe` with assertions for `head -n N` and `sed -n`
+   - Updated `test_targeted_recovery_hint_bash_catch_all_unrecognized_error` to match the new text ("bounded version" instead of "bounded command")
+
+All 118 tests pass, cargo build passes. The change is purely textual — hint strings only, no logic changes.
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+**Summary of changes in `src/tool_wrappers.rs`:**
+
+1. **Broken pipe hint** — extended to mention `head -n N` as the common SIGPIPE cause and suggests `tail`, `sed -n`, or file redirection as alternatives
+2. **General fallback hint** — reorganized to lead with bounded-command advice: "Start with a bounded version: add `| head -n 20` or `--max-results 5` to test the command shape before running unbounded."
+3. **Tests** — extended `test_targeted_recovery_hint_bash_broken_pipe` with assertions for `head -n N` and `sed -n`; updated `test_targeted_recovery_hint_bash_catch_all_unrecognized_error` assertion from "bounded command" → "bounded version"
+
+**Verification:** All 118 tool_wrappers tests pass, `cargo build` clean, `cargo fmt` clean.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
