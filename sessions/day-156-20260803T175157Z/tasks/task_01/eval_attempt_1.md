@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Two test functions added to the test file only; both correctly call find_missing_model_call_started with minimal fixtures, exercise orphan detection and matched-no-orphan cases, and assert on the expected return structure. Build/tests pass, no changes to the production script.
