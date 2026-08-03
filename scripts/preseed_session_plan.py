@@ -890,6 +890,34 @@ def _candidate_files_exist(candidate: dict[str, object]) -> bool:
     return False
 
 
+def _validate_files_list(files_str: str) -> tuple[str, list[str]]:
+    """Validate each file path against git-tracked files and return cleaned list.
+
+    Returns (cleaned_comma_str, dropped_paths).
+    Strips leading './'. Checks against git ls-files when available,
+    falls back to os.path.isfile when git is unavailable.
+    Paths not found in the tracked set or on disk are dropped.
+    """
+    tracked = _git_tracked_files()
+    valid: list[str] = []
+    dropped: list[str] = []
+    for path in files_str.split(","):
+        path = path.strip()
+        if not path:
+            continue
+        clean = path.removeprefix("./")
+        if tracked is not None:
+            if clean in tracked:
+                valid.append(clean)
+            else:
+                dropped.append(path)
+        elif os.path.isfile(clean):
+            valid.append(clean)
+        else:
+            dropped.append(path)
+    return ", ".join(valid), dropped
+
+
 _ANALYSIS_ONLY_METRICS = (
     "task_analysis_only_attempt_count",
     "task_no_edit_revert_count",
@@ -1019,6 +1047,14 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         contradicted, reason = check_task_contradiction(candidate, assessment)
         if not contradicted:
             candidate["validated_against_assessment"] = True
+            cleaned, dropped = _validate_files_list(str(candidate.get("files", "")))
+            if not cleaned:
+                # All files invalid — skip and try next candidate
+                candidate["files_dropped"] = dropped
+                continue
+            candidate["files"] = cleaned
+            if dropped:
+                candidate["files_dropped"] = dropped
             return candidate
 
     # All candidates are contradicted — return the first with annotation
@@ -1026,6 +1062,11 @@ def choose_task(assessment: str, assessment_was_missing: bool = False) -> dict[s
         contradicted, reason = check_task_contradiction(candidates[0], assessment)
         candidates[0]["validated_against_assessment"] = False
         candidates[0]["contradiction_reason"] = reason
+        cleaned, dropped = _validate_files_list(str(candidates[0].get("files", "")))
+        if cleaned:
+            candidates[0]["files"] = cleaned
+            if dropped:
+                candidates[0]["files_dropped"] = dropped
         return candidates[0]
 
     if analysis_only_active:
