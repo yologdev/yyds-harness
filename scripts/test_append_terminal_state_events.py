@@ -1197,6 +1197,51 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertIn("run completed with error status", reason)
             self.assertNotIn("cancelled by next hourly session", reason)
 
+    def test_find_missing_model_call_started_detects_orphaned_completion(self):
+        """find_missing_model_call_started returns orphaned ModelCallCompleted when no matching ModelCallStarted exists."""
+        events = [
+            {
+                "event_id": "evt-mcc-orphan-0",
+                "event_type": "ModelCallCompleted",
+                "run_id": "orphan-run",
+                "payload": {"model": "deepseek-v4-pro"},
+                "timestamp_ms": 1000,
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_missing_model_call_started(events)
+        self.assertEqual(len(missing), 1,
+                         "Should detect one orphaned ModelCallCompleted")
+        self.assertEqual(missing[0]["run_id"], "orphan-run")
+        self.assertEqual(missing[0]["model"], "deepseek-v4-pro")
+        self.assertEqual(missing[0]["timestamp_ms"], 1000)
+        self.assertEqual(diagnostics["unmatched_model_call_completed_count"], 1)
+        self.assertEqual(diagnostics["model_call_started_count"], 0)
+        self.assertEqual(diagnostics["model_call_completed_count"], 1)
+
+    def test_find_missing_model_call_started_returns_empty_when_matched(self):
+        """find_missing_model_call_started returns no orphans when every completion has a matching start."""
+        events = [
+            {
+                "event_id": "evt-mcs-matched-0",
+                "event_type": "ModelCallStarted",
+                "run_id": "matched-run",
+                "payload": {"model": "deepseek-v4-pro"},
+            },
+            {
+                "event_id": "evt-mcc-matched-0",
+                "event_type": "ModelCallCompleted",
+                "run_id": "matched-run",
+                "payload": {"model": "deepseek-v4-pro"},
+                "timestamp_ms": 2000,
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_missing_model_call_started(events)
+        self.assertEqual(len(missing), 0,
+                         "Should detect zero orphans when all are matched")
+        self.assertEqual(diagnostics["unmatched_model_call_completed_count"], 0)
+        self.assertEqual(diagnostics["model_call_started_count"], 1)
+        self.assertEqual(diagnostics["model_call_completed_count"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
