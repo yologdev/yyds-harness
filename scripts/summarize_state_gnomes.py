@@ -365,6 +365,9 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
                 unkeyed_model_call_completions += 1
 
     run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+    # Exclude externally-cancelled runs from incomplete counts
+    cancelled_run_ids = {rid for rid in run_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
     run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
     run_unmatched_completed_all = [
         {
@@ -397,6 +400,9 @@ def summarize_state_lifecycle(events: list[dict[str, Any]]) -> dict[str, Any]:
         run_id for run_id in model_incomplete_ids
         if not is_input_validation_completion(run_last_events.get(run_id))
     ]
+    # Exclude externally-cancelled runs from model incomplete counts
+    cancelled_model_run_ids = {rid for rid in model_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    model_incomplete_ids = [rid for rid in model_incomplete_ids if rid not in cancelled_model_run_ids]
     model_unmatched_completed_ids = sorted(
         run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
     )
@@ -484,6 +490,28 @@ def is_input_validation_completion(last_event: Any) -> bool:
         return False
     detail = str(last_event.get("error_detail") or "")
     return detail == "empty_input" or detail.startswith("invalid_input:")
+
+
+def _is_cancelled_run(run_id: str, run_last_events: dict[str, dict[str, Any]]) -> bool:
+    """Return True if *run_id* was externally cancelled (SIGTERM / GitHub Actions
+    concurrency kill), not a genuine harness error.
+
+    Detection mirrors ``_is_run_externally_cancelled`` signals 1–2 in
+    ``append_terminal_state_events.py``, but operates on the last-event summary
+    rather than the full per-run event list.
+    """
+    last_event = run_last_events.get(run_id)
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status in RunCompleted
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: RunCompleted error status + empty error_detail
+    # (SIGTERM-triggered panic hook writes this signature)
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        if not str(last_event.get("error_detail") or "").strip():
+            return True
+    return False
 
 
 def summarize_patch(event: dict[str, Any]) -> dict[str, Any]:
@@ -1004,6 +1032,68 @@ def run_tests() -> int:
         assert task["touched_files"] == ["src/right.rs"], task
         assert task["commit_shas"] == ["abc123"], task
         assert task["revert_reason"] is None, task
+
+        # --- lifecycle gnomes: cancelled runs excluded ---
+        cancelled_events = [
+            {
+                "event_id": "evt-run-start-ok",
+                "event_type": "RunStarted",
+                "run_id": "run-ok",
+                "payload": {"phase": "task", "status": "started"},
+            },
+            {
+                "event_id": "evt-run-complete-ok",
+                "event_type": "RunCompleted",
+                "run_id": "run-ok",
+                "payload": {"phase": "task", "status": "completed"},
+            },
+            # Signal 1: explicit cancelled status
+            {
+                "event_id": "evt-run-start-c1",
+                "event_type": "RunStarted",
+                "run_id": "run-cancelled",
+                "payload": {"phase": "task", "status": "started"},
+            },
+            {
+                "event_id": "evt-run-complete-c1",
+                "event_type": "RunCompleted",
+                "run_id": "run-cancelled",
+                "payload": {"phase": "task", "status": "cancelled"},
+            },
+            # Signal 2: RunCompleted error + empty error_detail (SIGTERM)
+            {
+                "event_id": "evt-run-start-c2",
+                "event_type": "RunStarted",
+                "run_id": "run-sigterm",
+                "payload": {"phase": "task", "status": "started"},
+            },
+            {
+                "event_id": "evt-run-complete-c2",
+                "event_type": "RunCompleted",
+                "run_id": "run-sigterm",
+                "payload": {"phase": "task", "status": "error", "error_detail": ""},
+            },
+            # Genuinely incomplete run (no terminal event)
+            {
+                "event_id": "evt-run-start-incomplete",
+                "event_type": "RunStarted",
+                "run_id": "run-incomplete",
+                "payload": {"phase": "task", "status": "started"},
+            },
+        ]
+        lifecycle = summarize_state_lifecycle(cancelled_events)
+        gnomes = lifecycle_gnomes(lifecycle)
+        # run-ok completed, run-incomplete genuinely incomplete
+        assert gnomes["state_run_started_count"] == 4, gnomes
+        assert gnomes["state_run_completed_count"] == 3, gnomes  # ok + cancelled + sigterm
+        assert gnomes["state_run_incomplete_count"] == 1, gnomes  # only run-incomplete
+        # Verify cancelled runs not in incomplete_runs detail
+        incomplete_run_ids = {r["run_id"] for r in lifecycle["runs"]["incomplete_runs"]}
+        assert "run-cancelled" not in incomplete_run_ids, incomplete_run_ids
+        assert "run-sigterm" not in incomplete_run_ids, incomplete_run_ids
+        assert "run-incomplete" in incomplete_run_ids, incomplete_run_ids
+        print("summarize_state_gnomes cancelled-run exclusion test passed")
+
     print("summarize_state_gnomes self-tests passed")
     return 0
 
