@@ -1276,6 +1276,38 @@ def is_input_validation_completion(last_event: Any) -> bool:
     return detail == "empty_input" or detail.startswith("invalid_input:")
 
 
+def is_cancelled_completion(last_event: Any) -> bool:
+    """Return True if *last_event* signals an externally cancelled run.
+
+    Two signals, matching the patterns in
+    ``scripts/append_terminal_state_events._is_run_externally_cancelled``:
+
+    1. **Explicit cancelled status.**  ``status == "cancelled"`` — the
+       harness lifecycle wrapper recorded the cancellation explicitly.
+
+    2. **Rust panic with no error detail.**  ``kind == "RunCompleted"``,
+       ``status == "error"``, and empty ``error_detail`` — SIGTERM triggers
+       the panic hook before emitting RunCompleted, producing an
+       error-without-diagnostic signature distinct from a genuine harness
+       bug (which would populate error_detail).
+
+    This is conservative: when uncertain it returns ``False``.  False
+    negatives (cancelled runs still counted) are less harmful than false
+    positives (real errors silently ignored).
+    """
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: Rust panic from SIGTERM — RunCompleted with error, no detail
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        detail = str(last_event.get("error_detail") or "").strip()
+        if not detail:
+            return True
+    return False
+
+
 def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     hit_tokens = 0
     miss_tokens = 0
@@ -1327,6 +1359,12 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
         miss_tokens += miss or 0
         event_count += 1
     incomplete_model_runs = started_runs - completed_runs
+    cancelled_model_runs = {
+        run_id
+        for run_id in incomplete_model_runs
+        if is_cancelled_completion(run_last_events.get(run_id))
+    }
+    incomplete_model_runs -= cancelled_model_runs
     input_validation_incomplete = sum(
         1 for run_id in incomplete_model_runs
         if is_input_validation_completion(run_last_events.get(run_id))
@@ -1339,6 +1377,12 @@ def state_cache_metrics(session_dir: Path) -> dict[str, Any]:
     )
     unmatched_completed_count = len(model_unmatched_run_ids) - model_input_validation_unmatched + max(unkeyed_completions - unkeyed_starts, 0)
     run_incomplete_ids = run_started - run_completed
+    cancelled_run_ids = {
+        run_id
+        for run_id in run_incomplete_ids
+        if is_cancelled_completion(run_last_events.get(run_id))
+    }
+    run_incomplete_ids -= cancelled_run_ids
     run_unmatched_completed_ids = run_completed - run_started
     run_unstarted_input_validation_error_count = sum(
         1
