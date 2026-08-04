@@ -1,0 +1,538 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target file to understand the current state, then implement the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read scripts/summarize_state_gnomes.py (100 lines) ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the relevant parts of `summarize_state_gnomes.py` — specifically the `summarize_state_lifecycle` function and the `is_input_validation_completion` helper.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation_completion' in scripts/summarize_state_gnomes.py  ▶ search 'summarize_state_lifecycle' in scripts/summarize_state_gnomes.py  ▶ search 'run_incomplete_ids' in scripts/summarize_state_gnomes.py ✓ (18ms)
+ ✓ (18ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full `summarize_state_lifecycle` function and the `is_input_validation_completion` helper.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:306..486 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of `is_input_validation_completion` to understand the pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:478..508 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `append_terminal_state_events.py` for the cancelled run detection pattern (the Evidence says lines 227-304, 344-346):
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check how cancelled runs are detected in `append_terminal_state_events.py`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_run_externally_cancelled' in scripts/append_terminal_state_events.py  ▶ search 'externally_cancelled' in scripts/append_terminal_state_events.py ✓ (13ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `_is_run_externally_cancelled` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:227..307 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read lines 340-348 of `append_terminal_state_events.py` to see how it uses this function (referenced in the task):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:335..355 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the picture. Let me now look at `event_lifecycle_summary` in `summarize_state_gnomes.py` to understand what `run_last_events` entries look like:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_lifecycle_summary' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:251..306 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me also look at what `run_last_events` entry looks like for cancelled runs. The `event_lifecycle_summary` records `kind`, `status`, `error`, `error_detail`. For cancelled runs:
+
+1. If `append_terminal_state_events.py` wrote a `RunCompleted` with `status == "cancelled"`, the `run_last_events` entry would have `kind: "RunCompleted"`, `status: "cancelled"`.
+2. If it was SIGTERM with rust_panic, the `run_last_events` entry could be either a FailureObserved or RunCompleted with `status: "error"` and empty `error_detail`, and the `error` field would be "rust_panic".
+
+But wait - `run_last_events` is built from ALL events for each run, overwriting with the latest one. For cancelled runs that DON'T get a RunCompleted (because SIGTERM kills them), the last event might be a FailureObserved or some other event. Let me think about what signals are available in `run_last_events`.
+
+Actually, the task says:
+- Check for `status == "cancelled"` 
+- OR `RunCompleted with status == "error" AND empty error_detail` (matching signal 2 in append_terminal_state_events.py)
+
+But `event_lifecycle_summary` captures the kind and status fields. So I can check:
+1. `last_event.get("status") == "cancelled"` 
+2. `last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error" and not str(last_event.get("error_detail") or "").strip()`
+
+Wait, for signal 2, `append_terminal_state_events.py` also requires `error == "rust_panic"` in at least one event. But in `summarize_state_gnomes.py`, we only have access to `run_last_events` (the last event per run), not all events per run. So we can only check the last event's fields.
+
+Let me look at what the task actually says:
+> Check the last event for: `status == "cancelled"` OR (RunCompleted with `status == "error"` AND empty `error_detail`). The empty-error_detail signal matches `_is_run_externally_cancelled` signal 2 in append_terminal_state_events.py.
+
+The task says to check only the last event via `run_last_events`. Let me simplify:
+
+The `_is_cancelled_run` helper should check `run_last_events[run_id]`:
+1. `last_event["status"] == "cancelled"` 
+2. OR `last_event["kind"] == "RunCompleted" and last_event["status"] == "error" and not str(last_event.get("error_detail") or "").strip()`
+
+But wait, signal 2 in `append_terminal_state_events.py` also requires `error == "rust_panic"` somewhere in the run's events. In `summarize_state_gnomes.py`, we only have the last event. If the last event is a RunCompleted with `status == "error"` and empty detail, AND we have access to `error` field via `event_lifecycle_summary`, we could check if `error == "rust_panic"`.
+
+Actually, let me re-read `event_lifecycle_summary`:
+```python
+return {
+    ...
+    "status": data.get("status"),
+    "error": data.get("error"),
+    "error_detail": data.get("error_detail"),
+}
+```
+
+So if the last event is a FailureObserved with `error == "rust_panic"`, it would have `error: "rust_panic"`. But it might not be a RunCompleted. And if the last event IS a RunCompleted (because `append_terminal_state_events.py` wrote one), the `error` field might not have "rust_panic" — the panic was in a different event.
+
+Let me look at how `append_terminal_state_events.py` handles cancelled runs more carefully. Let me also check if `FailureObserved` events are captured.
+
+Actually, I think the simpler approach is better. The task says:
+> add `is_cancelled_run()` helper (or inline the check)
+
+And the implementation notes say:
+> Add a helper `_is_cancelled_run(run_id, run_last_events)` after `is_input_validation_completion` (around line 255 in summarize_state_gnomes.py). Check the last event for: `status == "cancelled"` OR (RunCompleted with `status == "error"` AND empty `error_detail`).
+
+This is clear. Let me implement it.
+
+Now, the `run_last_events` entry for a cancelled run:
+- If `append_terminal_state_events.py` appended a RunCompleted with `status="cancelled"`, then `last_event` would have `kind: "RunCompleted"`, `status: "cancelled"`. Check 1 matches.
+- If the process was killed by SIGTERM and the panic hook wrote RunCompleted with `status="error"` and empty `error_detail`, then `last_event` would have `kind: "RunCompleted"`, `status: "error"`, and `error_detail` would be empty. Check 2 matches.
+- If the process was killed and no RunCompleted was written (no panic hook), the last event would be some other kind, and we'd miss it. But this is fine per the task's Fallback section.
+
+Now let me implement. I need to:
+
+1. Add `_is_cancelled_run` helper function after `is_input_validation_completion` (around line 487)
+2. Filter `run_incomplete_ids` at line 367
+3. Filter `model_incomplete_ids` at line 393-399
+
+Let me write the code.
+
+For the helper:
+
+```python
+def _is_cancelled_run(run_id: str, run_last_events: dict[str, dict[str, Any]]) -> bool:
+    """Return True if run_id was externally cancelled, not a genuine harness error."""
+    last_event = run_last_events.get(run_id)
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: RunCompleted with error status and empty error_detail
+    # (SIGTERM-triggered panic hook writes this signature)
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        if not str(last_event.get("error_detail") or "").strip():
+            return True
+    return False
+```
+
+For the filters:
+
+After line 367:
+```python
+    cancelled_run_ids = {rid for rid in run_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
+```
+
+After line 399 (the model_incomplete_ids filter already exists, I need to add cancelled filter too):
+```python
+    cancelled_model_run_ids = {rid for rid in model_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    model_incomplete_ids = [rid for rid in model_incomplete_ids if rid not in cancelled_model_run_ids]
+```
+
+Wait, let me re-read the task more carefully about the model_incomplete_ids placement:
+
+> At line 393-407, after computing `model_incomplete_ids` and before counting, add the same filter.
+
+Lines 393-399 compute `model_incomplete_ids`, then at line 407 `model_incomplete_count = len(model_incomplete_ids)` is computed. So I should add the filter between 399 and 407. Let me look at the exact lines again.
+
+Actually, let me re-read lines 393-414:
+
+```python
+    model_incomplete_ids = sorted(
+        run_id for run_id in model_call_started_runs if run_id not in model_call_completed_runs
+    )
+    model_incomplete_ids = [
+        run_id for run_id in model_incomplete_ids
+        if not is_input_validation_completion(run_last_events.get(run_id))
+    ]
+    model_unmatched_completed_ids = sorted(
+        run_id for run_id in model_call_completed_runs if run_id not in model_call_started_runs
+    )
+    model_unmatched_completed_ids = [
+        run_id for run_id in model_unmatched_completed_ids
+        if not is_input_validation_completion(run_last_events.get(run_id))
+    ]
+    model_incomplete_count = len(model_incomplete_ids) + max(
+        unkeyed_model_call_starts - unkeyed_model_call_completions,
+        0,
+    )
+```
+
+I should add the cancelled filter after line 399 (after the input validation filter on model_incomplete_ids) but before the count at line 407.
+
+Now let me also check: is there a test file?
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me check for existing tests:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/test_summarize_state_gnomes.py 2>&1; ls -la scripts/tests/test_su…  ▶ search 'def run_tests|def test_|unittest' in scripts/summarize_state_gnomes.py ✓ (6ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no separate test file. Let me check if there's a `run_tests` function at the bottom of the file (mentioned in the repo map):
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:990.. ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `run_tests` function to see existing lifecycle-related tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def run_tests' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `run_tests` function to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:945..995 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me implement the changes. Here's my plan:
+
+1. Add `_is_cancelled_run` helper after `is_input_validation_completion` (line 486)
+2. Add filter to `run_incomplete_ids` after line 367
+3. Add filter to `model_incomplete_ids` after line 399
+
+Let me also write a test in the `run_tests` function that verifies cancelled runs are excluded.
+
+Here are the exact edits:
+
+**Edit 1**: Add `_is_cancelled_run` helper after `is_input_validation_completion` (after line 486):
+```python
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+
+
+def _is_cancelled_run(run_id: str, run_last_events: dict[str, dict[str, Any]]) -> bool:
+    """Return True if *run_id* was externally cancelled (SIGTERM / GitHub Actions
+    concurrency kill), not a genuine harness error.
+    
+    Detection mirrors ``_is_run_externally_cancelled`` signals 1–2 in
+    ``append_terminal_state_events.py``, but operates on the last-event summary
+    rather than the full per-run event list.
+    """
+    last_event = run_last_events.get(run_id)
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status in RunCompleted
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: RunCompleted error status + empty error_detail
+    # (SIGTERM-triggered panic hook writes this signature)
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        if not str(last_event.get("error_detail") or "").strip():
+            return True
+    return False
+```
+
+**Edit 2**: Filter `run_incomplete_ids` after line 367:
+```python
+    run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+    # Exclude externally-cancelled runs from incomplete counts
+    cancelled_run_ids = {rid for rid in run_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
+    run_unmatched_completed_ids = ...
+```
+
+**Edit 3**: Filter `model_incomplete_ids` after line 399:
+```python
+    model_incomplete_ids = [
+        run_id for run_id in model_incomplete_ids
+        if not is_input_validation_completion(run_last_events.get(run_id))
+    ]
+    # Exclude externally-cancelled runs from model incomplete counts
+    cancelled_model_run_ids = {rid for rid in model_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+    model_incomplete_ids = [rid for rid in model_incomplete_ids if rid not in cancelled_model_run_ids]
+    model_unmatched_completed_ids = ...
+```
+
+Now let me also add a test in `run_tests`. I need to add a test for the lifecycle gnomes with cancelled runs.
+
+Let me first make the edits, then run the existing tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement the three edits:
+        return detail == "empty_input" or detail.startswith("invalid_input:")
+  + 
+  + 
+  + def _is_cancelled_run(run_id: str, run_last_events: dict[str, dict[str, Any]]) -> bool:
+  +     """Return True if *run_id* was externally cancelled (SIGTERM / GitHub Actions
+  +     concurrency kill), not a genuine harness error.
+  + 
+  +     Detection mirrors ``_is_run_externally_cancelled`` signals 1–2 in
+  +     ``append_terminal_state_events.py``, but operates on the last-event summary
+  +     rather than the full per-run event list.
+  +     """
+  +     last_event = run_last_events.get(run_id)
+  +     if not isinstance(last_event, dict):
+  +         return False
+  +     # Signal 1: Explicit cancelled status in RunCompleted
+  +     if last_event.get("status") == "cancelled":
+  +         return True
+  +     # Signal 2: RunCompleted error status + empty error_detail
+  +     # (SIGTERM-triggered panic hook writes this signature)
+  +     if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+  ... (6 more lines)
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (4 → 26 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (4 → 26 lines)
+        return detail == "empty_input" or detail.startswith("invalid_input:")
+  + 
+  + 
+  + def _is_cancelled_run(run_id: str, run_last_events: dict[str, dict[str, Any]]) -> bool:
+  +     """Return True if *run_id* was externally cancelled (SIGTERM / GitHub Actions
+  +     concurrency kill), not a genuine harness error.
+  + 
+  +     Detection mirrors ``_is_run_externally_cancelled`` signals 1–2 in
+  +     ``append_terminal_state_events.py``, but operates on the last-event summary
+  +     rather than the full per-run event list.
+  +     """
+  +     last_event = run_last_events.get(run_id)
+  +     if not isinstance(last_event, dict):
+  +         return False
+  +     # Signal 1: Explicit cancelled status in RunCompleted
+  +     if last_event.get("status") == "cancelled":
+  +         return True
+  +     # Signal 2: RunCompleted error status + empty error_detail
+  +     # (SIGTERM-triggered panic hook writes this signature)
+  +     if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+  ... (6 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the cancelled filter to `run_incomplete_ids`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+  +     # Exclude externally-cancelled runs from incomplete counts
+  +     cancelled_run_ids = {rid for rid in run_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+  +     run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
+        run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (2 → 5 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (2 → 5 lines)
+        run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+  +     # Exclude externally-cancelled runs from incomplete counts
+  +     cancelled_run_ids = {rid for rid in run_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+  +     run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
+        run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the cancelled filter to `model_incomplete_ids`. Let me re-read the current state around that area to get exact text:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:411..431 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:395..415 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+            run_id for run_id in model_incomplete_ids
+            if not is_input_validation_completion(run_last_events.get(run_id))
+        ]
+  +     # Exclude externally-cancelled runs from model incomplete counts
+  +     cancelled_model_run_ids = {rid for rid in model_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+  +     model_incomplete_ids = [rid for rid in model_incomplete_ids if rid not in cancelled_model_run_ids]
+        model_unmatched_completed_ids = sorted(
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (5 → 8 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (5 → 8 lines)
+            run_id for run_id in model_incomplete_ids
+            if not is_input_validation_completion(run_last_events.get(run_id))
+        ]
+  +     # Exclude externally-cancelled runs from model incomplete counts
+  +     cancelled_model_run_ids = {rid for rid in model_incomplete_ids if _is_cancelled_run(rid, run_last_events)}
+  +     model_incomplete_ids = [rid for rid in model_incomplete_ids if rid not in cancelled_model_run_ids]
+        model_unmatched_completed_ids = sorted(
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test in `run_tests` that verifies cancelled runs are excluded from lifecycle gnomes. Let me read the current `run_tests` function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test in the `run_tests` function. Let me read the full function first:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:945.. ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add a test for the cancelled run exclusion. I'll add it right before the `print("summarize_state_gnomes self-tests passed")` line. I'll add a test that creates events for a cancelled run, runs `summarize_state_lifecycle`, and verifies that the cancelled run is excluded from incomplete counts.
+
+I need to look at what events `summarize_state_lifecycle` looks for:
+- `RunStarted` with `run_id`
+- `RunCompleted` with `run_id`
+- `ModelCallStarted` with `deepseek_model_payload`
+- `ModelCallCompleted` with `deepseek_model_payload`
+
+Let me check `deepseek_model_payload`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def deepseek_model_payload' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:222..237 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me also check `event_run_id`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_run_id' in scripts/summarize_state_gnomes.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:172..187 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough context. Let me write a test for the cancelled run exclusion. I'll add it to `run_tests` before the final print statement.
+
+The test scenario:
+1. Run has RunStarted + a ModelCallStarted (deepseek)
+2. RunCompleted has `status: "cancelled"` — explicitly cancelled
+3. Assert that `state_run_incomplete_count` gnome is 0, and `deepseek_model_call_incomplete_count` is 0
+
+Let me add a second scenario for the signal 2 case (RunCompleted error with empty detail):
+4. Different run has RunStarted + ModelCallStarted
+5. RunCompleted has `status: "error"` with empty `error_detail`
+6. Also needs `error: "rust_panic"` in the RunCompleted payload? Actually no — the simplified check in `_is_cancelled_run` only checks for "RunCompleted with status=error and empty error_detail". It doesn't check for rust_panic. This is a deliberate simplification per the task description.
+
+Wait, but that might be too broad — any RunCompleted with error and empty error_detail would be treated as cancelled. Is that correct? The task says:
+> Check the last event for: `status == "cancelled"` OR (RunCompleted with `status == "error"` AND empty `error_detail`). The empty-error_detail signal matches `_is_run_externally_cancelled` signal 2 in append_terminal_state_events.py.
+
+Yes, this is the simplified version that the task specifies. It's a reasonable simplification since in the gnome layer, we only have the last event per run, not all events. The more complete check (requiring `error == "rust_panic"`) requires scanning all events.
+
+Let me keep the function as-is. Let me also add the test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add a test for the cancelled run exclusion:
+            assert task["commit_shas"] == ["abc123"], task
+            assert task["revert_reason"] is None, task
+  + 
+  +         # --- lifecycle gnomes: cancelled runs excluded ---
+  +         cancelled_events = [
+  +             {
+  +                 "event_id": "evt-run-start-ok",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "run-ok",
+  +                 "payload": {"phase": "task", "status": "started"},
+  +             },
+  +             {
+  +                 "event_id": "evt-run-complete-ok",
+  +                 "event_type": "RunCompleted",
+  +                 "run_id": "run-ok",
+  +                 "payload": {"phase": "task", "status": "completed"},
+  +             },
+  +             # Signal 1: explicit cancelled status
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/summarize_state_gnomes.py (3 → 65 lines)
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/summarize_state_gnomes.py (3 → 65 lines)
+            assert task["commit_shas"] == ["abc123"], task
+            assert task["revert_reason"] is None, task
+  + 
+  +         # --- lifecycle gnomes: cancelled runs excluded ---
+  +         cancelled_events = [
+  +             {
+  +                 "event_id": "evt-run-start-ok",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "run-ok",
+  +                 "payload": {"phase": "task", "status": "started"},
+  +             },
+  +             {
+  +                 "event_id": "evt-run-complete-ok",
+  +                 "event_type": "RunCompleted",
+  +                 "run_id": "run-ok",
+  +                 "payload": {"phase": "task", "status": "completed"},
+  +             },
+  +             # Signal 1: explicit cancelled status
+  +             {
+  +                 "event_id": "evt-run-start-c1",
+  ... (45 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to see if they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the self-tests:
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/summarize_stat… ✓ (48ms)
+
+

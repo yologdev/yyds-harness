@@ -1,0 +1,642 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. I need to add a `is_cancelled_completion()` helper in `scripts/log_feedback.py`
+2. Use it to filter out cancelled runs from `state_cache_metrics()` calculations
+3. This will reduce noise in lifecycle gap counts
+
+Let me first read the evolve skill, then study the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/log_feedback.py:1250..1370 ✓ (1.5s)
+ ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more of the function to see the complete metrics return and the full context:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1369..  ▶ read scripts/append_terminal_state_events.py:227..307 ✓ (1.5s)
+ ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me look at `_is_run_externally_cancelled()` in `append_terminal_state_events.py`. It checks:
+
+1. `status == "cancelled"` in RunCompleted
+2. Rust panic with no error detail (RunCompleted `status == "error"` + empty `error_detail` + `rust_panic` error in events)
+3. Long-duration heuristic (> 2.5 hours, no terminal evidence)
+
+For `log_feedback.py`, we need a simpler version since we only have `run_last_events` (the last event per run_id), not the full event list. Let me re-read the task description:
+
+> `is_cancelled_completion()` checks the `run_last_events` entry for the run: if the last event's `status` is `"cancelled"`, or if the last event is RunCompleted with `status == "error"` and empty `error_detail` (the rust-panic-from-SIGTERM pattern documented in `_is_run_externally_cancelled` signal 2).
+
+So actually the task says to check the last event. But the full `_is_run_externally_cancelled` looks at ALL events for the run — specifically it needs to check both for `rust_panic` error across all events AND for RunCompleted with empty error_detail. With just `run_last_events` we only have the last event per run_id.
+
+Let me think about what data is available in `state_cache_metrics`:
+- `run_last_events[run_id]` = result of `run_lifecycle_event_summary(kind, payload)` which returns `{kind, status, error, error_detail}`. This is from the LAST event with that run_id.
+- For a run killed by SIGTERM, the last event could be RunCompleted with `status: "error"` and empty `error_detail`, but we wouldn't know if there was also a `rust_panic` event because `run_last_events` only keeps the last event.
+
+Wait, I should think about this more carefully. In `state_cache_metrics`, `run_last_events` is updated on EVERY event with a run_id:
+
+```python
+for event in load_events(session_dir / "state" / "events.jsonl"):
+    kind = event_kind(event)
+    payload = event_payload(event)
+    run_id = event_run_id(event, payload)
+    if run_id:
+        run_last_events[run_id] = run_lifecycle_event_summary(kind, payload)
+```
+
+So it keeps overwriting — the LAST event wins. For a cancelled run, the last event might be RunCompleted with `status: "cancelled"` or `status: "error"` with empty error_detail. But we can't check for `rust_panic` across other events.
+
+However, looking at the signal-2 pattern more carefully in `_is_run_externally_cancelled`:
+- It needs BOTH `has_rust_panic` (any event for this run has `error == "rust_panic"`) AND `has_run_completed_error_no_detail` (RunCompleted with `status == "error"` and empty `error_detail`)
+
+With just `run_last_events`, we can't do the full check. But the task says:
+
+> `is_cancelled_completion()` checks the `run_last_events` entry for the run: if the last event's `status` is `"cancelled"`, or if the last event is RunCompleted with `status == "error"` and empty `error_detail` (the rust-panic-from-SIGTERM pattern documented in `_is_run_externally_cancelled` signal 2).
+
+So the task is explicitly asking for a simplified version that checks:
+1. `last_event["status"] == "cancelled"` 
+2. `last_event["kind"] == "RunCompleted"` AND `last_event["status"] == "error"` AND empty `error_detail`
+
+This is signal 1 and a simplified signal 2 (without the `rust_panic` cross-check since we don't have full event data). The task explicitly authorizes this simplification.
+
+Now let me also check what `run_lifecycle_event_summary` returns for the `error` field:
+
+```python
+def run_lifecycle_event_summary(kind, payload):
+    return {
+        "kind": kind,
+        "status": payload.get("status"),
+        "error": payload.get("error"),
+        "error_detail": payload.get("error_detail"),
+    }
+```
+
+So the `error` field IS available in `run_last_events`. I could actually check for `error == "rust_panic"` from the last event too! Though it might not be on the same event as the RunCompleted. Let me keep it simple as the task asks, and check for `error == "rust_panic"` on the last_event as well if available.
+
+Actually, let me re-read the task more carefully:
+
+> `is_cancelled_completion()` checks the `run_last_events` entry for the run: if the last event's `status` is `"cancelled"`, or if the last event is RunCompleted with `status == "error"` and empty `error_detail` (the rust-panic-from-SIGTERM pattern documented in `_is_run_externally_cancelled` signal 2).
+
+So the task is specific: check `status == "cancelled"` OR (`kind == "RunCompleted"` AND `status == "error"` AND empty `error_detail`).
+
+That's what I'll implement.
+
+Now let me plan the edit:
+
+1. Add `is_cancelled_completion()` helper after `is_input_validation_completion()` (after line 1277)
+2. In `state_cache_metrics()`, after line 1341 (`run_incomplete_ids = run_started - run_completed`), filter `run_incomplete_ids` to exclude cancelled runs
+3. After line 1329 (`incomplete_model_runs = started_runs - completed_runs`), filter `incomplete_model_runs` to exclude cancelled runs
+
+Wait, I need to be careful about WHERE to filter. Let me re-read lines 1329-1341:
+
+```python
+incomplete_model_runs = started_runs - completed_runs  # line 1329
+input_validation_incomplete = sum(  # line 1330
+    1 for run_id in incomplete_model_runs
+    if is_input_validation_completion(run_last_events.get(run_id))
+)
+incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)  # line 1334
+
+...
+
+run_incomplete_ids = run_started - run_completed  # line 1341
+```
+
+And later:
+```python
+"deepseek_model_call_incomplete_count": incomplete_count,  # line 1369
+"state_run_incomplete_count": len(run_incomplete_ids),  # line 1373
+```
+
+So the task wants:
+- Filter `run_incomplete_ids` to exclude cancelled runs → this fixes `state_run_incomplete_count`
+- Filter `incomplete_model_runs` → this also fixes `deepseek_model_call_incomplete_count`
+
+The most surgical approach:
+1. After line 1329, add a filter for `incomplete_model_runs`
+2. After line 1341, add a filter for `run_incomplete_ids`
+
+Or alternatively, add one filtered set after each and use it in the metric computation. Let me also re-read how `incomplete_count` is used:
+
+```python
+incomplete_count = len(incomplete_model_runs) - input_validation_incomplete + max(unkeyed_starts - unkeyed_completions, 0)
+```
+
+So if I filter `incomplete_model_runs`, the `incomplete_count` will automatically be lower. That's correct.
+
+Similarly for `state_run_incomplete_count`:
+```python
+"state_run_incomplete_count": len(run_incomplete_ids),
+```
+
+If I filter `run_incomplete_ids`, this will be lower. Correct.
+
+Let me also check: should the cancelled-filtered runs also be excluded from `input_validation_incomplete` calculation? Looking at the code, `input_validation_incomplete` counts runs in `incomplete_model_runs` that are input validation completions. If we're filtering out cancelled runs from `incomplete_model_runs` before computing `input_validation_incomplete`, then cancelled runs won't affect `input_validation_incomplete` either. But that's fine because cancelled runs aren't input validation errors.
+
+Actually, I need to be more careful. Let me look at the flow:
+
+1. `incomplete_model_runs = started_runs - completed_runs` (line 1329) - runs that started a model call but never completed it
+2. We filter cancelled runs out of `incomplete_model_runs`
+3. `input_validation_incomplete` is computed from the FILTERED `incomplete_model_runs`
+4. `incomplete_count` uses the FILTERED `incomplete_model_runs`
+
+This means both `incomplete_count` and `input_validation_incomplete` will exclude cancelled runs. Is that correct? Yes — cancelled runs don't have real incomplete model calls, they just got killed.
+
+Now let me implement this. I'll add the helper and the filter expressions.
+
+Actually wait - I should be more careful. Let me think about whether filtering `incomplete_model_runs` before computing `input_validation_incomplete` is correct. `input_validation_incomplete` is about input validation errors, not cancellations. A cancelled run would NOT match `is_input_validation_completion` anyway. So filtering before or after doesn't change `input_validation_incomplete`. The only thing that changes is `incomplete_count`.
+
+Similarly, should I worry about the `model_unmatched_run_ids = completed_runs - started_runs` scenario? The task says to focus on `run_incomplete_ids` and `incomplete_model_runs`, not on `model_unmatched_run_ids`. So I'll leave that alone.
+
+Let me also think about whether I should filter `run_incomplete_ids` for cancelled runs that might appear in `run_unmatched_completed_ids`. The task doesn't mention this, so I'll keep it focused.
+
+Now, for signal 2 in `is_cancelled_completion`: the task says to check `kind == "RunCompleted"` AND `status == "error"` AND empty `error_detail`. I think I should also check for `error == "rust_panic"` in the last_event since `run_lifecycle_event_summary` captures it. But the task explicitly names only two conditions. Let me stick with what the task says.
+
+Actually wait, I just re-read: "or if the last event is RunCompleted with `status == "error"` and empty `error_detail` (the rust-panic-from-SIGTERM pattern documented in `_is_run_externally_cancelled` signal 2)."
+
+So it's: `kind == "RunCompleted"` AND `status == "error"` AND empty `error_detail`. That's exactly what I need.
+
+Let me write the code now. I'll:
+
+1. Add `is_cancelled_completion()` after line 1277
+2. After line 1329, add filter for `incomplete_model_runs`
+3. After line 1341, add filter for `run_incomplete_ids`
+
+Let me verify the exact line numbers and spacing.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 32.0s (2 ✓)
+
+Now let me read the exact area where I need to make the edit more carefully, and also look at the test file to understand what tests exist:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1268..1288  ▶ search 'test_task_lineage_feedback' in scripts ✓ (1.0s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test file is `scripts/test_task_lineage_feedback.py`. Let me check if it exists and look at it to understand the test patterns:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ ls scripts (test_task_lineage_feedback*) ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for tests related to state_cache_metrics or cancelled runs in that test file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_cache_metrics' in scripts/test_task_lineage_feedback.py  ▶ search 'cancelled' in scripts/test_task_lineage_feedback.py ✓ (995ms)
+ ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that test to understand the pattern it uses:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2340.. ✓ (551ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the helpers used in the test file, like `append_event`, `write_json`, and `write_event`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py (80 lines) ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I now have a clear picture. Let me also look at the `test_log_feedback_counts_incomplete_deepseek_model_calls` test more closely and any tests around state run incomplete counts. Let me also search for tests that test `state_run_incomplete_count`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me search for relevant tests and understand how state run events are structured in tests:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'state_run_incomplete' in scripts/test_task_lineage_feedback.py  ▶ search 'RunStarted' in scripts/test_task_lineage_feedback.py ✓ (985ms)
+ ✓ (993ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 2810 that uses RunStarted:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2795.. ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me also look at how tests use `write_event` since it's mentioned in the test file, and search for where `state_cache_metrics` is tested to understand the test pattern:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2280.. ✓ (499ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the codebase. Let me also look at one of the existing tests that uses RunStarted and RunCompleted to understand how lifecycle events work in tests. I already saw the test at line 2807, which uses `append_event(events, "RunStarted", ..., run_id="run-open")` and `RunCompleted` with `run_id="run-closed-without-start"`.
+
+Now let me plan the implementation:
+
+1. Add `is_cancelled_completion()` helper after `is_input_validation_completion()` (after line 1277)
+2. After line 1329 (`incomplete_model_runs = started_runs - completed_runs`), filter out cancelled runs
+3. After line 1341 (`run_incomplete_ids = run_started - run_completed`), filter out cancelled runs
+
+For the helper:
+```python
+def is_cancelled_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: Rust panic from SIGTERM — RunCompleted with status="error" and empty error_detail
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        detail = str(last_event.get("error_detail") or "").strip()
+        if not detail:
+            return True
+    return False
+```
+
+For the filtering:
+
+After line 1329:
+```python
+incomplete_model_runs = started_runs - completed_runs
+cancelled_model_runs = {run_id for run_id in incomplete_model_runs if is_cancelled_completion(run_last_events.get(run_id))}
+incomplete_model_runs -= cancelled_model_runs
+```
+
+After line 1341:
+```python
+run_incomplete_ids = run_started - run_completed
+cancelled_run_ids = {run_id for run_id in run_incomplete_ids if is_cancelled_completion(run_last_events.get(run_id))}
+run_incomplete_ids -= cancelled_run_ids
+```
+
+Wait, I need to be careful about the exact line numbers. Let me check again more carefully:
+
+Line 1329: `    incomplete_model_runs = started_runs - completed_runs`
+Line 1330-1333: input_validation_incomplete computation (uses incomplete_model_runs)
+Line 1334: incomplete_count computation (uses incomplete_model_runs)
+
+Line 1341: `    run_incomplete_ids = run_started - run_completed`
+Line 1342+: uses run_incomplete_ids
+
+So I need to filter `incomplete_model_runs` between 1329 and 1330, and filter `run_incomplete_ids` between 1341 and 1342.
+
+Let me now also write a test. I'll add a test that creates a cancelled run (RunStarted followed by RunCompleted with status="cancelled") and verifies it's excluded from the counts.
+
+Let me write the test first, then implement the code change.
+
+Actually, looking at the task flow more carefully - let me think about whether I need to handle the SIGTERM signal (RunCompleted with `status == "error"` and empty `error_detail`). The task says:
+
+> `is_cancelled_completion()` checks the `run_last_events` entry for the run: if the last event's `status` is `"cancelled"`, or if the last event is RunCompleted with `status == "error"` and empty `error_detail` (the rust-panic-from-SIGTERM pattern documented in `_is_run_externally_cancelled` signal 2).
+
+So yes, I need both checks. Let me also consider the "Fallback" in the task:
+
+> If `run_last_events` lacks the status field needed to detect cancelled runs consistently (the `run_lifecycle_event_summary` helper might not record RunCompleted status for all event types), document the gap in comments and mark the task blocked — do not add fragile heuristics.
+
+Looking at `run_lifecycle_event_summary`:
+```python
+def run_lifecycle_event_summary(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "status": payload.get("status"),
+        "error": payload.get("error"),
+        "error_detail": payload.get("error_detail"),
+    }
+```
+
+This always returns a dict with `kind`, `status`, `error`, `error_detail`. The `status` field comes from `payload.get("status")`, which will be `None` for events without a status field. So `last_event.get("status") == "cancelled"` will work correctly — it only returns True when status is actually "cancelled".
+
+The `kind` field comes from the event type string, so `last_event.get("kind") == "RunCompleted"` will also work correctly.
+
+The data IS available. Let me proceed.
+
+Now, let me also think about whether the `is_cancelled_completion` function should also check for `error == "rust_panic"` as a cross-check for signal 2. In the full `_is_run_externally_cancelled`, signal 2 requires BOTH `has_rust_panic` AND `has_run_completed_error_no_detail`. In our simplified version with just `run_last_events`, we can only check the last event. But the task says to just check for RunCompleted with status="error" and empty error_detail — it doesn't require the rust_panic cross-check. So I'll follow the task exactly.
+
+Actually, wait — I just realized that `run_lifecycle_event_summary` does capture the `error` field: `"error": payload.get("error")`. So I COULD add a check for `error == "rust_panic"` on the same event. But the task doesn't mention it, and `_is_run_externally_cancelled` explicitly requires the rust_panic to be on ANY event for the run (not necessarily the last one), so cross-checking it on the last event would be fragile and might create false negatives. Better to keep it simple as the task describes.
+
+Let me now implement the changes. I'll start with the helper function, then the filter expressions.
+
+Let me also write a test. I'll add it to the test file.
+
+Actually, let me first make the code changes, run the existing tests, then add a test.
+
+One concern: should I also filter `run_unmatched_completed_ids`? The task says:
+
+> `state_cache_metrics()` excludes runs with `status == "cancelled"` from `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`.
+
+It only mentions incomplete counts, not unmatched counts. And for cancelled runs, the issue is that RunStarted fires but RunCompleted doesn't fire (or fires with cancelled status), meaning the run appears in `run_started - run_completed` (incomplete). So filtering incomplete runs is the right call.
+
+But wait, what about the SIGTERM signal? When a run is killed by SIGTERM, `src/prompt.rs`/`src/state.rs` emits a RunCompleted with `status="error"` and empty `error_detail`. In that case, the run WOULD be in both `run_started` and `run_completed`, so it wouldn't appear in `run_incomplete_ids`... but it would appear in `incomplete_model_runs` if ModelCallStarted fired but ModelCallCompleted didn't.
+
+Hmm, let me think about this more. The SIGTERM scenario:
+1. RunStarted fires
+2. ModelCallStarted fires  
+3. SIGTERM kills the process
+4. The panic hook emits RunCompleted with status="error", empty error_detail
+5. The model call never gets a ModelCallCompleted
+
+So in this case:
+- `run_started` has the run_id
+- `run_completed` has the run_id (from the panic hook's RunCompleted)
+- `run_incomplete_ids = run_started - run_completed` → empty! The run is NOT incomplete.
+
+But `started_runs` has the run_id (from ModelCallStarted)
+`completed_runs` does NOT have the run_id (no ModelCallCompleted)
+`incomplete_model_runs = started_runs - completed_runs` → has the run_id
+
+So the SIGTERM signal affects `incomplete_model_runs` but NOT `run_incomplete_ids`. The filtering on `run_incomplete_ids` would not catch these.
+
+HOWEVER, for the `status == "cancelled"` signal, what happens? If the run is explicitly cancelled, what events fire? Looking at `append_terminal_state_events.py`, the cancelled status comes from RunCompleted with `status == "cancelled"`. This means RunCompleted fires, so the run appears in `run_completed` and thus NOT in `run_incomplete_ids`.
+
+Wait, that doesn't match what the task is saying. Let me re-read the task:
+
+> In `state_cache_metrics()`, after computing `run_incomplete_ids` (line 1341), filter out runs where `is_cancelled_completion(run_last_events.get(run_id))` is true. Same for `incomplete_model_runs` computed at line 1329.
+
+The task says to filter BOTH. But if a run has `status == "cancelled"`, it would have RunCompleted, so it would be in `run_completed` and not in `run_incomplete_ids`. Unless... the cancelled runs DON'T have RunCompleted?
+
+Actually, the task's implementation notes say:
+
+> The `run_incomplete_ids` computation at line 1341 uses `run_started - run_completed` — cancelled runs appear here because SIGTERM prevents RunCompleted. Filter after computing the set difference.
+
+So the task is saying that cancelled runs may NOT have RunCompleted (SIGTERM prevents it). In that case, the run IS in `run_incomplete_ids` but its last event might still show something — like a FailureObserved or just the last event before SIGTERM.
+
+But then `is_cancelled_completion` checks `last_event.get("status") == "cancelled"` — if there's no RunCompleted, the last event might not have a status field at all.
+
+Hmm, I think the task wants me to handle the case where the cancelled status shows up in the last event, whatever that last event is. The `run_lifecycle_event_summary` returns status from `payload.get("status")`, which could be None for non-RunCompleted events. So `last_event.get("status") == "cancelled"` would be False for those.
+
+Wait, the task says:
+
+> `is_cancelled_completion()` checks the `run_last_events` entry for the run: if the last event's `status` is `"cancelled"`, or if the last event is RunCompleted with `status == "error"` and empty `error_detail`
+
+But `run_last_events` only has the LAST event per run_id. If a run is killed by SIGTERM without a RunCompleted, the last event might be a ModelCallStarted or FileEdited or similar — none of which have a `status` field.
+
+I think the task is acknowledging this complexity in the Fallback:
+
+> If `run_last_events` lacks the status field needed to detect cancelled runs consistently (the `run_lifecycle_event_summary` helper might not record RunCompleted status for all event types), document the gap in comments and mark the task blocked — do not add fragile heuristics.
+
+Looking at the actual state events, when a RunStarted occurs, the last event is the RunStarted itself (status not present). The `run_lifecycle_event_summary` returns `status: None` from `payload.get("status")`. So `last_event.get("status") == "cancelled"` would be False.
+
+But actually, wait. Let me re-examine. When `append_terminal_state_events.py` processes runs, it has access to ALL events for a run. The `_is_run_externally_cancelled` function scans all events to find RunCompleted with status="cancelled". 
+
+In `log_feedback.py`'s `state_cache_metrics`, the `run_last_events` dict stores only the LAST event per run_id. This is a significant limitation. If the RunCompleted with status="cancelled" fires but then another event for the same run fires afterward, it would overwrite it. But in practice, RunCompleted should be the last event for a run.
+
+However, for runs killed by SIGTERM WITHOUT a RunCompleted, the last event wouldn't show cancelled status at all. The `_is_run_externally_cancelled` handles this with signal 3 (duration > 2.5 hours), which `log_feedback.py` can't replicate.
+
+But looking at what actually happens in the harness (from `src/prompt.rs` and `src/state.rs`), when SIGTERM hits:
+1. The panic hook fires
+2. It emits FailureObserved
+3. It emits RunCompleted with status="error", error_detail=""
+
+So the last event WOULD be RunCompleted with status="error" and empty error_detail. That's exactly what signal 2 checks.
+
+And for explicit cancellation (GitHub Actions concurrency cancel):
+1. RunStarted fires
+2. The cancellation happens
+3. The harness lifecycle wrapper emits RunCompleted with status="cancelled"
+
+So the last event WOULD be RunCompleted with status="cancelled". That's signal 1.
+
+I think the implementation is correct. Let me proceed.
+
+Now, what about the case where the run has RunCompleted with status="cancelled"? Then `run_completed` contains the run_id, and `run_incomplete_ids = run_started - run_completed` does NOT contain the run_id. So filtering `run_incomplete_ids` wouldn't catch it anyway.
+
+BUT the task says to filter both `run_incomplete_ids` and `incomplete_model_runs`. For `incomplete_model_runs`, if ModelCallStarted fired but ModelCallCompleted didn't, the run is in `incomplete_model_runs` even if RunCompleted fired.
+
+Actually, let me re-think. The task's Implementation Notes say:
+
+> In `state_cache_metrics()`, after computing `run_incomplete_ids` (line 1341), filter out runs where `is_cancelled_completion(run_last_events.get(run_id))` is true. Same for `incomplete_model_runs` computed at line 1329.
+
+And:
+
+> The `run_incomplete_ids` computation at line 1341 uses `run_started - run_completed` — cancelled runs appear here because SIGTERM prevents RunCompleted.
+
+So the task assumes that SIGTERM prevents RunCompleted. But from what I see in the codebase (signal 2 in `_is_run_externally_cancelled`), the panic hook DOES emit RunCompleted. Maybe the task is referring to a case where even the panic hook doesn't fire?
+
+You know what, I'm overthinking this. The task says to filter both, so I'll filter both. The filtering of `run_incomplete_ids` might be a no-op in practice (if cancelled runs always have RunCompleted), but it's defensive and harmless. The filtering of `incomplete_model_runs` is the one that actually matters.
+
+Let me implement it now. I'll also add a test.
+
+Actually, I realize I should also consider: for `run_incomplete_ids`, a SIGTERM-killed run might NOT have RunCompleted if the panic hook itself fails or the process is kill -9'd. In that case, the last event would be whatever happened before the kill (e.g., ModelCallStarted, FileEdited, etc.), which wouldn't match any of our signals. So `is_cancelled_completion` would return False. The run would still be counted as incomplete. That's the conservative behavior the task mentions (false negatives are less harmful than false positives).
+
+OK, let me proceed with the implementation.
+
+Plan:
+1. Add `is_cancelled_completion()` after line 1277
+2. After 1329, add filter for `incomplete_model_runs`
+3. After 1341, add filter for `run_incomplete_ids`
+4. Add a test
+5. Run tests
+6. Commit
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me implement this. I'll take a todo to track progress.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (504ms)
+  ▶ todo ✓ (503ms)
+  ▶ todo ✓ (504ms)
+  ▶ todo ✓ (486ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now make the edits. First, add the helper function.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.5s (4 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add the `is_cancelled_completion()` helper after `is_input_validation_completion()` which ends at line 1277.
+────────────────────────────────────────────────────────────────────────────────
+
+
+        return detail == "empty_input" or detail.startswith("invalid_input:")
+  + 
+  + 
+  + def is_cancelled_completion(last_event: Any) -> bool:
+  +     """Return True if *last_event* signals an externally cancelled run.
+  + 
+  +     Two signals, matching the patterns in
+  +     ``scripts/append_terminal_state_events._is_run_externally_cancelled``:
+  + 
+  +     1. **Explicit cancelled status.**  ``status == "cancelled"`` — the
+  +        harness lifecycle wrapper recorded the cancellation explicitly.
+  + 
+  +     2. **Rust panic with no error detail.**  ``kind == "RunCompleted"``,
+  +        ``status == "error"``, and empty ``error_detail`` — SIGTERM triggers
+  +        the panic hook before emitting RunCompleted, producing an
+  +        error-without-diagnostic signature distinct from a genuine harness
+  +        bug (which would populate error_detail).
+  + 
+  +     This is conservative: when uncertain it returns ``False``.  False
+  +     negatives (cancelled runs still counted) are less harmful than false
+  ... (16 more lines)
+  ✓ Auto-approved: edit: scripts/log_feedback.py (4 → 36 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (4 → 36 lines)
+        return detail == "empty_input" or detail.startswith("invalid_input:")
+  + 
+  + 
+  + def is_cancelled_completion(last_event: Any) -> bool:
+  +     """Return True if *last_event* signals an externally cancelled run.
+  + 
+  +     Two signals, matching the patterns in
+  +     ``scripts/append_terminal_state_events._is_run_externally_cancelled``:
+  + 
+  +     1. **Explicit cancelled status.**  ``status == "cancelled"`` — the
+  +        harness lifecycle wrapper recorded the cancellation explicitly.
+  + 
+  +     2. **Rust panic with no error detail.**  ``kind == "RunCompleted"``,
+  +        ``status == "error"``, and empty ``error_detail`` — SIGTERM triggers
+  +        the panic hook before emitting RunCompleted, producing an
+  +        error-without-diagnostic signature distinct from a genuine harness
+  +        bug (which would populate error_detail).
+  + 
+  +     This is conservative: when uncertain it returns ``False``.  False
+  +     negatives (cancelled runs still counted) are less harmful than false
+  ... (16 more lines)
+ ✓ (503ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, helper added. Now let me filter `incomplete_model_runs`. The original code was at line 1329 (now shifted by 32 lines). Let me find the new location.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (504ms)
+  ▶ todo ✓ (501ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the exact current location of `incomplete_model_runs = started_runs - completed_runs`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'incomplete_model_runs = started_runs - completed_runs' in scripts/log_feedback.py ✓ (487ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read around line 1361 to get the exact context:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1358.. ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the exact lines. Now I need to add the filter for `incomplete_model_runs` after line 1361, and for `run_incomplete_ids` after line 1373.
+
+For `incomplete_model_runs`:
+- After line 1361, add:
+```python
+    cancelled_model_runs = {run_id for run_id in incomplete_model_runs if is_cancelled_completion(run_last_events.get(run_id))}
+    incomplete_model_runs -= cancelled_model_runs
+```
+
+For `run_incomplete_ids`:
+- After line 1373, add:
+```python
+    cancelled_run_ids = {run_id for run_id in run_incomplete_ids if is_cancelled_completion(run_last_events.get(run_id))}
+    run_incomplete_ids -= cancelled_run_ids
+```
+
+Let me make these edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the filter for `incomplete_model_runs`:
+        incomplete_model_runs = started_runs - completed_runs
+  +     cancelled_model_runs = {
+  +         run_id
+  +         for run_id in incomplete_model_runs
+  +         if is_cancelled_completion(run_last_events.get(run_id))
+  +     }
+  +     incomplete_model_runs -= cancelled_model_runs
+        input_validation_incomplete = sum(
+  ✓ Auto-approved: edit: scripts/log_feedback.py (2 → 8 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (2 → 8 lines)
+        incomplete_model_runs = started_runs - completed_runs
+  +     cancelled_model_runs = {
+  +         run_id
+  +         for run_id in incomplete_model_runs
+  +         if is_cancelled_completion(run_last_events.get(run_id))
+  +     }
+  +     incomplete_model_runs -= cancelled_model_runs
+        input_validation_incomplete = sum(
+ ✓ (509ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now filter `run_incomplete_ids`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+        run_incomplete_ids = run_started - run_completed
+  +     cancelled_run_ids = {
+  +         run_id
+  +         for run_id in run_incomplete_ids
+  +         if is_cancelled_completion(run_last_events.get(run_id))
+  +     }
+  +     run_incomplete_ids -= cancelled_run_ids
+        run_unmatched_completed_ids = run_completed - run_started
+  ✓ Auto-approved: edit: scripts/log_feedback.py (2 → 8 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/log_feedback.py (2 → 8 lines)
+        run_incomplete_ids = run_started - run_completed
+  +     cancelled_run_ids = {
+  +         run_id
+  +         for run_id in run_incomplete_ids
+  +         if is_cancelled_completion(run_last_events.get(run_id))
+  +     }
+  +     run_incomplete_ids -= cancelled_run_ids
+        run_unmatched_completed_ids = run_completed - run_started
+ ✓ (500ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the edit looks correct by reading the area around the changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the changes look correct:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1360.. ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The changes look correct. Now let me update todos and write a test. Let me first run the existing tests to make sure I haven't broken anything.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, the edits look correct. Let me run the existing tests first:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (501ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c "import scripts.log… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import error is pre-existing — it's because the script needs to be imported from its own directory. Let me try a different approach:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness/scripts && python3 -c "import log… ✓ (996ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, imports work. Now let me run the test:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (1.1s)
+
+
