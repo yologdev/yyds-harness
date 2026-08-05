@@ -1028,6 +1028,11 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                     2 => " (exit code 2 = misuse; check flags and argument order with --help)",
                     126 => " (exit code 126 = not executable; try chmod +x)",
                     127 => " (exit code 127 = command not found; check PATH or install the tool)",
+                    130 => " (exit code 130 = SIGINT; command was interrupted, possibly by timeout or Ctrl+C — try with a longer timeout or a smaller scope)",
+                    137 => " (exit code 137 = SIGKILL; likely out-of-memory — reduce input size or use a more memory-efficient command)",
+                    139 => " (exit code 139 = SIGSEGV; the command itself crashed — try a different tool or check for known bugs in this version)",
+                    141 => " (exit code 141 = SIGPIPE; output pipe closed early — use a bounded command (head -n, tail -n) or avoid piping to a consumer that exits first)",
+                    143 => " (exit code 143 = SIGTERM; command was terminated — may be a resource limit or external signal; retry once, then escalate)",
                     _ => "",
                 });
                 let mut hint = String::from(
@@ -3011,6 +3016,64 @@ mod tests {
         assert!(
             !hint.contains("exit code 42"),
             "unknown exit codes should not get extra tag: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_signal_exit_codes() {
+        // 130 = SIGINT (interrupt)
+        let hint = targeted_recovery_hint("bash", "Exit code: 130\nkilled").unwrap();
+        assert!(
+            hint.contains("SIGINT"),
+            "exit code 130 should mention SIGINT: {hint}"
+        );
+        assert!(
+            hint.contains("interrupted"),
+            "exit code 130 hint should mention interruption: {hint}"
+        );
+
+        // 137 = SIGKILL (OOM)
+        let hint = targeted_recovery_hint("bash", "Exit code: 137\nkilled").unwrap();
+        assert!(
+            hint.contains("SIGKILL"),
+            "exit code 137 should mention SIGKILL: {hint}"
+        );
+        assert!(
+            hint.contains("out-of-memory") || hint.contains("memory"),
+            "exit code 137 hint should mention memory: {hint}"
+        );
+
+        // 139 = SIGSEGV (segfault)
+        let hint = targeted_recovery_hint("bash", "Exit code: 139\nkilled").unwrap();
+        assert!(
+            hint.contains("SIGSEGV"),
+            "exit code 139 should mention SIGSEGV: {hint}"
+        );
+        assert!(
+            hint.contains("crashed"),
+            "exit code 139 hint should mention crash: {hint}"
+        );
+
+        // 141 = SIGPIPE (pipe closed)
+        let hint = targeted_recovery_hint("bash", "Exit code: 141\nkilled").unwrap();
+        assert!(
+            hint.contains("SIGPIPE"),
+            "exit code 141 should mention SIGPIPE: {hint}"
+        );
+        assert!(
+            hint.contains("pipe") || hint.contains("bounded"),
+            "exit code 141 hint should mention pipe or bounded: {hint}"
+        );
+
+        // 143 = SIGTERM (terminated)
+        let hint = targeted_recovery_hint("bash", "Exit code: 143\nkilled").unwrap();
+        assert!(
+            hint.contains("SIGTERM"),
+            "exit code 143 should mention SIGTERM: {hint}"
+        );
+        assert!(
+            hint.contains("terminated"),
+            "exit code 143 hint should mention termination: {hint}"
         );
     }
 
