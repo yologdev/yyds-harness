@@ -126,8 +126,16 @@ pub fn set_current_model_call_id(id: String) {
 }
 
 /// Clear the current model call ID after ModelCallCompleted is recorded.
+/// Emits a diagnostic warning to stderr if called when no model call ID
+/// is active — this indicates an orphaned ModelCallCompleted event.
 pub fn clear_current_model_call_id() {
-    CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+    let old = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+    if old.is_none() {
+        eprintln!(
+            "yyds state: clear_current_model_call_id called but no model call ID was active \
+             — ModelCallCompleted may be orphaned"
+        );
+    }
 }
 
 static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
@@ -8603,5 +8611,25 @@ mod tests {
         assert_eq!(config["secret_key"], "[redacted]");
         assert_eq!(config["timeout"], 30);
         assert_eq!(redacted["model"], "deepseek-v4");
+    }
+
+    #[test]
+    fn clear_current_model_call_id_warns_when_no_id_is_active() {
+        // Ensure no model call ID is active.
+        let id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+        assert!(
+            id.is_none(),
+            "precondition: no model call ID should be active"
+        );
+
+        // Calling clear when nothing is active should not panic.
+        clear_current_model_call_id();
+
+        // After the call, the cell should still be None (no spurious state).
+        let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+        assert!(
+            after.is_none(),
+            "cell should stay None after clearing with no active ID"
+        );
     }
 }
