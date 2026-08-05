@@ -1,0 +1,210 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': trailing characters at line 1 column 6
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source file to understand the current implementation before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/tool_wrappers.rs:1010..1060 ✓ (20ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the targeted_recovery_hint function. I need to also find the test around line 2928 to understand the test pattern. Let me also check if `extract_exit_code` exists and how it works.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Now let me find the test block and the `extract_exit_code` function:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'test_targeted_recovery_hint_bash_exit_code' in src/tool_wrappers.rs  ▶ search 'fn extract_exit_code' in src/tool_wrappers.rs ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the extract_exit_code function and the test area.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:990..1015  ▶ read src/tool_wrappers.rs:2940..3020 ✓ (21ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I need to:
+
+1. Add signal-specific exit code arms to the match in `targeted_recovery_hint` (line 1026-1032)
+2. Add tests for the new signal-kill exit codes following the existing pattern
+
+Let me also check if `extract_exit_code` would correctly handle exit codes like 130, 137, 139, 141, 143 in the test format "Exit code: 130\nfailed" - yes, it should since it parses digits.
+
+Now let me implement. First add the match arms, then add the tests.
+
+For the match arms, I need to add them BEFORE the `_ => ""` wildcard. Let me update lines 1026-1032.
+
+Let me also check if there are tests near line 3015 that test unknown exit codes - yes, line 3009-3014 tests exit code 42 returns no specific advice. I need to also make sure unknown codes still get empty string.
+
+Now let me plan the edits:
+
+1. Edit the match in `targeted_recovery_hint` to add arms for 130, 137, 139, 141, 143
+2. Add test for signal-kill exit codes
+
+Let me do the edits.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.8s (2 ✓)
+
+Good, I have a clear picture. Let me now make the changes. First, the signal-kill match arms in `targeted_recovery_hint`:
+                        2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+                        126 => " (exit code 126 = not executable; try chmod +x)",
+                        127 => " (exit code 127 = command not found; check PATH or install the tool)",
+  +                     130 => " (exit code 130 = SIGINT; command was interrupted, possibly by timeout or Ctrl+C — try with a longer timeout or a smaller scope)",
+  +                     137 => " (exit code 137 = SIGKILL; likely out-of-memory — reduce input size or use a more memory-efficient command)",
+  +                     139 => " (exit code 139 = SIGSEGV; the command itself crashed — try a different tool or check for known bugs in this version)",
+  +                     141 => " (exit code 141 = SIGPIPE; output pipe closed early — use a bounded command (head -n, tail -n) or avoid piping to a consumer that exits first)",
+  +                     143 => " (exit code 143 = SIGTERM; command was terminated — may be a resource limit or external signal; retry once, then escalate)",
+                        _ => "",
+                    });
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 12 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 12 lines)
+                        2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+                        126 => " (exit code 126 = not executable; try chmod +x)",
+                        127 => " (exit code 127 = command not found; check PATH or install the tool)",
+  +                     130 => " (exit code 130 = SIGINT; command was interrupted, possibly by timeout or Ctrl+C — try with a longer timeout or a smaller scope)",
+  +                     137 => " (exit code 137 = SIGKILL; likely out-of-memory — reduce input size or use a more memory-efficient command)",
+  +                     139 => " (exit code 139 = SIGSEGV; the command itself crashed — try a different tool or check for known bugs in this version)",
+  +                     141 => " (exit code 141 = SIGPIPE; output pipe closed early — use a bounded command (head -n, tail -n) or avoid piping to a consumer that exits first)",
+  +                     143 => " (exit code 143 = SIGTERM; command was terminated — may be a resource limit or external signal; retry once, then escalate)",
+                        _ => "",
+                    });
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the test for signal-kill exit codes. Let me add a test after the existing specific advice test block.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test for signal-kill exit codes after the existing `test_targeted_recovery_hint_bash_exit_code_specific_advice`:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3013..3023 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add a new test function after line 3020 (the closing brace of the test_targeted_recovery_hint_bash_exit_code_specific_advice test).
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(
+                !hint.contains("exit code 42"),
+                "unknown exit codes should not get extra tag: {hint}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_signal_exit_codes() {
+  +         // 130 = SIGINT (interrupt)
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 130\nkilled").unwrap();
+  +         assert!(
+  +             hint.contains("SIGINT"),
+  +             "exit code 130 should mention SIGINT: {hint}"
+  +         );
+  +         assert!(
+  +             hint.contains("interrupted"),
+  +             "exit code 130 hint should mention interruption: {hint}"
+  +         );
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (9 → 67 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (9 → 67 lines)
+            assert!(
+                !hint.contains("exit code 42"),
+                "unknown exit codes should not get extra tag: {hint}"
+  +         );
+  +     }
+  + 
+  +     #[test]
+  +     fn test_targeted_recovery_hint_bash_signal_exit_codes() {
+  +         // 130 = SIGINT (interrupt)
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 130\nkilled").unwrap();
+  +         assert!(
+  +             hint.contains("SIGINT"),
+  +             "exit code 130 should mention SIGINT: {hint}"
+  +         );
+  +         assert!(
+  +             hint.contains("interrupted"),
+  +             "exit code 130 hint should mention interruption: {hint}"
+  +         );
+  + 
+  +         // 137 = SIGKILL (OOM)
+  ... (44 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the focused tests:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (32.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 119 tests pass, including the new `test_targeted_recovery_hint_bash_signal_exit_codes` test. Now let me run `cargo fmt -- --check` and then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All 119 tests pass including the new signal-kill tests. Now format check and commit:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let me check git diff to confirm the changes are correct and then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only 2>&1 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, only `src/tool_wrappers.rs` is changed, which matches the Edit Surface. Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit succeeded. Let me verify with a quick `cargo build` to make sure everything is good.
+────────────────────────────────────────────────────────────────────────────────
+
+Committed. Let me run a quick build check to confirm everything is clean:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (6.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything checks out. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**What changed:** `src/tool_wrappers.rs`
+
+**Edit 1 — `targeted_recovery_hint` match arms (line 1026):** Added 5 new exit code arms before the wildcard `_ => ""`:
+
+| Code | Signal | Hint |
+|------|--------|------|
+| 130 | SIGINT | Interrupted — try longer timeout or smaller scope |
+| 137 | SIGKILL | OOM — reduce input size or use memory-efficient command |
+| 139 | SIGSEGV | Tool crashed — try different tool or check for known bugs |
+| 141 | SIGPIPE | Pipe closed early — use bounded command (head -n, tail -n) |
+| 143 | SIGTERM | Terminated — retry once, then escalate |
+
+**Edit 2 — New test `test_targeted_recovery_hint_bash_signal_exit_codes`:** Tests that each of the 5 signal-kill exit codes (130, 137, 139, 141, 143) returns a non-empty hint containing the signal name and appropriate context keywords (interrupted, memory, crashed, pipe/bounded, terminated).
+
+**Verification:**
+• `cargo test tool_wrappers`: 119 tests passed (including 6 new assertions)
+• `cargo fmt -- --check`: passed
+• `cargo check`: passed
+
+**Expected Evidence satisfied:** Signal-kill exit codes now produce meaningful recovery hints instead of empty strings, reducing retry cycles for common pipeline failures like SIGPIPE (141).
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

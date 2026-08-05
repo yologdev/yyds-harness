@@ -1,0 +1,686 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill. The task is to add a guard in `clear_current_model_call_id` so that when no model call ID is currently tracked, the completed event is either skipped or recorded with a synthetic trace ID.
+
+Let me first read the evolve skill, then the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:115..155 ✓ (1.3s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand:
+1. How `clear_current_model_call_id` is called and where ModelCallCompleted is recorded
+2. What the current flow looks like
+3. Where to add the guard
+
+Let me search for `ModelCallCompleted` and `clear_current_model_call_id` usage.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'clear_current_model_call_id' in src/  ▶ search 'ModelCallCompleted' in src/  ▶ search 'CURRENT_MODEL_CALL_ID' in src/ ✓ (807ms)
+ ✓ (1.8s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the flow:
+
+1. `CURRENT_MODEL_CALL_ID` is a thread-local `Cell<Option<String>>`
+2. `set_current_model_call_id(id)` sets it to `Some(id)`
+3. `clear_current_model_call_id()` sets it to `None` — but the ModelCallCompleted event is recorded elsewhere (in prompt.rs), not in `clear_current_model_call_id` itself
+4. The panic hook also reads `CURRENT_MODEL_CALL_ID` to close lifecycle on panic
+
+So the issue: `clear_current_model_call_id` just clears the ID. The ModelCallCompleted events are recorded in `prompt.rs` at lines 955, 1041, and 1102. The callers in prompt.rs call `clear_current_model_call_id` AFTER recording the event. But the problem is different — the unmatched completed events happen when `ModelCallCompleted` is recorded without a corresponding `ModelCallStarted`, not when `clear` is called without `set`.
+
+Wait, actually let me re-read. The task says: "When clear is called without a prior set, the completed event becomes orphaned." But looking at the code, `clear_current_model_call_id` just sets the cell to None. The event recording happens in prompt.rs before the clear call.
+
+Let me look at what exactly happens. Let me read the relevant parts of prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 8.3s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..790  ▶ read src/prompt.rs:940..990 ✓ (489ms)
+  ▶ read src/prompt.rs:1025..1075  ▶ read src/prompt.rs:1090..1130 ✓ (1.5s)
+ ✓ (4.6s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the flow in prompt.rs:
+
+1. Line 780: `set_current_model_call_id(model_call_id.clone())` — sets the global
+2. Line 781-785: Records `ModelCallStarted` with the model_call_id
+3. Lines 944-976: When `AgentEnd` fires, it records `ModelCallCompleted` (955) then calls `clear_current_model_call_id()` (974)
+4. Lines 1027-1055: On ctrl_c, records `ModelCallCompleted` (1041) then calls `clear_current_model_call_id()` (1055)
+5. Lines 1092-1116: After loop exits, records `ModelCallCompleted` (1102) then calls `clear_current_model_call_id()` (1116)
+
+So the flow in prompt.rs looks correct — it always records ModelCallStarted before ModelCallCompleted. There's no orphan there.
+
+BUT — the issue might be about the panic hook in state.rs. Let me read that.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.1s (4 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:25..75 ✓ (458ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I see the full picture. The panic hook in state.rs at line 68 does `CURRENT_MODEL_CALL_ID.with(|c| c.take())` and if there IS a model call ID, it records a ModelCallCompleted. This is correct.
+
+But the issue the task is about: `clear_current_model_call_id` is a separate function (line 129-131) that just sets the cell to None. It doesn't record anything — the recording happens in prompt.rs BEFORE `clear_current_model_call_id` is called. So `clear_current_model_call_id` itself can't produce an unmatched completed event.
+
+However, the unmatched completed count `deepseek_model_call_unmatched_completed_count=1` might come from a different scenario. Let me check `append_terminal_state_events.py` which detects these orphans.
+
+Let me search for the unmatched completed scenario more carefully. The task says "When clear is called without a prior set, the completed event becomes orphaned." But in prompt.rs, `set_current_model_call_id` is called first, then ModelCallStarted is recorded, then ModelCallCompleted, then `clear_current_model_call_id`. So the clear shouldn't happen without a prior set.
+
+Wait — maybe the issue is in a different code path where ModelCallCompleted is recorded without going through the prompt.rs flow. Let me check `src/commands_eval.rs` line 3530 and line 6606, and `src/state.rs` line 4355.
+
+Actually, let me reconsider: the task description says the issue is about `clear_current_model_call_id`. The implementation notes say: "The current model call ID is tracked via a global Mutex<Option<String>> (see set_current_model_call_id / clear_current_model_call_id around lines 124-129 in src/state.rs)."
+
+But it's actually a `Cell<Option<String>>`, not a `Mutex<Option<String>>`. The task says Mutex but the code uses Cell. The task implementation notes are slightly wrong about the type, but the overall concept is right.
+
+Now, looking at this more carefully: the `clear_current_model_call_id` function itself never records a ModelCallCompleted. It just clears the cell. So there's no way for `clear_current_model_call_id` itself to produce an unmatched ModelCallCompleted.
+
+But wait — there IS a scenario. The panic hook takes from CURRENT_MODEL_CALL_ID, which clears it AND records a ModelCallCompleted. If `clear_current_model_call_id()` was called first (clearing the ID), and then the panic hook fires, it won't record a duplicate. That's fine.
+
+But the unmatched completed scenario could happen in another way. Let me think...
+
+Actually, the issue might be simpler. Let me look at `record_cache_metrics` which is called right after `clear_current_model_call_id` in prompt.rs line 975. That function might record something. But that's not ModelCallCompleted.
+
+Let me search for where ModelCallCompleted might be recorded WITHOUT a corresponding ModelCallStarted.
+
+Actually, let me look at `commands_eval.rs` line 3530:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_eval.rs:3520..3550  ▶ read src/commands_eval.rs:6596..6626  ▶ read src/state.rs:4345..4375 ✓ (2.3s)
+ ✓ (2.0s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lines in commands_eval.rs are just reading events (matching on event_type), not recording them. Lines 6606 and 4355 are test code with test fixtures, not real recording.
+
+So the actual ModelCallCompleted recording only happens in:
+1. prompt.rs line 955 (AgentEnd path)
+2. prompt.rs line 1041 (ctrl_c path)
+3. prompt.rs line 1102 (stream closed path)
+4. state.rs line 70 (panic hook)
+
+In all prompt.rs paths, `set_current_model_call_id` is called before ModelCallStarted, which is before ModelCallCompleted. So they should be balanced.
+
+The unmatched completed could come from the panic hook scenario differently: what if `set_current_model_call_id` was called, then the process panics before ModelCallStarted is recorded? The panic hook would record ModelCallCompleted (with the ID from CURRENT_MODEL_CALL_ID) but ModelCallStarted was never recorded. That's an unmatched completed.
+
+But wait, that would require an orphaned ModelCallStarted? No — the panic hook records a ModelCallCompleted without a ModelCallStarted if the panic happens after set but before ModelCallStarted is recorded.
+
+Actually, the key insight from looking at the code: the flow in prompt.rs (lines 780-785) calls `set_current_model_call_id` AND records ModelCallStarted. These are sequential but the `set` happens first. If a panic occurs between the `set` (line 780) and the `record ModelCallStarted` (lines 781-785), the panic hook would record ModelCallCompleted but ModelCallStarted was never recorded. That's the unmatched completed.
+
+But this is a race condition that's extremely unlikely. More likely, there's another scenario.
+
+Let me look at `append_terminal_state_events.py` to understand what it detects as an unmatched completion.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.8s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched' in scripts/append_terminal_state_events.py ✓ (555ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the relevant section of append_terminal_state_events.py to understand what counts as "unmatched".
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:450..530 ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the first function (around line 450) finds ModelCallCompleted events whose run_id doesn't have a matching ModelCallStarted. This uses `run_id` as the key, not `model_call_id`.
+
+The second function (around line 480) finds orphaned ModelCallStarted without matching ModelCallCompleted, using model_call_id as the key.
+
+Now let me understand where the unmatched completed count of 1 comes from. The `find_missing_model_call_started` function (first one) finds completions without starts. This could happen if:
+1. ModelCallCompleted is recorded with a run_id that never had a ModelCallStarted
+2. The ModelCallStarted and ModelCallCompleted have different run_ids
+
+The task's proposed fix is to add a guard in `clear_current_model_call_id` to detect when no model call ID is currently set. But this doesn't directly address the issue because `clear_current_model_call_id` doesn't record anything — it just clears the cell.
+
+Let me think about this differently. The real issue might be in `record_cache_metrics` or `record_cache_metrics_direct`, which is called after `clear_current_model_call_id` in prompt.rs (line 975). But that doesn't record ModelCallCompleted either.
+
+Actually, let me re-read the task more carefully:
+
+> Add a guard in clear_current_model_call_id (or the caller that records ModelCallCompleted) so that when no model call ID is currently tracked, the completed event is either skipped with a diagnostic log or recorded with a synthetic "unknown-start" trace ID rather than producing an orphaned ModelCallCompleted.
+
+OK so the task recognizes that the guard could be in `clear_current_model_call_id` OR in the caller. The callers are in prompt.rs. But looking at the code, the callers DO set the ID before recording the event.
+
+Wait - maybe the unmatched completed count is from a scenario where `set_current_model_call_id` was never called? Like if a previous or different session used the same run_id and recorded a ModelCallCompleted without a start? That would be a cross-session issue.
+
+Actually, let me look at the `record_cache_metrics_direct` function since it's called from `clear_current_model_call_id` context and might record things.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'record_cache_metrics_direct' in src/state.rs ✓ (505ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`record_cache_metrics_direct` records CacheMetricsRecorded, not ModelCallCompleted. So that's not the issue.
+
+Now let me think about this more carefully. The unmatched completed count is 1. It might have been a one-time race condition. The task says: "If clear_current_model_call_id already guards against missing start, or if the unmatched count is from a one-time race that cannot recur, write task_01_obsolete.md with the evidence."
+
+Looking at the code flow again:
+
+In prompt.rs, every path that records ModelCallCompleted ensures ModelCallStarted is recorded first:
+- Lines 944-976: AgentEnd path checks `if !model_call_started` and records ModelCallStarted before ModelCallCompleted. Then calls `clear_current_model_call_id()`.
+- Lines 1027-1055: ctrl_c path checks `if !model_call_started` and records ModelCallStarted before ModelCallCompleted. Then calls `clear_current_model_call_id()`.
+- Lines 1092-1116: Stream closed path checks `if !model_call_started` and records ModelCallStarted before ModelCallCompleted. Then calls `clear_current_model_call_id()`.
+
+The panic hook in state.rs (line 68) reads the ID from CURRENT_MODEL_CALL_ID and records ModelCallCompleted. But it doesn't record ModelCallStarted — the ModelCallStarted should have been recorded before the set. However, if the panic happens between `set_current_model_call_id` (line 780) and the ModelCallStarted record (lines 781-785), then the panic hook would record a ModelCallCompleted without a corresponding ModelCallStarted.
+
+But this is a very tight race window. And the task says to add a guard in `clear_current_model_call_id`. Let me look more carefully at what the task is asking.
+
+Actually, I think the right approach is to look at this from the task's perspective. The task says "When clear is called without a prior set (e.g. the model call started before state recording began, or the start event was lost), the completed event becomes orphaned."
+
+So the scenario is:
+1. ModelCallCompleted is recorded (somehow)
+2. `clear_current_model_call_id()` is called
+3. But no `set_current_model_call_id` was called before
+
+This would produce an unmatched completed. The question is: where does this happen?
+
+Let me search for all places where ModelCallCompleted is recorded in state.rs to find any path that doesn't go through prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only two places record ModelCallCompleted in state.rs: line 70 (panic hook) and lines 4355 (test fixture).
+
+In prompt.rs, all 3 paths check `!model_call_started` before recording ModelCallCompleted and all paths call `set_current_model_call_id` at the beginning (line 780).
+
+So the unmatched completed count of 1 likely came from the panic hook. When the process panics between `set_current_model_call_id` (line 780) and the `record ModelCallStarted` (lines 781-785), the panic hook records a ModelCallCompleted but ModelCallStarted was never recorded.
+
+Now, the task's proposed fix is to add a guard in `clear_current_model_call_id`. But the actual fix should be to ensure the panic hook also records ModelCallStarted before ModelCallCompleted. OR, to add a flag that tracks whether ModelCallStarted was already recorded.
+
+Actually, wait. Let me re-read the panic hook code more carefully.
+
+Looking at line 68: `if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take())` - the panic hook takes the ID and records ModelCallCompleted. But it doesn't record ModelCallStarted.
+
+The fix should be in the panic hook: record ModelCallStarted before ModelCallCompleted. But the panic hook might not have enough info. 
+
+Alternatively, we could use a separate flag to track whether ModelCallStarted was already recorded. But that seems complex.
+
+Actually, the simplest fix matching the task description is: add a guard in `clear_current_model_call_id` that returns whether there was an ID to clear, and if not, log a warning. But that won't fix the unmatched completed issue in the panic hook case.
+
+Let me think about this differently. The task says the guard should be "fail-soft: if the ID is missing, log a warning via eprintln or tracing, and either skip the event or emit it with trace_id 'unknown-start'."
+
+Wait, but `clear_current_model_call_id` doesn't record events. It just clears the cell. So the task description might be slightly inaccurate about the mechanism but the spirit is correct: add a guard that prevents unmatched completions.
+
+The real fix should be in the panic hook: when it records ModelCallCompleted, it should also record ModelCallStarted (with minimal info). Let me look at this again.
+
+Actually, looking at the panic hook again (lines 68-74):
+
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(
+        EventType::ModelCallCompleted,
+        Actor::Harness,
+        json!({
+            "model_call_id": model_call_id,
+            "model": "",
+```
+
+There's no ModelCallStarted recorded here. If a panic occurs after `set_current_model_call_id` but before ModelCallStarted is recorded in prompt.rs, the panic hook would create a ModelCallCompleted without a matching ModelCallStarted.
+
+The fix should be: in the panic hook, record ModelCallStarted before ModelCallCompleted.
+
+But wait, it's also possible the unmatched completed happened through another path. Let me look at whether `record` function is called with ModelCallCompleted anywhere else.
+
+Actually, let me search more broadly for where ModelCallCompleted events could be created.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::ModelCallCompleted' in src/ ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The places where ModelCallCompleted is actually recorded (via `record()` call):
+1. `src/state.rs:70` — panic hook
+2. `src/prompt.rs:955` — AgentEnd path
+3. `src/prompt.rs:1041` — ctrl_c path
+4. `src/prompt.rs:1102` — stream closed path
+
+All other matches are either test fixtures, event deserialization, or parsing.
+
+Now the prompt.rs paths all have the `set_current_model_call_id` call at line 780 followed by ModelCallStarted record at lines 781-785. And in all three completion paths, they check `if !model_call_started` before recording ModelCallStarted as a backup.
+
+But the panic hook doesn't check or record ModelCallStarted. So if a panic occurs after `set_current_model_call_id` (line 780) but before ModelCallStarted is recorded (lines 781-785), the panic hook would record a ModelCallCompleted without a preceding ModelCallStarted.
+
+Now, the task says to add a guard in `clear_current_model_call_id`. But actually, I think the right fix is more nuanced. Let me think about what would actually fix this based on the task description:
+
+The task says: "Add a guard in clear_current_model_call_id (or the caller that records ModelCallCompleted) so that when no model call ID is currently tracked, the completed event is either skipped with a diagnostic log or recorded with a synthetic 'unknown-start' trace ID."
+
+But `clear_current_model_call_id` doesn't record the event — it just clears the cell. The event is recorded by the caller (prompt.rs) BEFORE `clear_current_model_call_id` is called.
+
+Hmm, but there's still the panic hook scenario. Let me look at the actual fix that would prevent unmatched completions. 
+
+The real fix has two parts:
+1. In the panic hook: record ModelCallStarted before ModelCallCompleted
+2. In `clear_current_model_call_id`: make it return whether an ID was present, so callers can log a warning if clearing without a prior set
+
+But actually, for the panic hook, even if we add ModelCallStarted recording, the issue is that the panic hook doesn't know the model name or usage. It would record a minimal ModelCallStarted.
+
+Let me think about this more practically. The unmatched count is 1. This could be a one-time race that won't recur. Let me check if there's evidence this is recurring.
+
+Actually, let me go with the task's recommendation. The task says:
+
+> If clear_current_model_call_id already guards against missing start, or if the unmatched count is from a one-time race that cannot recur, write task_01_obsolete.md with the evidence.
+
+The code shows that `clear_current_model_call_id` does NOT guard against missing start. It just sets the cell to None. But it also doesn't produce orphaned completions because it doesn't record events.
+
+The real question is: can the unmatched completed count recur? The potential race is:
+1. `set_current_model_call_id` (line 780 in prompt.rs)
+2. PANIC before lines 781-785 (ModelCallStarted record)
+3. Panic hook records ModelCallCompleted without ModelCallStarted
+
+This is a very unlikely race. But it's not impossible. Let me add a guard to the panic hook.
+
+Actually, I'll implement the fix as the task suggests: modify `clear_current_model_call_id` to detect when no ID is set and emit a warning. And also fix the panic hook to record ModelCallStarted before ModelCallCompleted.
+
+Wait, let me re-read the task once more. The task says:
+
+> Add a guard in clear_current_model_call_id (or the caller that records ModelCallCompleted) so that when no model call ID is currently tracked, the completed event is either skipped with a diagnostic log or recorded with a synthetic "unknown-start" trace ID rather than producing an orphaned ModelCallCompleted.
+
+The key insight: the guard should be where ModelCallCompleted is RECORDED, not just where the ID is cleared. The `clear_current_model_call_id` function is the wrong place because it doesn't record events. The right places are the callers: prompt.rs (lines 955, 1041, 1102) and state.rs panic hook (line 70).
+
+But the task explicitly names `clear_current_model_call_id` as the target. Let me think about what change to `clear_current_model_call_id` would actually help...
+
+One approach: change `clear_current_model_call_id` to return `Option<String>` — the ID that was there, or `None` if there was no ID. Then callers can detect the case and handle it.
+
+But that changes the API and might not directly fix the unmatched completion.
+
+Let me go with a practical approach:
+1. Make `clear_current_model_call_id` detect when no ID is set and log a warning
+2. Also fix the panic hook to record ModelCallStarted before ModelCallCompleted
+
+Actually, looking more carefully, I think the simplest and most correct fix is:
+1. In the panic hook (state.rs lines 64-74), add a ModelCallStarted record before the ModelCallCompleted record
+2. In `clear_current_model_call_id`, check if there IS an ID before clearing, and return whether an ID was present. Log a warning if not.
+
+But wait, the task also says: "New test verifies the guard: calling clear when no ID is set does not emit an orphaned ModelCallCompleted with a missing-start lifecycle gap."
+
+So the test would call `clear_current_model_call_id` without a prior `set_current_model_call_id` and verify no orphaned event is produced. Since `clear_current_model_call_id` currently doesn't record anything, calling it without a prior set already doesn't produce an orphaned event. So the test would pass as-is.
+
+Let me reconsider the whole approach. Maybe the right thing to do is:
+1. Fix the panic hook to record ModelCallStarted before ModelCallCompleted
+2. Add a guard in `clear_current_model_call_id` that logs when no ID is set
+3. Write a test
+
+Let me now implement this. Let me plan the changes:
+
+For `clear_current_model_call_id`:
+```rust
+pub fn clear_current_model_call_id() {
+    let had_id = CURRENT_MODEL_CALL_ID.with(|c| {
+        let had = c.take().is_some();
+        c.set(None);
+        had
+    });
+    if !had_id {
+        eprintln!("[state] clear_current_model_call_id called with no active model call ID (possible duplicate clear or missing set)");
+    }
+}
+```
+
+For the panic hook, add ModelCallStarted before ModelCallCompleted:
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    // Record a synthetic ModelCallStarted since the real one may not have been recorded
+    record(
+        EventType::ModelCallStarted,
+        Actor::Harness,
+        json!({
+            "model_call_id": model_call_id,
+            "model": "",
+            "synthetic": true,
+        }),
+    );
+    record(
+        EventType::ModelCallCompleted,
+        ...
+    );
+}
+```
+
+And add a test for both.
+
+Let me proceed with this implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. Let me read the panic hook section more completely, and also look at how the existing tests are structured.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..120  ▶ search 'fn test.*model_call' in src/state.rs ✓ (997ms)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me search for existing tests around model call lifecycle to understand the test patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test.*model' in src/state.rs  ▶ search 'clear_current_model_call' in src/state.rs ✓ (1.0s)
+ ✓ (995ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests for model call lifecycle. Let me find a good place to add tests in the test module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search '#\[cfg\(test\)\]' in src/state.rs ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No test module in state.rs. Let me check if tests are in a separate file or at the bottom.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/state.rs  ▶ search '#\[test\]' in src/state.rs ✓ (991ms)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Ah, the test module is at line 3569. Let me look at a few tests near the end to understand the pattern, then find where to add the test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3569..3629  ▶ read src/state.rs:8550..8600 ✓ (1.6s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me implement the fix:
+
+1. Modify `clear_current_model_call_id` to check if there's an ID present before clearing, and log a warning if not.
+2. Fix the panic hook to record a synthetic ModelCallStarted before ModelCallCompleted.
+3. Add a test.
+
+Let me now implement these changes. Let me also check the end of the test module to find where to add the test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8598.. ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now I have all the information I need. Let me plan the implementation:
+
+1. **Fix `clear_current_model_call_id`** (lines 129-131): Make it take the current value and check if it was None. Log a warning if no ID was active. This is a diagnostic improvement.
+
+2. **Fix panic hook** (lines 64-82): Before recording ModelCallCompleted, also record a synthetic ModelCallStarted event. This is the actual fix for the unmatched completed count.
+
+3. **Add a test** that verifies the guard works correctly.
+
+Let me implement these now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. The issue is:
+
+1. The panic hook in `state.rs` records `ModelCallCompleted` without a corresponding `ModelCallStarted` when a panic occurs after `set_current_model_call_id` but before the `ModelCallStarted` event is recorded in `prompt.rs`.
+2. `clear_current_model_call_id` doesn't guard against being called with no active ID.
+
+The fix is two-fold: add a synthetic `ModelCallStarted` in the panic hook, and add a diagnostic guard in `clear_current_model_call_id`.
+
+Let me implement this now.
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (490ms)
+  ▶ todo ✓ (505ms)
+  ▶ todo ✓ (502ms)
+  ▶ todo ✓ (506ms)
+  ▶ todo    /// Clear the current model call ID after ModelCallCompleted is recorded.
+  - pub fn clear_current_model_call_id() {
+  -     CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  + /// Returns the previous ID if one was active, or `None` if no call was
+  + /// being tracked.  Callers should treat a `None` return as a signal that
+  + /// an unmatched clear occurred — the model call lifecycle may have a gap.
+  + pub fn clear_current_model_call_id() -> Option<String> {
+  +     CURRENT_MODEL_CALL_ID.with(|c| {
+  +         let prev = c.take();
+  +         if prev.is_none() {
+  +             eprintln!(
+  +                 "[state] clear_current_model_call_id called with no active model call ID \
+  +                  (possible duplicate clear or missing set_current_model_call_id)"
+  +             );
+  +         }
+  +         prev
+  +     })
+    }
+  ✓ Auto-approved: edit: src/state.rs (4 → 16 lines)
+ ✓ (547ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start implementing. First, fix `clear_current_model_call_id`.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 4.6s (5 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 16 lines)
+    /// Clear the current model call ID after ModelCallCompleted is recorded.
+  - pub fn clear_current_model_call_id() {
+  -     CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  + /// Returns the previous ID if one was active, or `None` if no call was
+  + /// being tracked.  Callers should treat a `None` return as a signal that
+  + /// an unmatched clear occurred — the model call lifecycle may have a gap.
+  + pub fn clear_current_model_call_id() -> Option<String> {
+  +     CURRENT_MODEL_CALL_ID.with(|c| {
+  +         let prev = c.take();
+  +         if prev.is_none() {
+  +             eprintln!(
+  +                 "[state] clear_current_model_call_id called with no active model call ID \
+  +                  (possible duplicate clear or missing set_current_model_call_id)"
+  +             );
+  +         }
+  +         prev
+  +     })
+    }
+ ✓ (535ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now fix the panic hook to record a synthetic ModelCallStarted before ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+Now fix the panic hook to record a synthetic `ModelCallStarted` before `ModelCallCompleted`:
+                // Close any in-flight model call so the lifecycle is balanced.
+                // The panic hook runs on a best-effort basis; we do not have
+                // access to the full usage or model info, so we record a
+  -             // minimal "interrupted" completion.
+  +             // minimal "interrupted" completion preceded by a synthetic
+  +             // ModelCallStarted to avoid an unmatched completed event.
+                if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+  +                 // Emit a synthetic ModelCallStarted so the lifecycle is
+  +                 // complete — the real start may not have been recorded if
+  +                 // the panic occurred between set_current_model_call_id and
+  +                 // the ModelCallStarted event write.
+  +                 record(
+  +                     EventType::ModelCallStarted,
+  +                     Actor::Harness,
+  +                     json!({
+  +                         "model_call_id": model_call_id,
+  +                         "model": "",
+  +                         "synthetic": true,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (19 → 33 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (19 → 33 lines)
+                // Close any in-flight model call so the lifecycle is balanced.
+                // The panic hook runs on a best-effort basis; we do not have
+                // access to the full usage or model info, so we record a
+  -             // minimal "interrupted" completion.
+  +             // minimal "interrupted" completion preceded by a synthetic
+  +             // ModelCallStarted to avoid an unmatched completed event.
+                if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+  +                 // Emit a synthetic ModelCallStarted so the lifecycle is
+  +                 // complete — the real start may not have been recorded if
+  +                 // the panic occurred between set_current_model_call_id and
+  +                 // the ModelCallStarted event write.
+  +                 record(
+  +                     EventType::ModelCallStarted,
+  +                     Actor::Harness,
+  +                     json!({
+  +                         "model_call_id": model_call_id,
+  +                         "model": "",
+  +                         "synthetic": true,
+  +                     }),
+  +                 );
+  ... (3 more lines)
+ ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add a test. Let me add it at the end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test at the end of the test module:
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_none_and_warns_when_no_id_tracked() {
+  +         // Ensure no model call ID is active.
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  +         let result = clear_current_model_call_id();
+  +         // Should return None when no ID was being tracked.
+  +         assert!(result.is_none(), "expected None when no ID is active");
+  +         // The cell should still be None after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none(), "cell should be None after unmatched clear");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_id_when_one_is_active() {
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(Some("mc-test-123".into())));
+  +         let result = clear_current_model_call_id();
+  +         assert_eq!(result.as_deref(), Some("mc-test-123"));
+  +         // Cell should be cleared after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none());
+  ... (2 more lines)
+  ✓ Auto-approved: edit: src/state.rs (1 → 22 lines)
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (1 → 22 lines)
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_none_and_warns_when_no_id_tracked() {
+  +         // Ensure no model call ID is active.
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  +         let result = clear_current_model_call_id();
+  +         // Should return None when no ID was being tracked.
+  +         assert!(result.is_none(), "expected None when no ID is active");
+  +         // The cell should still be None after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none(), "cell should be None after unmatched clear");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_id_when_one_is_active() {
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(Some("mc-test-123".into())));
+  +         let result = clear_current_model_call_id();
+  +         assert_eq!(result.as_deref(), Some("mc-test-123"));
+  +         // Cell should be cleared after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none());
+  ... (2 more lines)
+ ✗ (1.0s)
+    │ old_text matches 1214 locations in src/state.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to include more context to make the match unique. Let me use the last test and the closing brace with more context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8589..8604 ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The file grew to 8633 lines (was 8607). Let me find the exact end of the test module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8620.. ✓ (504ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert_eq!(config["secret_key"], "[redacted]");
+            assert_eq!(config["timeout"], 30);
+            assert_eq!(redacted["model"], "deepseek-v4");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_none_and_warns_when_no_id_tracked() {
+  +         // Ensure no model call ID is active.
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  +         let result = clear_current_model_call_id();
+  +         // Should return None when no ID was being tracked.
+  +         assert!(result.is_none(), "expected None when no ID is active");
+  +         // The cell should still be None after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none(), "cell should be None after unmatched clear");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_id_when_one_is_active() {
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(Some("mc-test-123".into())));
+  ... (7 more lines)
+  ✓ Auto-approved: edit: src/state.rs (6 → 28 lines)
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 28 lines)
+            assert_eq!(config["secret_key"], "[redacted]");
+            assert_eq!(config["timeout"], 30);
+            assert_eq!(redacted["model"], "deepseek-v4");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_none_and_warns_when_no_id_tracked() {
+  +         // Ensure no model call ID is active.
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(None));
+  +         let result = clear_current_model_call_id();
+  +         // Should return None when no ID was being tracked.
+  +         assert!(result.is_none(), "expected None when no ID is active");
+  +         // The cell should still be None after the call.
+  +         let after = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         assert!(after.is_none(), "cell should be None after unmatched clear");
+  +     }
+  + 
+  +     #[test]
+  +     fn clear_current_model_call_id_returns_id_when_one_is_active() {
+  +         CURRENT_MODEL_CALL_ID.with(|c| c.set(Some("mc-test-123".into())));
+  ... (7 more lines)
+ ✓ (491ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to update the callers in prompt.rs. The function signature changed from `fn clear_current_model_call_id()` to `fn clear_current_model_call_id() -> Option<String>`. The callers don't use the return value, so they won't break, but let me check for compiler warnings about unused return values.
+
+Actually, the callers just call the function without capturing the return value, which is fine. But let me check if there's a `#[must_use]` attribute... No, I didn't add one.
+
+Now let me run the checks.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the checks. First `cargo fmt`:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (490ms)
+  ▶ todo ✓ (503ms)
+  ▶ todo ✓ (505ms)
+  ▶ todo ✓ (488ms)
+  4 tools completed in 3.5s (4 ✓)
+
+
