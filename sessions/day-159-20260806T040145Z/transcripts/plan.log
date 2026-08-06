@@ -1,0 +1,368 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 5812 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 4982
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment agent didn't produce output, so I'm in fallback planning mode. Let me analyze the trajectory evidence and create task files.
+
+Key observations from the trajectory:
+1. Day 158 had 1/2 tasks verified, 1 reverted as unverified (evaluator timeout pattern)
+2. The reverted task (Issue #160) was about adding a model call lifecycle guard for unmatched completed events
+3. Graph pressure shows: evaluator_unverified_count=1, deepseek_model_call_abnormal_completed_count=10, evaluator_timeout_count=1
+4. Task success rate is 0.5, task verification rate is 0.5
+5. There's a cached issue #105 about DeepSeek prompt cache metrics (blocked by upstream yoagent)
+
+The trajectory says:
+- "Raise verified task success rate (task_success_rate=0.5): Dominant task failure: evaluator_unverified_count=1"
+- "Bound evaluator checks so verdicts are not skipped (evaluator_unverified_count=1)"
+- "Close yyds state and model lifecycle gaps (deepseek_model_call_abnormal_completed_count=10)"
+
+The self-issue #160 (reverted task) is about the model call lifecycle guard. This was reverted because the evaluator timed out, not because the code was wrong. The task itself is still valid.
+
+Let me first check if session_plan/task_01.md already exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ ✓ (79ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md and assessment_missing.md. Let me read the existing task_01.md to see if it's a seed task.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (113ms)
+ ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task_01.md is a generic "add something small to src/state.rs" fallback. It's weak — no specific evidence, no tie to trajectory. The trajectory has clear, specific evidence I can work with:
+
+1. **Model call lifecycle guard (#160)**: The reverted task from Day 158. The evaluator timed out but the code was likely correct. This was about `clear_current_model_call_id` — adding a guard for unmatched completed events. Trajectory shows `deepseek_model_call_abnormal_completed_count=10` with causes including `model_incomplete/open_after_FailureObserved=3`.
+
+2. **Evaluator timeout problem (#131)**: Blocked (do-not-modify territory), but I could work on `scripts/log_feedback.py` to better detect and score evaluator timeouts.
+
+3. **Cache metrics (#105)**: Blocked by upstream yoagent.
+
+Let me refine task_01.md to be evidence-backed, targeting the highest-priority trajectory pressure. The graph says:
+- "Raise verified task success rate" — dominant failure: evaluator_unverified_count=1
+- "Close yyds state and model lifecycle gaps" — deepseek_model_call_abnormal_completed_count=10
+
+The #160 issue (model call lifecycle guard) is exactly the right task for the lifecycle gap pressure. It was reverted due to evaluator timeout, not incorrect code. Let me refine the seed task to target this specific, evidence-backed improvement.
+
+But wait — the #160 task was already attempted and reverted. The trajectory says evaluator_unverified_count=1. The implementation agent presumably wrote code that passed cargo build && cargo test but the evaluator timed out. If I reseed the same task, it might hit the same evaluator timeout.
+
+However, the planning instruction says: "If a task has been reverted before, make it SMALLER than last time." The #160 task was already pretty small — just add a guard in `clear_current_model_call_id`. Let me make it even smaller: just add the guard with a test, no additional refactoring.
+
+But actually, there's a risk the evaluator will timeout again. The trajectory shows `evaluator_timeout_count=1` as ongoing pressure. I can't fix the evaluator timeout (it's in evolve.sh, do-not-modify). But I can still plan the task — it's the right thing to do.
+
+For task_02, I should look at the other trajectory pressures:
+- "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=4)"
+- "Make evaluator timeouts resumable or cheaper (evaluator_timeout_count=1)"
+
+The evaluator timeout fix is in evolve.sh (do-not-modify). But I could address it indirectly — e.g., improve something in the evaluation scripts or log feedback.
+
+Let me also consider: `scripts/log_feedback.py` improvements. The trajectory says log_feedback score=0.5625 and has lessons about failed tool actions and strict verifier evidence.
+
+Let me refine the seed task_01.md to be the model call lifecycle guard (backed by trajectory evidence), and create a task_02.md for something else useful.
+
+Actually wait, let me re-read the planning instructions more carefully:
+
+"If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The assessment found no actionable bugs in src/" — but the trajectory evidence shows specific, actionable issues: the model call lifecycle gap (deepseek_model_call_abnormal_completed_count=10). So the seed task's premise is wrong. I should replace it.
+
+Let me refine task_01.md to be the lifecycle guard, and add task_02.md for another trajectory-backed improvement.
+
+For task_02, looking at trajectory pressures:
+- bash_tool_error=4: "Bound failing shell commands before retrying"
+- evaluator_timeout_count=1: Can't fix evolve.sh
+
+What about improving `scripts/log_feedback.py` to better detect evaluator timeouts on correct code? That would help the harness distinguish infrastructure timeouts from real bugs. This is diagnostic improvement, not a fitness gnome, but the trajectory lesson says "tasks lacked strict verifier evidence -> require bounded verifier evidence before counting task success."
+
+Actually, let me focus. I have clear evidence for task_01 (lifecycle guard). Let me also look for something in src/ that's small and verifiable. 
+
+What about the `recovery_hints` in `src/tool_wrappers.rs`? The trajectory says bash_tool_error=4. But I'd need to check if there's something actionable there.
+
+Let me look at what recovery hints exist for bash failures...
+
+Actually, let me keep it simple and focused. Let me:
+1. Refine task_01.md to be the model call lifecycle guard (from trajectory evidence, replacing the weak seed)
+2. Add task_02.md for something small but evidence-backed
+
+For task_02, let me consider the `failed_tool_summary.bash_tool_error=4` pressure. The lesson from log feedback says "failed tool actions were recovered from transcripts -> inspect failed tool calls and add prompt/tool guards for the dominant failure class." This is about improving recovery hints in tool_wrappers.rs. But that might be too vague.
+
+Let me check if there's something concrete I can verify quickly without broad source reading. Let me look at what the trajectory lesson actually says: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=4): prefer bounded commands with explicit paths and inspect exit output b..."
+
+This seems to be about adding better recovery hints to the bash tool. Let me check the recovery hints in tool_wrappers.rs quickly.
+
+Actually wait — the planning rules say I should limit context-gathering commands. Let me focus on what I already have. The trajectory is clear. Let me:
+
+1. Refine task_01.md to the lifecycle guard (backed by trajectory: deepseek_model_call_abnormal_completed_count=10, reverted issue #160)
+2. Write task_02.md for improving bash recovery hints (backed by trajectory: bash_tool_error=4)
+
+Let me also consider: can I plan a task that addresses the evaluator timeout indirectly? Something in scripts/log_feedback.py to detect timeouts on passing code? That would help the trajectory signal.
+
+Actually, per the rules: "A task is preferred only when it names the fitness gnome it should improve, the verifier or held-out eval that proves the improvement, and the expected lineage/state/fitness.json evidence. If it only fixes diagnostics, say which fitness signal was blocked."
+
+The evaluator timeout blocks task_verification_rate — a fitness gnome. Improving log_feedback to detect timeouts would help the harness distinguish real failures from infrastructure issues, which unblocks task_verification_rate measurement.
+
+OK, let me plan:
+
+Task 01: Model call lifecycle guard (fitness: reduces deepseek_model_call_abnormal_completed_count)
+Task 02: Improve bash recovery hints for common failure patterns (fitness: reduces bash_tool_error count, improves retry success)
+
+Let me now refine task_01.md and create task_02.md. But first, let me check ownership: is `clear_current_model_call_id` really in `src/state.rs`?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 50.7s (2 ✓)
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn clear_current_model_call_id\|fn set_current_model_call_id' src/state…  ▶ $ grep -n 'fn with_recovery_hints\|recovery_hint\|RECOVERY_HINT\|bash.*hint\|hint.… ✓ (69ms)
+ ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Both symbols exist:
+- `clear_current_model_call_id` at line 131 in src/state.rs
+- `targeted_recovery_hint` at line 1018 in src/tool_wrappers.rs
+
+Let me also check if there's already a test for `clear_current_model_call_id_warns_when_no_id_is_active` at line 8725 — this suggests the guard might already exist! Let me check that test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:124..154  ▶ read src/state.rs:8720..8760 ✓ (168ms)
+ ✓ (72ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The guard is already implemented! `clear_current_model_call_id` at line 131 already:
+1. Takes the ID via `c.take()`
+2. If `old.is_none()`, prints a diagnostic warning via `eprintln!`
+3. Doesn't panic
+
+And there's a test at line 8725 that verifies this behavior.
+
+So issue #160 is already resolved — the guard exists and is tested. The reverted task from Day 158 was likely attempting to add this exact guard, which was already there, and the evaluator timed out. 
+
+This means the seed task_01.md premise ("The assessment found no actionable bugs in src/") is partially right — the lifecycle guard is already in place. But the trajectory still shows `deepseek_model_call_abnormal_completed_count=10` with causes including `model_incomplete/open_after_FailureObserved=3`. The warning is emitted, but the orphaned ModelCallCompleted events still get recorded somewhere.
+
+Let me check where ModelCallCompleted is actually recorded — the warning in `clear_current_model_call_id` doesn't prevent the event from being recorded. Let me find where the event is emitted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/state.rs | head -20 ✓ (142ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see where ModelCallCompleted is actually emitted — specifically the call at line 4363.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4350..4380 ✓ (92ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's test data, not the actual emission point. Let me find where ModelCallCompleted is actually recorded in the running code (not tests).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/state.rs | grep -v 'test\|fn panic\|EventType::…  ▶ $ grep -rn 'ModelCallCompleted\|model_call_completed\|record_model_call' src/promp… ✓ (418ms)
+ ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me see the actual emission code at line 955 in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:940..970 ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at where `clear_current_model_call_id` is called in prompt.rs and whether the guard is properly preventing orphaned events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'clear_current_model_call_id\|set_current_model_call_id' src/prompt.rs ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me trace the lifecycle. The ModelCallStarted is recorded at line 780 (set_current_model_call_id) and ModelCallCompleted at line 954-969. The clear at line 974 is after the ModelCallCompleted record.
+
+But there are two other clear calls at lines 1055 and 1116 which are in error/failure paths. Let me see what's happening there.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1030..1070  ▶ read src/prompt.rs:1100..1130 ✓ (200ms)
+ ✓ (137ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the lifecycle. The issue is:
+1. `set_current_model_call_id` is called at line 780 when a model call starts
+2. `ModelCallCompleted` is recorded (via `state::record`) at lines 954-969, 1040-1053, or 1101-1114
+3. `clear_current_model_call_id` is called after each completed recording
+
+The guard in `clear_current_model_call_id` already exists — it prints a warning when there's no active ID. But the `ModelCallCompleted` event itself is recorded regardless of whether the ID was set. The guard only warns, it doesn't prevent the orphaned event.
+
+The `append_terminal_state_events.py` script detects the orphans by checking whether ModelCallCompleted events have a preceding ModelCallStarted. It's an offline detection tool.
+
+So the real question is: why does the trajectory show `deepseek_model_call_abnormal_completed_count=10`? The guard is in place but the warning only goes to stderr. The events are still recorded.
+
+But wait — the guard was likely added as a result of the Day 158 task that got reverted. Let me check git log to see if it's actually in the codebase or if it was reverted.
+
+Let me check if the guard code I see at line 131-138 is actually committed or was reverted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.7s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -5 -- src/state.rs ✓ (114ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the commit `51400e99` from Day 158 (19:03) added the diagnostic guard. The revert was on the NEXT session (2026-08-05 19:22), where task 1 was reverted but as "reverted_unverified" — meaning the evaluator timed out, not that the code was wrong.
+
+Let me check if the code survived the revert. The trajectory says Day 158 session 2 had "tasks 1/2 ⚠️ — 1/2 strict verified; task states: reverted_unverified=1". The "reverted_unverified" means the evaluator timed out — the code might still be in the tree.
+
+Let me check git log more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 ✓ (112ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK! So the Day 158 task was NOT reverted. The commit `51400e99` is still in the tree. The trajectory says "reverted_unverified=1" for Day 158 session 2 — but the commit is there. Let me re-read: the trajectory says "day-158 (2026-08-05 19:22:04): tasks 1/2 ⚠️ — 1/2 strict verified; task states: reverted_unverified=1". 
+
+Wait, the 19:22 session is the SECOND session of Day 158. The first session (17:38) had tasks landing — those commits are in the tree. The second session at 19:22 had 1/2 tasks verified, 1 reverted_unverified. The reverted task was #160.
+
+But looking at the git log, there are no revert commits. The commits from the first session are all intact. The second session's reverted task was apparently reverted during the session itself (the implementation was attempted, the evaluator timed out, the code was reverted within the session before any commit landed).
+
+So the guard from `51400e99` is still in the codebase. But the #160 issue (the one that was reverted) was presumably trying to add something additional or different.
+
+Let me look at what commit `51400e99` actually added vs what issue #160 was asking for.
+
+Actually, looking more carefully at the commit messages:
+- `51400e99` Day 158 (19:03): "Add diagnostic guard to clear_current_model_call_id for unmatched lifecycle detection" — This matches what I saw in the code.
+- `93bfa791` Day 159 (02:36): "Close in-progress model calls when FailureObserved is recorded" — This was a different task from Day 159
+
+So the guard from #160 was already landed in Day 158 session 1 (commit 51400e99). The issue #160 says "Day 158, Task 1 was automatically reverted by the verification gate" — but the commit exists! This might be a different session's task #160.
+
+Wait, let me re-read the issue more carefully. It says "Day 158, Task 1 was automatically reverted by the verification gate. Reason: Evaluator timed out without a verifier verdict." 
+
+But the commit exists! Let me check what happened. Perhaps the implementation landed in one session and then a later session tried to re-implement it and got reverted. Or perhaps the issue is stale — it was created during the session when the task got reverted, but then the task was re-attempted and succeeded in a later session.
+
+Actually, looking at the git log:
+- `51400e99` Day 158 (19:03) — "Add diagnostic guard to clear_current_model_call_id"
+- The issue #160 says Day 158, Task 1 was reverted
+
+But the commit is there. So either:
+1. The issue wasn't updated after the task succeeded in a later attempt
+2. The commit was from a different task
+3. The issue is stale
+
+Looking at the timestamps: the issue says "Day 158, Task 1" — but we have Day 158 commits at both 17:38 and 19:03. The issue was from the session that got reverted, but then a later session in the same day successfully landed it.
+
+In any case, the guard IS in the code. The issue #160 is effectively resolved. The trajectory still shows `deepseek_model_call_abnormal_completed_count=10` which might be from historical data, not from new sessions.
+
+OK so let me focus on what's actionable NOW:
+
+1. The lifecycle guard is already implemented. Issue #160 is stale/resolved.
+2. The trajectory shows `bash_tool_error=4` — recovery hints for bash failures. Day 158 already added signal-kill exit code hints. Day 159 already added "recovery hints for common bash failure patterns beyond signal-kill." 
+
+Let me check what's in the current targeted_recovery_hint to see if there are still gaps.
+
+Actually, let me step back. The trajectory's most pressing issues are:
+- `evaluator_unverified_count=1` — can't fix (do-not-modify)
+- `evaluator_timeout_count=1` — can't fix (do-not-modify)
+- `deepseek_model_call_abnormal_completed_count=10` — guard exists, might be historical
+- `bash_tool_error=4` — already addressed in recent commits
+
+The log_feedback score is 0.5625 with lessons about "failed tool actions were recovered from transcripts" and "tasks lacked strict verifier evidence."
+
+Let me look at what's actually actionable. I should create task files that are evidence-backed and verifiable.
+
+Let me look at the recent commits more carefully — they seem to be from a DIFFERENT session that already ran today (Day 159 at 02:36). So this planning phase is for a new Day 159 session at 04:01.
+
+Looking at the commits from 02:36:
+- `93bfa791` "Close in-progress model calls when FailureObserved is recorded (Task 1)"
+- `d8f611ce` "Add recovery hints for common bash failure patterns beyond signal-kill (Task 2)"
+
+These are fresh from TODAY's earlier session. The trajectory I'm looking at includes the 02:36 session? No — the trajectory was computed at 04:02Z and shows "Last computed: 2026-08-06T04:02Z. Day 159. Window: last 10 sessions / 14 days." So it should include the 02:36 session.
+
+But the trajectory says day-158 is the last session with outcomes — it doesn't show day-159 at all! That means the 02:36 session wasn't captured in the trajectory data. Let me check if the trajectory extractor might need updating.
+
+Actually wait — the trajectory says "Recent session outcomes (newest 6 of 10)" starting with "day-158 (2026-08-05 19:22:04)". There's no day-159. The 02:36 session today might have happened after the audit-log data was fetched. Or the trajectory is showing the audit-log data which lags behind.
+
+OK, regardless. For THIS planning phase, I need to produce task files. Let me focus on what's evidence-backed.
+
+Looking at the trajectory graph pressure:
+1. "Raise verified task success rate" — evaluator_unverified_count=1 (can't fix directly)
+2. "Bound evaluator checks so verdicts are not skipped" — evaluator_unverified_count=1 (can't fix)
+3. "Bound failing shell commands before retrying" — bash_tool_error=4 (already addressed)
+4. "Make evaluator timeouts resumable or cheaper" — can't fix
+5. "Close yyds state and model lifecycle gaps" — abnormal_completed_count=10 (guard exists)
+
+The log_feedback says:
+- "failed tool actions were recovered from transcripts -> inspect failed tool calls and add prompt/tool guards for the dominant failure class"
+- "tasks lacked strict verifier evidence -> require bounded verifier evidence before counting task success"
+
+Let me think about what's actually implementable and would move the needle:
+
+Option A: Improve task verification evidence — make the evaluator produce evidence faster so it doesn't timeout. But this touches scripts/ which might be complex.
+
+Option B: Address the `deepseek_model_call_abnormal_completed_count=10`. The guard exists but perhaps there's a gap: the panic hook path. Let me check if the panic hook properly closes model calls.
+
+Option C: Something in `scripts/log_feedback.py` to better score evaluator timeouts.
+
+Option D: Add a `cargo clippy` fix — the trajectory says there are some.
+
+Let me check what recent clippy warnings exist without running cargo clippy (which would be expensive).
+
+Actually, let me take a different approach. The planning rules say I should create task files from trajectory evidence. The strongest evidence is:
+1. `bash_tool_error=4` with lesson about recovery hints 
+2. `deepseek_model_call_abnormal_completed_count=10`
+
+But both of these were already addressed in the 02:36 session (commits `d8f611ce` and `93bfa791`). So perhaps they're resolved now and the trajectory just hasn't caught up.
+
+Let me look for NEW issues. Let me check if there are any test failures or build issues.
+
+Actually, let me just check what's in the current state of the codebase quickly — any obvious low-hanging fruit.
+
+Let me look at what the `scripts/log_feedback.py` lesson says more carefully. "failed tool actions were recovered from transcripts -> inspect failed tool calls and add prompt/tool guards for the dominant failure class." This is about looking at what kinds of tool failures happen most and adding targeted recovery hints.
+
+But the 02:36 session already added recovery hints. Let me check what was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show --stat d8f611ce  ▶ $ git show --stat 93bfa791 ✓ (260ms)
+ ✓ (165ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the 02:36 session added:
+- Task 1: 108 lines to state.rs — "Close in-progress model calls when FailureObserved is recorded"
+- Task 2: 11 lines to tool_wrappers.rs — recovery hints
+
+These are fresh. The trajectory doesn't yet reflect them. Let me now check what else is needed.
+
+Let me check if there are any failing tests or build issues.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo check 2>&1 | tail -5 ✓ (6.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build is clean. Let me check tests quickly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test 2>&1 | tail -20
