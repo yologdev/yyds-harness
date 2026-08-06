@@ -3175,7 +3175,8 @@ def corrected_gnomes(
         recalc_score = True
     if manifest.get("planning_failed"):
         gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
-        gnomes["session_success_rate"] = 0.0
+        if attempted:
+            gnomes["session_success_rate"] = 0.0
         gnomes["task_artifact_coverage"] = 0.0
         recalc_score = True
     provider_blocked_session = 1 if provider_blocked_before_tasks(gnomes) else 0
