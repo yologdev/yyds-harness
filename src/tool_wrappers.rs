@@ -1026,6 +1026,7 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                 let exit_code_advice = extract_exit_code(error_msg).map(|code| match code {
                     1 => " (exit code 1 = general error; check command syntax or try --help)",
                     2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+                    124 => " (exit code 124 = timeout; the command was killed by the `timeout` wrapper — try reducing scope, splitting into smaller commands, or adding `--max-results` to limit output)",
                     126 => " (exit code 126 = not executable; try chmod +x)",
                     127 => " (exit code 127 = command not found; check PATH or install the tool)",
                     130 => " (exit code 130 = SIGINT; command was interrupted, possibly by timeout or Ctrl+C — try with a longer timeout or a smaller scope)",
@@ -3016,6 +3017,16 @@ mod tests {
         assert!(
             !hint.contains("exit code 42"),
             "unknown exit codes should not get extra tag: {hint}"
+        );
+        // Exit code 124 should get timeout advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 124\nkilled").unwrap();
+        assert!(
+            hint.contains("exit code 124 = timeout"),
+            "exit code 124 should get timeout advice: {hint}"
+        );
+        assert!(
+            hint.contains("reducing scope") || hint.contains("smaller"),
+            "exit code 124 hint should mention scope reduction: {hint}"
         );
     }
 
