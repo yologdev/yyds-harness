@@ -983,6 +983,37 @@ async fn handle_prompt_events(
                                 "reason": reason.clone(),
                             }),
                         );
+                        // Close model call lifecycle: InputRejected is a terminal event
+                        // for the current model call, just like ctrl+c or stream close.
+                        // Without this, the ModelCallStarted from line 782 stays open
+                        // indefinitely, polluting lifecycle gnomes.
+                        if !model_call_terminal_recorded {
+                            if !model_call_started {
+                                crate::state::record(
+                                    crate::state::EventType::ModelCallStarted,
+                                    crate::state::Actor::Yoyo,
+                                    serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+                                );
+                                model_call_started = true;
+                            }
+                            crate::state::record(
+                                crate::state::EventType::ModelCallCompleted,
+                                crate::state::Actor::Yoyo,
+                                model_call_terminal_payload(
+                                    &model_call_id,
+                                    model,
+                                    &state.usage,
+                                    state.thinking_observed,
+                                    "input_rejected",
+                                    Some(&reason),
+                                    &state.collected_text,
+                                    state.last_tool_name.as_deref(),
+                                ),
+                            );
+                            model_call_terminal_recorded = true;
+                            model_calls_completed += 1;
+                            crate::state::clear_current_model_call_id();
+                        }
                         if let Some(s) = state.spinner.take() { s.stop(); }
                         eprintln!("{RED}  input rejected: {reason}{RESET}");
                         if let Some(diagnostic) = diagnose_api_error(&reason, model) {
