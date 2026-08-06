@@ -1,0 +1,366 @@
+warning: skipping corrupted event at line 1169 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 104
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to extend the `targeted_recovery_hint` function in `src/tool_wrappers.rs` to add recovery hints for common bash failure patterns beyond signal-kill codes. Let me first read the evolve skill, then examine the current code.
+
+Let me plan my approach:
+1. Read the evolve skill
+2. Read the relevant section of `src/tool_wrappers.rs` to understand the current `targeted_recovery_hint` function
+3. Read the existing tests for this function
+4. Write new tests first
+5. Extend the function with new match arms
+6. Verify with `cargo test` and `cargo check`
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the evolve skill and the relevant source code in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ search 'targeted_recovery_hint' in src/tool_wrappers.rs ✓ (56ms)
+ ✓ (53ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now read the `targeted_recovery_hint` function and the existing tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1015..1115  ▶ read src/tool_wrappers.rs:3200..3400 ✓ (11ms)
+ ✓ (209ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the existing `targeted_recovery_hint` function. Let me look at the full function to understand all the match arms. Let me also look at the bash-specific section more carefully.
+
+Looking at the existing function (lines 1018-1114), I can see it already handles:
+
+1. **Exit code matching** (lines 1026-1037): handles codes 1, 2, 126, 127, 130, 137, 139, 141, 143
+2. **stderr patterns** (lines 1053-1103):
+   - "timed out" → timeout hint
+   - "failed to spawn" → spawn hint  
+   - "no such file or directory" → path error hint
+   - "permission denied" → permission hint
+   - "command not found" → command not found hint
+   - "argument list too long" → E2BIG hint
+   - "broken pipe" → EPIPE hint
+   - catch-all fallback hint
+
+Looking at the task's requested patterns:
+
+1. **Exit code 127 — "command not found"**: Already handled in lines 1029 (exit code 127 in extract_exit_code) AND lines 1080-1085 ("command not found" stderr). ✓ Already done.
+
+2. **Exit code 126 — "Permission denied" / "not executable"**: Already handled in line 1029 (exit code 126 in extract_exit_code) AND lines 1073-1078 ("permission denied" stderr). ✓ Already done.
+
+3. **stderr contains "No such file or directory"**: Already handled in lines 1066-1071. ✓ Already done.
+
+4. **Exit code 124 — timeout**: NOT handled. The "timed out" stderr pattern is handled (lines 1053-1058) but exit code 124 is not in the extract_exit_code match. Need to add.
+
+5. **stderr contains "Permission denied" (without exit 126)**: Already handled in lines 1073-1078. ✓ Already done.
+
+So the function already handles most of the requested patterns! The task asks to check this — the Fallback says: "If `targeted_recovery_hint` already covers all the failure patterns listed below, write task_02_obsolete.md with the evidence."
+
+But wait, there are still things to add:
+- Exit code 124 (timeout) is NOT in the exit code match
+- The existing hints could be improved (the task asks for more specific suggestions like "which <cmd>", "command -v <cmd>")
+
+Let me also check what `extract_exit_code` does and look at the bash tests more carefully.
+
+Actually, let me re-read the task more carefully. The task says:
+
+> Target failure patterns to add (in priority order):
+> 1. Exit code 127 — "command not found" → Already handled in exit_code match
+> 2. Exit code 126 — "Permission denied" → Already handled in exit_code match 
+> 3. stderr "No such file or directory" → Already handled
+> 4. Exit code 124 — timeout → NOT handled in exit_code match
+> 5. stderr "Permission denied" (without exit 126) → Already handled
+
+So exit code 124 is genuinely new. But the task also says the hints should be "actionable and reference concrete commands the agent can run to diagnose or fix the problem." The existing hints are somewhat generic.
+
+Looking more carefully at the existing hints:
+- The exit code 127 hint says "check PATH or install the tool" but doesn't mention `which <cmd>` or `command -v <cmd>`
+- The exit code 126 hint says "try chmod +x" but doesn't mention `ls -la` to check permissions first
+
+The task says the Fallback is: "If `targeted_recovery_hint` already covers all the failure patterns listed below, write task_02_obsolete.md with the evidence."
+
+Hmm, but exit code 124 is genuinely missing from the exit code match. Let me be more precise:
+
+The existing function handles:
+- Exit codes: 1, 2, 126, 127, 130, 137, 139, 141, 143
+- Exit code 124 is NOT in the match
+
+So I should at minimum add exit code 124. Let me also make the existing hints more specific per the task.
+
+But wait, I need to be careful. The task says: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test..."
+
+So the question is: does exit code 124 need to be added? And should I enhance the existing hints?
+
+Let me check whether the task is truly "obsolete" or if there are real improvements. The facts:
+1. Exit code 124 is missing from the exit_code match - this is a real gap
+2. The existing hints for codes 126, 127 could be more specific
+
+I think the right approach is: add exit code 124 to the exit code match and add tests for all the new patterns. This is a genuine improvement, not an obsolete task.
+
+Let me also check what the `extract_exit_code` function looks like, and read the full test suite for targeted_recovery_hint.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 22.9s (2 ✓)
+
+Now let me read the `extract_exit_code` function and find the existing bash-specific tests:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn extract_exit_code' in src/tool_wrappers.rs  ▶ search 'test_targeted_recovery_hint_bash' in src/tool_wrappers.rs ✓ (24ms)
+ ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the extract_exit_code function and the bash tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:993..1018  ▶ read src/tool_wrappers.rs:2950..3200 ✓ (159ms)
+ ✓ (89ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a full picture. Let me analyze the gaps:
+
+**Current state of `targeted_recovery_hint` for "bash":**
+
+Exit codes handled:
+- 1, 2, 126, 127, 130, 137, 139, 141, 143
+
+Exit codes NOT handled that the task mentions:
+- **124 (timeout)** — missing from the exit code match
+
+Stderr patterns handled:
+- "timed out" (lines 1053-1058) ✓
+- "failed to spawn" (lines 1059-1065) ✓
+- "no such file or directory" (lines 1066-1071) ✓
+- "permission denied" (lines 1073-1078) ✓
+- "command not found" (lines 1080-1085) ✓
+- "argument list too long" (lines 1087-1092) ✓
+- "broken pipe" (lines 1094-1102) ✓
+
+So the task's requested patterns 1 (exit 127), 2 (exit 126), 3 (no such file), and 5 (permission denied) are already covered. Pattern 4 (exit 124 timeout) is the only genuinely missing pattern.
+
+The question is: should I write `task_02_obsolete.md` since 4 out of 5 patterns are already done, or should I add exit code 124?
+
+Looking at the task requirements:
+- "Extend the `targeted_recovery_hint` function to produce helpful recovery suggestions for at least 3 new failure patterns beyond signal-kill."
+- "Each new hint is backed by a unit test."
+
+The signal-kill codes (130, 137, 139, 141, 143) were added in Day 158. The "beyond signal-kill" patterns are 127, 126, "no such file", timeout, and "permission denied" — ALL of which are already handled except for exit code 124.
+
+This is very close to being an obsolete task. But exit code 124 IS genuinely missing. The task specifically asks for it. Let me add it and also add tests for it. That's the smallest scoped improvement.
+
+Actually wait, let me re-read the fallback more carefully:
+
+> If `targeted_recovery_hint` already covers all the failure patterns listed below, write task_02_obsolete.md with the evidence.
+
+Not ALL patterns are covered — exit code 124 is missing. So I should add it.
+
+But also: "If the current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test..."
+
+I think the right approach is:
+1. Add exit code 124 to the `extract_exit_code` match
+2. Add a test for exit code 124 recovery hint
+3. This is the smallest scoped improvement that addresses the genuine gap
+
+Let me now look at the full structure once more, then make my edit. I need to add `124` to the match in lines 1026-1037.
+
+Also, I should check if the test for `test_targeted_recovery_hint_bash_exit_code_specific_advice` already tests exit code 124. It doesn't — it tests 1, 2, 127, 126, and 42.
+
+Let me also look at the exit code 124 hint text. The existing "timed out" stderr pattern hint says:
+"The command timed out. Try reducing scope: limit file traversal depth, add a `timeout` wrapper, or split the work into smaller sequential commands."
+
+For exit code 124, I should add a specific hint that says something like:
+"exit code 124 = timeout; the command was killed by timeout — try reducing scope, adding --max-results, or splitting into smaller commands"
+
+Let me now make the edit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 14.3s (2 ✓)
+
+Now I have a clear picture. Let me analyze what's present and what's missing:
+
+**Already covered:**
+• Exit code 127 (command not found) — line 1030
+• Exit code 126 (not executable) — line 1029
+• "No such file or directory" stderr pattern — lines 1066-1071
+• "Permission denied" stderr pattern — lines 1073-1078
+• "command not found" stderr pattern — lines 1080-1085
+• "timed out" stderr pattern — lines 1053-1058
+
+**Missing:**
+• **Exit code 124 (timeout)** — NOT in the extract_exit_code match arms
+
+So 4/5 requested patterns are already handled. Exit code 124 is the only genuine gap. The task fallback says to write obsolete if ALL are covered; since one is missing, I'll add it.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (19ms)
+  ▶ todo ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write tests first, then implement. Let me add the test for exit code 124 and the exit code entry.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me write the test first, then implement the change. I'll add the test in the `test_targeted_recovery_hint_bash_exit_code_specific_advice` test or create a new dedicated test. Let me look at the right insertion point.
+            assert!(
+                !hint.contains("exit code 42"),
+                "unknown exit codes should not get extra tag: {hint}"
+  +         );
+  +         // Exit code 124 should get timeout advice
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 124\nkilled").unwrap();
+  +         assert!(
+  +             hint.contains("exit code 124 = timeout"),
+  +             "exit code 124 should get timeout advice: {hint}"
+  +         );
+  +         assert!(
+  +             hint.contains("reducing scope") || hint.contains("smaller"),
+  +             "exit code 124 hint should mention scope reduction: {hint}"
+            );
+        }
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 17 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 17 lines)
+            assert!(
+                !hint.contains("exit code 42"),
+                "unknown exit codes should not get extra tag: {hint}"
+  +         );
+  +         // Exit code 124 should get timeout advice
+  +         let hint = targeted_recovery_hint("bash", "Exit code: 124\nkilled").unwrap();
+  +         assert!(
+  +             hint.contains("exit code 124 = timeout"),
+  +             "exit code 124 should get timeout advice: {hint}"
+  +         );
+  +         assert!(
+  +             hint.contains("reducing scope") || hint.contains("smaller"),
+  +             "exit code 124 hint should mention scope reduction: {hint}"
+            );
+        }
+ ✓ (130ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add exit code 124 to the extract_exit_code match. I'll add it after 127 (since 124 is a valid bash exit code).
+────────────────────────────────────────────────────────────────────────────────
+
+Now add exit code 124 to the match:
+                    let exit_code_advice = extract_exit_code(error_msg).map(|code| match code {
+                        1 => " (exit code 1 = general error; check command syntax or try --help)",
+                        2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+  +                     124 => " (exit code 124 = timeout; the command was killed by the `timeout` wrapper — try reducing scope, splitting into smaller commands, or adding `--max-results` to limit output)",
+                        126 => " (exit code 126 = not executable; try chmod +x)",
+                        127 => " (exit code 127 = command not found; check PATH or install the tool)",
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (5 → 6 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (5 → 6 lines)
+                    let exit_code_advice = extract_exit_code(error_msg).map(|code| match code {
+                        1 => " (exit code 1 = general error; check command syntax or try --help)",
+                        2 => " (exit code 2 = misuse; check flags and argument order with --help)",
+  +                     124 => " (exit code 124 = timeout; the command was killed by the `timeout` wrapper — try reducing scope, splitting into smaller commands, or adding `--max-results` to limit output)",
+                        126 => " (exit code 126 = not executable; try chmod +x)",
+                        127 => " (exit code 127 = command not found; check PATH or install the tool)",
+ ✓ (163ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now verify with the tests:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test test_targeted_recov… ✓ (27.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me run the full test suite for tool_wrappers to make sure nothing is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+Test passes. Let me now run the full `tool_wrappers` test suite:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 119 tool_wrappers tests pass. Now let me run cargo fmt and cargo check.
+────────────────────────────────────────────────────────────────────────────────
+
+All 119 tests pass. Now let me run format check and cargo check:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 && c… ✓ (7.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both pass. Now let me verify the diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Let me inspect the diff:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (41ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is clean and scoped. It touches exactly the task's Edit Surface (`src/tool_wrappers.rs`). Let me now update the todo list, and commit.
+
+Let me also check the todo list before committing.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now commit the changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now commit:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (319ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. Let me summarize what was done:
+
+The task asked to extend `targeted_recovery_hint` for common bash failure patterns beyond signal-kill. After reading the existing code, I found that 4 of the 5 requested patterns were already covered:
+
+1. **Exit code 127** — already handled (line 1030, exit code match arm + "command not found" stderr pattern)
+2. **Exit code 126** — already handled (line 1029, exit code match arm + "permission denied" stderr pattern)
+3. **"No such file or directory"** — already handled (lines 1066-1071)
+4. **"Permission denied"** — already handled (lines 1073-1078)
+
+The only genuinely missing pattern was **Exit code 124 (timeout)** — it wasn't in the `extract_exit_code` match arms.
+
+I added:
+- Exit code 124 to the exit code match with a hint: "exit code 124 = timeout; the command was killed by the `timeout` wrapper — try reducing scope, splitting into smaller commands, or adding `--max-results` to limit output"
+- A test verifying exit code 124 produces the timeout-specific advice
+
+This is the smallest scoped improvement that addresses the genuine gap while honoring that most of the task's requested patterns were already satisfied.
+────────────────────────────────────────────────────────────────────────────────
+
+Committed. Here's a summary of what happened:
+
+## Task Outcome
+
+**4 of 5 requested failure patterns were already covered** in the existing `targeted_recovery_hint` function:
+
+| Pattern | Status | Location |
+|---|---|---|
+| Exit code 127 (command not found) | ✅ Already handled | Line 1030 |
+| Exit code 126 (not executable) | ✅ Already handled | Line 1029 |
+| "No such file or directory" stderr | ✅ Already handled | Lines 1066-1071 |
+| Exit code 124 (timeout) | ✅ Added | Line 1029 (new) |
+| "Permission denied" stderr | ✅ Already handled | Lines 1073-1078 |
+
+**What was added:**
+• Exit code 124 match arm in `targeted_recovery_hint` (`src/tool_wrappers.rs:1029`): produces a hint about the `timeout` wrapper, suggesting scope reduction, smaller commands, and `--max-results`
+• Unit test in `test_targeted_recovery_hint_bash_exit_code_specific_advice` verifying exit code 124 produces the timeout advice
+
+**Verification:**
+• `cargo fmt -- --check` ✅
+• `cargo check` ✅
+• `cargo test tool_wrappers -- --test-threads=1` — 119/119 passed ✅
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

@@ -1,0 +1,724 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the relevant source files to understand the current state and implement the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs (150 lines) ✓ (2.9s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - it looks like the panic hook already closes in-progress model calls! Let me look at lines 64-82 — the code already does:
+
+1. Takes the model call ID from `CURRENT_MODEL_CALL_ID`
+2. Records a `ModelCallCompleted` with status "interrupted"
+3. Then records `FailureObserved`
+
+Wait, this is actually done BEFORE `FailureObserved`. The order is:
+- `ModelCallCompleted` recorded first (lines 69-82)
+- Then `FailureObserved` (line 85)
+
+So the panic hook already handles this case. But the task says the non-panic path (`record_failure_observed` used in prompt.rs) also needs checking.
+
+Let me search for `FailureObserved` to find all paths that record it, including the non-panic one, and see whether `clear_current_model_call_id()` is called there.
+
+Let me also look at what the diagnostic says - "3 model calls were left open (ModelCallStarted with no matching ModelCallCompleted) because a FailureObserved event fired while a model call was in progress". The panic hook appears to handle this already. So maybe the gap is in the non-panic path.
+
+Let me search more thoroughly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+The panic hook already closes in-progress model calls (lines 64-82). Let me check the non-panic `FailureObserved` recording paths to see if they also handle this.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' (*.rs)  ▶ search 'record_failure_observed' (*.rs) ✓ (1.9s)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the broader pattern of where FailureObserved is recorded via `record(`:
+
+- In the panic hook (lines 64-92 in state.rs) — already handled
+- In prompt.rs — let me check the recording paths there
+
+Let me also look at what happens in prompt.rs where `CURRENT_MODEL_CALL_ID` is set and cleared, to understand the lifecycle.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_model_call_id' (*.rs)  ▶ search 'clear_current_model_call_id' (*.rs) ✓ (1.8s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at prompt.rs around those lines to understand the lifecycle: where `FailureObserved` is recorded outside the panic hook, and whether `clear_current_model_call_id` is called in those paths.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:770..830  ▶ read src/prompt.rs:960..1020  ▶ read src/prompt.rs:1040..1100  ▶ read src/prompt.rs:1100..1160 ✓ (6.8s)
+ ✓ (2.0s)
+ ✓ (6.8s)
+ ✓ (5.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me trace through all `FailureObserved` recording paths:
+
+1. **Panic hook** (state.rs, lines 64-92): Already closes in-progress model calls before recording FailureObserved. ✅ Handled.
+
+2. **InputRejected event** (prompt.rs, line 978-991): Records `FailureObserved` but does NOT call `clear_current_model_call_id()` before or after. If an InputRejected event fires while a model call is in progress (CURRENT_MODEL_CALL_ID is Some), the model call would be left dangling.
+
+3. Let me check if there are other places that record FailureObserved directly...
+
+Let me search more broadly.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 9.7s (4 ✓)
+
+The panic hook is already fixed. Let me check the `InputRejected` path more carefully and find all other direct `FailureObserved` recordings in prompt.rs.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::FailureObserved' (*.rs) ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are two paths in prompt.rs that record FailureObserved:
+
+1. Line 906 (in the stream event loop - likely on ToolSchemaFailure or JsonOutputFailure)
+2. Line 979 (InputRejected path)
+
+Let me look at lines around 906 to understand the context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:885..945 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me summarize:
+
+1. **Panic hook** (state.rs, lines 64-92): ✅ Already closes in-progress model calls via `CURRENT_MODEL_CALL_ID.with(|c| c.take())` and records `ModelCallCompleted` with "interrupted" before recording `FailureObserved`.
+
+2. **Tool error FailureObserved** (prompt.rs, line 904-915): Records `FailureObserved` when a tool execution fails. This happens DURING a model call loop (the event loop at line 788). At this point, `CURRENT_MODEL_CALL_ID` is still set because the model call hasn't completed yet. BUT: this FailureObserved is for a tool error, not for the model call itself. The model call continues after this. So this is fine — it's not recording a fatal failure that abandons the model call.
+
+3. **InputRejected FailureObserved** (prompt.rs, line 977-991): Records `FailureObserved` when input is rejected. This also happens during the event loop. The model call may still be in progress. But like the tool error case, the loop continues and the model call will eventually be completed normally. Wait, but does InputRejected cause the loop to exit? Let me re-read...
+
+Looking at lines 977-991: after recording FailureObserved, it prints the error message and then... there's no break or return. The loop continues. So the model call will eventually complete normally. However, if InputRejected causes the agent to terminate early (e.g., the stream closes), the model call might end up in the `!model_call_terminal_recorded` path at line 1092. But that path already handles it properly by recording ModelCallCompleted.
+
+So the question is: where do the "open_after_FailureObserved" orphans come from?
+
+Let me re-read the panic hook more carefully. Lines 64-82 show that it:
+1. Takes the model call ID from CURRENT_MODEL_CALL_ID
+2. Records ModelCallCompleted with "interrupted"
+3. Records FailureObserved
+
+BUT WAIT — what about the `record` function itself? If `record` panics or fails before ModelCallCompleted is recorded, or if ModelCallCompleted is recorded but the event stream has an issue...
+
+Actually, looking more carefully at the panic hook, lines 68-82 record ModelCallCompleted, and then line 85 records FailureObserved. These are both in the same panic hook closure. But what if the global recorder isn't initialized at that point? The comment on line 83 says "fail-soft: the global recorder might not be initialized yet" but that comment is BEFORE line 85 (FailureObserved), not before the ModelCallCompleted at line 69.
+
+Wait, I think I may have misread the code. Let me look more carefully:
+
+```
+line 64-67: comment about closing in-flight model call
+line 68: if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+line 69-81: record ModelCallCompleted
+line 82: }
+line 83: // fail-soft: the global recorder might not be initialized yet
+line 84: RUN_HAD_ERROR.with(|c| c.set(true));
+line 85: record(EventType::FailureObserved, Actor::Harness, payload);
+```
+
+So the comment on line 83 says the global recorder might not be initialized. But the ModelCallCompleted is recorded BEFORE FailureObserved. Both calls use the same `record` function. So if the global recorder isn't initialized, the ModelCallCompleted call at line 69 would also fail.
+
+BUT: the `record` function likely handles this gracefully (fail-soft). Let me check.
+
+Actually, looking at this more carefully, I think the code is correct as-is for the panic hook. The ModelCallCompleted is recorded before FailureObserved. The comment at line 83 about the recorder not being initialized applies to FailureObserved (line 85), but the same issue would affect ModelCallCompleted (line 69). However, both are wrapped in the panic hook which is a best-effort context.
+
+The question is: are the "open_after_FailureObserved" orphans from pre-Day-158 sessions that have since been fixed by Day 158 Task 1 (commit 51400e99)? The task says:
+
+> Day 158 Task 1 (commit 51400e99) added the diagnostic guard to `clear_current_model_call_id()` — it now warns when called without an active model call ID. But the panic hook at src/state.rs line 85 that records FailureObserved does not call `clear_current_model_call_id()`, so active model calls are left dangling when the process panics.
+
+But this is WRONG. The panic hook DOES handle this — it takes the model call ID and records ModelCallCompleted directly, without calling `clear_current_model_call_id()`. This is actually a different approach than calling `clear_current_model_call_id()`, but it achieves the same result.
+
+Actually wait — let me re-read carefully. The panic hook does:
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(EventType::ModelCallCompleted, ...);
+}
+```
+
+This takes the ID from the Cell (clearing it) and records ModelCallCompleted. But there's no subsequent call to `clear_current_model_call_id()`. However, `clear_current_model_call_id()` just does `CURRENT_MODEL_CALL_ID.with(|c| c.take())` — which is exactly what line 68 already does! So the Cell is already cleared, and calling `clear_current_model_call_id()` would be a no-op (and would trigger the warning since the ID would already be None).
+
+So the panic hook is ALREADY handling this correctly! The task description is wrong when it says "the panic hook at src/state.rs line 85 that records FailureObserved does not call clear_current_model_call_id()" — because the panic hook uses `.take()` directly instead of calling `clear_current_model_call_id()`, but achieves the same thing.
+
+Now, what about the `InputRejected` path at prompt.rs line 977-991? That path records FailureObserved but does NOT close the model call. However, as I noted, InputRejected doesn't break out of the loop — it continues, and the model call will eventually complete normally (or be caught by the post-loop fallback at line 1092).
+
+Hmm, but what if InputRejected causes the stream to immediately close? Then the post-loop code at line 1092 kicks in and records ModelCallCompleted properly.
+
+Let me think about this differently. The "open_after_FailureObserved=3" metric could be from:
+1. Pre-Day-158 sessions before the panic hook fix was properly working
+2. Sessions where FailureObserved was recorded but the panic hook fix was subtly broken in some edge case
+
+Actually, wait. Let me re-read the panic hook code VERY carefully:
+
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(
+        EventType::ModelCallCompleted,
+        Actor::Harness,
+        json!({
+            "model_call_id": model_call_id,
+            ...
+        }),
+    );
+}
+```
+
+The `ref model_call_id` pattern matches on `Option<String>`, so it takes ownership of the String. Then `model_call_id` is a `&String` in the body. This should work fine.
+
+Let me also look at what `record` does when the global recorder isn't initialized.
+
+Let me check the `record` function...
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the `record` function to understand fail-soft behavior and verify whether the panic hook really handles everything.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^pub fn record\b' in src/state.rs (*.rs) ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the record function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:549..589 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `record` is fail-soft: if the recorder is not initialized (`guard.as_ref()` returns None), it just returns without doing anything. This means that in the panic hook, if the recorder isn't initialized, both the ModelCallCompleted and FailureObserved calls are silently ignored.
+
+Now let me think about what's actually happening. The panic hook at lines 64-92:
+
+1. Takes the model call ID from CURRENT_MODEL_CALL_ID - this clears the Cell
+2. Records ModelCallCompleted (fail-soft if recorder not initialized)
+3. Records FailureObserved (fail-soft if recorder not initialized)
+
+This looks correct. The model call IS being closed. But the task says there are 3 "open_after_FailureObserved" orphans. Where could these come from?
+
+Possibilities:
+1. These are from sessions before Day 158 when the panic hook closure was added
+2. There's a race condition: if the panic hook fires but CURRENT_MODEL_CALL_ID is already None (because the model call completed normally just before the panic), then there's no orphan — but the FailureObserved would still be recorded.
+3. There's a non-panic FailureObserved recording path that doesn't close the model call.
+
+Let me look more carefully at the InputRejected path. Does the InputRejected event cause the stream to close? Let me re-check...
+
+At line 986-991, after recording FailureObserved for InputRejected, there's no break statement. The loop continues. But InputRejected could mean the stream is about to close. If the next event from the channel is None (channel closed), the loop breaks at line 791, and then we go to the post-loop code at line 1080, which records ModelCallCompleted (if not already recorded) at line 1092.
+
+So there shouldn't be orphans from InputRejected either...
+
+But wait — what if InputRejected causes `prompt()` to return an error BEFORE the event loop even starts? Let me look at where `prompt()` is called and what happens if it fails...
+
+Actually, let me look at this from a different angle. Let me check if there are places outside the event loop where FailureObserved is recorded but the model call isn't closed. The search showed FailureObserved recordings in:
+- state.rs:85 (panic hook) ✅
+- prompt.rs:906 (tool error in event loop) — model call continues, eventually closed
+- prompt.rs:979 (InputRejected in event loop) — model call continues, eventually closed
+- deepseek.rs:1014
+- commands_deepseek.rs:750
+- commands_eval.rs:1181
+- commands_state.rs:21222
+- commands_state.rs:23209
+- commands_evolve.rs:431, 537
+
+Let me check deepseek.rs:1014 since that's the DeepSeek provider module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/deepseek.rs:1000..1040  ▶ read src/commands_deepseek.rs:740..780 ✓ (936ms)
+ ✓ (4.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see: `record_deepseek_transport_failure` in deepseek.rs line 1011 records `FailureObserved` but does NOT call `clear_current_model_call_id()`. This is called during transport failures, which likely happen when a model call is in progress. If a transport failure results in a panic or process exit, the model call would be left dangling.
+
+But wait — does `record_deepseek_transport_failure` cause a process exit? Or does it just record the event and continue? Let me check where it's called.
+
+Let me search for callers of `record_deepseek_transport_failure`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'record_deepseek_transport_failure' (*.rs) ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check lib.rs to see the context where `record_deepseek_transport_failure` is called. Also, let me look for all places where `FailureObserved` is recorded to get a complete picture. But more importantly, let me think about the actual model call lifecycle:
+
+The model call flow is:
+1. `set_current_model_call_id(model_call_id)` (prompt.rs:780)
+2. `record(ModelCallStarted, ...)` (prompt.rs:781-785)
+3. ... stream events loop ...
+4. Either:
+   a. `record(ModelCallCompleted, ...)` then `clear_current_model_call_id()` (prompt.rs:974)
+   b. Ctrl+C: `record(ModelCallCompleted, ...)` then `clear_current_model_call_id()` (prompt.rs:1055)
+   c. Post-loop: `record(ModelCallCompleted, ...)` then `clear_current_model_call_id()` (prompt.rs:1116)
+   d. Panic hook: takes the ID and records ModelCallCompleted (state.rs:68-82)
+
+So the main model call lifecycle is fully handled. The question is whether there are FailureObserved recordings OUTSIDE this flow that might leave a model call dangling.
+
+Let me check the lib.rs context for `record_deepseek_transport_failure`:
+- This is a transport failure, which likely happens during a model call (during the stream loop). If the transport failure doesn't crash the process, the model call should still complete normally via path 4c (post-loop).
+
+Hmm, let me re-think this. The task says `open_after_FailureObserved=3` with `model_incomplete/open_after_FailureObserved=3`. This is from the trajectory graph pressure. Maybe these are from pre-Day-158 sessions before the panic hook fix was added? 
+
+Actually, wait. Let me re-read the task evidence more carefully:
+
+> Day 158 Task 1 (commit 51400e99) added the diagnostic guard to `clear_current_model_call_id()` — it now warns when called without an active model call ID. But the panic hook at src/state.rs line 85 that records FailureObserved does not call `clear_current_model_call_id()`, so active model calls are left dangling when the process panics.
+
+But I showed above that the panic hook DOES close the model call (lines 64-82). So the task's evidence is potentially outdated — it was written assuming the panic hook DOESN'T close model calls, but it does.
+
+Let me verify: was the panic hook's model-call-closing code added before or after (or as part of) Day 158 Task 1?
+
+Let me check git log for the panic hook to see when the model-call-closing code was added.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the git history to understand when the panic hook's model-call-closing code was added.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 -- src/s… ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There it is! `9d693537 Day 154 (02:50): Close model call lifecycle in panic path so FailureObserved doesn't leave orphaned ModelCallStarted (Task 2)` — this is the commit that added the model-call-closing code to the panic hook.
+
+So the panic hook ALREADY closes model calls. This was done on Day 154. The task was written before/without awareness of this fix.
+
+Now, the task says `open_after_FailureObserved=3`. Let me check if those 3 orphans are from pre-Day-154 sessions. If Day 154 Task 2 fixed the panic hook, then the remaining orphans should be from sessions before that.
+
+Let me check: `append_terminal_state_events.py` should have cleaned up those orphans. Let me verify that the diagnostic is working correctly. Let me also check if there are any remaining paths that record FailureObserved without closing model calls.
+
+Let me look at the non-panic FailureObserved paths more carefully:
+
+1. `deepseek.rs:1014` (record_deepseek_transport_failure) — called from lib.rs:299
+2. `commands_deepseek.rs:750` (record_thinking_protocol_failure) — this is a diagnostic event in a subcommand, not during a model call
+3. `commands_eval.rs:1181` — eval command, not during a model call
+4. `commands_state.rs` — state command, not during a model call
+5. `commands_evolve.rs:431,537` — evolve command
+
+Wait, commands_evolve.rs records FailureObserved during evolve. Let me check if those run while a model call is in progress.
+
+Actually, let me focus on what matters. The task says:
+
+> Day 158 Task 1 (commit 51400e99) added the diagnostic guard to `clear_current_model_call_id()` — it now warns when called without an active model call ID. But the panic hook at src/state.rs line 85 that records FailureObserved does not call `clear_current_model_call_id()`, so active model calls are left dangling when the process panics.
+
+This is incorrect. The panic hook DOES close the model call at line 68, and Day 154 Task 2 (commit 9d693537) added that logic.
+
+Now, the question is: are the `open_after_FailureObserved=3` orphans from pre-Day-154 sessions that still haven't been cleaned up? If so, this is a data cleanup issue, not a code fix issue. But the task specifically asks to add `clear_current_model_call_id()` after FailureObserved in the panic hook.
+
+Given the panic hook ALREADY handles this, I should write `task_01_obsolete.md` as the fallback instructs. Let me verify the panic hook closure is complete by reading it carefully one more time.
+
+Actually wait, let me also check if there's a non-panic path where `record_deepseek_transport_failure` is called and the model call needs closing. The transport failure might not crash the process but might leave the model call in a bad state...
+
+Let me look at the specific call site in lib.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:285..325 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `maybe_record_deepseek_api_failure` is called with a `PromptOutcome` after the prompt has already completed. Let me find where it's called to understand if the model call is already closed at that point.
+
+But actually, looking at the function name `maybe_record_deepseek_api_failure` — it records transport failures AFTER the prompt has completed. So the model call should already be closed by then. This is a diagnostic recording, not during an active model call.
+
+Let me now verify more carefully. The key insight is:
+
+1. Panic hook (state.rs:64-92): ALREADY closes model calls. ✅
+2. Non-panic FailureObserved paths: These either happen after the model call is complete, or during the event loop where the model call eventually completes.
+
+So the code already handles this. The task's claim that the panic hook doesn't close model calls is wrong — it does.
+
+Let me now check: is there a non-panic path where FailureObserved is recorded AND the process exits without closing the model call? Looking at the paths:
+
+- `prompt.rs:906` (tool error) — in the event loop, model call continues
+- `prompt.rs:979` (InputRejected) — in the event loop, model call continues
+- `deepseek.rs:1014` (transport failure) — called after prompt completes
+- `commands_*` — not during model calls
+
+So all paths seem to be covered. The open_after_FailureObserved orphans must be from pre-Day-154 sessions.
+
+But wait — let me also check `commands_evolve.rs` since it's in the list and the evolve command is the main automation path.
+
+Actually, let me check if there's an `exit_with_state` function that might not close model calls...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn exit_with_state' (*.rs) ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:985..1015 ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `exit_with_state` calls `mark_run_completed_with_error` if code != 0. But it doesn't call `clear_current_model_call_id()`. However, `exit_with_state` is called at process exit, AFTER the prompt has completed. So the model call should already be closed by then.
+
+Let me now think about this task more carefully. The task claims:
+1. "the panic hook at src/state.rs line 85 that records FailureObserved does not call clear_current_model_call_id()"
+2. This leaves active model calls dangling when the process panics.
+
+But I've shown that the panic hook DOES handle model call closure at lines 64-82 (BEFORE line 85). So the task's premise is wrong.
+
+However, I need to verify this isn't just a documentation or clarity issue. Let me check: does `append_terminal_state_events.py` still detect "open_after_FailureObserved" orphans? If so, perhaps:
+1. The fix in Day 154 Task 2 is somehow incomplete
+2. There's a non-panic path that's not covered
+3. The orphans are from pre-Day-154 sessions
+
+Let me also check the record function more carefully — does it actually write to the JSONL file? If the panic hook records ModelCallCompleted but the record function silently fails (because the recorder isn't initialized), then we'd have an orphan.
+
+Wait, looking at the panic hook again:
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(EventType::ModelCallCompleted, Actor::Harness, json!({...}));
+}
+// fail-soft: the global recorder might not be initialized yet
+RUN_HAD_ERROR.with(|c| c.set(true));
+record(EventType::FailureObserved, Actor::Harness, payload);
+```
+
+The comment "fail-soft: the global recorder might not be initialized yet" is on line 83, before FailureObserved on line 85. But the ModelCallCompleted at line 69 is also calling `record()` — which would also fail silently if the recorder isn't initialized.
+
+However, if the recorder IS initialized (which it should be if we're deep in the prompt loop), then BOTH calls succeed, and the model call is properly closed.
+
+Now, the question is: was Day 154 Task 2 the fix that closed these orphans, and are the 3 remaining orphans from BEFORE that fix? If so, the task is obsolete.
+
+But wait, let me think about this differently. Let me look at what `append_terminal_state_events.py` does — it's a cleanup script. It might have already cleaned up pre-Day-154 orphans. And the "open_after_FailureObserved=3" might be from sessions AFTER Day 154 but with a different root cause.
+
+Actually, let me look at the model call lifecycle more carefully. When `record(ModelCallCompleted, ...)` is called in the panic hook, the payload includes:
+```json
+{
+    "model_call_id": model_call_id,
+    "model": "",
+    "status": "interrupted",
+    "detail": "rust_panic",
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "thinking_observed": false,
+}
+```
+
+But does `append_terminal_state_events.py` recognize this as a valid ModelCallCompleted that closes the ModelCallStarted? Let me check what it looks for...
+
+Actually, let me focus on what the task asks me to do and whether it's actually needed. The task says to add `clear_current_model_call_id()` after FailureObserved in the panic hook. But:
+1. The panic hook already calls `CURRENT_MODEL_CALL_ID.with(|c| c.take())` at line 68, which clears the ID
+2. Calling `clear_current_model_call_id()` AFTER that would be a no-op (and would warn because the ID is already None)
+
+So adding `clear_current_model_call_id()` is not needed.
+
+BUT: there might be OTHER FailureObserved recording paths that don't close model calls. Let me look more carefully at `record_deepseek_transport_failure` — it records FailureObserved but doesn't close model calls. But as I noted, it's called after the prompt completes.
+
+However... what if the transport failure happens DURING a model call, not after? Let me search for where `maybe_record_deepseek_api_failure` is called.
+
+Actually, looking at the function signature `maybe_record_deepseek_api_failure(source, provider, model, &response, source)` — it takes a `PromptOutcome` which is the result of a completed prompt. So it's definitely post-model-call.
+
+OK, I'm now fairly confident that the panic hook already handles this, and the remaining `open_after_FailureObserved` orphans are from pre-Day-154 sessions. The task is effectively obsolete.
+
+But wait — let me also check whether there's a path where FailureObserved is recorded from OUTSIDE the panic hook while a model call is in progress, leading to an orphan. Let me look at the commands_evolve.rs FailureObserved recordings.
+
+Actually, let me take a step back. The task's fallback says:
+
+> If install_panic_hook already calls clear_current_model_call_id() or the model call lifecycle is closed elsewhere before the panic hook fires, write task_01_obsolete.md with the evidence.
+
+The panic hook DOES close the model call lifecycle (via `.take()` + `record(ModelCallCompleted)`), even though it doesn't call `clear_current_model_call_id()` directly. It achieves the same result.
+
+So I should write `task_01_obsolete.md`.
+
+But before I do that, let me verify that there isn't still a gap. Let me check if there are FailureObserved recordings outside the panic hook that happen while CURRENT_MODEL_CALL_ID is set but don't close it. Specifically in:
+
+1. prompt.rs:906 (tool error) — is CURRENT_MODEL_CALL_ID still set here? Yes, it's in the event loop. But the model call continues and eventually completes.
+2. prompt.rs:979 (InputRejected) — same as above
+
+The key insight: these FailureObserved recordings don't terminate the model call — the event loop continues. So they don't create orphans.
+
+What about `exit_with_state`? It's called at process exit, not during a model call. The model call should already be complete.
+
+What about `commands_evolve.rs`? Let me check one of those quickly...
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the evolve command's FailureObserved recordings to see if they might leave model calls dangling.
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_evolve.rs:420..450  ▶ read src/commands_evolve.rs:525..555 ✓ (1.1s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+These are harness patch operations, not during model calls. They use `append_patch_event`, not the global `record` function. So they're completely separate from the model call lifecycle.
+
+OK, I'm now confident the task is obsolete. The panic hook (Day 154 Task 2, commit 9d693537) already closes model calls before recording FailureObserved. The remaining "open_after_FailureObserved" orphans are from pre-Day-154 sessions.
+
+Let me write `task_01_obsolete.md`. But first, let me verify by looking at the git log for Day 154 Task 2 to confirm what it did, and then check whether there might still be an edge case.
+
+Actually, wait. Let me think about this one more time. The panic hook code at lines 64-82 closes the model call by:
+1. Taking the model_call_id from CURRENT_MODEL_CALL_ID (clearing the Cell)
+2. Recording ModelCallCompleted
+
+But what if the `record` call for ModelCallCompleted fails? The `record` function is fail-soft when the recorder is configured that way (it eprintln's a warning). But even if it fails, the Cell has been cleared, and there's no way to retry. This is a valid concern — the ModelCallCompleted recording might fail while the FailureObserved recording succeeds, or vice versa.
+
+But this is a fundamental limitation of recording in a panic context — you can't guarantee ordering or atomicity in a panic hook. The best-effort approach is already implemented.
+
+OK let me now check whether `record` function at line 549 has a `match` on `guard.as_ref()` — if it's `None` (recorder not initialized), it returns without recording. In a panic hook, if the recorder was initialized for the session, both recordings should succeed. If not, neither will.
+
+Let me go ahead and write the obsolete note. I need to provide concrete evidence that:
+1. Day 154 Task 2 (9d693537) already added model call closure in the panic hook
+2. The closure happens before FailureObserved is recorded
+3. The approach (CURRENT_MODEL_CALL_ID.take() + record ModelCallCompleted) is functionally equivalent to calling clear_current_model_call_id()
+
+Actually, hold on. Let me also check if there's a scenario where `exit_with_state` is called while a model call is still active. The `exit_with_state` function is at lib.rs:985 and just calls `mark_run_completed_with_error` and `process::exit`. If a model call is still active at that point... but this would only happen during process shutdown, not during normal operation.
+
+Let me also check: is there any path where `FailureObserved` is recorded via `record()` during a model call, and then the model call is abandoned without being closed? The non-panic paths I found:
+- prompt.rs:906 (tool error in event loop) — loop continues, model call eventually closed
+- prompt.rs:979 (InputRejected) — loop continues, model call eventually closed  
+- deepseek.rs:1014 (transport failure) — called after prompt completes
+
+The key insight: none of these cause the event loop to abort without closing the model call. The only path that does is a panic, which is already handled.
+
+Now let me write the obsolete note.
+
+Actually, let me reconsider one more time. The task says `open_after_FailureObserved=3`. These are real orphans detected by `append_terminal_state_events.py`. If the Day 154 fix already handles this, why are there still 3 orphans? Possibilities:
+1. They're from pre-Day-154 sessions that haven't been cleaned up by `append_terminal_state_events.py`
+2. The fix has a subtle bug in some edge case
+3. There's another FailureObserved path I haven't found
+
+Let me check: does `append_terminal_state_events.py` clean up orphans from past sessions, or does it only detect them?
+
+Let me look at the script briefly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.7s (2 ✓)
+
+Let me verify whether `append_terminal_state_events.py` detects or also cleans up these orphans, and whether the 3 orphans might be pre-existing.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --format="%H %s" 9d693…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 9d693537 --stat ✓ (3.9s)
+ ✓ (3.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Day 154 Task 2 added model call closure in the panic path AND in prompt.rs. Let me see what was added to prompt.rs — it might be the `clear_current_model_call_id()` call on the InputRejected path or something else.
+
+Let me check the diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 9d693537 -- src/promp… ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. Day 154 Task 2 added:
+1. `set_current_model_call_id` call before ModelCallStarted in prompt.rs
+2. `clear_current_model_call_id` calls after all three ModelCallCompleted recording paths in prompt.rs
+3. The panic hook model call closure in state.rs
+
+So Day 154 added the entire model call lifecycle tracking infrastructure (set/clear) AND the panic hook closure.
+
+The task claims the panic hook doesn't close model calls — but it does. The 3 remaining `open_after_FailureObserved` orphans must be from sessions before Day 154, or from sessions where the panic hook fix hadn't been deployed yet (between Day 154 commit and the next cron run).
+
+Now, let me consider: is there still a gap? Looking at the current code:
+
+Panic hook (state.rs):
+- Lines 68-82: takes CURRENT_MODEL_CALL_ID and records ModelCallCompleted ✅
+- Line 85: records FailureObserved
+
+Prompt loop:
+- Line 780: `set_current_model_call_id(model_call_id)` before ModelCallStarted
+- Line 974: `clear_current_model_call_id()` after normal ModelCallCompleted ✅
+- Line 1055: `clear_current_model_call_id()` after Ctrl+C ModelCallCompleted ✅
+- Line 1116: `clear_current_model_call_id()` after post-loop ModelCallCompleted ✅
+
+InputRejected:
+- Line 979: Records FailureObserved but does NOT clear model call ID
+- However, the event loop continues after this, so the model call eventually completes
+
+What if there's a path where FailureObserved is recorded AND the process immediately exits (or the channel closes) without the post-loop cleanup running?
+
+Actually wait — let me think about this: if InputRejected fires, is that a fatal error? Looking at lines 977-991:
+```rust
+AgentEvent::InputRejected { reason } => {
+    crate::state::record(EventType::FailureObserved, ...);
+    if let Some(s) = state.spinner.take() { s.stop(); }
+    eprintln!("{RED}  input rejected: {reason}{RESET}");
+    if let Some(diagnostic) = diagnose_api_error(&reason, model) {
+        eprintln!("...");
+    }
+}
+```
+
+There's no `break` or `return` — the loop continues. However, an InputRejected from the API typically means the request was rejected, and the stream/channel may close shortly after. The next `rx.recv()` would return None, breaking the loop, and the post-loop code at line 1092 would close the model call.
+
+But what if InputRejected is followed by a process exit (e.g., global error handler calls `exit_with_state`)? In that case, the model call would be left dangling because `exit_with_state` doesn't call `clear_current_model_call_id()`.
+
+However, this seems like a very unlikely scenario. The InputRejected is just logged, and the caller decides what to do.
+
+OK, I think the bottom line is:
+1. The panic hook already handles model call closure ✅
+2. Normal model call completion paths all call `clear_current_model_call_id()` ✅
+3. The `open_after_FailureObserved=3` orphans are likely from pre-Day-154 sessions
+
+But there's one more thing: the task says to also check `record_failure_observed` (a non-panic path). Let me search for that function name more carefully. The search returned no results for `record_failure_observed`. Maybe the task refers to the `record(EventType::FailureObserved, ...)` calls in prompt.rs lines 906 and 979?
+
+For the tool error path at line 906: this is during the event loop. The model call continues and eventually completes (or the panic hook fires). So no orphan should result.
+
+For the InputRejected path at line 979: same as above.
+
+Now, one thing I want to verify: what if the `record(ModelCallCompleted, ...)` call in the panic hook fails (because of a recorder issue) but the `record(FailureObserved, ...)` succeeds? In that case, we'd have a ModelCallStarted without a matching ModelCallCompleted. But both `record` calls go through the same function, so if one fails, the other likely also fails.
+
+Actually, the `record` function locks the mutex each time. Between the two calls, someone else could theoretically take the lock and the second call might fail differently. But in a panic hook context, this is a single-threaded scenario (the panicking thread is the only one running).
+
+I'm now confident the task is obsolete. Let me write `task_01_obsolete.md`.
+
+But wait — should I add a regression test instead? The task's fallback says:
+> If install_panic_hook already calls clear_current_model_call_id() or the model call lifecycle is closed elsewhere before the panic hook fires, write task_01_obsolete.md with the evidence.
+
+The evolve skill also says:
+> If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation.
+
+So I should either add a regression test or write the obsolete note. Let me think about whether a regression test would be valuable here...
+
+The panic hook is hard to test because it involves actual panics. But I could test the model call lifecycle closure by:
+1. Setting a mock model call ID
+2. Manually calling the code path that closes it
+3. Verifying the ID is cleared
+
+Actually, looking at the existing test at line 8617:
+```
+fn clear_current_model_call_id_warns_when_no_id_is_active() {
+```
+
+There's already a test for `clear_current_model_call_id`. But there's no test that verifies that after a FailureObserved is recorded (via the non-panic path), the model call ID is properly cleared.
+
+Actually, is there a test for the panic hook's model call closure? Let me check...
+
+But wait, testing the panic hook is tricky because it involves `std::panic::set_hook`. And testing the non-panic FailureObserved recording paths would require mocking the event loop.
+
+I think the most valuable approach is to write a unit test that verifies that when `record(FailureObserved, ...)` is called via the non-panic path (e.g., `record_deepseek_transport_failure`), the model call ID is properly handled. But actually, `record_deepseek_transport_failure` doesn't close model calls — and it's not supposed to, because it's called after the prompt completes.
+
+OK, I think the right thing to do is write the obsolete note with clear evidence. The panic hook already handles this correctly. The `clear_current_model_call_id()` calls in prompt.rs handle the normal paths. The remaining orphans are pre-Day-154 artifacts.
+
+Let me write the obsolete note.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the complete picture. Let me verify my understanding by examining the panic hook closure and the Day 154 commit more carefully, then write the obsolete note.
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all | head…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show 9d693537 -- src/state… ✓ (4.7s)
+ ✓ (3.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This confirms it. Day 154 Task 2 (commit 9d693537) already added:
+1. The `CURRENT_MODEL_CALL_ID` thread-local variable
+2. Model call closure in the panic hook (before FailureObserved)
+3. `set_current_model_call_id` and `clear_current_model_call_id` functions
+4. Wiring in prompt.rs
+
+Day 158 Task 1 (commit 51400e99) then added the diagnostic warning to `clear_current_model_call_id()`.
+
+The task I'm currently asked to implement claims the panic hook doesn't close model calls, but it DOES. The task is obsolete.
+
+Now, the question is: should I write `task_01_obsolete.md` or should I try to add a regression test?
+
+The evolve skill says:
+> If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation.
+
+Let me think about what a good regression test would look like. The panic hook's model call closure is hard to test directly because it involves actual panics. But I could:
+
+1. Test that `set_current_model_call_id` followed by `clear_current_model_call_id` works correctly (this may already exist)
+2. Test that after a simulated FailureObserved recording path, the model call ID is properly cleared
+
+Actually, looking at the existing test at line 8617:
+```
+fn clear_current_model_call_id_warns_when_no_id_is_active()
+```
+
+Let me check if there's a test for the full lifecycle (set → FailureObserved → verify ID cleared). Let me search for tests related to model calls in state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.6s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn.*model_call|fn.*panic_hook|fn.*failure_observed|fn.*curre…' in src/state.rs (*.rs) ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for the test function names more directly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn test_\|fn .*_test\… ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test around line 8616 which is the `clear_current_model_call_id_warns_when_no_id_is_active` test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8614..8644 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there's already a test for the `clear_current_model_call_id` diagnostic guard. But there's no test that verifies the panic hook properly closes the model call lifecycle.
+
+However, testing the panic hook directly is not practical because it involves `std::panic::set_hook` and an actual panic. The best we can do is test the `set_current_model_call_id` + `clear_current_model_call_id` roundtrip.
+
+Let me now write the obsolete note. The evidence is clear:
+1. Day 154 Task 2 (commit 9d693537) already added model call closure in the panic hook (lines 64-82 of state.rs)
+2. The closure happens BEFORE FailureObserved is recorded (line 85)
+3. The approach (CURRENT_MODEL_CALL_ID.take() + record ModelCallCompleted) is functionally equivalent to calling clear_current_model_call_id()
+4. The prompt.rs event loop already calls clear_current_model_call_id() on all three completion paths (normal, Ctrl+C, post-loop)
+5. Day 158 Task 1 (commit 51400e99) added the diagnostic warning to clear_current_model_call_id()
+
+The 3 remaining open_after_FailureObserved orphans must be from sessions before Day 154 (before August 1, 2026) that weren't cleaned up by append_terminal_state_events.py, or from sessions where the recorder wasn't initialized when the panic hook fired (which is a fundamental limitation).
+
+I'll write the obsolete note now.
+────────────────────────────────────────────────────────────────────────────────
+
+I've confirmed the task is obsolete. The panic hook (lines 64-82 in `src/state.rs`) already closes in-progress model calls — Day 154 Task 2 (commit `9d693537`) added this. The closure happens via `CURRENT_MODEL_CALL_ID.with(|c| c.take())` + `record(ModelCallCompleted, ...)` BEFORE `FailureObserved` is recorded at line 85. This is functionally equivalent to calling `clear_current_model_call_id()`.
+
+Let me write the obsolete note.
+  - # Task Obsolete: Repair evidence-backed planning after no-task sessions
+  + # Task 1 — Obsolete
+    
+  - ## Why This Task Is Obsolete
+  + **Title:** Close in-progress model calls when FailureObserved is recorded
+    
+  - The harness-seed task claimed "The harness reached planning with no task artifacts" and that planning reliability was the highest-priority repair. The Day 159 assessment contradicts both claims:
+  + **Status:** OBSOLETE — the panic hook already handles this.
+    
+  - 1. **Task artifacts exist**: The assessment found multiple concrete, evidence-backed issues — state lifecycle gaps (`open_after_FailureObserved=3`), bash tool failure patterns (`bash_tool_error=4`), and evaluator timeout false-reverts. The planning pipeline produced a rich assessment with actionable findings.
+  + ## Evidence
+    
+  - 2. **Not the highest priority**: The trajectory graph pressure directly ranks issues. The top-ranked actionable item is "Close yyds state and model lifecycle gaps" (`deepseek_model_call_abnormal_completed_count=10`), specifically the `open_after_FailureObserved=3` cause. This is a concrete code fix in `src/state.rs` with clear verification. Planning reliability improvements to Python scripts, while potentially useful, don't address the highest-ranked graph pressure.
+  + Day 154 Task 2 (commit `9d693537`, 2026-08-01 10:00 UTC) already added model call
+  + lifecycle closure in the panic hook. The relevant code lives at
+  + `src/state.rs:64-82`:
+    
+  - 3. **Self-referential trap**: The seed task's objective — modify the planning pipeline that produced it — matches the Day 115 self-wisdom pattern: "Fallback self-reference turns 'nothing broken' into busywork you can't refuse." The diagnostic: does this task change the system that produced it? Yes — the preseed script is what seeded this task. When a pipeline that's actually working gets asked to fix itself because a previous session was empty, it's a treadmill, not a repair.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (73 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (73 lines) ✓ (936ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the Rust code still compiles clean and tests pass (even though I haven't changed anything), and then check the git diff to make sure I'm not modifying source files. The task says to inspect `git diff --name-only` before finishing.
+
+Actually, since I'm writing an obsolete note and not changing any source files, the git diff should be clean (or only show the obsolete note). Let me verify.
+
+Wait, the task instructions say:
+> Before your final answer, run `git diff --name-only` and inspect the result. Confirm the touched files overlap the task's Edit Surface.
+
+Since I wrote an obsolete note instead of editing source files, the diff should show only `session_plan/task_01_obsolete.md`. This is correct for an obsolete task.
+
+Let me also run `cargo fmt -- --check` and a quick build check to be safe, and verify the diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | ta… ✓ (4.3s)
+ ✓ (3.8s)
+  2 tools completed in 6.2s (2 ✓)
+
+
