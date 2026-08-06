@@ -1,0 +1,204 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding this task and following the evolve skill. The task is to close model call lifecycle on InputRejected and other unclosed paths. Let me:
+
+1. First read `skills/evolve/SKILL.md`
+2. Then read the relevant source code in `src/prompt.rs`
+3. Implement the fix
+4. Verify with tests
+
+Let me begin.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/prompt.rs:770..830 ✓ (1.3s)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the InputRejected handler, the ctrl+c handler, and the channel-close cleanup to understand the patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.1s (2 ✓)
+
+Let me read the critical sections - the InputRejected handler, the Completion handler, the ctrl+c handler, and the channel-close cleanup.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'InputRejected' in src/prompt.rs  ▶ search 'model_call_terminal_recorded' in src/prompt.rs ✓ (1.0s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the InputRejected handler around line 977, the Completion handler around 955, the ctrl+c handler around 1031, and the channel-close cleanup around 1092.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:940..1020  ▶ read src/prompt.rs:1015..1145 ✓ (349ms)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The InputRejected handler at line 977-991 records `FailureObserved` but does NOT record `ModelCallCompleted`. After InputRejected, the event loop continues (it doesn't break/return), so the channel might still deliver events or close. The channel-close cleanup at line 1092 would eventually catch it with `"stream_closed_without_agent_end"`, BUT only if the channel actually closes before the function returns. If yoagent holds the channel open expecting a retry, the `ModelCallStarted` from line 782 stays open.
+
+The fix is straightforward: in the InputRejected handler, after recording FailureObserved, record ModelCallCompleted with status "input_rejected" and set `model_call_terminal_recorded = true`. This prevents the channel-close cleanup from double-recording and ensures every ModelCallStarted has a matching ModelCallCompleted.
+
+Let me also check if there's a second InputRejected handler at line 1805 that might have the same issue.
+
+Let me also check what `model_call_terminal_payload` looks like to make sure I call it correctly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn model_call_terminal_payload' in src/prompt.rs  ▶ read src/prompt.rs:1795..1825 ✓ (457ms)
+ ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The second InputRejected handler at line 1805 is in a different function (probably `run_prompt_auto_retry` or similar) and doesn't record model call lifecycle events at all - it just sets `last_api_error`. That's fine, it doesn't record ModelCallStarted either.
+
+Now let me read the `model_call_terminal_payload` function to understand its signature:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:32..72 ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have everything I need. Let me also quickly check what function the second InputRejected handler (line 1805) is in, to make sure I'm only fixing the right one.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the function containing line 1805 to confirm it's a different context that doesn't record model call lifecycle:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search '^fn.*handle_prompt' in src/prompt.rs  ▶ read src/prompt.rs:1710..1720 ✓ (745ms)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The second InputRejected handler at line 1805 is in a different function (likely `run_prompt_auto_retry` or similar retry loop). It doesn't record ModelCallStarted, so it doesn't need ModelCallCompleted. The key fix is in the first handler at line 977-991.
+
+Now let me implement the fix. The change is simple: in the InputRejected handler (lines 977-991), after recording FailureObserved, add ModelCallCompleted recording and set `model_call_terminal_recorded = true`.
+
+Let me also check if there are tests related to this area:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+Now I have a clear picture. Let me implement the fix. The InputRejected handler at line 977 records `FailureObserved` but not `ModelCallCompleted`. The fix adds lifecycle closure there, following the same pattern as the ctrl+c handler.
+                                    "reason": reason.clone(),
+                                }),
+                            );
+  +                         // Close model call lifecycle: InputRejected is a terminal event
+  +                         // for the current model call, just like ctrl+c or stream close.
+  +                         // Without this, the ModelCallStarted from line 782 stays open
+  +                         // indefinitely, polluting lifecycle gnomes.
+  +                         if !model_call_terminal_recorded {
+  +                             if !model_call_started {
+  +                                 crate::state::record(
+  +                                     crate::state::EventType::ModelCallStarted,
+  +                                     crate::state::Actor::Yoyo,
+  +                                     serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+  +                                 );
+  +                                 model_call_started = true;
+  +                             }
+  +                             crate::state::record(
+  +                                 crate::state::EventType::ModelCallCompleted,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/prompt.rs (15 → 46 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/prompt.rs (15 → 46 lines)
+                                    "reason": reason.clone(),
+                                }),
+                            );
+  +                         // Close model call lifecycle: InputRejected is a terminal event
+  +                         // for the current model call, just like ctrl+c or stream close.
+  +                         // Without this, the ModelCallStarted from line 782 stays open
+  +                         // indefinitely, polluting lifecycle gnomes.
+  +                         if !model_call_terminal_recorded {
+  +                             if !model_call_started {
+  +                                 crate::state::record(
+  +                                     crate::state::EventType::ModelCallStarted,
+  +                                     crate::state::Actor::Yoyo,
+  +                                     serde_json::json!({ "model_call_id": &model_call_id, "model": model }),
+  +                                 );
+  +                                 model_call_started = true;
+  +                             }
+  +                             crate::state::record(
+  +                                 crate::state::EventType::ModelCallCompleted,
+  +                                 crate::state::Actor::Yoyo,
+  +                                 model_call_terminal_payload(
+  ... (17 more lines)
+ ✓ (454ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run format check, then build and test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run format check and build:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passed. Now let me build:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (18.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passed. Let me now run focused tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run focused tests:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state::tests … ✓ (32.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 335 tests pass. Let me verify the diff looks right:
+────────────────────────────────────────────────────────────────────────────────
+
+All 335 tests pass. Let me verify the diff and commit:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only changed file is `src/prompt.rs`, which matches the task's Edit Surface. Let me verify the diff looks correct and then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff ✓ (948ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff looks correct. The edit adds ModelCallCompleted recording to the InputRejected handler, guarded by `!model_call_terminal_recorded` to prevent double-recording. It follows the exact same pattern as the ctrl+c handler at line 1031. Now let me commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (805ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The task is complete. Let me summarize what was done:
+
+**What changed**: `src/prompt.rs` — the `InputRejected` handler in `handle_prompt_events` (line 977)
+
+**What was added**: After recording `FailureObserved`, the handler now also records `ModelCallCompleted` with status `"input_rejected"` and the rejection reason as `error_detail`. This is guarded by `!model_call_terminal_recorded` to prevent double-recording (same pattern as ctrl+c handler at line 1031 and channel-close cleanup at line 1092). If `model_call_started` is false (shouldn't happen since line 782 always sets it), it records `ModelCallStarted` first — same guard pattern used in the ctrl+c handler.
+
+**Why it matters**: Previously, the `InputRejected` handler recorded `FailureObserved` but left the `ModelCallStarted` event (from line 782) open. If the channel didn't close immediately after rejection, the model call lifecycle was incomplete, polluting lifecycle gnomes with `deepseek_model_call_incomplete_count > 0`. This fix ensures every `ModelCallStarted` gets a matching `ModelCallCompleted`.
+
+**Verification**: `cargo fmt --check`, `cargo build`, and `cargo test --lib state::tests -- prompt::tests` all pass.
+────────────────────────────────────────────────────────────────────────────────
+
+The task is complete. Here's a summary:
+
+**What changed**: `src/prompt.rs` — the `InputRejected` handler in `handle_prompt_events` (~line 977)
+
+**Fix**: After recording `FailureObserved`, the handler now records `ModelCallCompleted` with status `"input_rejected"` and clears the current model call ID. Guarded by `!model_call_terminal_recorded` (same pattern as the ctrl+c and channel-close handlers) to prevent double-recording in case the channel also closes afterward.
+
+**Why**: Without this, `ModelCallStarted` from line 782 was left open when `InputRejected` fired, creating orphaned model calls that polluted lifecycle gnomes with `deepseek_model_call_incomplete_count > 0`.
+
+**Verification**: `cargo fmt --check`, `cargo build`, and `cargo test --lib state::tests -- prompt::tests` (335 tests) all pass.
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

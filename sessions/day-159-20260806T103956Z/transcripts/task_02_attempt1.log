@@ -1,0 +1,218 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. I need to modify `scripts/build_evolution_dashboard.py` around line 3176-3180
+2. The current code unconditionally sets `session_success_rate = 0.0` when `planning_failed` is true
+3. The fix: only set `session_success_rate = 0.0` when `attempted` is truthy (i.e., tasks were attempted but planning failed)
+4. When `attempted=0` (no tasks attempted), the planner correctly found nothing to do, so it's a deliberate no-op, not a crash
+
+Let me start by reading the evolve skill and then the relevant code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/build_evolution_dashboard.py:3160..3200 ✓ (20ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the code clearly. The issue is at lines 3176-3180:
+
+```python
+if manifest.get("planning_failed"):
+    gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
+    gnomes["session_success_rate"] = 0.0
+    gnomes["task_artifact_coverage"] = 0.0
+    recalc_score = True
+```
+
+The fix: when `planning_failed` is true but `attempted` is 0 (no tasks attempted), don't set `session_success_rate = 0.0`. The planner correctly found nothing to do — it's a deliberate no-op, not a crash.
+
+I need to add `if attempted:` guard before `gnomes["session_success_rate"] = 0.0`.
+
+Let me also check: is `attempted` in scope at line 3176? Let me look at where `attempted` is defined in this function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+I can see the relevant code. Let me verify that `attempted` is in scope at the `planning_failed` block, and understand the full context.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'attempted\s*=\s*int' in scripts/build_evolution_dashboard.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `attempted` is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'attempted' in scripts/build_evolution_dashboard.py ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where `attempted` is set as a local variable near line 3160.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'attempted' scripts/build_evolution_dashboard.py | grep -E '^\d+:\s+atte… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at more context around the area to find where `attempted` is defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3130..3160 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look further back to find where `attempted` is set.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'attempted = ' scripts/build_evolution_dashboard.py | head -20 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Line 3011 is the relevant one - `attempted = int(outcome.get("tasks_attempted") or 0)`. Let me also check line 2718. Both are `int(outcome.get("tasks_attempted") or 0)`. So `attempted` is set to 0 when `tasks_attempted` is unavailable. Good.
+
+Let me read the context starting from line 3011 to confirm the variable is in scope at line 3176.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:3008..3018 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. `attempted` is defined at line 3011 and used through to line 3176+. It's in scope.
+
+Now let me make the edit. The change is minimal:
+
+```python
+if manifest.get("planning_failed"):
+    gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
+    if attempted:
+        gnomes["session_success_rate"] = 0.0
+    gnomes["task_artifact_coverage"] = 0.0
+    recalc_score = True
+```
+
+Let me make the edit now.
+────────────────────────────────────────────────────────────────────────────────
+
+`attempted` is defined at line 3011 and in scope through line 3176+. Now I'll make the one-line guard change.
+        if manifest.get("planning_failed"):
+            gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
+  -         gnomes["session_success_rate"] = 0.0
+  +         if attempted:
+  +             gnomes["session_success_rate"] = 0.0
+            gnomes["task_artifact_coverage"] = 0.0
+            recalc_score = True
+  ✓ Auto-approved: edit: scripts/build_evolution_dashboard.py (5 → 6 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/build_evolution_dashboard.py (5 → 6 lines)
+        if manifest.get("planning_failed"):
+            gnomes["planner_no_task_count"] = max(int(gnomes.get("planner_no_task_count") or 0), 1)
+  -         gnomes["session_success_rate"] = 0.0
+  +         if attempted:
+  +             gnomes["session_success_rate"] = 0.0
+            gnomes["task_artifact_coverage"] = 0.0
+            recalc_score = True
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, edit applied. Now let me run the verifiers: Python import check and syntax check.
+────────────────────────────────────────────────────────────────────────────────
+
+Edit applied. Now let me verify with the specified checks.
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c "import scripts.bui…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/build_evolutio… ✓ (85ms)
+ ✓ (205ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The import check failed because the script expects to be run from the `scripts/` directory (it imports `state_graph_tools` which is a sibling module). The syntax check passed (the usage error means the script parsed successfully - it just requires required arguments). 
+
+Let me do a syntax-only check:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+Import check fails due to `sys.path` dependency on `scripts/` directory, but syntax check passes cleanly (the "usage" output means Python parsed the file successfully; the error is just missing CLI args). Let me run a proper syntax check:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m py_compile scripts/… ✓ (88ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Syntax is clean. Now let me run the cargo gates: cargo fmt --check and cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+Syntax is clean. Now run the cargo gates:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+cargo fmt passed. Now let me check cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -5 ✓ (134ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me inspect the diff to confirm it's exactly what's needed, then commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Let me inspect the diff to confirm the change:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only && echo "… ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is exactly what was specified: a one-line guard on `session_success_rate = 0.0` behind `if attempted:`. The file touched matches the Edit Surface (`scripts/build_evolution_dashboard.py`).
+
+Now I need to commit with the specified message format.
+────────────────────────────────────────────────────────────────────────────────
+
+The diff is exactly the one-line guard specified. The touched file matches the Edit Surface. Now commit:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (22ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Committed. Let me verify the commit exists:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -1 ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Everything is done. Let me summarize what changed and where, with the verification results.
+
+Change: `scripts/build_evolution_dashboard.py` line 3178 — added `if attempted:` guard before `gnomes["session_success_rate"] = 0.0` in the `planning_failed` block.
+
+This means:
+- `planning_failed=True` + `attempted=0` → `session_success_rate` is NOT set to 0.0 (deliberate no-op)
+- `planning_failed=True` + `attempted>0` → `session_success_rate` is still 0.0 (tasks attempted but planning failed)
+- `planner_no_task_count` and `task_artifact_coverage` are still set regardless of `attempted`
+
+Verification:
+- python3 -m py_compile: syntax OK
+- cargo fmt --check: passed
+- cargo build: passed
+- git diff: confirms single file, correct change
+
+TASK_TERMINAL_EVIDENCE: changed
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Summary:
+
+**Changed:** `scripts/build_evolution_dashboard.py` line 3178 — added `if attempted:` guard before `gnomes["session_success_rate"] = 0.0` in the `planning_failed` gnome computation block.
+
+**Behavior:**
+• `planning_failed=True` + `attempted=0` → `session_success_rate` is no longer hard-coded to 0.0 (the session correctly found nothing to do)
+• `planning_failed=True` + `attempted>0` → `session_success_rate` still 0.0 as before (tasks were attempted but planning had issues)
+• `planner_no_task_count` and `task_artifact_coverage = 0.0` are unchanged — they still apply regardless
+
+**Verification:**
+• `python3 -m py_compile scripts/build_evolution_dashboard.py` — syntax OK
+• `cargo fmt -- --check` — passed
+• `cargo build` — passed
+
+TASK_TERMINAL_EVIDENCE: changed
+
+

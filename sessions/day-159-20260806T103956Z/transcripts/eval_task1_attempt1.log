@@ -1,0 +1,165 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task. I have:
+
+1. **Task Description**: Close model call lifecycle on `InputRejected` and other unclosed paths
+2. **Diff**: Shows a change in `src/prompt.rs` around line 983
+3. **Build Status**: PASS
+4. **Tests Status**: PASS
+
+Let me verify the diff against the task requirements:
+
+**Task requirements:**
+1. ✅ The `InputRejected` handler records `ModelCallCompleted` with status "input_rejected"
+2. ✅ Sets `model_call_terminal_recorded = true` to prevent double-recording
+3. ✅ Guards with `if !model_call_started { record ModelCallStarted first }` - same pattern as ctrl+c handler
+4. ✅ Does NOT modify `FailureObserved` recording or diagnostic print - only ADDS lifecycle closure
+5. ✅ ~10-line addition in a single match arm
+
+**What the diff shows:**
+- After the `FailureObserved` recording (line 983), adds a block that:
+  - Checks `!model_call_terminal_recorded` 
+  - If `!model_call_started`, records `ModelCallStarted` first (guard pattern)
+  - Records `ModelCallCompleted` with status "input_rejected"
+  - Sets `model_call_terminal_recorded = true`
+  - Increments `model_calls_completed`
+  - Calls `clear_current_model_call_id()`
+
+**The task also mentions "any other early-return/error paths that record ModelCallStarted but not ModelCallCompleted are also fixed, or documented as intentionally left open."**
+
+Let me check if there are other paths in the diff. The diff only shows the `InputRejected` handler change. The task description says "The InputRejected handler" should be fixed and "Any other event handlers that record only ModelCallStarted without a matching ModelCallCompleted are also fixed, or documented as intentionally left open with a clear comment."
+
+Let me check if there's more to the diff or if other paths are addressed. The diff shown is only one section. Let me look at the actual file to see the full diff context.
+
+Actually, the diff provided is specifically about the InputRejected handler - it only shows one change. The task says other paths should be "also fixed, or documented as intentionally left open." Let me check if there are other such paths that might still be unclosed.
+
+But wait - the task says: "Any other event handlers that record only ModelCallStarted without a matching ModelCallCompleted are also fixed, or documented as intentionally left open with a clear comment."
+
+The diff only addresses InputRejected. Let me check if there are other unclosed paths in the event loop. Let me look at the relevant section of the code.
+
+Actually, let me re-read the task more carefully. The task says the gap is specifically about InputRejected. Let me check the code to see if there are other paths.
+
+Let me look at the relevant code sections to verify the implementation and check for other unclosed paths.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/prompt.rs:770..1020 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the diff matches exactly what's in the file. Let me also check if there are other unclosed paths. Let me look at the full event handlers to see if there are other paths that record ModelCallStarted but not ModelCallCompleted.
+
+Let me also check the ctrl+c handler and the channel-close handler to see the pattern.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the other event paths that could leave `ModelCallStarted` unclosed. Let me check a broader range of the event loop:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_terminal_recorded' in src/prompt.rs ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the ctrl+c handler (around line 1062) and the channel-close handler (around line 1123) to see if they already properly close model call lifecycle. These are the other two paths mentioned in the task description.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1040..1170 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have the full picture:
+
+1. **Normal Completion path** (line ~955-975): Records `ModelCallCompleted`, sets `model_call_terminal_recorded = true`, calls `clear_current_model_call_id()`. ✅
+
+2. **InputRejected path** (line 977-1016): Now records `ModelCallCompleted` with status "input_rejected", sets `model_call_terminal_recorded = true`, calls `clear_current_model_call_id()`. ✅ (This is the new fix)
+
+3. **ctrl+c path** (line 1058-1107): Records `ModelCallCompleted` with status "interrupted", sets `model_call_terminal_recorded` (implicitly via recording), calls `clear_current_model_call_id()`. But wait - line 1085 increments `model_calls_completed += 1` but I don't see `model_call_terminal_recorded = true` being set... Let me re-read.
+
+Actually, looking at lines 1062-1087:
+```
+if !model_call_terminal_recorded {
+    if !model_call_started { ... record ModelCallStarted ... }
+    ... record ModelCallCompleted ...
+    model_calls_completed += 1;
+    crate::state::clear_current_model_call_id();
+}
+```
+
+Wait, I don't see `model_call_terminal_recorded = true` in the ctrl+c block! But it does record `ModelCallCompleted`. However, there's no explicit `model_call_terminal_recorded = true` set. Looking more carefully at lines 1085-1086:
+```
+                    model_calls_completed += 1;
+                    crate::state::clear_current_model_call_id();
+```
+
+There's no `model_call_terminal_recorded = true;` in the ctrl+c path! But since it returns immediately after (`return PromptResult::Done { ... }`), it doesn't matter - the loop exits immediately. The channel-close cleanup at line 1123 only runs if the loop finishes, not on early return.
+
+But wait... looking at line 1062: `if !model_call_terminal_recorded` - this check prevents double recording but doesn't SET it. Since the ctrl+c handler returns immediately from the function, the channel-close cleanup code after the loop never runs, so it doesn't matter.
+
+But there's still a subtle issue: the ctrl+c handler doesn't set `model_call_terminal_recorded = true`. If for some reason the ctrl+c handler didn't return (it does, but hypothetically), the channel-close cleanup would double-record. However, since it does return immediately, this is fine.
+
+Let me check if there's a missing `model_call_terminal_recorded = true` in the ctrl+c handler. Looking at lines 1085-1086 again... No, there isn't one. But since the function returns immediately at line 1101-1106, it's fine.
+
+4. **Channel-close cleanup** (line 1123-1148): Records `ModelCallCompleted` with "stream_closed_without_agent_end" if not already recorded. This is the fallback.
+
+Now, the task asks about "any other event handlers that record only ModelCallStarted without a matching ModelCallCompleted." The main event handlers in the loop are:
+- `AgentEvent::ToolExecutionStart` - doesn't touch model call lifecycle
+- `AgentEvent::ToolExecutionEnd` - doesn't touch model call lifecycle
+- Various text/streaming events - don't touch model call lifecycle
+- `AgentEvent::Completion` - records ModelCallCompleted ✅
+- `AgentEvent::InputRejected` - NOW records ModelCallCompleted ✅ (the fix)
+- Other events like `TurnStart`, `TurnEnd` - don't touch lifecycle
+- `_ => {}` - wildcard, doesn't touch lifecycle
+
+The ctrl+c and channel-close paths both close the lifecycle.
+
+The question is: are there any other `AgentEvent` variants from yoagent that could arrive, be caught by the wildcard `_ => {}`, and leave the model call open? Since line 782 records `ModelCallStarted` before the event loop, any unhandled event that causes the loop to break would be caught by the channel-close cleanup at line 1123. And the `_ => {}` wildcard doesn't break the loop.
+
+The main risk was `InputRejected` - it didn't break the loop, but it also didn't close the model call. The model call would stay open until the channel closed, and then be closed by the cleanup at line 1123. So technically it would eventually close, but with a "stream_closed_without_agent_end" status which is misleading. The fix makes it close properly with "input_rejected" status.
+
+Actually wait - does InputRejected cause the channel to close? The task says "If the channel doesn't close immediately after rejection, or if yoagent holds the channel open expecting a retry, the ModelCallStarted from line 782 stays open indefinitely." So the concern is that after InputRejected, the channel might stay open (for a retry), meaning the cleanup at line 1123 never runs, and the model call stays open. This fix addresses that by closing it immediately.
+
+Now, let me evaluate the diff against the implementation notes:
+
+1. ✅ Fix is surgical: in the `AgentEvent::InputRejected` arm, after recording `FailureObserved`, records `ModelCallCompleted`
+2. ✅ Status is "input_rejected"
+3. ✅ Calls `clear_current_model_call_id()`
+4. ✅ Sets `model_call_terminal_recorded = true`
+5. ✅ Guards with `if !model_call_started { record ModelCallStarted first }` 
+6. ✅ Does NOT modify `FailureObserved` recording or diagnostic print
+7. ✅ ~10-line addition
+
+The build and tests passed. The diff matches the task description exactly. 
+
+There's one thing from the task I want to double-check: "Any other event handlers that record only ModelCallStarted without a matching ModelCallCompleted are also fixed, or documented as intentionally left open with a clear comment."
+
+Looking at the full event loop, the other event handlers that could be terminal:
+- `Completion` - already closes lifecycle ✅
+- `InputRejected` - now closes lifecycle ✅ (the fix)
+- `_ => {}` - wildcard, doesn't cause loop break
+- ctrl+c - closes lifecycle ✅
+- channel close - closes lifecycle ✅
+
+I don't see any other paths that need fixing. The wildcard `_ => {}` doesn't break the loop, so it wouldn't leave a model call open. Any future yoagent event would either be handled explicitly or fall through to `_ => {}`.
+
+However, the task says to document any intentionally left open paths. The implementer didn't add any such documentation. But since I can't find any other paths that are unclosed, this isn't a violation.
+
+Verdict: PASS. The implementation matches the task description, builds, tests pass, and the fix is surgical and correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me verify the implementation quality.
+
+**Summary of evidence:**
+
+1. **Normal `Completion` path** (line ~955-975): Already closes lifecycle ✅
+2. **`InputRejected` path** (line 977-1016): **Now** closes lifecycle with status `"input_rejected"` ✅ — this is the fix
+3. **ctrl+c handler** (line 1058-1107): Already closes lifecycle with `"interrupted"` ✅
+4. **Channel-close fallback** (line 1123-1148): Already closes lifecycle with `"stream_closed_without_agent_end"` ✅
+5. **Wildcard `_ => {}`** and other events: Don't break the loop, so the channel-close fallback eventually catches them
+
+The fix is surgical: it adds only the lifecycle closure block after `FailureObserved`, preserves the existing diagnostic print and error handling, uses the same guard pattern (`!model_call_started` → record `ModelCallStarted` first), sets `model_call_terminal_recorded = true`, and calls `clear_current_model_call_id()`.
+
+Build: PASS, Tests: PASS. No unclosed paths remain — all four terminal paths (Completion, InputRejected, ctrl+c, channel close) now properly close the model call lifecycle.
+  + Verdict: PASS
+  + Reason: The fix adds a ModelCallCompleted event with status "input_rejected" in the InputRejected handler, using the same guard pattern as the ctrl+c handler. It preserves the existing FailureObserved recording and diagnostic print. All four terminal paths (Completion, InputRejected, ctrl+c, channel close) now close the model call lifecycle. Build and tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/eval_task_1.md (2 lines) ✓ (6ms)
