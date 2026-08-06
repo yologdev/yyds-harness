@@ -1,0 +1,661 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 118206 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+warning: skipping corrupted event at line 258326 of '.yoyo/state/events.jsonl': EOF while parsing an object at line 1 column 700
+note: skipped 3 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. It's about closing lifecycle feedback gaps by distinguishing input-validation exits from real incomplete runs. Let me first read the evolve skill and the relevant source files.
+
+Let me plan my approach:
+1. Read the evolve skill first
+2. Read the three target files to understand current code
+3. Check if the fallback condition applies (state_unmatched/run_error_without_start count is already 0)
+4. Write tests or make edits accordingly
+
+Let me start by reading the files in parallel.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/log_feedback.py (100 lines) ✓ (2.4s)
+ ✓ (1.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the log_feedback.py to find the `is_input_validation_completion` function and understand how it works. Also need to read append_terminal_state_events.py and summarize_state_gnomes.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation_completion' in scripts  ▶ search 'state_run_incomplete_count' in scripts ✓ (71ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to read the key functions in each file. Let me read:
+1. `is_input_validation_completion` in log_feedback.py (around line 1268)
+2. The relevant section in append_terminal_state_events.py (around line 706)
+3. The `is_input_validation_completion` and usage in summarize_state_gnomes.py (around line 384 and 484)
+4. The test files to understand existing test patterns
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1260..1340  ▶ read scripts/append_terminal_state_events.py:370..430  ▶ read scripts/summarize_state_gnomes.py:375..495 ✓ (25ms)
+ ✓ (25ms)
+ ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the append_terminal_state_events.py code around the area where it handles lifecycle gaps (around line 700) to understand what needs to change there.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.8s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:690..770  ▶ read scripts/log_feedback.py:1360..1420 ✓ (23ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me analyze what needs to change:
+
+1. **log_feedback.py** (line 1268): `is_input_validation_completion()` already exists and correctly identifies input-validation runs. It's used in `state_cache_metrics()` at lines 1368-1377 and 1386-1393 to exclude input-validation completions from counts. This looks correct already.
+
+2. **append_terminal_state_events.py**: The `find_runs_with_failure_observed_no_completion()` function at line 374 finds runs with FailureObserved but no RunCompleted, and emits retroactive RunCompleted events. But the task says this should also skip input-validation runs. Let me check: does the function at lines 734-754 handle this? It doesn't seem to filter out input-validation runs.
+
+3. **summarize_state_gnomes.py**: Already has `is_input_validation_completion()` at line 484 and uses it at lines 381-402 and 396-412. But the gnome metrics at line 278 still use `runs.get("incomplete")` directly which comes from `run_incomplete_ids` — need to check if it's been adjusted.
+
+Let me trace the gnome computation in summarize_state_gnomes.py more carefully.
+
+Let me also check the `run_incomplete_ids` computation in summarize_state_gnomes.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:260..360  ▶ read scripts/append_terminal_state_events.py:650..750 ✓ (20ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me understand the overall picture:
+
+**log_feedback.py** (`state_cache_metrics`, lines 1368-1394): Already correctly filters out input-validation completions from `incomplete_count`, `unmatched_completed_count`, `run_unmatched_completed_ids`, and `state_run_incomplete_count`. It uses `is_input_validation_completion()` correctly.
+
+**summarize_state_gnomes.py** (`summarize_state_lifecycle`, lines 306-481): Already filters input-validation runs in multiple places:
+- Lines 381-395: Splits `run_unmatched_completed_all` into validation vs non-validation
+- Lines 396-402: Filters `model_incomplete_ids` with `is_input_validation_completion`
+- Lines 408-412: Filters `model_unmatched_completed_ids` with `is_input_validation_completion`
+- Line 426: `runs["incomplete"]` = `len(run_incomplete_ids)` — does this filter input-validation runs?
+
+Let me check how `run_incomplete_ids` is computed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:360..380 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the structure:
+
+**summarize_state_gnomes.py:**
+- `run_incomplete_ids` (line 367): runs that have RunStarted but no RunCompleted. Input-validation runs are fire-and-forget — they typically don't record RunStarted, so they won't show up here. This should be fine.
+- `run_unmatched_completed_ids` (line 371): runs with RunCompleted but no RunStarted. Input-validation runs DO show up here (they have a RunCompleted with error detail "empty_input"). This IS properly filtered at line 381-395.
+
+But wait, `run_incomplete_ids` at line 367 = `run_started_ids - run_completed_ids`. For an input-validation run, it usually doesn't have RunStarted, so it won't be in `run_incomplete_ids`. So `runs["incomplete"]` should not be inflated by input-validation runs.
+
+The task talks about `state_unmatched/run_error_without_start=3` — three runs completed with error but never recorded RunStarted. The assessment notes these may be input-validation completions. Let me check if `append_terminal_state_events.py` properly handles this.
+
+Let me look more at append_terminal_state_events.py to understand how `find_runs_with_failure_observed_no_completion` works and if it filters for input-validation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:374..394  ▶ search 'input_validation' in scripts/append_terminal_state_events.py ✓ (14ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full context around the model call started/unmatched handling (lines 756-790) and also the `find_runs_with_failure_observed_no_completion` function. Also need to check line 328 in append_terminal_state_events.py.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:756..826  ▶ read scripts/append_terminal_state_events.py:320..380 ✓ (22ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a comprehensive understanding. Let me analyze the gaps:
+
+### Current State Analysis
+
+1. **log_feedback.py** `state_cache_metrics()` (lines 1368-1394): ✅ Already correctly filters input-validation runs from `incomplete_count`, `unmatched_completed_count`, `run_incomplete_ids`, and `state_run_incomplete_count`.
+
+2. **append_terminal_state_events.py** `find_missing_failure_observed()` (lines 328-371): ✅ Already excludes input-validation runs (lines 340-343) and cancelled runs (lines 344-346).
+
+3. **append_terminal_state_events.py** `find_runs_with_failure_observed_no_completion()` (lines 374-407): ⚠️ Does NOT filter input-validation runs. This function finds runs with FailureObserved but no RunCompleted. But input-validation runs typically wouldn't have FailureObserved... Let me think about this more carefully.
+
+4. **append_terminal_state_events.py** Model call unmatched handling (lines 756-793): ✅ Already filters input-validation runs using `collect_input_validation_run_ids()`.
+
+5. **summarize_state_gnomes.py** `summarize_state_lifecycle()`: ✅ Already filters input-validation runs for unmatched completed and model incomplete counts. But `run_incomplete_ids` (line 367) is `run_started_ids - run_completed_ids` — input-validation runs typically don't have RunStarted, so they won't be in this set.
+
+Now, let me think about what the task is really asking. The assessment found `state_unmatched/run_error_without_start=3`. Let me check what this metric represents by looking at where it's reported.
+
+Let me search for `run_error_without_start`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.8s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'run_error_without_start' in scripts  ▶ search 'unmatched_completed_details' in scripts ✓ (14ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what `run_error_without_start` classification does — it seems to be about classifying runs that completed with error but have no RunStarted.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2535..2575  ▶ read scripts/state_graph_tools.py:860..900 ✓ (19ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the critical distinction:
+
+In `build_evolution_dashboard.py` line 2542-2543 and `state_graph_tools.py` line 865-867, there's a classification: if a RunCompleted has `error_detail` of `"empty_input"` or starts with `"invalid_input:"`, it's classified as `"input_validation_exit_without_run_start"`. Otherwise, if the status is `"error"`, it's `"run_error_without_start"`.
+
+So the assessment's `state_unmatched/run_error_without_start=3` means there are 3 runs that completed with error status but NO `error_detail` of `"empty_input"` or `"invalid_input:"` — meaning they're NOT input-validation exits. These are genuine lifecycle gaps.
+
+But wait — there's a gap. Let me look at the `state_graph_tools.py` code more carefully (line 865-867). It uses `last_event.get("error_detail")` directly, not `is_input_validation_completion()`. And `build_evolution_dashboard.py` uses `is_input_validation_completion()` at line 2542.
+
+Now, the task says `is_input_validation_completion()` checks for `kind == "RunCompleted"` AND `status == "error"` AND `detail == "empty_input" or detail.startswith("invalid_input:")`. The `state_graph_tools.py` classification at line 865-867 does the same check but inline.
+
+Now let me read the full context of the task again. The assessment found `state_unmatched/run_error_without_start=3` - these are runs that completed with error but no `empty_input` or `invalid_input:` detail. These are NOT validation exits according to current classification. However, the task suggests these COULD be validation completions if:
+
+> Some of these may be input-validation completions (model called to check DeepSeek availability, completed, but the short-lived run never got a RunStarted event).
+
+This suggests the `is_input_validation_completion()` function might be too narrow — it only catches "empty_input" and "invalid_input:" error details, but there might be OTHER kinds of input-validation completions that aren't being caught.
+
+The task specifically says: "verify it correctly detects validation-only model calls (pre-agent, short duration, no tool calls)."
+
+Let me think about this differently. What are the actual gaps?
+
+1. **log_feedback.py**: The `is_input_validation_completion()` function and its usage in `state_cache_metrics()` already correctly filter input-validation runs.
+
+2. **append_terminal_state_events.py**: 
+   - `find_missing_failure_observed()` at line 328 already excludes input-validation runs (lines 340-343).
+   - `find_runs_with_failure_observed_no_completion()` at line 374 does NOT filter input-validation runs. However, this function deals with runs that have FailureObserved but no RunCompleted — input-validation runs wouldn't typically have FailureObserved since they're short-lived. So this might not be a real gap.
+   - Model call unmatched handling at line 756 already filters.
+
+3. **summarize_state_gnomes.py**: Already filters properly.
+
+Let me look more carefully at what the task says about `append_terminal_state_events.py`:
+
+> `append_terminal_state_events.py` does not flag input-validation completions as lifecycle gaps.
+
+Let me check more carefully what happens in `append_terminal_state_events.py` when it scans for runs with `RunCompleted` but no `RunStarted`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.6s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:400..480 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the main function in append_terminal_state_events.py to understand the full flow — particularly where unmatched completions are handled.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:550..650 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me trace the issue more thoroughly. The task says:
+
+> The remaining gaps are in input-validation exits (pre-agent model calls that complete before any agent turn) and transport-level disconnects.
+
+The key question is: does `is_input_validation_completion()` correctly identify ALL input-validation completions? Currently it checks for `detail == "empty_input" or detail.startswith("invalid_input:")`. 
+
+But the task also says: "Some of these may be input-validation completions (model called to check DeepSeek availability, completed, but the short-lived run never got a RunStarted event)." — This implies that some input-validation runs may NOT have `empty_input` or `invalid_input:` as error_detail.
+
+Let me actually look at what the assessment says and check the fallback condition. Let me check if there are recent state snapshots to see if `run_error_without_start` is still 3.
+
+Actually, wait. Let me re-read the task carefully:
+
+> Fallback:
+> - If `state_unmatched/run_error_without_start` count is already 0 in the latest state snapshot, or if the assessment shows all lifecycle gaps were closed by state.rs fixes, write an obsolete-task note instead of editing.
+
+So I need to check the current state first. Let me look at the latest state snapshot or assessment.
+
+But before that, let me also check what the task is actually asking me to change. Let me re-read:
+
+> Objective:
+> Ensure lifecycle gap classification in diagnostic scripts correctly separates input-validation exits (harmless — model called for capability check, no agent turn) from real incomplete runs (model call started, agent turn active, but no completion recorded). This prevents false lifecycle-gap alarms from inflating `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`.
+
+The task identifies the key function as `is_input_validation_completion()` and wants to ensure it correctly detects validation-only model calls. The implementation notes say:
+
+> - The key function is `is_input_validation_completion()` in log_feedback.py — verify it correctly detects validation-only model calls (pre-agent, short duration, no tool calls).
+
+Let me now check what the actual current behavior is. Let me look at how the event pipeline works to understand if there are input-validation completions that aren't detected.
+
+Actually, let me step back and think about what concrete changes need to be made:
+
+1. The `is_input_validation_completion()` function in `log_feedback.py` (line 1268) — is it correct? It checks if `last_event.kind == "RunCompleted"`, `last_event.status == "error"`, and `detail == "empty_input" or detail.startswith("invalid_input:")`. This seems correct for how the harness currently labels input-validation runs.
+
+2. The `is_input_validation_completion()` function in `summarize_state_gnomes.py` (line 484) — identical logic.
+
+3. But in `state_graph_tools.py` at line 865-867, the same check is done inline (not using `is_input_validation_completion()`):
+```python
+detail = str(last_event.get("error_detail") or "")
+if detail == "empty_input" or detail.startswith("invalid_input:"):
+    return "input_validation_exit_without_run_start"
+```
+And `build_evolution_dashboard.py` at line 2542 DOES use `is_input_validation_completion()`.
+
+So the fix is to make `state_graph_tools.py` use `is_input_validation_completion()` instead of inline checks, for consistency and maintainability.
+
+But wait — the task's Files list is: `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py`. It does NOT include `state_graph_tools.py` or `build_evolution_dashboard.py`.
+
+Let me focus on the listed files. Let me check what's specifically needed in each:
+
+1. **log_feedback.py**: `is_input_validation_completion()` already exists and is correct. But maybe its usage in some function needs fixing? Let me check...
+
+2. **append_terminal_state_events.py**: Has `collect_input_validation_run_ids()` at line 410 and uses it for model call unmatched handling (line 769). But `find_runs_with_failure_observed_no_completion()` at line 374 doesn't filter input-validation. However, this function looks for FailureObserved without RunCompleted — input-validation runs wouldn't have FailureObserved. So it might not be an issue.
+
+Wait, but there's another thing: the task says `append_terminal_state_events.py` should not flag input-validation completions as lifecycle gaps. The function that could mistakenly handle input-validation runs is `find_missing_failure_observed()` — which already handles it at line 340-343. Good.
+
+But looking more carefully at the code flow in `append_terminal_events()`: The `find_runs_with_failure_observed_no_completion()` at line 708 finds runs with FailureObserved but no RunCompleted. Input-validation runs wouldn't have FailureObserved, so this isn't relevant.
+
+Let me think about what other gaps there might be in `append_terminal_state_events.py`. There's the `find_missing_model_call_started()` function at line 436. It finds ModelCallCompleted without ModelCallStarted. Input-validation runs ARE filtered at line 769-773 using `collect_input_validation_run_ids()`. OK, that's handled.
+
+Now in `summarize_state_gnomes.py`:
+- `run_incomplete_ids` at line 367 = `run_started_ids - run_completed_ids`. Input-validation runs usually don't have RunStarted, so they won't be here.
+- `run_unmatched_completed_ids` at line 371 = `run_completed_ids - run_started_ids`. Input-validation runs WILL be here. This is filtered at lines 381-395.
+- `model_incomplete_ids` at line 396-402 filters with `is_input_validation_completion()`. 
+- `model_unmatched_completed_ids` at line 406-412 filters with `is_input_validation_completion()`.
+
+OK so everything in the listed files already seems to handle input-validation correctly. But wait — the task says this is an issue that needs fixing. Let me look at whether the task is asking me to make `is_input_validation_completion()` MORE robust to catch cases it currently misses.
+
+Let me re-read: "The key function is `is_input_validation_completion()` in log_feedback.py — verify it correctly detects validation-only model calls (pre-agent, short duration, no tool calls)."
+
+So the task wants me to enhance `is_input_validation_completion()` to also detect other kinds of input-validation runs beyond just `empty_input` and `invalid_input:` error details. For example, a transport-level disconnect might produce a RunCompleted with error status but no specific `error_detail`.
+
+But wait — adding more detection patterns would make it LESS conservative, not more. If a real transport disconnect produces a RunCompleted with `status: error` but no specific detail, that SHOULD be counted as a lifecycle gap, not filtered out as harmless input validation.
+
+Hmm. Let me re-read the objective once more:
+
+> "correctly separates input-validation exits (harmless — model called for capability check, no agent turn) from real incomplete runs (model call started, agent turn active, but no completion recorded)"
+
+So the task is about CORRECT SEPARATION. Currently:
+- Runs with `error_detail == "empty_input"` or `error_detail.startswith("invalid_input:")` are classified as input-validation → correct
+- Runs with other error details are classified as real gaps → correct
+- Runs with no error detail (e.g., transport disconnect) are not caught by `is_input_validation_completion()` → they go to `run_error_without_start` → correctly classified as real gaps
+
+I think the current code is actually correct, and the task might be asking me to verify this and add tests. But I need to look more carefully at the fallback condition.
+
+> If `state_unmatched/run_error_without_start` count is already 0 in the latest state snapshot, or if the assessment shows all lifecycle gaps were closed by state.rs fixes, write an obsolete-task note instead of editing.
+
+Let me check the current state. Let me look for the latest state summary or assessment.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the current state snapshot and assessment to see if the fallback condition applies.
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ 2>/dev/null; cat session_plan/task_01.md 2>/dev/null | head…  ▶ search 'run_error_without_start' in scripts ✓ (21ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the assessment to check if it shows `state_unmatched/run_error_without_start=3`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/assessment.md ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The assessment confirms:
+- Line 81: `deepseek_model_call_incomplete_count=1`, with 3 `state_unmatched/run_error_without_start` events.
+- Line 92: "Close yyds state and model lifecycle gaps — 3 `state_unmatched/run_error_without_start` events, plus 1 incomplete model call."
+
+So `run_error_without_start` is 3, not 0 — the fallback condition is NOT met. I need to make real changes.
+
+Now let me analyze what specifically needs to change. Let me look at the `state_unmatched/run_error_without_start` classification path. The assessment says these might be input-validation completions. Let me check if the `is_input_validation_completion()` function is being used consistently everywhere it should be.
+
+I see that in `state_graph_tools.py` (line 865-867), the classification uses inline checks rather than `is_input_validation_completion()`. But that file is not in the task's Files list. Let me focus on the listed files.
+
+Let me trace through the code more carefully:
+
+### In `append_terminal_state_events.py`:
+
+The `find_runs_with_failure_observed_no_completion()` function (line 374) finds runs with FailureObserved but no RunCompleted. The task says these should skip input-validation runs. But input-validation runs don't have FailureObserved, so this function won't match them. I think this is fine.
+
+However, let me look at the code block around lines 716-754. Here, `fo_no_rc_runs` (runs with FailureObserved but no RunCompleted) are being processed and retroactive RunStarted/RunCompleted events are emitted. The code checks `if rid not in run_started_runs` (line 738) before emitting RunStarted. But it doesn't check if the run is an input-validation run.
+
+Wait — could input-validation runs have FailureObserved? Let me check. Input-validation runs are short-lived model calls that return `empty_input` or `invalid_input:`. The harness might record FailureObserved for these if the run completed with error. If so, they'd show up in `fo_no_rc_runs`.
+
+Actually, looking at the flow: input-validation runs have `RunCompleted` with `status: error`, so they're "completed". The `find_runs_with_failure_observed_no_completion()` looks for runs with FailureObserved but NO RunCompleted. Since input-validation runs DO have RunCompleted, they won't be caught.
+
+So the gap isn't in `find_runs_with_failure_observed_no_completion()`.
+
+Let me think about this differently. The `state_unmatched/run_error_without_start` metric counts runs that completed (with error status) but never recorded RunStarted. These are `run_unmatched_completed` entries.
+
+In `state_graph_tools.py`, the classification at line 865-867 checks if the error_detail is `"empty_input"` or `"invalid_input:"` and returns `"input_validation_exit_without_run_start"`. Otherwise, for error status, it returns `"run_error_without_start"`.
+
+But the issue is that `build_evolution_dashboard.py` at line 2542 calls `is_input_validation_completion()` which checks `kind == "RunCompleted"` AND `status == "error"`. The `state_graph_tools.py` doesn't check `kind` — it assumes the function is only called for RunCompleted events.
+
+Wait, let me re-read the problem more carefully. The task says:
+
+> `append_terminal_state_events.py` does not flag input-validation completions as lifecycle gaps.
+
+But `append_terminal_state_events.py` doesn't directly classify lifecycle gaps — it only appends retroactive events. The classification is done by `state_graph_tools.py` and `build_evolution_dashboard.py` when they read the lifecycle data.
+
+Let me re-read the task's Edit Surface: `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py`.
+
+The key issue might be in `append_terminal_state_events.py` where it handles `find_missing_failure_observed()`. This function at line 328 already handles input-validation (excluding them), but does it feed into the right metrics?
+
+Actually, let me look at this from a different angle. Let me check what the `state_unmatched/run_error_without_start` count actually comes from. It's produced by `state_graph_tools.py` in the `lifecycle_imbalance_causes` function. Let me look at it more carefully.
+
+Actually wait — let me re-read the code. The task says:
+> `scripts/log_feedback.py` already classifies `is_input_validation_completion()` but the downstream scripts (append_terminal_state_events, summarize_state_gnomes) may not consistently exclude validation-only completions from lifecycle-gap counting.
+
+So the issue is that `log_feedback.py` has the function, but the other scripts might not use it consistently. Let me verify:
+
+1. `append_terminal_state_events.py`: Has its own `collect_input_validation_run_ids()` (line 410) which does the same check. But does it have `is_input_validation_completion()`? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'is_input_validation_completion' in scripts/append_terminal_state_events.py  ▶ search 'def is_input_validation_completion' in scripts/log_feedback.py ✓ (15ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `append_terminal_state_events.py` does NOT use `is_input_validation_completion()` — it has its own `collect_input_validation_run_ids()` which does the same check but for a different purpose (finding run IDs from events, vs checking a single `last_event` dict).
+
+This is actually fine — `collect_input_validation_run_ids()` serves a different purpose. But the task says the downstream scripts may not consistently exclude validation-only completions. Let me look at a specific gap:
+
+In `append_terminal_state_events.py`, the `find_runs_with_failure_observed_no_completion()` function at line 374 is used at line 708 to find runs that need retroactive RunCompleted events. This function checks `FailureObserved` vs `RunCompleted`. But input-validation runs are not affected here since they already have RunCompleted.
+
+Wait, let me think about what `state_unmatched/run_error_without_start` actually means. It comes from the lifecycle imbalance causes in `state_graph_tools.py` or `build_evolution_dashboard.py`. The `unmatched_completed_details` contains runs that have `RunCompleted` but no matching `RunStarted`. For each such run, the `last_event` is a `RunCompleted` with `status: error`. If the `error_detail` is NOT `"empty_input"` or `"invalid_input:"`, it's classified as `"run_error_without_start"`.
+
+So the question is: are there runs that completed with error status but have `error_detail` that IS input-validation (but not `"empty_input"` or `"invalid_input:"`)? 
+
+Looking at the Rust source code for input validation, let me check what error details are produced.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.4s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'empty_input' in src  ▶ search 'invalid_input' in src ✓ (16ms)
+ ✓ (17ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! Let me look at the lib.rs code to see how input validation works:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/lib.rs:725..755 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `commands_state_crashes.rs` to understand `is_preflight_error()`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state_crashes.rs:95..125 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see how it works. The `is_preflight_error` in Rust checks for `"empty_input"` or `"slash_command_in_piped_mode"` in the error_detail. And `is_input_validation_completion()` in Python checks for `detail == "empty_input" or detail.startswith("invalid_input:")`.
+
+The "invalid_input:" prefix in Python would catch `"invalid_input: slash_command_in_piped_mode"`. So the Rust and Python checks align.
+
+Now, the key question: are there OTHER error details that represent input-validation/preflight errors that the Python `is_input_validation_completion()` doesn't catch? 
+
+Looking at the Rust code, `is_preflight_error` only checks for `"empty_input"` and `"slash_command_in_piped_mode"`. The Python version checks for `"empty_input"` and `"invalid_input:"` prefix. These are essentially the same.
+
+So the `is_input_validation_completion()` function seems correct for the known input-validation patterns.
+
+But the task says the remaining gaps might be in transport-level disconnects. If a transport disconnect produces a RunCompleted with error but a different error_detail, `is_input_validation_completion()` would correctly NOT classify it as input-validation (which is the desired behavior — transport disconnects ARE real lifecycle gaps).
+
+Hmm, let me re-think this task. Perhaps the issue is not in `is_input_validation_completion()` being too narrow, but rather that the downstream scripts DON'T use it at all for some paths.
+
+Let me check the key metric path. The `state_run_incomplete_count` gnome value in `summarize_state_gnomes.py` comes from:
+```python
+"state_run_incomplete_count": int(runs.get("incomplete") or 0),
+```
+
+And `runs["incomplete"]` comes from:
+```python
+run_incomplete_ids = sorted(run_id for run_id in run_started_ids if run_id not in run_completed_ids)
+run_incomplete_ids = [rid for rid in run_incomplete_ids if rid not in cancelled_run_ids]
+```
+
+This filters out cancelled runs but does NOT filter out input-validation runs. However, input-validation runs don't have RunStarted, so they won't be in `run_incomplete_ids` anyway.
+
+Let me look at `run_unmatched_completed_ids` instead:
+```python
+run_unmatched_completed_ids = sorted(run_id for run_id in run_completed_ids if run_id not in run_started_ids)
+```
+
+This WILL include input-validation runs (they have RunCompleted but no RunStarted). But at line 381-395, they're separated:
+```python
+run_unstarted_input_validation_errors = [run for run in run_unmatched_completed_all if is_input_validation_completion(run.get("last_event"))]
+```
+
+And then:
+```python
+"unmatched_completed": len(run_unmatched_completed_ids),
+```
+
+Wait — `run_unmatched_completed_ids` is NOT filtered for input-validation. The count of `"unmatched_completed"` includes BOTH validation and non-validation runs. Then at line 278:
+```python
+"state_run_unmatched_completed_count": int(runs.get("unmatched_completed") or 0),
+```
+
+This means `state_run_unmatched_completed_count` includes input-validation runs! But there's a separate field `state_run_unmatched_non_validation_completed_count` that excludes them. The gnome `state_run_unmatched_completed_count` might be inflating.
+
+Hmm, but the task is specifically about `state_run_incomplete_count` and `deepseek_model_call_incomplete_count`, not `state_run_unmatched_completed_count`.
+
+Let me check `model_incomplete_count`:
+```python
+model_incomplete_ids = sorted(run_id for run_id in model_call_started_runs if run_id not in model_call_completed_runs)
+model_incomplete_ids = [run_id for run_id in model_incomplete_ids if not is_input_validation_completion(run_last_events.get(run_id))]
+```
+
+This IS filtered. Good.
+
+OK, I think the current code in `summarize_state_gnomes.py` and `log_feedback.py` is actually already doing the right thing for the most part. But let me look for subtle issues.
+
+Actually, let me look at the `state_unmatched/run_error_without_start` classification more carefully. It comes from `build_evolution_dashboard.py` line 2542-2548. That code uses `is_input_validation_completion()` from `log_feedback.py`... wait, does `build_evolution_dashboard.py` import from `log_feedback.py`?
+
+Let me check...
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'from log_feedback import' in scripts/build_evolution_dashboard.py  ▶ search 'def is_input_validation_completion' in scripts/build_evolution_dashboard.py ✓ (14ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `build_evolution_dashboard.py` has its OWN copy of `is_input_validation_completion()`. And `log_feedback.py` has its own. And `summarize_state_gnomes.py` has its own. And `state_graph_tools.py` uses inline checks instead of a function.
+
+This is the core issue — the function is duplicated across files! If one copy is updated, the others might not be, leading to inconsistent behavior.
+
+Now I understand the task better. The task wants me to:
+
+1. Ensure `is_input_validation_completion()` is consistent across all files
+2. Ensure `append_terminal_state_events.py` properly excludes input-validation runs from lifecycle gap detection
+3. Ensure `summarize_state_gnomes.py` properly excludes input-validation runs
+
+But wait, the task specifically says `is_input_validation_completion()` lives in `log_feedback.py` as the canonical version and the other scripts should use it. Let me check if `summarize_state_gnomes.py` has its own copy.
+
+I already confirmed:
+- `log_feedback.py` line 1268: has its own `is_input_validation_completion()`
+- `summarize_state_gnomes.py` line 484: has its own `is_input_validation_completion()`
+- `build_evolution_dashboard.py` line 2519: has its own `is_input_validation_completion()`
+- `state_graph_tools.py` line 865-867: inline check
+- `append_terminal_state_events.py`: has `collect_input_validation_run_ids()` but NOT `is_input_validation_completion()`
+
+The task also says: "append_terminal_state_events.py does not flag input-validation completions as lifecycle gaps."
+
+Let me look at what `append_terminal_state_events.py` currently does that might flag input-validation runs. The function `find_missing_failure_observed()` at line 328 already excludes input-validation runs correctly (lines 340-343). But it uses inline checks rather than `is_input_validation_completion()`.
+
+OK, let me now identify the specific concrete changes needed:
+
+### Change 1: Add `is_input_validation_completion()` to `append_terminal_state_events.py`
+Currently, `append_terminal_state_events.py` doesn't have this function and uses inline checks. Add the function and use it consistently.
+
+### Change 2: Ensure `append_terminal_state_events.py` filters input-validation runs in `find_runs_with_failure_observed_no_completion()`
+This function at line 374 looks for runs with FailureObserved but no RunCompleted. Input-validation runs are not affected here since they have RunCompleted. But to be safe and consistent, we should add filtering.
+
+Actually no — `find_runs_with_failure_observed_no_completion()` deals with runs that have FailureObserved but NO RunCompleted. Input-validation runs do have RunCompleted, so they won't be caught by this function. No change needed here.
+
+### Change 3: Ensure log_feedback.py's `state_cache_metrics()` properly excludes input-validation from all counts
+Looking at the code, it already does this correctly at lines 1368-1394.
+
+### Change 4: Ensure summarize_state_gnomes.py properly excludes input-validation from all counts
+Looking at the code, it already does this correctly.
+
+Wait, let me look more carefully. Maybe the issue is that `summarize_state_gnomes.py` and `log_feedback.py` have duplicate `is_input_validation_completion()` functions, and the task wants them to share a single implementation. But that would require importing from one to the other, which could be a refactoring change.
+
+Actually, the simplest and most impactful change would be to:
+1. Add `is_input_validation_completion()` to `append_terminal_state_events.py` (replacing inline checks)
+2. Make `find_missing_failure_observed()` in `append_terminal_state_events.py` use it (it already has the check inline, just not as a function call)
+3. Add input-validation filtering to any other lifecycle-gap-detection paths in `append_terminal_state_events.py` that don't already have it
+4. Add tests
+
+But actually, looking more carefully at the code, I think the real actionable gap is:
+
+**In `append_terminal_state_events.py`**: The `find_missing_failure_observed()` at line 328 already has inline input-validation checks. The `find_missing_model_call_started()` at line 436 does NOT have input-validation checks — these are done at the call site (line 769). This is fine.
+
+**In `summarize_state_gnomes.py`**: The `summarize_state_lifecycle()` function at line 306 does NOT filter input-validation runs from `run_incomplete_ids`. But wait — `run_incomplete_ids` = `run_started_ids - run_completed_ids`. Input-validation runs typically don't have RunStarted, so they won't be here.
+
+But what if an input-validation run ALSO has RunStarted? Let me think... In the Rust code:
+
+```rust
+// lib.rs line 732-735
+if input.is_empty() {
+    eprintln!("No input on stdin.");
+    state::stash_diagnostic_error("empty_input");
+    exit_with_state(1);
+}
+```
+
+Looking at how `exit_with_state` works, it would trigger the panic hook path which might or might not emit RunStarted. Let me check...
+
+Actually, let me step back and just focus on the concrete changes. Let me identify the most impactful, minimal changes:
+
+1. Add `is_input_validation_completion()` to `append_terminal_state_events.py` 
+2. Use it in `find_missing_failure_observed()` to replace the inline check
+3. Add input-validation filtering to `find_runs_with_failure_observed_no_completion()` 
+
+For point 3: Even though input-validation runs typically wouldn't have FailureObserved, it's still a good defensive practice to filter them.
+
+Actually wait, let me look at the code flow for `find_runs_with_failure_observed_no_completion()` again more carefully in the context of how it's used at line 708 and 734.
+
+```python
+# Line 708
+fo_no_rc_runs, fo_no_rc_diag = find_runs_with_failure_observed_no_completion(events)
+
+# Line 734-754
+for rid in sorted(fo_no_rc_runs):
+    if rid in already_closed_fo:
+        continue
+    if rid not in run_started_runs:
+        _maybe_append_event(events_path, "RunStarted", ...)
+    _maybe_append_event(events_path, "RunCompleted", ...)
+```
+
+If an input-validation run had FailureObserved for some reason, it would get a retroactive RunStarted and RunCompleted. This wouldn't be harmful but it would be unnecessary.
+
+Let me think about what the actual bug is. The assessment says `state_unmatched/run_error_without_start=3`. This means there are 3 runs that completed with error but never had RunStarted. These are classified as `"run_error_without_start"` because `is_input_validation_completion()` returns False for them.
+
+The question is: are these truly NOT input-validation runs? If they ARE input-validation runs but `is_input_validation_completion()` fails to detect them, then we have a classification bug.
+
+Looking at `is_input_validation_completion()`:
+```python
+def is_input_validation_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    if last_event.get("kind") != "RunCompleted":
+        return False
+    if last_event.get("status") != "error":
+        return False
+    detail = str(last_event.get("error_detail") or "")
+    return detail == "empty_input" or detail.startswith("invalid_input:")
+```
+
+The only ways this could miss input-validation runs:
+1. The `last_event` dict doesn't have `kind == "RunCompleted"` — but for `run_unmatched_completed` runs, the last event IS a RunCompleted, so this should be fine.
+2. The `status` is not "error" — but input-validation runs exit with error status.
+3. The `error_detail` field is something other than "empty_input" or "invalid_input:*" — this is the key question.
+
+Could there be input-validation runs with different error_details? Let me check if there are other preflight checks.
+
+Let me also look at the `state_graph_tools.py` classification:
+
+```python
+if kind == "RunCompleted":
+    detail = str(last_event.get("error_detail") or "")
+    if detail == "empty_input" or detail.startswith("invalid_input:"):
+        return "input_validation_exit_without_run_start"
+    status = str(last_event.get("status") or "")
+    if status == "completed":
+        return "completion_without_run_start"
+    if status == "error":
+        return "run_error_without_start"
+```
+
+This is the SAME check. So the classification is consistent.
+
+Now, the `run_error_without_start=3` means 3 runs that had RunCompleted with `status=error` but `error_detail` is NOT `"empty_input"` or `"invalid_input:*"`. These are genuine lifecycle gaps, NOT input-validation runs.
+
+But the task says: "Some of these may be input-validation completions (model called to check DeepSeek availability, completed, but the short-lived run never got a RunStarted event)."
+
+This suggests that there might be input-validation runs whose `error_detail` is NOT `"empty_input"` or `"invalid_input:"`. For example, a DeepSeek availability check might produce a different error_detail.
+
+Let me search for what error details are produced for DeepSeek capability checks.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 27.0s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'stash_diagnostic_error' in src ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see several diagnostic error messages:
+- `empty_input` → input-validation
+- `invalid_input: slash_command_in_piped_mode` → input-validation
+- `api_error: single_prompt_stream_json` → NOT input-validation
+- `api_error: fallback_retry_exhausted` → NOT input-validation
+- `api_error: piped_stream_json` → NOT input-validation
+- `api_error: piped_fallback_exhausted` → NOT input-validation
+- Various others like `agent run: {e}`, `state init: {e}`, `checkpoint_triggered`, etc.
+
+So `is_input_validation_completion()` currently catches `empty_input` and `invalid_input:*`, which is correct for the current Rust code.
+
+However, there could be OTHER input-validation paths that don't produce these error details. For example, `api_error: single_prompt_stream_json` from line 460-481 might also be a pre-agent check.
+
+But wait, let me re-read the task. It says:
+> "The remaining gaps are in input-validation exits (pre-agent model calls that complete before any agent turn) and transport-level disconnects."
+
+So the task is saying there are TWO types of remaining gaps:
+1. Input-validation exits — already handled by `is_input_validation_completion()`
+2. Transport-level disconnects — NOT handled, and NOT input-validation (they're real lifecycle gaps)
+
+The task objective is to "correctly separate" these two types. Currently, transport disconnects would be classified as `run_error_without_start`, which is correct behavior (they ARE real gaps). Input-validation exits are classified as `input_validation_exit_without_run_start`, also correct.
+
+So maybe the code is already correct for the classification, but the task wants me to verify this and add tests?
+
+Let me look at the test files to understand what tests exist and what new tests are needed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_task_lineage_feedback.py:2640..2720  ▶ search 'is_input_validation' in scripts/test_task_lineage_feedback.py ✓ (13ms)
+ ✓ (13ms)
+  2 tools completed in 20ms (2 ✓)
+
+
