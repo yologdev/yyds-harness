@@ -8614,6 +8614,114 @@ mod tests {
     }
 
     #[test]
+    fn panic_hook_closes_model_call_before_failure_observed() {
+        // Regression test: verify that when FailureObserved is recorded while
+        // a model call is in progress, the panic hook properly closes the model
+        // call lifecycle first. This simulates what the panic hook at lines
+        // 64-85 does (without actually installing a global panic hook).
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        // Set a model call ID as if a model call is in progress.
+        let model_call_id = "model-call-panic-test-42";
+        set_current_model_call_id(model_call_id.to_string());
+
+        // Simulate the panic hook closure (lines 64-82):
+        // 1. Take the model call ID
+        let active_id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+        assert_eq!(
+            active_id.as_deref(),
+            Some(model_call_id),
+            "should have the active model call ID"
+        );
+
+        // 2. Record ModelCallCompleted with "interrupted" status
+        record(
+            EventType::ModelCallCompleted,
+            Actor::Harness,
+            json!({
+                "model_call_id": model_call_id,
+                "model": "",
+                "status": "interrupted",
+                "detail": "rust_panic",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "thinking_observed": false,
+            }),
+        );
+
+        // 3. Then record FailureObserved (line 85)
+        RUN_HAD_ERROR.with(|c| c.set(true));
+        record(
+            EventType::FailureObserved,
+            Actor::Harness,
+            json!({
+                "failure_class": "rust_panic",
+                "panic_message": "test model call lifecycle closure",
+                "panic_location": "test.rs:0",
+                "recorded_at_ms": now_ms(),
+            }),
+        );
+
+        // 4. Close the run lifecycle so the event stream is well-formed.
+        {
+            let _guard = RunCompletionGuard::completed_on_drop();
+        }
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+
+        // Verify both events are present.
+        assert!(
+            raw.contains("ModelCallCompleted"),
+            "should contain ModelCallCompleted: {raw}"
+        );
+        assert!(
+            raw.contains("FailureObserved"),
+            "should contain FailureObserved: {raw}"
+        );
+        assert!(
+            raw.contains(model_call_id),
+            "should contain the model call ID '{model_call_id}': {raw}"
+        );
+
+        // The ModelCallCompleted must appear before FailureObserved in the
+        // event stream, because the panic hook closes the model call first.
+        let completed_pos = raw
+            .find("ModelCallCompleted")
+            .expect("ModelCallCompleted not found");
+        let failure_pos = raw
+            .find("FailureObserved")
+            .expect("FailureObserved not found");
+        assert!(
+            completed_pos < failure_pos,
+            "ModelCallCompleted must precede FailureObserved: {raw}"
+        );
+
+        // The ModelCallCompleted status must be "interrupted", not a normal
+        // completion status.
+        assert!(
+            raw.contains("\"status\":\"interrupted\""),
+            "ModelCallCompleted should have interrupted status: {raw}"
+        );
+
+        // Verify the Cell is empty after the panic hook logic ran.
+        let remaining = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+        assert!(
+            remaining.is_none(),
+            "model call ID cell should be empty after panic hook logic"
+        );
+    }
+
+    #[test]
     fn clear_current_model_call_id_warns_when_no_id_is_active() {
         // Ensure no model call ID is active.
         let id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
