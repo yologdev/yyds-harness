@@ -1034,7 +1034,8 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                     139 => " (exit code 139 = SIGSEGV; the command itself crashed — try a different tool or check for known bugs in this version)",
                     141 => " (exit code 141 = SIGPIPE; output pipe closed early — use a bounded command (head -n, tail -n) or avoid piping to a consumer that exits first)",
                     143 => " (exit code 143 = SIGTERM; command was terminated — may be a resource limit or external signal; retry once, then escalate)",
-                    _ => "",
+                    42 => " (exit code 42 is not a standard exit code — check the command's stderr output for what it means; the command may use its own error convention)",
+                    _ => " (non-standard exit code — inspect stderr for command-specific error details)",
                 });
                 let mut hint = String::from(
                     "Use explicit paths like `./script.sh` to avoid PATH ambiguity, \
@@ -3014,11 +3015,11 @@ mod tests {
             hint.contains("exit code 126 = not executable"),
             "exit code 126 should get specific advice: {hint}"
         );
-        // Exit code 42 (unknown) should not have specific advice
+        // Exit code 42 should get specific advice about non-standard exit codes
         let hint = targeted_recovery_hint("bash", "Exit code: 42\nfailed").unwrap();
         assert!(
-            !hint.contains("exit code 42"),
-            "unknown exit codes should not get extra tag: {hint}"
+            hint.contains("exit code 42 is not a standard exit code"),
+            "exit code 42 should get specific advice: {hint}"
         );
         // Exit code 124 should get timeout advice
         let hint = targeted_recovery_hint("bash", "Exit code: 124\nkilled").unwrap();
@@ -3029,6 +3030,21 @@ mod tests {
         assert!(
             hint.contains("reducing scope") || hint.contains("smaller"),
             "exit code 124 hint should mention scope reduction: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_unknown_exit_code_fallback() {
+        // Unknown exit code 99 should get generic non-standard advice
+        let hint = targeted_recovery_hint("bash", "Exit code: 99\nfailed").unwrap();
+        assert!(
+            hint.contains("non-standard exit code"),
+            "unknown exit code should get generic fallback advice: {hint}"
+        );
+        // The generic hint should NOT mention a specific code number
+        assert!(
+            !hint.contains("exit code 99"),
+            "generic fallback should not reference specific code number: {hint}"
         );
     }
 
