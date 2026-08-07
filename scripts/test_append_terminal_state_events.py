@@ -608,6 +608,63 @@ class AppendTerminalStateEvents(unittest.TestCase):
             self.assertTrue(fo_rows[0]["payload"].get("retroactive"),
                             "The FailureObserved should be marked retroactive")
 
+    def test_excludes_deliberate_no_op_from_failure_observed(self):
+        """A RunCompleted with error status, zero tasks, and zero failures is a deliberate no-op."""
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp) / "events.jsonl"
+            # Deliberate no-op run: error status, no task lineage, no failures
+            write_event(events, "RunStarted", "no-op-run")
+            write_event(events, "ModelCallStarted", "no-op-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "no-op-run", {"status": "error"})
+            # A real failing run: error status, has task lineage
+            write_event(events, "RunStarted", "real-fail-run")
+            write_event(events, "ModelCallStarted", "real-fail-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "TaskLineageLinked", "real-fail-run",
+                        {"task_id": "task_01", "attempt": 1})
+            write_event(events, "RunCompleted", "real-fail-run", {"status": "error"})
+            after_line = len(events.read_text(encoding="utf-8").splitlines())
+
+            write_event(events, "RunStarted", "current-run")
+            write_event(events, "ModelCallStarted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "ModelCallCompleted", "current-run", {"model": "deepseek-v4-pro"})
+            write_event(events, "RunCompleted", "current-run", {"status": "completed"})
+
+            result = append_terminal_state_events.append_terminal_events(
+                events,
+                after_line,
+                None,
+                "session-1",
+                "trace-1",
+                "post_hoc",
+                "error",
+                "error",
+                "post_hoc_closure",
+                "",
+                "closing orphans",
+            )
+
+            diag = result["diagnostics"]["failure_observed_diagnostics"]
+            # The no-op run should be excluded from missing.
+            self.assertEqual(diag["deliberate_no_op_excluded"], 1,
+                             "Deliberate no-op run should be excluded")
+            self.assertEqual(diag["missing_failure_observed"], 1,
+                             "Only the real failing run should be missing")
+            self.assertEqual(diag["error_completed_runs"], 2,
+                             "Both runs have error status RunCompleted")
+
+            # Only the real failing run should get a retroactive FailureObserved.
+            self.assertNotIn("no-op-run", result["failure_observed_appended"])
+            self.assertIn("real-fail-run", result["failure_observed_appended"])
+
+            rows = [json.loads(line) for line in events.read_text(encoding="utf-8").splitlines()]
+            # Verify no FailureObserved was appended for the no-op run.
+            no_op_fo = [
+                row for row in rows
+                if row["event_type"] == "FailureObserved" and row["run_id"] == "no-op-run"
+            ]
+            self.assertEqual(len(no_op_fo), 0,
+                             "No-op run should not have a retroactive FailureObserved")
+
     def test_skips_failure_observed_for_success_run(self):
         """A RunCompleted with status 'completed' does not trigger FailureObserved."""
         with tempfile.TemporaryDirectory() as tmp:

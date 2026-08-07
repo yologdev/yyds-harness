@@ -318,6 +318,13 @@ def find_missing_failure_observed(
     are excluded — the missing terminal events are expected behaviour when a
     session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
 
+    Deliberate no-op runs (RunCompleted error status with zero
+    TaskLineageLinked events and zero non-harness FailureObserved events)
+    are excluded — these are journal-only or planning-only sessions that
+    produced zero tasks with zero errors and exit with error status because
+    no tasks were completed, which is expected behaviour, not a harness
+    failure (Day 160).
+
     Returns (missing_entries, diagnostics) where each missing entry is a dict
     with keys run_id, status, timestamp_ms for runs whose RunCompleted
     payload status is not "success"/"completed" and that have no matching
@@ -325,8 +332,11 @@ def find_missing_failure_observed(
     """
     error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
     failure_observed_runs: set[str] = set()
+    runs_with_task_lineage: set[str] = set()
+    runs_with_non_harness_failure: set[str] = set()
     input_validation_excluded = 0
     cancelled_excluded = 0
+    deliberate_no_op_excluded = 0
 
     for event in events:
         kind = event_type(event)
@@ -350,15 +360,39 @@ def find_missing_failure_observed(
                 }
         elif kind == "FailureObserved":
             failure_observed_runs.add(rid)
+            actor = event.get("actor", "")
+            if actor != "harness":
+                runs_with_non_harness_failure.add(rid)
+        elif kind == "TaskLineageLinked":
+            runs_with_task_lineage.add(rid)
+
+    # A deliberate no-op run has ALL of: RunCompleted error status,
+    # zero TaskLineageLinked events, zero non-harness FailureObserved
+    # events, and is not input-validation/cancelled (already excluded).
+    # These are journal-only or planning-only sessions that produced
+    # zero tasks with zero errors — exiting with error status because
+    # no tasks were completed is expected behaviour, not a harness
+    # failure (Day 160).
+    def _is_deliberate_no_op(rid: str) -> bool:
+        return (
+            rid not in runs_with_task_lineage
+            and rid not in runs_with_non_harness_failure
+        )
 
     missing = sorted(
         [
             {"run_id": rid, **info}
             for rid, info in error_completed.items()
             if rid not in failure_observed_runs
+            and not _is_deliberate_no_op(rid)
         ],
         key=lambda m: m["run_id"],
     )
+
+    # Count deliberate no-op exclusions from the missing set.
+    for rid, info in error_completed.items():
+        if rid not in failure_observed_runs and _is_deliberate_no_op(rid):
+            deliberate_no_op_excluded += 1
 
     diagnostics = {
         "error_completed_runs": len(error_completed),
@@ -366,6 +400,7 @@ def find_missing_failure_observed(
         "missing_failure_observed": len(missing),
         "input_validation_excluded": input_validation_excluded,
         "cancelled_excluded": cancelled_excluded,
+        "deliberate_no_op_excluded": deliberate_no_op_excluded,
     }
 
     return missing, diagnostics

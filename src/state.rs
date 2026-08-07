@@ -165,14 +165,6 @@ pub fn set_current_tool_name(name: String) {
     CURRENT_TOOL_NAME.with(|c| c.set(Some(name)));
 }
 
-/// Clear the current tool name after a tool completes. Also available as
-/// `CurrentToolNameGuard` for automatic cleanup via Drop.
-pub fn clear_current_tool_name() {
-    CURRENT_TOOL_NAME.with(|c| {
-        let _ = c.take();
-    });
-}
-
 static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
 pub const STATE_ADAPTER_NAME: &str = "yoagent-state";
 pub const STATE_ADAPTER_MODE: &str = "path-dependency";
