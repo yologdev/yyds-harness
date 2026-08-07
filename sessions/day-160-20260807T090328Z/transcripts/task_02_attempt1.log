@@ -1,0 +1,623 @@
+warning: skipping corrupted event at line 58599 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 6460
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and understanding the task, then examine the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/append_terminal_state_events.py:400..480 ✓ (420ms)
+ ✓ (349ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the `find_missing_failure_observed` function to understand the exclusion logic I need to replicate:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:307.. ✓ (103ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. I need to:
+
+1. Modify `find_runs_with_failure_observed_no_completion()` (line 409) to add input-validation and cancelled-run exclusions, matching the pattern in `find_missing_failure_observed()` (lines 350-356).
+
+2. Add tests in the test file.
+
+Let me also look at the test file to understand existing test patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me look at the existing tests for this function:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'failure_observed_no_completion' in scripts/test_append_terminal_state_events.py ✓ (71ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test context around line 749 and 837.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:720.. ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also look at the test file's imports and setUp to understand the helper patterns:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the test file imports and `write_event` helper:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py (60 lines) ✓ (104ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. Let me also check the existing test for `find_missing_failure_observed` to see the pattern for exclusion tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me see the test for `find_missing_failure_observed` exclusions to match patterns:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'input_validation_excluded' in scripts/test_append_terminal_state_events.py ✓ (70ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test file doesn't have tests for the exclusion logic yet. Let me also search for the cancelled exclusion tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'cancelled_excluded' in scripts/test_append_terminal_state_events.py ✓ (68ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there are no existing tests for these exclusions. Let me now also check where `failure_observed_no_completion_diagnostics` is used in the main module, to understand the full flow:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'failure_observed_no_completion' in scripts/append_terminal_state_events.py ✓ (69ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 744 where diagnostics are assembled:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:730.. ✓ (101ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me plan my changes:
+
+1. **Modify `find_runs_with_failure_observed_no_completion()` (lines 409-442)**:
+   - Add `input_validation_excluded` and `cancelled_excluded` counters.
+   - In the event loop, when we encounter a `RunCompleted` event with a non-success status:
+     - Check if `error_detail` is `"empty_input"` or starts with `"invalid_input:"` → skip (input-validation exclusion).
+     - Check if `status == "cancelled"` → skip (cancelled exclusion).
+   - Subtract excluded runs from `missing` before returning.
+   - Add counters to diagnostics dict.
+
+2. **Add tests** in `test_append_terminal_state_events.py`:
+   - Test: input-validation run (FailureObserved + RunCompleted with error_detail "empty_input") should NOT appear in missing.
+   - Test: cancelled run (FailureObserved + RunCompleted with status "cancelled") should NOT appear in missing.
+   - Test: normal error run (FailureObserved + RunCompleted with status "error" but no input-validation/cancelled markers) should still appear in missing.
+   - Test: verify diagnostics counters include the new exclusion keys.
+
+Let me also think about the test case for the function that already exists (the `test_failure_observed_alone_gets_closed` test at line ~719). That test checks that a run with FailureObserved but no RunCompleted still gets `runs_with_failure_observed_no_completion: 1`. But with the new exclusion logic, a run that has FailureObserved but no RunCompleted at all would NOT be excluded by input-validation or cancelled checks (because those checks are on RunCompleted events). So that test case is still correct - it has a run with FailureObserved and no RunCompleted, so it should still appear in the missing set.
+
+Wait, actually let me re-read the test. The test at line 719 constructs a "crashed-run" with FailureObserved but no RunCompleted. The function returns `runs_with_failure_observed_no_completion: 1`. With my changes, this should still be 1 because:
+- The "crashed-run" has FailureObserved but no RunCompleted.
+- Since there's no RunCompleted event for it, the exclusion logic (which checks RunCompleted payloads) won't exclude it.
+- So it stays in `missing`.
+
+Good, the existing test should pass unchanged.
+
+Now, for the new tests, I need to construct synthetic event lists directly (not via `append_terminal_events`), calling `find_runs_with_failure_observed_no_completion` directly with a list of event dicts.
+
+Let me now implement the changes.
+
+Task plan:
+1. Write tests first in test_append_terminal_state_events.py
+2. Modify find_runs_with_failure_observed_no_completion in append_terminal_state_events.py
+3. Run tests
+4. Run fmt check
+5. Commit
+
+Let me start with the code changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan and implement:
+
+1. Modify `find_runs_with_failure_observed_no_completion()` to add input-validation and cancelled exclusions
+2. Add tests for the new exclusion logic
+
+Let me start by writing the test, then modify the function.
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (69ms)
+  ▶ todo ✓ (139ms)
+  ▶ todo ✓ (188ms)
+  ▶ todo ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the right spot to add tests. I'll add them after the existing `test_failure_observed_alone_gets_closed` test (line 751) and before `test_failure_observed_alone_without_run_started_gets_closed_with_started` (line 753). Actually, let me find a better spot - near the end of the test class would be cleaner, after `test_find_missing_model_call_started_returns_empty_when_matched` at line 1301.
+
+Actually, let me search for where to add. I want to add tests for the `find_runs_with_failure_observed_no_completion` function specifically. These are unit tests for the function directly, not integration tests through `append_terminal_events`. Let me add them near the `find_missing_model_call_started` tests at the end, since those follow the same pattern - they test the function directly with synthetic events.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 5.8s (4 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (69ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now add the test cases. I'll add them right after the existing `find_missing_model_call_started_returns_empty_when_matched` test (line 1300).
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the tests. I'll insert them after the last existing test method:
+            self.assertEqual(diagnostics["model_call_started_count"], 1)
+            self.assertEqual(diagnostics["model_call_completed_count"], 1)
+  + 
+  +     def test_find_runs_with_failure_observed_no_completion_excludes_input_validation(self):
+  +         """A run with FailureObserved and a RunCompleted with error_detail 'empty_input'
+  +         is excluded from the missing set."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rc-iv-0",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "iv-run",
+  +                 "payload": {},
+  +             },
+  +             {
+  +                 "event_id": "evt-fo-iv-0",
+  +                 "event_type": "FailureObserved",
+  +                 "run_id": "iv-run",
+  +                 "payload": {"reason": "panic", "error": "panicked"},
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (6 → 125 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (6 → 125 lines)
+            self.assertEqual(diagnostics["model_call_started_count"], 1)
+            self.assertEqual(diagnostics["model_call_completed_count"], 1)
+  + 
+  +     def test_find_runs_with_failure_observed_no_completion_excludes_input_validation(self):
+  +         """A run with FailureObserved and a RunCompleted with error_detail 'empty_input'
+  +         is excluded from the missing set."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rc-iv-0",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "iv-run",
+  +                 "payload": {},
+  +             },
+  +             {
+  +                 "event_id": "evt-fo-iv-0",
+  +                 "event_type": "FailureObserved",
+  +                 "run_id": "iv-run",
+  +                 "payload": {"reason": "panic", "error": "panicked"},
+  +             },
+  +             {
+  ... (104 more lines)
+ ✓ (143ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests are written. Let me verify the edit looks correct:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the test edit:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1296.. ✓ (99ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, tests look correct. Now let me modify `find_runs_with_failure_observed_no_completion` in the main module.
+
+The current function (lines 409-442):
+```python
+def find_runs_with_failure_observed_no_completion(
+    events: list[dict[str, Any]],
+) -> tuple[set[str], dict[str, Any]]:
+    failure_observed_runs: set[str] = set()
+    run_completed_runs: set[str] = set()
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+        elif kind == "RunCompleted":
+            run_completed_runs.add(rid)
+
+    missing = failure_observed_runs - run_completed_runs
+
+    diagnostics = {
+        "failure_observed_runs": len(failure_observed_runs),
+        "run_completed_runs_in_fo_scan": len(run_completed_runs),
+        "runs_with_failure_observed_no_completion": len(missing),
+    }
+
+    return missing, diagnostics
+```
+
+I need to:
+1. Add `excluded_runs: set[str] = set()` and `input_validation_excluded = 0` and `cancelled_excluded = 0`.
+2. In the `RunCompleted` branch, check error_detail and status for exclusions.
+3. Subtract `excluded_runs` from `missing`.
+4. Add counters to diagnostics.
+
+Let me follow the exact same pattern as `find_missing_failure_observed` (lines 350-356):
+```python
+detail = str(data.get("error_detail") or "")
+if detail == "empty_input" or detail.startswith("invalid_input:"):
+    input_validation_excluded += 1
+    continue
+if status == "cancelled":
+    cancelled_excluded += 1
+    continue
+```
+
+Wait, but the current code does `run_completed_runs.add(rid)` for ALL run completed runs. If I add a `continue` for excluded runs, those runs won't be in `run_completed_runs`. But that's fine because when computing `missing = failure_observed_runs - run_completed_runs`, the excluded runs would still be in the missing set if they have FailureObserved... unless they're not in `run_completed_runs`.
+
+Hmm, let me think about this more carefully. The current logic is:
+- Collect all FailureObserved run_ids
+- Collect all RunCompleted run_ids
+- missing = runs with FailureObserved but no RunCompleted
+
+But the task says to exclude input-validation and cancelled runs. The way `find_missing_failure_observed` does it is: when iterating and seeing a RunCompleted with input-validation detail or cancelled status, it skips (continue) before adding to error_completed. This means those runs are excluded from the output.
+
+For `find_runs_with_failure_observed_no_completion`, the approach should be:
+- Still add to run_completed_runs (so they're not in `missing = failure_observed_runs - run_completed_runs`)
+- But also track them as excluded in the diagnostics
+
+Wait, actually, if a run has both FailureObserved and a RunCompleted with input-validation status, it would NOT be in `missing` anyway because `run_completed_runs` includes it. The function finds runs with FailureObserved but NO RunCompleted. So the only runs that WOULD be in `missing` are:
+- Runs with FailureObserved but no RunCompleted at all
+
+The exclusion logic in `find_missing_failure_observed` is different - it finds runs with RunCompleted error status but no FailureObserved. For that, the exclusions make sense because you'd otherwise flag input-validation runs as missing FailureObserved.
+
+For `find_runs_with_failure_observed_no_completion`, how would a run get into `missing` if it has a RunCompleted? It wouldn't! `missing = failure_observed_runs - run_completed_runs`. If a run has both FailureObserved and RunCompleted, it's automatically excluded from `missing`.
+
+Wait, but the task says this is defensive. Let me re-read the task:
+> While input-validation runs currently shouldn't have FailureObserved events, defensive consistency prevents a future code change from silently introducing false positives.
+
+So the concern is: what if in the future, input-validation runs DO start emitting FailureObserved events? Then they'd land in `missing` because there's no RunCompleted for them (since RunCompleted already happened... wait no, if they have RunCompleted too, they're fine).
+
+Actually, I think the issue is more nuanced. Let me re-read the function's purpose:
+> Find runs that have FailureObserved but no RunCompleted.
+
+And from the caller (line 769+):
+```python
+for rid in sorted(fo_no_rc_runs):
+    if rid in already_closed_fo:
+        continue
+    # Emit RunStarted if needed
+    # Emit RunCompleted with status=error, terminal_reason=orphaned_previous_session
+```
+
+So runs in `missing` get post-hoc RunCompleted events appended. If an input-validation run somehow has a FailureObserved event, it would get a spurious post-hoc RunCompleted. But wait - input-validation runs already HAVE a RunCompleted (that's how they're classified). So they wouldn't be in `missing` at all!
+
+Hmm, BUT the existing code adds ALL RunCompleted run_ids to the set, including input-validation ones. So they would not appear in `missing` anyway.
+
+I think the defensiveness here is more about making the two functions structurally parallel so they're maintainable as a pair. The actual exclusion might only apply in edge cases where:
+- An input-validation run has FailureObserved before its RunCompleted, and the RunCompleted is somehow not in the event set being scanned
+- Or a future code change adds events differently
+
+Let me just follow the task spec exactly: add the same exclusion checks, update counters, subtract from missing. Even if the current data patterns mean the exclusions are rarely triggered, the consistency is the value.
+
+Actually wait - I just realized something important. For the `run_completed_runs` set, I should still add all RunCompleted runs to it (including input-validation ones), because that's what makes `missing = failure_observed_runs - run_completed_runs` correct. The exclusion is really about tracking how many runs were excluded in the diagnostics, not about changing the missing computation.
+
+But the task says:
+> Subtract `excluded_runs` from `missing` before returning.
+
+So the task DOES want me to actively subtract excluded runs from missing. Let me follow the spec literally.
+
+The approach:
+1. Still collect `run_completed_runs` as before (all RunCompleted runs)
+2. Also track `excluded_runs` for input-validation and cancelled runs
+3. `missing = (failure_observed_runs - run_completed_runs) - excluded_runs`
+4. Add exclusion counters to diagnostics
+
+But wait, if an excluded run is in `run_completed_runs`, then `failure_observed_runs - run_completed_runs` already excludes it. So `(failure_observed_runs - run_completed_runs) - excluded_runs` would be the same as `failure_observed_runs - run_completed_runs` for runs with RunCompleted.
+
+The only case where the extra subtraction matters is if an input-validation/cancelled run has FailureObserved but somehow no RunCompleted in the event set. In that case, `failure_observed_runs - run_completed_runs` would include it, but `- excluded_runs` would remove it.
+
+This is truly defensive - it would only matter if there's an inconsistent state where a run has FailureObserved AND was classified as input-validation/cancelled but doesn't have its RunCompleted in the scanned events.
+
+OK, let me implement it as specified. Here's my plan for the function:
+
+```python
+def find_runs_with_failure_observed_no_completion(
+    events: list[dict[str, Any]],
+) -> tuple[set[str], dict[str, Any]]:
+    failure_observed_runs: set[str] = set()
+    run_completed_runs: set[str] = set()
+    excluded_runs: set[str] = set()
+    input_validation_excluded = 0
+    cancelled_excluded = 0
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+        elif kind == "RunCompleted":
+            status = data.get("status", "")
+            detail = str(data.get("error_detail") or "")
+            if detail == "empty_input" or detail.startswith("invalid_input:"):
+                input_validation_excluded += 1
+                excluded_runs.add(rid)
+            elif status == "cancelled":
+                cancelled_excluded += 1
+                excluded_runs.add(rid)
+            else:
+                run_completed_runs.add(rid)
+
+    missing = (failure_observed_runs - run_completed_runs) - excluded_runs
+
+    diagnostics = {
+        "failure_observed_runs": len(failure_observed_runs),
+        "run_completed_runs_in_fo_scan": len(run_completed_runs),
+        "runs_with_failure_observed_no_completion": len(missing),
+        "input_validation_excluded": input_validation_excluded,
+        "cancelled_excluded": cancelled_excluded,
+    }
+
+    return missing, diagnostics
+```
+
+Wait, but there's a subtlety. If I DON'T add the excluded runs to `run_completed_runs`, then when computing `missing = failure_observed_runs - run_completed_runs`, the excluded runs would appear in missing even if they DO have a RunCompleted. Then I have to subtract `excluded_runs` from `missing` to fix it.
+
+But it would be cleaner to add excluded RunCompleted runs to `run_completed_runs` anyway (since they DO have a RunCompleted), and just track them separately for diagnostics. That way the computation stays clean and the exclusion subtraction is truly defensive.
+
+Hmm, actually the task spec says to subtract `excluded_runs` from `missing`. Let me just do it the way the spec says, which keeps excluded runs out of `run_completed_runs`:
+
+Actually, I think the cleanest approach is:
+- Add ALL RunCompleted runs to `run_completed_runs` (including excluded ones)
+- Track `excluded_runs` separately  
+- `missing = (failure_observed_runs - run_completed_runs) - excluded_runs`
+
+This way:
+- Normal runs: in both `run_completed_runs` and not in `excluded_runs` → excluded from missing via `run_completed_runs`
+- Input-validation/cancelled runs with RunCompleted: in both `run_completed_runs` AND `excluded_runs` → excluded from missing via `run_completed_runs` AND defensively by `- excluded_runs`
+- Runs with FailureObserved but no RunCompleted, that happen to be in `excluded_runs`: can't happen because `excluded_runs` is only populated from RunCompleted events
+
+So `excluded_runs` only contains runs that have RunCompleted, which means they're already in `run_completed_runs` and already excluded from missing. The `- excluded_runs` is truly redundant but harmless.
+
+Let me just go with this approach. Actually, let me simplify - I'll just add ALL completed runs to `run_completed_runs`, track exclusion counts for diagnostics, and compute `missing` the same way. The exclusion subtraction adds no value but the diagnostics counters are what matter.
+
+Hmm, but the task says "Subtract excluded_runs from missing before returning." Let me do it to satisfy the spec, even if it's currently a no-op. It makes the code future-proof.
+
+Final approach:
+```python
+def find_runs_with_failure_observed_no_completion(
+    events: list[dict[str, Any]],
+) -> tuple[set[str], dict[str, Any]]:
+    failure_observed_runs: set[str] = set()
+    run_completed_runs: set[str] = set()
+    excluded_runs: set[str] = set()
+    input_validation_excluded = 0
+    cancelled_excluded = 0
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+        elif kind == "RunCompleted":
+            run_completed_runs.add(rid)
+            status = data.get("status", "")
+            detail = str(data.get("error_detail") or "")
+            if detail == "empty_input" or detail.startswith("invalid_input:"):
+                input_validation_excluded += 1
+                excluded_runs.add(rid)
+            elif status == "cancelled":
+                cancelled_excluded += 1
+                excluded_runs.add(rid)
+
+    missing = (failure_observed_runs - run_completed_runs) - excluded_runs
+
+    diagnostics = {
+        "failure_observed_runs": len(failure_observed_runs),
+        "run_completed_runs_in_fo_scan": len(run_completed_runs),
+        "runs_with_failure_observed_no_completion": len(missing),
+        "input_validation_excluded": input_validation_excluded,
+        "cancelled_excluded": cancelled_excluded,
+    }
+
+    return missing, diagnostics
+```
+
+This approach:
+- Keeps the original `run_completed_runs.add(rid)` for ALL RunCompleted events (preserving the existing behavior)
+- Adds `excluded_runs` tracking for input-validation and cancelled runs
+- Subtracts `excluded_runs` from missing as specified
+- Adds the two new counters to diagnostics
+
+This is clean and minimal. Let me implement it.
+────────────────────────────────────────────────────────────────────────────────
+
+Good, tests look correct. Now let me modify the main function:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (87ms)
+  ▶ todo ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me edit the function. I need to replace lines 409-442.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 10.7s (2 ✓)
+
+
+        These runs recorded a failure but their lifecycle was never formally
+        closed.  They contribute to ``open_after_FailureObserved`` and inflate
+        ``state_run_incomplete_count`` in gnome summaries.
+  + 
+  +     Input-validation runs (RunCompleted with error_detail ``"empty_input"`` or
+  +     ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+  +     that deliberately exit before starting an agent and do not need synthetic
+  +     closure (Day 160).
+  + 
+  +     Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+  +     are excluded — the missing terminal events are expected behaviour when a
+  +     session is killed by SIGTERM or GitHub Actions concurrency (Day 160).
+    
+        Returns (runs_missing_run_completed, diagnostics).
+        """
+        failure_observed_runs: set[str] = set()
+        run_completed_runs: set[str] = set()
+  +     excluded_runs: set[str] = set()
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (34 → 56 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (34 → 56 lines)
+        These runs recorded a failure but their lifecycle was never formally
+        closed.  They contribute to ``open_after_FailureObserved`` and inflate
+        ``state_run_incomplete_count`` in gnome summaries.
+  + 
+  +     Input-validation runs (RunCompleted with error_detail ``"empty_input"`` or
+  +     ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+  +     that deliberately exit before starting an agent and do not need synthetic
+  +     closure (Day 160).
+  + 
+  +     Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+  +     are excluded — the missing terminal events are expected behaviour when a
+  +     session is killed by SIGTERM or GitHub Actions concurrency (Day 160).
+    
+        Returns (runs_missing_run_completed, diagnostics).
+        """
+        failure_observed_runs: set[str] = set()
+        run_completed_runs: set[str] = set()
+  +     excluded_runs: set[str] = set()
+  +     input_validation_excluded = 0
+  +     cancelled_excluded = 0
+  ... (28 more lines)
+ ✓ (140ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the tests to verify:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (70ms)
+  ▶ todo ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (221ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+5 test failures. Let me see the full output to understand all failures:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (261ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+4 of my new tests pass (the `find_runs_with_failure_observed_no_completion_*` tests), but 5 existing tests fail. Let me understand why.
+
+The failing tests seem related to `find_missing_failure_observed` - tests like `test_appends_failure_observed_for_error_completed_run`, `test_cancelled_run_gets_specific_failure_observed_reason`, `test_detects_and_closes_orphaned_run_from_previous_session`, `test_error_run_keeps_generic_failure_observed_reason`, `test_skips_retroactive_failure_observed_on_second_invocation`.
+
+Wait, these tests aren't directly testing `find_runs_with_failure_observed_no_completion`. Let me look at the failing tests more carefully to understand what broke.
+
+Looking at `test_error_run_keeps_generic_failure_observed_reason` - it says "Errored RunCompleted keeps the generic reason in FailureObserved" and it fails with `AssertionError: 0 != 1` at line 1252, checking `len(fo_rows)`. This seems related to FailureObserved not being appended. Let me check if this is a test that uses `append_terminal_events` - yes, the integration function.
+
+Let me look at this test to understand what went wrong:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me examine one of the failing tests to understand the issue:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1220.. ✓ (117ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The failing tests are all integration tests that use `append_terminal_events` — they're NOT directly testing `find_runs_with_failure_observed_no_completion`. But they fail because the function changed the output format of `append_terminal_events`.
+
+Wait, no. Let me look more carefully. The test `test_error_run_keeps_generic_failure_observed_reason` creates an error run with `RunCompleted` status="error" and expects `find_missing_failure_observed` to find it (it has no `FailureObserved`). The `append_terminal_events` function appends a `FailureObserved` for it. Then it should find 1 `FailureObserved` row. It finds 0. 
+
+But I didn't change `find_missing_failure_observed` — I only changed `find_runs_with_failure_observed_no_completion`. So why is this test failing?
+
+Let me look at the error more carefully. The test says: `AssertionError: 0 != 1`. The query is:
+```python
+fo_rows = [
+    row for row in rows
+    if row["event_type"] == "FailureObserved" and row["run_id"] == "error-run"
+]
+self.assertEqual(len(fo_rows), 1)
+```
+
+It expects 1 FailureObserved row but finds 0. But `find_missing_failure_observed` should still work fine...
+
+Wait, let me check: `test_error_run_keeps_generic_failure_observed_reason` writes 4 events to the file, then calls `append_terminal_events` with `after_line=0`. That means the whole events file is scanned (all 4 events), and the function should find `error-run` as having a `RunCompleted` with status `"error"` and no `FailureObserved`.
+
+Let me check: does `find_missing_failure_observed` now have an issue? Let me look at the data for this test:
+- RunStarted "error-run"
+- ModelCallStarted "error-run"
+- ModelCallCompleted "error-run"  
+- RunCompleted "error-run" with status "error"
+
+The `error_detail` field is not in the payload. So `data.get("error_detail")` returns `None`, and `str(None or "")` is `"None"`. Wait, `str(None or "")` is `str("")` which is `""`. No wait...
+
+`dict.get("error_detail") or ""` → when the key doesn't exist, `data.get("error_detail")` returns `None`. `None or ""` evaluates to `""`. Then `str("")` is `""`. So `detail == ""`. That's NOT `"empty_input"` and doesn't start with `"invalid_input:"`. So the input-validation check should pass.
+
+Then `status` is `"error"`. `status == "cancelled"` → False. So `cancelled_excluded` is not incremented either. The run should be added to `error_completed`.
+
+But wait - this test is about `find_missing_failure_observed`, NOT `find_runs_with_failure_observed_no_completion`. I didn't change `find_missing_failure_observed`. Unless...
+
+Oh wait, let me re-check. I'm looking at `test_appends_failure_observed_for_error_completed_run` too. Let me check if the test failures are pre-existing. Let me first revert my changes, run the tests, and see if they pass without my changes:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if these tests were passing before my change. Let me run just the failing tests on a clean state:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 -m unitte… ✓ (241ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good — 5 tests were already failing before my change (including `test_skips_retroactive_failure_observed_on_second_invocation`). So the pre-existing 5 failures are identical. Let me restore my changes and run just MY new tests:
+────────────────────────────────────────────────────────────────────────────────
+
+Good - the 5 failures are pre-existing (not caused by my changes). Let me restore my changes and run just my new tests:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash pop ✓ (269ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run just my 4 new tests to confirm they pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (221ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 4 new tests pass. Now let me also verify that the existing tests that were passing before are still passing (excluding the 5 that were already broken):
+────────────────────────────────────────────────────────────────────────────────
+
+All 4 new tests pass. Let me also verify no regressions by running all tests and filtering out the pre-existing failures:
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (248ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only failures are the 5 pre-existing ones. No new failures from my changes. My 4 new tests all pass. Let me check exactly which tests failed on stash (pre-existing) vs now to confirm they're the same set:
+
+From the stash run (pre-existing 5 failures):
+- test_appends_failure_observed_for_error_completed_run
+- test_cancelled_run_gets_specific_failure_observed_reason  
+- test_detects_and_closes_orphaned_run_from_previous_session
+- test_error_run_keeps_generic_failure_observed_reason
+- test_skips_retroactive_failure_observed_on_second_invocation
+
+From my run (5 failures): same list. Good, no regressions.
+
+Now let me run the healper commands the task says: `python3 scripts/append_terminal_state_events.py --help` to confirm no regressions:
+────────────────────────────────────────────────────────────────────────────────
+
+No regressions — the 5 failures are identical to pre-existing. Let me also verify the help output:
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 scripts/append_termina… ✓ (281ms)
+
+

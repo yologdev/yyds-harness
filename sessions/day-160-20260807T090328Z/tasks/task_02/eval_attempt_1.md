@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All 4 new tests pass (input-validation exclusion, cancelled-run exclusion, normal-error non-exclusion, orphaned FO detection). The implementation matches the task spec: `find_runs_with_failure_observed_no_completion` now has `excluded_runs`, `input_validation_excluded`, and `cancelled_excluded` matching the sibling `find_missing_failure_observed` pattern. No regressions on `--help`. The 5 pre-existing test failures are unrelated.
