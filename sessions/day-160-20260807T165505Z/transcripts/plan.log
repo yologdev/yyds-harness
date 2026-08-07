@@ -1,0 +1,444 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the current state and plan tasks for this session. 
+
+## Assessment Summary
+
+- Build: GREEN
+- Recent pattern: State event lifecycle fixes (closing gaps between what happened and what the event record says)
+- Key issues:
+  1. DeepSeek cache metrics not recorded (issue #90/#105) - blocked by yoagent upstream
+  2. Retroactive FailureObserved for deliberate no-op sessions (issue #165) - reverted due to evaluator timeout
+  3. Task scope mismatch recurring - implementation agents touch files outside planned scope
+  4. Session timeout clustering
+
+## Trajectory Evidence
+
+The most recent session (Day 160 11:08) had 0/1 tasks with `reverted_scope_mismatch=1`. The trajectory shows:
+- `task_success_rate=0.0`, `task_verification_rate=0.0`
+- `bash_tool_error=28` - high from normal tool usage
+- `task_analysis_only_attempt_count=1`
+- `task_scope_mismatch_count=1`
+
+Graph-derived pressure:
+1. Force analysis-only attempts into action
+2. Raise verified task success rate
+3. Require strict verifier evidence
+4. Bound failing shell commands
+5. Align implementation edits with task file scope
+
+## Planning Constraints
+
+- ARTIFACT-FIRST: I need to create session_plan/task_01.md quickly
+- The seed task from assessment evidence is issue #165 (retroactive FailureObserved fix) - but it was reverted
+- The harness may have already placed a seed task_01.md
+
+Let me check if task_01.md exists already, then plan.
+
+Looking at the evidence:
+
+1. **Issue #165 (retroactive FailureObserved)**: Reverted due to evaluator timeout. The code was probably correct but the evaluator timed out. This is the same pattern as #131. I should NOT replan this with the same scope - it'll just get reverted again by the evaluator.
+
+2. **DeepSeek cache metrics (#90/#105)**: Blocked by yoagent upstream. Can't fix without the two fields in yoagent's Usage struct.
+
+3. **Task scope mismatch**: Real recurring problem. Implementation agents touch files outside planned scope. The fix would be in task verification or task file generation - but these are in evolve.sh (do-not-modify) or are behavioral (prompt changes).
+
+4. **Session timeout clustering**: This is about GH Actions timeout. Not something I can fix in source code.
+
+Let me look at what's actionable and small enough:
+
+- The `bash_tool_error=28` pressure is interesting but likely from normal usage, not a real bug
+- The `task_analysis_only_attempt_count=1` and `task_scope_mismatch_count=1` are the most recent failures
+- Looking at the self-wisdom, there's a lesson about "Diagnostic refinement has its own inertia" - relevant
+
+Let me check if there's a seed task file first, then plan from what's actually fixable.
+
+The most actionable thing I can see:
+1. Small, concrete improvements to the harness that don't touch the high-friction append_terminal_state_events.py
+2. Something in src/ that passes cargo build && cargo test
+
+Looking at the assessment more carefully:
+- The `state.rs` panic hook now records tool-call lineage (Day 160 02:41)
+- The `tool_wrappers.rs` has recovery hints for exit codes
+- The most recent session failed with scope_mismatch
+
+Let me think about what concrete thing I can do that:
+- Touches at most 3 files
+- Can be verified with cargo build && cargo test
+- Is small enough to complete in 20 minutes
+- Improves a fitness gnome
+
+One idea: The `bash_tool_error=28` pressure suggests we should add better error recovery hints. The Day 160 09:03 session already added exit code 42 recovery hint. Maybe continue that pattern.
+
+Another idea: The assessment mentions that `commands_deepseek.rs` has the `cache-report` command returning "no cache metrics recorded." The diagnostic paths (stream-check, fim-complete) work because they parse raw JSON directly. Could I add a similar raw-JSON parse path for chat completions? But that would require changes in prompt.rs which is complex.
+
+Actually, let me look at the most impactful small change. The trajectory says `task_scope_mismatch_count=1` and `task_verification_rate=0.0`. The verifier catches scope mismatches but the planning agent doesn't learn. What if I improve the task file template to be more explicit about file scope?
+
+Wait, but task files are generated by the planning agent (me) and consumed by implementation agents. The scope mismatch happens when the implementation agent edits files not listed in the task's Files: entry. This is a behavioral issue, not a code issue.
+
+Let me focus on what I can actually change in src/ code:
+
+1. **Improve bash recovery hints further**: The `tool_wrappers.rs` already has recovery hints. Maybe add more specific ones for common bash error patterns.
+
+2. **Fix a small bug**: The assessment mentions `yyds state why last-failure` shows retroactive FailureObserved. The fix was reverted. Maybe I can approach it differently - smaller scope.
+
+3. **Improve test coverage**: Add tests for the recent state.rs changes (tool-call lineage in panic hook).
+
+Let me check what's actually in the codebase that needs fixing. Let me look at the recent commits to understand what changed.
+
+Actually, let me just create task files. The assessment gives me enough to work with. Let me pick tasks that are small, concrete, and verifiable.
+
+**Task 01 candidate: Add recovery hint for "No such file or directory" bash errors**
+
+This is small, touches only `src/tool_wrappers.rs`, verifiable with `cargo test`. The trajectory shows `bash_tool_error=28` and the pressure says "prefer bounded commands with explicit paths."
+
+**Task 02 candidate: Add unit test for tool-call lineage in panic hook FailureObserved payload**
+
+This is small, touches `src/state.rs` test module, verifiable with `cargo test`. The Day 160 02:41 session added this feature but maybe without sufficient test coverage.
+
+**Task 03 candidate: something else small**
+
+Let me first create task_01.md and go from there.
+
+Actually wait - let me first check if session_plan/task_01.md already exists (the harness may have seeded one).
+────────────────────────────────────────────────────────────────────────────────
+
+Let me start by checking if a seed task file already exists, then build the plan from evidence.
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null  ▶ $ git log --oneline -10 ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - there's already a seed task_01.md and an assessment.md. Let me read the seed task to see what the harness placed, then refine or replace as needed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+Good — the harness seeded a task file. Let me read it and the assessment, then plan.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (506ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The seed task is issue #105 (DeepSeek cache metrics) - the same one that was reverted on Day 137 with "Task blocked by agent; no implementation landed." This task has been attempted before and failed because the yoagent `Usage` struct drops cache fields.
+
+The assessment clearly states this is blocked by yoagent upstream (issue #90): "The fix needs an upstream yoagent PR to add cache fields to the `Usage` struct, or a yyds workaround that parses the raw response."
+
+This seed task is stale/wrong. The assessment contradicts it - the assessment says cache metrics can't be recorded because yoagent drops the fields. The seed task says "Ensure successful DeepSeek prompt executions record prompt cache hit/miss token usage."
+
+I should replace this with an evidence-backed task. Let me write task_01_obsolete.md explaining the contradiction, then write real tasks.
+
+Let me think about what's actually actionable:
+
+1. **The retroactive FailureObserved fix (#165)**: Was reverted due to evaluator timeout, not wrong code. The code might have been correct. But replanning it risks another evaluator timeout. Too risky.
+
+2. **Bash recovery hints**: Day 160 09:03 added exit code 42 hint. The trajectory shows `bash_tool_error=28`. I could add more recovery hints for common patterns like "No such file or directory" or "command not found". Small, concrete, verifiable with `cargo test`.
+
+3. **Test coverage for recent state.rs changes**: Day 160 02:41 added tool-call lineage in panic hook FailureObserved payload. I should verify this has test coverage.
+
+4. **Something else small in src/**: Maybe improve a tool wrapper or fix a minor bug.
+
+Let me think about what the trajectory is telling me:
+- `task_success_rate=0.0` - the most recent session (11:08) reverted
+- `task_scope_mismatch_count=1` - implementation touched files outside scope
+- `task_analysis_only_attempt_count=1` - implementation ended without file progress
+
+The pressure says "Align implementation edits with task file scope" and "Force analysis-only attempts into action."
+
+These are behavioral issues, not code bugs. I can't fix them with src/ changes.
+
+Let me focus on concrete, verifiable code changes:
+
+**Task 01: Add bash recovery hint for "No such file or directory" errors**
+- Files: src/tool_wrappers.rs
+- Verifier: cargo test
+- Small, concrete, follows the pattern of the exit code 42 hint added today
+
+**Task 02: Add unit tests for tool-call lineage in panic hook**
+- Files: src/state.rs
+- Verifier: cargo test
+- The Day 160 02:41 commit added tool-call lineage to panic hook FailureObserved - let me verify if tests exist
+
+Let me check if there are tests for the panic hook tool-call lineage feature.
+
+Actually, let me also consider: can I make a task that actually improves a fitness gnome? The trajectory says `task_success_rate=0.0`. What concrete code change would raise that?
+
+The scope mismatch problem: implementation agents edit files not listed in the task's Files: entry. The fix would be either:
+a) Better task files (planning-side) - but that's what I'm doing right now
+b) Better implementation prompts (in evolve.sh, do-not-modify)
+c) Better scope checking (already works - catches the mismatch)
+
+None of these are src/ code changes.
+
+OK, let me focus on what I can do:
+
+1. Write task_01_obsolete.md for the seed cache task
+2. Write a new task_01.md for bash recovery hints
+3. Write task_02.md for panic hook test coverage (if needed)
+4. Write issue_responses.md
+
+Let me first check what tests exist for the panic hook changes.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed task (#105 - DeepSeek cache metrics) is stale. The assessment clearly states this is blocked by yoagent upstream (issue #90): yoagent's `Usage` struct drops `cache_read_input_tokens` and `cache_creation_input_tokens`. This task was already reverted once (Day 137) as "blocked by agent." I need to obsolete it and write evidence-backed tasks.
+
+Let me check what's actually testable and what recent changes lack coverage:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git diff 2a53fadc..0189a35f --stat -- src/  ▶ $ git show 0f3e4e7f --stat 2>/dev/null || echo "commit not found"  ▶ $ rg -n "tool_call_lineage\|current_tool_name\|CURRENT_TOOL_NAME\|tool.lineage" sr… ✓ (1.0s)
+ ✓ (4.2s)
+ ✓ (4.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use the available `search` tool and check the state of tests.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_call_lineage' in src/state.rs  ▶ search 'fn test.*panic\|fn test.*tool_call\|fn test.*lineage' in src/state.rs  ▶ search 'recovery_hint\|exit_code.*42\|exit.*42' in src/tool_wrappers.rs ✓ (1.6s)
+ ✓ (1.6s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Hmm, let me search more broadly. The search tool might need literal patterns without regex.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'tool_call_lineage' in src  ▶ search 'exit_code_42' in src  ▶ search 'recovery_hint' in src ✓ (1.0s)
+ ✓ (2.1s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the targeted_recovery_hint function to see what patterns are already covered:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.7s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1018..1138 ✓ (538ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - the recovery hints are already quite extensive. Let me see what's missing or could be improved. The "No such file or directory" pattern is already covered (line 1068). The exit codes are well-covered (1, 2, 124, 126, 127, 130, 137, 139, 141, 143, 42).
+
+Let me check what tests exist for the panic hook changes and targeted_recovery_hint.
+
+Actually, let me step back and think about what the assessment and trajectory are telling me. The key pressures are:
+
+1. `task_analysis_only_attempt_count=1` - Implementation ended without file progress
+2. `task_scope_mismatch_count=1` - Implementation touched files outside scope
+3. `bash_tool_error=28` - High but likely from normal tool usage
+
+The seed task (cache metrics) is dead-on-arrival because yoagent blocks it. I need to obsolete it.
+
+What CAN I actually fix that's small, concrete, and verifiable?
+
+Looking at the assessment more carefully:
+- "`yyds state why last-failure`: Found retroactive FailureObserved from Day 159 12:05 session"
+- The fix for this (#165) was reverted due to evaluator timeout, not wrong code
+- BUT the assessment says the code might have been correct
+
+The problem with replanning #165 is: it touches `scripts/append_terminal_state_events.py`, which the assessment identifies as "a high-friction edit surface — complex event-processing logic with subtle correctness requirements that resist one-session fixes."
+
+Let me think about what src/ changes I can make:
+
+1. **Test coverage for targeted_recovery_hint / tool_wrappers**: There are tests at line 3039. Let me check what coverage exists.
+
+2. **Small improvement to bash tool error reporting**: Maybe add stderr capture hints.
+
+3. **Something in commands_state.rs**: The `state why last-failure` command could be improved to distinguish retroactive from real failures.
+
+Actually, let me look at this from the trajectory perspective. The trajectory says:
+- `task_success_rate=0.0` (most recent session reverted)
+- The reverted task was scope_mismatch
+
+The scope mismatch happens when implementation edits files not in the task's Files: entry. This is a behavioral issue, not a code bug. I can't fix it with a code change.
+
+Let me focus on what's small and verifiable:
+
+**Task 01 candidate: Add test for targeted_recovery_hint covering all exit codes**
+- This is a test-only change, verifiable with `cargo test`
+- Ensures the recovery hints work correctly
+- Small scope, one file
+
+**Task 02 candidate: Improve `state why last-failure` to distinguish retroactive from live FailureObserved**
+- The assessment shows `yyds state why last-failure` reports retroactive FailureObserved as real failures
+- Could add a "retroactive" label or filter
+- Touches commands_state.rs, verifiable with `cargo test`
+
+Wait, but the assessment says `commands_state.rs` is 25,042 lines. That's huge. Let me verify.
+
+Actually, let me check what the actual line count is:
+
+Let me just proceed with planning. I'll:
+1. Write task_01_obsolete.md for the seed cache task
+2. Write task_01.md for a small, concrete improvement
+3. Write task_02.md if I can find a second one
+4. Write issue_responses.md
+
+For task_01, let me pick: **Add test coverage for the targeted_recovery_hint function's exit code branches.** The recovery hints were recently extended (Day 160 09:03 added exit code 42), and tests ensure they don't regress.
+
+Actually, let me reconsider. What actually moves a fitness gnome? The trajectory says `task_success_rate=0.0` and `task_verification_rate=0.0`. What concrete code change would improve these?
+
+The scope mismatch problem: the implementation agent edits files outside the task's Files: entry. The fix could be in the task verification step - but that's in evolve.sh (do-not-modify).
+
+What if I improve the bash tool to reduce `bash_tool_error`? The trajectory shows `bash_tool_error=28`. If I can reduce common bash errors with better hints, that improves the coding agent's effectiveness.
+
+OK let me just go with concrete, small tasks:
+
+**Task 01: Add test coverage for targeted_recovery_hint exit code branches**
+- Files: src/tool_wrappers.rs (test module only)
+- Verifier: cargo test tool_wrappers
+- Why: The Day 160 09:03 session added exit code 42 hint but may lack tests for all exit code branches
+
+**Task 02: Distinguish retroactive FailureObserved in state why command output**
+- Files: src/commands_state.rs
+- Verifier: cargo test commands_state
+- Why: The assessment shows `yyds state why last-failure` reports retroactive events as if they were real, confusing diagnostics
+
+Actually, let me check if task_02 is even feasible in a 20-minute window. 25,042 lines is a lot to navigate.
+
+Let me just go with one solid task and make sure it's good.
+
+Wait, the policy says "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+Let me find two tasks.
+
+For task_01: recovery hint tests (clean, small, verifiable)
+For task_02: Let me think...
+
+Actually, looking at the trajectory again: `task_analysis_only_attempt_count=1` with "Implementation ended without file progress or terminal evidence; retry with explicit coverage/output expectations."
+
+This is about implementation agents that spin without producing output. The fix would be in the implementation prompt or in timeout detection. But prompts are in evolve.sh (do-not-modify) and timeout detection is complex.
+
+Let me look at what else I can do. The assessment says:
+- `commands_deepseek.rs` has the cache-report command
+- The cache-report returns "no cache metrics recorded" because yoagent drops fields
+- BUT the diagnostic paths (stream-check, fim-complete) parse raw JSON directly and DO report cache metrics
+
+What if I add a similar raw-JSON parsing path for the prompt execution? That would bypass yoagent's Usage struct limitation. But that's complex and touches prompt.rs which is 3,063 lines.
+
+OK let me just go with recovery hint tests. It's small, concrete, and verifiable.
+
+For task_02, let me pick something from the assessment's capability gaps:
+- "Retroactive FailureObserved pollution" - but this was already attempted and reverted
+- "Task scope mismatch recurring" - behavioral, not code
+
+Actually, wait. Let me re-read the assessment more carefully for small bugs:
+
+"`yyds state failures --recent`: 12 recent failures, 2 tool_execution (bash errors), 10 unknown harness-level FailureObserved events (likely retroactive inserts)."
+
+10 unknown harness-level FailureObserved events. These are polluting the failure count. The `state failures` command doesn't distinguish retroactive from live events.
+
+What if task_02 is: **Filter retroactive FailureObserved from `state failures --recent` output**? This would:
+- Touch `src/commands_state.rs`
+- Be verifiable with `cargo test`
+- Improve diagnostic accuracy
+- Be small enough for a 20-minute session
+
+But 25,042 lines... Let me at least verify the file exists and check its structure.
+
+Actually, let me be practical. I'll write:
+- task_01_obsolete.md (cache metrics seed)
+- task_01.md (recovery hint test coverage)
+- task_02.md (something small)
+- issue_responses.md
+
+Let me do that now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. The seed task (cache metrics) is blocked by yoagent upstream — the assessment confirms this. I need to obsolete it and write evidence-backed tasks. Let me check what's testable and find a second task.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ wc -l src/commands_state.rs src/tool_wrappers.rs src/state.rs  ▶ search 'fn test.*recovery\|fn test.*targeted\|fn test.*exit_code' in src/tool_wrappers.rs  ▶ search 'failures.*recent\|fn.*failures\|state failures' in src/commands_state.rs ✓ (1.0s)
+ ✓ (1.0s)
+ ✓ (3.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more specifically.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn test' in src/tool_wrappers.rs  ▶ search 'failures' in src/commands_state.rs ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I found 50 test functions in tool_wrappers.rs. Let me check if there are tests for targeted_recovery_hint specifically. Let me also look at the handle_failures function in commands_state.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'targeted_recovery_hint' in src/tool_wrappers.rs  ▶ read src/commands_state.rs:83..88 ✓ (551ms)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are test references to `targeted_recovery_hint` at line 3252 and others. Let me check the test coverage around line 3039 (where we saw the exit code 99 test earlier).
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:3030..3110 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The recovery hints already have substantial test coverage. Let me check if exit code 42 has a test. Let me also check what tests exist for exit codes 1, 2, 126, 127.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:2980..3060 ✓ (495ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the recovery hints already have excellent test coverage. Exit codes 1, 2, 42, 124, 126, 127, 130, 137, 139, 141, 143, and unknown (99) are all tested. The "No such file or directory" pattern and other patterns are also tested. This task idea (adding recovery hint tests) is dead — the tests already exist.
+
+Let me think about what else I can do.
+
+Looking at the assessment again more carefully:
+
+**What's actually broken/actionable?**
+
+1. The seed task (#105 cache metrics) is blocked by yoagent. Must obsolete.
+
+2. The retroactive FailureObserved problem (#165) was reverted due to evaluator timeout. The code might have been correct. But replanning it risks another timeout on the same file. The assessment says `scripts/append_terminal_state_events.py` is a "high-friction edit surface."
+
+3. Task scope mismatch - this is a behavioral issue.
+
+4. Session timeout clustering - GH Actions issue, not code.
+
+Looking at the issues list:
+- #167: Planning-only session, all tasks reverted — this IS the current session's predecessor! It says "Focus on smaller, more incremental changes."
+- #165: Reverted (evaluator timeout)
+- #163: Reverted (agent blocked)
+- #162: Reverted (scope mismatch)
+- #105: Reverted (agent blocked)
+
+All the recent agent-self issues are reverted tasks. The pattern is clear: tasks touching scripts/ (especially append_terminal_state_events.py) keep getting reverted.
+
+So what CAN I plan that will actually land?
+
+Let me look for small, src/-only tasks that pass `cargo build && cargo test`:
+
+1. **Test coverage for the `state why last-failure` command path** — but this might be complex
+2. **Small documentation or comment fix** — too trivial
+3. **Add a new recovery hint pattern** — the existing ones are already comprehensive
+4. **Fix a clippy warning or dead code** — let me check
+
+Actually, let me check if there are any clippy warnings or dead code issues.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — the recovery hints already have comprehensive test coverage. That task idea is dead. Let me find something actually needed. Let me check for clippy warnings and build issues:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo clippy --all-targets -- -D warnings 2>&1 | head -30 ✓ (25.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean clippy. Let me check for any test failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo test -- --test-threads=1 2>&1 | tail -30
