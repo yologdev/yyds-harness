@@ -1,0 +1,272 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the situation:
+
+1. The evaluator rejected a previous implementation because it only added the infrastructure (thread-local, guard, set/clear functions) to `src/state.rs` but never wired it up - the panic hook doesn't read CURRENT_TOOL_NAME, and `src/tool_wrappers.rs` was not modified.
+
+2. I need to:
+   - Wire up the panic hook to read CURRENT_TOOL_NAME and include it in the FailureObserved payload
+   - Modify `RecoveryHintTool::invoke()` to set/clear the tool name
+
+Let me start by checking the current state of the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/state.rs:25..80  ▶ read src/tool_wrappers.rs:1160..1200 ✓ (7ms)
+ ✓ (26ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the rest of the panic hook to understand the full payload construction and how CURRENT_MODEL_CALL_ID is used, and also the rest of RecoveryHintTool::execute to see where I need to add the tool name tracking.
+
+Let me also check what's after line 79 in state.rs to see the full panic hook.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:79..109  ▶ read src/tool_wrappers.rs:1199..1229 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The evaluator says:
+
+1. The infrastructure exists: `CURRENT_TOOL_NAME` thread-local (line 37), `CurrentToolNameGuard`, `set_current_tool_name`, `clear_current_tool_name`. Let me verify these exist.
+
+2. But the panic hook payload (lines 62-67) doesn't read `CURRENT_TOOL_NAME` — it just builds a payload with `failure_class`, `panic_message`, `panic_location`, `recorded_at_ms`.
+
+3. `RecoveryHintTool::execute` (lines 1187-1216) doesn't call `set_current_tool_name` or use `CurrentToolNameGuard`.
+
+What I need to do:
+
+**A. In `src/state.rs` (panic hook, around lines 62-67):**
+- Read `CURRENT_TOOL_NAME` and include `tool_name` in the FailureObserved payload when set.
+
+**B. In `src/tool_wrappers.rs` (RecoveryHintTool::execute, around line 1192):**
+- Set `crate::state::set_current_tool_name(tool_name)` before invoking `self.inner.execute()`, and clear it after.
+- Use a scope guard pattern for cleanup.
+
+Let me first check what set/clear functions and CurrentToolNameGuard already exist.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.3s (2 ✓)
+
+Let me check what's already been added for the tool name infrastructure:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'CURRENT_TOOL_NAME' in src/state.rs  ▶ search 'CurrentToolNameGuard' in src/state.rs  ▶ search 'set_current_tool_name\|clear_current_tool_name' in src/state.rs ✓ (20ms)
+ ✓ (19ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the CurrentToolNameGuard and related functions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.2s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:142..182 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a complete picture. The infrastructure exists:
+
+1. `CURRENT_TOOL_NAME` thread-local (line 37)
+2. `CurrentToolNameGuard` struct with Drop impl that clears (lines 145-156)
+3. `set_current_tool_name(name: String)` (line 160-162)
+4. `clear_current_tool_name()` (lines 166-170)
+
+But:
+- The panic hook (lines 62-67) doesn't include `tool_name` in the payload
+- RecoveryHintTool::execute doesn't call set_current_tool_name / use CurrentToolNameGuard
+
+Now I need to make two changes:
+
+### Change 1: Panic hook in state.rs (around line 62-67)
+Add reading CURRENT_TOOL_NAME and including it in the payload.
+
+The current payload is:
+```rust
+let payload = json!({
+    "failure_class": "rust_panic",
+    "panic_message": msg,
+    "panic_location": location,
+    "recorded_at_ms": now_ms(),
+});
+```
+
+I need to add `tool_name` conditionally when CURRENT_TOOL_NAME is set. The pattern should follow how CURRENT_MODEL_CALL_ID is used below.
+
+### Change 2: RecoveryHintTool::execute in tool_wrappers.rs (around line 1192)
+Wrap the inner execute call with a CurrentToolNameGuard.
+
+Let me make these edits now.
+
+For the panic hook payload, I'll add tool_name similar to how CURRENT_MODEL_CALL_ID is read below. The simplest approach is to read it before building the payload:
+
+```rust
+let tool_name = CURRENT_TOOL_NAME.with(|c| c.take());
+let mut payload = json!({
+    "failure_class": "rust_panic",
+    "panic_message": msg,
+    "panic_location": location,
+    "recorded_at_ms": now_ms(),
+});
+if let Some(name) = tool_name {
+    payload["tool_name"] = json!(name);
+}
+```
+
+For RecoveryHintTool::execute, I'll add at the top:
+```rust
+let _guard = crate::state::set_current_tool_name(self.inner.name().to_string());
+```
+
+Wait, but `set_current_tool_name` returns `()`. I need to create a guard that will clear on drop. Let me look at the function again - it sets the Cell. The `CurrentToolNameGuard` only clears, it doesn't set. I need to:
+
+1. Call `set_current_tool_name(name)` to set
+2. Create `CurrentToolNameGuard` which will clear on drop
+
+So in the execute method:
+```rust
+async fn execute(...) -> ... {
+    crate::state::set_current_tool_name(self.inner.name().to_string());
+    let _guard = crate::state::CurrentToolNameGuard;
+    // ... rest of the method
+}
+```
+
+Let me now make both edits.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Two changes needed:
+
+1. **Panic hook** (line 62-67): Read `CURRENT_TOOL_NAME` and add `tool_name` to the payload when set.
+2. **RecoveryHintTool::execute** (line 1192): Set the tool name before `self.inner.execute()` with a scope guard for cleanup.
+  -             let payload = json!({
+  +             let tool_name = CURRENT_TOOL_NAME.with(|c| c.take());
+  +             let mut payload = json!({
+                    "failure_class": "rust_panic",
+                    "panic_message": msg,
+                    "panic_location": location,
+                    "recorded_at_ms": now_ms(),
+                });
+  +             if let Some(name) = tool_name {
+  +                 payload["tool_name"] = json!(name);
+  +             }
+  ✓ Auto-approved: edit: src/state.rs (6 → 10 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 10 lines)
+  -             let payload = json!({
+  +             let tool_name = CURRENT_TOOL_NAME.with(|c| c.take());
+  +             let mut payload = json!({
+                    "failure_class": "rust_panic",
+                    "panic_message": msg,
+                    "panic_location": location,
+                    "recorded_at_ms": now_ms(),
+                });
+  +             if let Some(name) = tool_name {
+  +                 payload["tool_name"] = json!(name);
+  +             }
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the second change: add tool name tracking to RecoveryHintTool::execute.
+────────────────────────────────────────────────────────────────────────────────
+
+Now wire up the tool wrapper — set the tool name before execute and clear on drop:
+            ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            let tool_name = self.inner.name().to_string();
+  +         crate::state::set_current_tool_name(tool_name.clone());
+  +         let _guard = crate::state::CurrentToolNameGuard;
+            match self.inner.execute(params, ctx).await {
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (7 → 9 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (7 → 9 lines)
+            ctx: yoagent::types::ToolContext,
+        ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
+            let tool_name = self.inner.name().to_string();
+  +         crate::state::set_current_tool_name(tool_name.clone());
+  +         let _guard = crate::state::CurrentToolNameGuard;
+            match self.inner.execute(params, ctx).await {
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify both changes look correct by reading the modified code.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify both edits look correct:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..80  ▶ read src/tool_wrappers.rs:1189..1209 ✓ (6ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both edits look good. Now let me run the verification commands as specified: `cargo fmt -- --check` and `cargo test state tool_wrappers`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.9s (2 ✓)
+
+Both edits look correct. Now run the specified verification:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | ta… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt passed (empty output means no issues). Now run `cargo test state tool_wrappers`.
+────────────────────────────────────────────────────────────────────────────────
+
+fmt passes. Now run the test:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state tool_wrappers… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test filter syntax needs quoting - cargo treats `state` and `tool_wrappers` as separate arguments. Let me quote it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test "state tool_wrapper… ✓ (26.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The build succeeded with one warning: `clear_current_tool_name` is never used. That's expected since we use `CurrentToolNameGuard` instead (which calls `c.take()` directly in its Drop impl). The test filter `"state tool_wrappers"` didn't match any tests, meaning there aren't test functions that contain both substrings. Let me run a broader search for relevant tests.
+
+The tests compiled and passed - 0 tests matched but no failures. Let me also confirm there are no test functions specifically for this feature by searching for test functions with "tool_name" or "current_tool" or "panic" in state.rs and tool_wrappers.rs.
+
+But actually the task says "cargo test state tool_wrappers" — meaning run tests in files matching state and tool_wrappers. The issue is that cargo test filter works on test function names, not module/file names.
+
+Let me try running tests by module path instead.
+────────────────────────────────────────────────────────────────────────────────
+
+The filter matched 0 tests because cargo's TESTNAME filters by function name, not module. Let me run the correct module-targeted tests:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib state:: 2>&1 … ✓ (2.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All state tests pass (276 passed). Now tool_wrappers tests. Let me check if there are test modules in tool_wrappers.rs.
+────────────────────────────────────────────────────────────────────────────────
+
+All 276 state tests pass. Let me check tool_wrappers tests:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib tool_wrappers… ✓ (124ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+All tests pass (276 state, 119 tool_wrappers). Here's what changed:
+
+### Changes made
+
+**`src/state.rs` (panic hook, line 62-71):**
+• Before building the FailureObserved payload, reads `CURRENT_TOOL_NAME` via `with(|c| c.take())` — the same pattern used by `CURRENT_MODEL_CALL_ID` below
+• When the thread-local has a value, adds `"tool_name"` to the payload; otherwise the field is absent (panic outside tool execution)
+• Uses `c.take()` so the name is consumed and can't leak between panics
+
+**`src/tool_wrappers.rs` (RecoveryHintTool::execute, lines 1192-1194):**
+• Before `self.inner.execute()`: calls `crate::state::set_current_tool_name(tool_name.clone())` to record which tool is executing
+• Immediately creates `let _guard = crate::state::CurrentToolNameGuard` — the guard's `Drop` calls `c.take()` on `CURRENT_TOOL_NAME`, ensuring cleanup on panic, early return, or cancellation
+
+### How it works end-to-end
+1. `RecoveryHintTool::execute` sets the thread-local with the tool name, then invokes the inner tool
+2. If the inner tool panics, the panic hook fires on the same thread, reads the tool name from the thread-local, and includes it in the `FailureObserved` payload
+3. The `CurrentToolNameGuard` Drop ensures the thread-local is cleared regardless of outcome
+4. If a panic occurs outside any tool (e.g., in prompt handling), `CURRENT_TOOL_NAME` is `None` and `tool_name` is simply omitted from the payload
+
+

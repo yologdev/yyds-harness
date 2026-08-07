@@ -1,0 +1,281 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': trailing characters at line 1 column 6
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task. The task is about modifying `scripts/append_terminal_state_events.py` to prevent `find_missing_failure_observed()` from retroactively inserting FailureObserved events for deliberate no-op sessions (sessions with zero TaskStarted events and zero tool-call FailureObserved events).
+
+The key evidence:
+1. Day 159 had a journal-only session that got a retroactive FailureObserved
+2. The fix should be in `find_missing_failure_observed()` (around line 307)
+
+But the CHANGES MADE section shows an empty git diff. Let me check if there are any actual changes.
+
+Let me first check the current state of the file and whether there's actually a diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat && git status … ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes! The git diff wasn't shown in the prompt but there are changes. Let me read the actual diff and the test file to evaluate.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff scripts/append_termin… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff shows the changes. Let me now verify:
+
+1. The implementation adds tracking sets for `task_started_runs` and `tool_failure_observed_runs`
+2. A `deliberate_no_op_excluded` counter in diagnostics
+3. The exclusion condition: runs with zero TaskStarted events and zero tool-call FailureObserved events AND RunCompleted error status AND not input-validation/cancelled
+4. New test cases for deliberate no-op runs
+
+Let me now run the tests to verify they pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m pytest scripts/test… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try unittest instead, as the task says.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are pre-existing test failures (5 failures). Let me check if these failures are pre-existing or caused by the change. Let me look at the specific new tests for deliberate-no-op.
+
+The new tests (test_deliberate_no_op_excluded_from_missing, etc.) - let me see their results first. I need to find which tests are new vs old.
+
+Actually, the test output shows 35 tests, 5 failures. Let me check if the new tests passed.
+
+The pre-existing tests that are failing:
+1. test_cancelled_run_gets_specific_failure_observed_reason
+2. test_detects_and_closes_orphaned_run_from_previous_session
+3. test_error_run_keeps_generic_failure_observed_reason
+4. test_skips_retroactive_failure_observed_on_second_invocation
+
+Let me verify these are pre-existing failures by checking whether they existed before the change. Let me stash the changes and run the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 -m unitte… ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So pre-existing tests already had 2 failures (not 5) before the change. Now with the change we have 5 failures - 3 new ones. Let me look at the test diff more carefully to understand what was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, after stash pop, the test shows 2 failures, not 5. But earlier it showed 5. Let me re-run cleanly to see what's happening now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (66ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now it's back to 29 tests with 2 failures. The earlier run with 35 tests and 5 failures must have been stale. The 2 failures are pre-existing (they exist before the change too).
+
+Wait - the test count went from 29 (before) to 29 (now). But the diff shows new tests being added. Let me count more carefully...
+
+Actually looking at the diff, the new tests were added. But the test count is still 29. The original had 29 tests. After the change it's... still 29? That doesn't make sense if 6 new tests were added. Let me look at the actual test file to see the new test names.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No deliberate/no-op tests are being run. Let me check what the test names look like to understand if the new tests are being found.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "def test_" scripts/te… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The new tests (about deliberate-no-op) are NOT in the file! The diff showed them being added, but after stash pop, they should be there. Let me check what happened — maybe the stash pop didn't fully restore or there's something wrong.
+
+Actually wait - the test file currently has 29 tests and the diff showed tests being added after line 1197 (`test_find_missing_model_call_started_detects_orphaned_completion`). Let me check if the diff changes are actually applied right now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The git diff is empty - the changes are no longer in the working tree. The stash pop must have conflicted or something. Let me check git stash list.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash list ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The stash pop didn't restore the changes. Let me apply the stash to get them back.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash pop ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now the changes are back. Let me run the tests again.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (83ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me analyze:
+
+**Pre-existing failures (before the change):** 2 failures
+- `test_cancelled_run_gets_specific_failure_observed_reason` 
+- `test_detects_and_closes_orphaned_run_from_previous_session`
+
+**New failures introduced by the change:** 3 additional failures
+- `test_appends_failure_observed_for_error_completed_run` - expects `missing_failure_observed == 1` but got `0`
+- `test_error_run_keeps_generic_failure_observed_reason` - expects `len(fo_rows) == 1` but got `0`
+- `test_skips_retroactive_failure_observed_on_second_invocation` - expects `["error-run"]` but got `[]`
+
+These three failures are caused by the change. The issue is that the change is now excluding runs from `find_missing_failure_observed` that should be flagged. These test fixtures likely have error RunCompleted runs that have zero TaskStarted events (because they're simple test fixtures without full event sequences).
+
+Let me look at the implementation more carefully to understand the bug.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/append_terminal_state_events.py:307..407 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the bug. Look at the exclusion logic (lines 373-377):
+
+```python
+if rid not in failure_observed_runs
+and not (
+    rid not in task_started_runs
+    and rid not in tool_failure_observed_runs
+)
+```
+
+This says: include the run in `missing` if:
+- `rid not in failure_observed_runs` AND
+- NOT (rid has no TaskStarted AND rid has no tool failures)
+
+Which simplifies to: include if `rid not in failure_observed_runs` AND (`rid in task_started_runs` OR `rid in tool_failure_observed_runs`).
+
+Wait, that seems wrong. Let me re-read...
+
+The original logic was:
+```python
+if rid not in failure_observed_runs
+```
+
+The new logic adds:
+```python
+if rid not in failure_observed_runs
+and not (
+    rid not in task_started_runs
+    and rid not in tool_failure_observed_runs
+)
+```
+
+So the condition is: include in missing if:
+1. rid is NOT in failure_observed_runs (already didn't have a FailureObserved)
+2. AND it's NOT the case that (rid has no tasks AND rid has no tool failures)
+
+So runs are excluded when they have: no failure_observed AND no tasks AND no tool failures. That's correct for the no-op case.
+
+But WAIT - the problem is that runs that truly need FailureObserved can also have no TaskStarted and no tool failures! For instance, a run that fails during initialization (before any tasks start) WOULD have "RunCompleted error status" but zero TaskStarted events and zero tool-call FailureObserved events. That's exactly the `test_appends_failure_observed_for_error_completed_run` test case.
+
+The fix is too aggressive. A run should only be considered a "deliberate no-op" if it has:
+- Zero TaskStarted AND
+- Zero tool-call FailureObserved AND
+- Zero non-harness FailureObserved of any kind
+
+But also, the implementation should only exclude runs that have NO FailureObserved at all (which is already the case since `rid not in failure_observed_runs`). The issue is that the test fixtures use error runs without TaskStarted events.
+
+Wait, let me re-examine. Let me look at the failing test `test_appends_failure_observed_for_error_completed_run` to see what events it creates.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/scripts/test_append_terminal_state_events.py:453..513 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue clearly. The test `test_appends_failure_observed_for_error_completed_run` creates an "error-run" with:
+- RunStarted
+- ModelCallStarted
+- RunCompleted (status=error)
+
+This run has NO TaskStarted event and also has no FailureObserved. It's a genuine error run that should get a retroactive FailureObserved, but the new logic excludes it because it has zero TaskStarted and zero tool failures.
+
+The problem: the test harness sets up a minimal fixture for a genuine error run (e.g., a session that crashed before it could start any tasks), and this minimal fixture looks exactly like a "deliberate no-op" to the new logic.
+
+The fix needs to distinguish between:
+1. A genuine no-op: No tasks were even attempted (TaskStarted=0), no tool failures, AND the session was truly minimal (few model calls, etc.)
+2. A real failure that didn't get to start tasks: a run that had model calls (indicating real work was attempted) but no tasks were started
+
+But the task description says: "A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded)."
+
+The issue is that the test fixtures for real error runs also have zero TaskStarted events. The implementation as specified by the task is too broad - it catches both genuine no-ops and real failures that just didn't get to start tasks.
+
+The task says: "rely only on events present in the events list" - so we can't look at model calls or other heuristics.
+
+Actually wait, let me reconsider. Looking at the real scenario from Day 159 (12:05 journal-only): that session probably had `RunStarted` and then maybe some model calls for writing the journal, but no TaskStarted events. But so would a session that crashes during planning...
+
+The task says: "Deliberate no-op runs (RunCompleted error status, zero TaskStarted events, zero tool-call FailureObserved events) are excluded." This is the desired behavior per the task description.
+
+The issue is that this breaks the existing tests because those tests use fixtures with error runs that have zero TaskStarted events. The tests need to be updated to include TaskStarted events in their fixtures for real error runs, OR the implementation needs a different approach.
+
+Given the strictness of FAIL criteria listed: "The implementation doesn't match the task description" and "Tests pass but the feature clearly doesn't work" and "Obvious bugs that tests don't catch" - this is a FAIL. The implementation breaks 3 existing tests. While the new tests pass, pre-existing tests that validate genuine error-run behavior now fail.
+
+The implementation is too aggressive in its exclusion. Every run with RunCompleted error status AND zero TaskStarted AND zero tool failures gets excluded, even if it's a real error run that just didn't get to start tasks (e.g., crashed during initialization).
+
+This is a FAIL because the implementation breaks existing behavior that was working correctly.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. Let me verify the core issue:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (23 lines) ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Confirmed. The implementation excludes runs that have ModelCallStarted events (indicating real agent work was attempted) just because they have zero TaskStarted events. This breaks the pre-existing behavior where real error runs get retroactive FailureObserved events.
+
+The fix needs to be more discriminating. A "deliberate no-op" run should be one where the exit was expected - i.e., where the session deliberately produced no tasks. But from just the events stream, how can we tell?
+
+The task description says: "rely only on events present in the events list" and "A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled."
+
+The problem is that a run that crashes during initialization ALSO matches this description. The task description's specification is flawed - it cannot distinguish between a genuine crash and a deliberate no-op using only events.
+
+But wait - maybe the fix should check for the presence of ModelCallStarted or other evidence of real agent work. A deliberate journal-only session would still have model calls (for writing the journal). So we can't use that.
+
+Actually, re-reading the task: "Deliberate no-op sessions (journal-only, assessment-only, clean-tree planning failure) exit with non-zero status because no tasks were completed — but this is expected behavior, not a harness failure."
+
+These sessions DO have model calls - journal-only sessions use the model to write journals, assessment sessions use the model for assessment. The distinguishing factor is they intentionally didn't produce tasks.
+
+So the implementation as specified by the task (zero TaskStarted + zero tool failures = no-op) is exactly what was asked for. The issue is that the existing tests use fixtures that happen to have zero TaskStarted for real error runs.
+
+The fix should update the test fixtures to include a TaskStarted event for the "real error run" cases, since real error runs would typically have at least attempted to start a task.
+
+But wait - a real error CAN happen before any task starts. For example, if the API call itself fails. Looking at test_skips_retroactive_failure_observed_on_second_invocation, the test creates an error run with RunStarted and RunCompleted but no tasks. 
+
+I think the right approach is: the specification is correct as stated, but the existing test fixtures need updating. However, the task says not to modify tests other than adding new ones for deliberate-no-op. The new code breaks existing tests, which is a FAIL.
+
+Let me write the verdict: FAIL - the implementation is too broad and breaks 3 pre-existing tests that validate genuine error-run behavior. The exclusion condition catches any RunCompleted with error status and zero TaskStarted events, including legitimate error runs that crashed before starting tasks (e.g., during initialization or model call setup).
+────────────────────────────────────────────────────────────────────────────────
+
+The evidence is clear. The implementation matches the task spec literally but is too broad — it also excludes legitimate error runs (where the agent crashed during init/setup before any `TaskStarted` could be emitted). Three pre-existing tests now fail because their error-run fixtures have zero `TaskStarted` events (which is normal for a crash-before-task scenario).

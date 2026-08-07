@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: All success criteria met — CURRENT_TOOL_NAME thread-local added to state.rs mirroring CURRENT_MODEL_CALL_ID pattern, panic hook reads it and conditionally adds tool_name to FailureObserved payload, CurrentToolNameGuard scope guard ensures cleanup on drop, and RecoveryHintTool::execute sets the tool name before inner execution. Build and tests pass. Implementation matches the task spec precisely (~38 lines across 2 files).

@@ -1,0 +1,105 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+The error is straightforward: `clear_current_tool_name` is never used, and the build fails because of `-D dead-code`. Let me read that function and see how it's used (or not).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:160..180 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if `clear_current_tool_name` is used anywhere in the codebase, and also check how `CurrentToolNameGuard` handles cleanup.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'clear_current_tool_name'  ▶ search 'CurrentToolNameGuard' ✓ (15ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`clear_current_tool_name` is only defined, never called elsewhere. `CurrentToolNameGuard` is used in `tool_wrappers.rs` and its `Drop` impl presumably calls `clear_current_tool_name` or does the same cleanup. Let me check the Drop impl.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:148..168 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `clear_current_tool_name` is never used anywhere. The `CurrentToolNameGuard` handles the clearing via its `Drop` impl (which does the same thing). The `clear_current_tool_name` function is dead code.
+
+I should either:
+1. Remove `clear_current_tool_name` function, or
+2. Add `#[allow(dead_code)]` on it
+
+Since the comment on line 168-169 says "Also available as `CurrentToolNameGuard` for automatic cleanup via Drop", this function was intended as a public API for manual cleanup. But it's not used. The simplest fix is to remove it, since `CurrentToolNameGuard` is the preferred way (Drop-based).
+
+Let me remove the `clear_current_tool_name` function.
+────────────────────────────────────────────────────────────────────────────────
+
+The function `clear_current_tool_name` is dead code — only `CurrentToolNameGuard` (its Drop-based equivalent) is used. I'll remove it.
+    /// this to include `tool_name` in `FailureObserved` payloads.
+    pub fn set_current_tool_name(name: String) {
+        CURRENT_TOOL_NAME.with(|c| c.set(Some(name)));
+  - }
+  - 
+  - /// Clear the current tool name after a tool completes. Also available as
+  - /// `CurrentToolNameGuard` for automatic cleanup via Drop.
+  - pub fn clear_current_tool_name() {
+  -     CURRENT_TOOL_NAME.with(|c| {
+  -         let _ = c.take();
+  -     });
+    }
+    
+    static GLOBAL_RECORDER
+  ✓ Auto-approved: edit: /home/runner/work/yyds-harness/yyds-harness/src/state.rs (15 → 7 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit /home/runner/work/yyds-harness/yyds-harness/src/state.rs (15 → 7 lines)
+    /// this to include `tool_name` in `FailureObserved` payloads.
+    pub fn set_current_tool_name(name: String) {
+        CURRENT_TOOL_NAME.with(|c| c.set(Some(name)));
+  - }
+  - 
+  - /// Clear the current tool name after a tool completes. Also available as
+  - /// `CurrentToolNameGuard` for automatic cleanup via Drop.
+  - pub fn clear_current_tool_name() {
+  -     CURRENT_TOOL_NAME.with(|c| {
+  -         let _ = c.take();
+  -     });
+    }
+    
+    static GLOBAL_RECORDER
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run `cargo check` to verify the fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (6.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`cargo check` passes. Now run `cargo fmt -- --check`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes. Now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Done. The fix was straightforward: removed the unused `clear_current_tool_name` function from `src/state.rs`. The `CurrentToolNameGuard` already handles the same cleanup via `Drop`, so the manual function was redundant dead code.
+────────────────────────────────────────────────────────────────────────────────
+
+Fixed. Removed the unused `clear_current_tool_name` function from `src/state.rs` — `CurrentToolNameGuard` already provides the same cleanup via its `Drop` impl, making the standalone function dead code. `cargo check` and `cargo fmt -- --check` both pass.
+
+

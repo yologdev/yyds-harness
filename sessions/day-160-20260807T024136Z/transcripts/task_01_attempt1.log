@@ -1,0 +1,753 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill rules. I need to:
+
+1. Read the evolve skill first
+2. Read the relevant source file (`scripts/append_terminal_state_events.py`)
+3. Read the test file (`scripts/test_append_terminal_state_events.py`)
+4. Implement the change
+5. Verify and commit
+
+Let me begin by reading the evolve skill and then the source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py:290..370 ✓ (3.3s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read more of the `find_missing_failure_observed` function and the surrounding code to understand the full structure. I also need to read the test file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:369..  ▶ read scripts/test_append_terminal_state_events.py ✓ (2.7s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the full picture:
+
+1. `find_missing_failure_observed()` currently:
+   - Tracks runs with error RunCompleted
+   - Excludes input-validation runs and cancelled runs
+   - Tracks which runs have FailureObserved events
+   - Returns runs with error RunCompleted that lack FailureObserved
+
+2. The problem: Deliberate no-op sessions (journal-only, planning-only with zero tasks) exit with error status because no tasks were completed, but this is expected behavior. The function retroactively inserts FailureObserved for these runs, polluting failure metrics.
+
+3. The fix: Add exclusion for runs that have zero `TaskStarted` events and zero tool-call `FailureObserved` events. These are deliberate no-ops that shouldn't get retroactive FailureObserved.
+
+Let me now look at the test file more carefully to understand the existing tests for `find_missing_failure_observed` and see where to add the new test.
+
+Let me also check if there's a distinction needed between "harness FailureObserved" and "tool-call FailureObserved". The task says:
+- "zero non-harness FailureObserved events" — this means FailureObserved that come from tool calls (like bash failures), not from the harness itself.
+
+Let me look at what FailureObserved events look like — how to distinguish harness vs tool-call origins.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Let me look at the relevant test cases for `find_missing_failure_observed` and understand how FailureObserved events are structured:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_failure_observed' in scripts/test_append_terminal_state_events.py  ▶ search 'FailureObserved' in scripts/append_terminal_state_events.py ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are no existing tests for `find_missing_failure_observed` in the test file. Let me look at how FailureObserved events are structured to understand the "harness" vs "non-harness" distinction. Let me look at how FailureObserved is emitted in the codebase.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src  ▶ read scripts/append_terminal_state_events.py:220..310 ✓ (901ms)
+ ✓ (3.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at how FailureObserved events carry information about their origin. The task mentions "non-harness FailureObserved" — meaning FailureObserved events that come from tool-call errors (bash failures, etc.), as opposed to the retroactive FailureObserved that the harness itself inserts.
+
+Let me look at how FailureObserved events are created in the Rust code to understand their payload structure.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+Let me understand FailureObserved event payloads to distinguish harness vs tool-call origins:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'EventType::FailureObserved' in src  ▶ search 'record.*FailureObserved' in src ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the key places where FailureObserved is recorded — particularly the one in state.rs line 85 and the ones in prompt.rs.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:80..110  ▶ read src/prompt.rs:895..925  ▶ read src/prompt.rs:970..1000 ✓ (901ms)
+ ✓ (5.4s)
+ ✓ (4.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the structure. FailureObserved events from tool errors have `"source": "tool"` and an `"actor"` field. Let me check how events are stored in the JSONL to understand what fields `append_terminal_state_events.py` can see.
+
+Looking at the test file's `write_event` function, events have:
+- `event_id`
+- `event_type` (e.g., "FailureObserved", "TaskStarted", "RunCompleted")
+- `run_id`
+- `payload`
+- (possibly other fields like `actor`, `source`)
+
+But for the purpose of the python script, I need to check: when FailureObserved is emitted from tools, does it have a `source` field? Looking at the Rust code:
+- `src/prompt.rs` line 906-914: FailureObserved with `"source": "tool"` 
+- Harness-originated FailureObserved from state.rs line 85: no source field in payload (just error info)
+- `src/prompt.rs` line 977-985: FailureObserved with `"source": "input_rejected"`
+
+So the distinction between harness and non-harness FailureObserved would be:
+- **Non-harness (tool-call)**: FailureObserved with `payload.source == "tool"` (from tool errors, bash failures, etc.)
+- **Harness-originated**: FailureObserved without source field, or with `source: "input_rejected"` (from the harness itself, including retroactive ones)
+
+Actually wait — looking more carefully at the task description:
+
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events
+
+So the key signals are:
+1. RunCompleted with error status (not success/completed)
+2. Zero TaskStarted events
+3. Zero non-harness FailureObserved events (i.e., no tool failures)
+
+The approach:
+- Track runs that have `TaskStarted` events
+- Track runs that have tool-call `FailureObserved` events (source == "tool")
+- Before adding to `missing`, check: if the run has zero TaskStarted AND zero tool FailureObserved, AND is not input-validation/cancelled, it's a deliberate no-op → exclude it
+
+Now let me implement this. I need to:
+
+1. In `find_missing_failure_observed()`:
+   - Add tracking sets: `task_started_runs` and `tool_failure_observed_runs`
+   - In the event loop, when we see `TaskStarted`, add to tracking set
+   - When we see `FailureObserved` with non-harness source (check payload), add to tool failure set
+   - Before adding to `missing`, check: if run_id not in task_started_runs and run_id not in tool_failure_observed_runs → it's a deliberate no-op, exclude it
+   - Add `deliberate_no_op_excluded` counter to diagnostics
+
+2. In the test file:
+   - Add a new test for the deliberate-no-op scenario
+
+Let me also check: does the `FailureObserved` event in the JSONL include an `actor` field? Let me look at the `event_type` function and `payload` function to understand the event structure.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.3s (3 ✓)
+
+Now let me check the event structure to understand what fields are available:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py (30 lines) ✓ (896ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at event_type, payload, and run_id helper functions to understand the event structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_type' in scripts/append_terminal_state_events.py  ▶ search 'def payload' in scripts/append_terminal_state_events.py  ▶ search 'def run_id' in scripts/append_terminal_state_events.py ✓ (2.7s)
+ ✓ (2.7s)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these helper functions to understand the event structure.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:32..72 ✓ (905ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the event structure. Events have `event_type`, `run_id`, and `payload`. The FailureObserved events from tools have `source: "tool"` in the payload.
+
+Now let me also look at how events in the append_terminal_state_events.py itself create FailureObserved events to understand the structure better, specifically looking at the `append_terminal_events` function:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at how the `append_terminal_events` function creates FailureObserved events:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search '"FailureObserved"' in scripts/append_terminal_state_events.py ✓ (906ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at line 701 and the functions around it to understand the FailureObserved payload structure created by the script itself:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:685..725 ✓ (898ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding. Let me plan the implementation:
+
+1. In `find_missing_failure_observed()`, I need to add:
+   - A tracking set for runs that have `TaskStarted` events
+   - A tracking set for runs that have non-harness (tool-call) `FailureObserved` events (those with `source == "tool"` in payload)
+   - In the event loop, when we process `FailureObserved`, check if it's a tool-call one
+   - When building the `missing` list, exclude runs that have zero `TaskStarted` AND zero tool-call `FailureObserved` events
+   - Add `deliberate_no_op_excluded` to diagnostics
+
+Now let me look at the full function again and plan the edit:
+
+```python
+def find_missing_failure_observed(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    error_completed: dict[str, dict[str, Any]] = {}
+    failure_observed_runs: set[str] = set()
+    input_validation_excluded = 0
+    cancelled_excluded = 0
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "RunCompleted":
+            status = data.get("status", "")
+            if status and status not in ("success", "completed"):
+                detail = str(data.get("error_detail") or "")
+                if detail == "empty_input" or detail.startswith("invalid_input:"):
+                    input_validation_excluded += 1
+                    continue
+                if status == "cancelled":
+                    cancelled_excluded += 1
+                    continue
+                error_completed[rid] = {
+                    "status": status,
+                    "timestamp_ms": event.get("timestamp_ms", 0),
+                }
+        elif kind == "FailureObserved":
+            failure_observed_runs.add(rid)
+
+    missing = sorted(
+        [
+            {"run_id": rid, **info}
+            for rid, info in error_completed.items()
+            if rid not in failure_observed_runs
+        ],
+        key=lambda m: m["run_id"],
+    )
+
+    diagnostics = {
+        "error_completed_runs": len(error_completed),
+        "failure_observed_runs": len(failure_observed_runs),
+        "missing_failure_observed": len(missing),
+        "input_validation_excluded": input_validation_excluded,
+        "cancelled_excluded": cancelled_excluded,
+    }
+
+    return missing, diagnostics
+```
+
+My changes:
+
+1. Add tracking sets in the event loop section:
+   ```python
+   task_started_runs: set[str] = set()
+   tool_failure_observed_runs: set[str] = set()
+   ```
+
+2. In the event loop, after `FailureObserved`:
+   ```python
+   elif kind == "FailureObserved":
+       failure_observed_runs.add(rid)
+       # Track tool-call failures (non-harness FailureObserved)
+       if data.get("source") == "tool":
+           tool_failure_observed_runs.add(rid)
+   ```
+   Also track TaskStarted:
+   ```python
+   elif kind == "TaskStarted":
+       task_started_runs.add(rid)
+   ```
+
+3. In the missing filter, add exclusion condition:
+   ```python
+   deliberate_no_op_excluded = 0
+   ...
+   for rid, info in error_completed.items():
+       if rid not in failure_observed_runs:
+           # Check for deliberate no-op: no tasks started AND no tool failures
+           if rid not in task_started_runs and rid not in tool_failure_observed_runs:
+               deliberate_no_op_excluded += 1
+               continue
+           ...
+   ```
+
+4. Add `deliberate_no_op_excluded` to diagnostics.
+
+Wait, but I need to think about this more carefully. The task says "zero non-harness FailureObserved events". This means:
+- Harness FailureObserved (the kind that `append_terminal_state_events.py` itself creates with `source: "harness"` or no source, or that come from `src/state.rs` panic hook, `src/prompt.rs` input_rejected) should NOT protect the run from being a no-op
+- Tool-call FailureObserved (with `source: "tool"`) should protect the run — if a tool had an error, it's not a deliberate no-op
+
+So the logic is:
+- If a run has RunCompleted error AND zero TaskStarted AND zero tool FailureObserved → deliberate no-op → exclude from missing
+- If a run has RunCompleted error AND has TaskStarted → real failure → keep in missing
+- If a run has RunCompleted error AND has tool FailureObserved → real failure → keep in missing
+- If a run has RunCompleted error AND zero TaskStarted AND zero tool FailureObserved → deliberate no-op → exclude
+
+This makes sense. The task says "zero TaskStarted events AND zero non-harness FailureObserved events". Non-harness = tool-call.
+
+Now let me also look at how FailureObserved payloads appear in the events file. Looking at the `append_terminal_events` function at line 694-701, the payload for retroactive FailureObserved has `"reason"` and `"retroactive": True`. Tool-call FailureObserved from prompt.rs line 906 has `"source": "tool"`.
+
+But wait - I need to check: do the FailureObserved events from the prompt.rs actually have the `"source"` field in the payload as seen by the python script? Looking at the Rust code:
+
+```rust
+crate::state::record(
+    crate::state::EventType::FailureObserved,
+    crate::state::Actor::Harness,
+    serde_json::json!({
+        "source": "tool",
+        "tool_call_id": tool_call_id.clone(),
+        "tool_name": tool_name.clone(),
+        "error_preview": preview.clone(),
+    }),
+);
+```
+
+And `record` stores this payload. But the `payload()` function in `append_terminal_state_events.py` might unwrap it. Let me look at the state recording to understand how events are serialized.
+
+Actually, let me look at test data more carefully to understand how the events are structured in the JSONL. Let me look at one of the test fixtures:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at how events are structured in test data:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_failure' in scripts/test_append_terminal_state_events.py  ▶ search 'test_find_missing' in scripts/test_append_terminal_state_events.py ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No existing tests for `find_missing_failure_observed`. Let me also check the `_maybe_append_event` function to understand how the script creates events, and look at the `append_state_event` module.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+Let me check the `_maybe_append_event` function and the `append_state_event` module to understand event format:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def _maybe_append_event' in scripts/append_terminal_state_events.py ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function and also read the append_state_event.py module.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:545..595 ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `append_state_event.py` to understand how events are stored:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_state_event.py ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the event format. Events in the JSONL have:
+- `event_type`: string (e.g., "FailureObserved", "TaskStarted", "RunCompleted")
+- `run_id`: string or null
+- `payload`: dict with arbitrary data
+- `actor`: string
+
+The `payload()` function in `append_terminal_state_events.py` extracts the payload dict. For tool-call FailureObserved from prompt.rs, the payload would have `{"source": "tool", "tool_call_id": "...", "tool_name": "...", "error_preview": "..."}`.
+
+For harness-originated FailureObserved from:
+- `state.rs` (panic hook): would have whatever payload was passed (likely `{"error": "rust_panic"}`)
+- `append_terminal_state_events.py` (retroactive): `{"reason": "retroactive: ...", "retroactive": true}`
+- `append_terminal_state_events.py` (current session): `{"reason": "...", "retroactive": true, ...}`
+
+For the purpose of detecting "non-harness" FailureObserved (i.e., tool-call failures), I should check for `data.get("source") == "tool"` in the payload.
+
+Now let me implement the changes. Here's my plan:
+
+### Changes to `scripts/append_terminal_state_events.py`:
+
+In `find_missing_failure_observed()`:
+1. Add tracking sets `task_started_runs` and `tool_failure_observed_runs`
+2. In the event loop: track TaskStarted events and tool-call FailureObserved events
+3. In the missing computation: exclude runs with zero TaskStarted AND zero tool FailureObserved
+4. Add `deliberate_no_op_excluded` to diagnostics
+
+### Changes to `scripts/test_append_terminal_state_events.py`:
+
+Add a test for the deliberate-no-op scenario.
+
+Let me now implement this. First, let me also check if the `FailureObserved` from `prompt.rs` tool error path includes `"source": "tool"`. Let me also check `commands_deepseek.rs` to see if there are other tool-call FailureObserved patterns.
+
+Actually, I already confirmed at line 906-914 of prompt.rs: the tool error FailureObserved includes `"source": "tool"` in the payload. That's the key signal.
+
+Now, for harness-originated FailureObserved:
+- `state.rs:85`: the panic hook records FailureObserved. Looking at the panic hook code more carefully...
+
+Let me look at the panic hook code around line 70-95:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a solid understanding. Let me implement the changes. First, let me look at how the panic hook creates FailureObserved to understand all FailureObserved payload patterns:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:60..90 ✓ (903ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The panic hook FailureObserved has payload:
+```json
+{
+    "panic_message": msg,
+    "panic_location": location,
+    "recorded_at_ms": now_ms(),
+}
+```
+
+This doesn't have `"source": "tool"` — it's a harness-originated FailureObserved.
+
+The retroactive FailureObserved created by `append_terminal_state_events.py` at line 694-701 has:
+```json
+{
+    "reason": "retroactive: ...",
+    "retroactive": true,
+    ...
+}
+```
+
+Also doesn't have `"source": "tool"`.
+
+And tool-call FailureObserved from prompt.rs:
+```json
+{
+    "source": "tool",
+    "tool_call_id": "...",
+    "tool_name": "...",
+    "error_preview": "...",
+}
+```
+
+So the right signal for "non-harness" FailureObserved is indeed `data.get("source") == "tool"`.
+
+Now let me also check: `input_rejected` FailureObserved from prompt.rs line 977-985:
+```json
+{
+    "source": "input_rejected",
+    "reason": "...",
+}
+```
+
+This is also a harness-originated FailureObserved — it doesn't indicate a tool failure.
+
+Now let me implement the changes.
+
+Actually wait — I want to double-check one thing: the task says "zero non-harness FailureObserved events". Let me re-read the Implementation Notes:
+
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded).
+
+So "non-harness FailureObserved" = tool-call FailureObserved (source == "tool"). Got it.
+
+Now let me implement. I'll edit `find_missing_failure_observed()` and add the test.
+
+Let me also think about edge cases:
+1. A run with RunCompleted error, zero TaskStarted, and a harness FailureObserved (e.g., input_rejected) — should be excluded as deliberate no-op. Yes, because there are no real tool failures.
+2. A run with RunCompleted error, a TaskStarted, and zero tool FailureObserved — should NOT be excluded (it started tasks but had no failures — something went wrong).
+3. A run with RunCompleted error, zero TaskStarted, and a tool FailureObserved — should NOT be excluded (a tool failed).
+
+This logic makes sense.
+
+Now let me write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have enough understanding. Let me implement the fix. I'll start by editing `find_missing_failure_observed()`:
+        Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+        are excluded — the missing terminal events are expected behaviour when a
+        session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
+  + 
+  +     Deliberate no-op runs (RunCompleted error status, zero TaskStarted events,
+  +     zero tool-call FailureObserved events) are excluded — journal-only,
+  +     assessment-only, and clean-tree planning failures exit with non-zero status
+  +     because no tasks were completed, but this is expected behaviour, not a
+  +     harness failure (Day 160).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  ···
+        failure_observed_runs: set[str] = set()
+        input_validation_excluded = 0
+        cancelled_excluded = 0
+  +     deliberate_no_op_excluded = 0
+  +     task_started_runs: set[str] = set()
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (63 → 92 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (63 → 92 lines)
+        Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+        are excluded — the missing terminal events are expected behaviour when a
+        session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
+  + 
+  +     Deliberate no-op runs (RunCompleted error status, zero TaskStarted events,
+  +     zero tool-call FailureObserved events) are excluded — journal-only,
+  +     assessment-only, and clean-tree planning failures exit with non-zero status
+  +     because no tasks were completed, but this is expected behaviour, not a
+  +     harness failure (Day 160).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  ···
+        failure_observed_runs: set[str] = set()
+        input_validation_excluded = 0
+        cancelled_excluded = 0
+  +     deliberate_no_op_excluded = 0
+  +     task_started_runs: set[str] = set()
+  +     tool_failure_observed_runs: set[str] = set()
+    
+  ... (43 more lines)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me add the test. Let me find a good place in the test file to add the new test case.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add the test cases. Let me find where to add them:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1190..1230 ✓ (912ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add test cases right before the `test_find_missing_model_call_started_detects_orphaned_completion` test at line 1200. Let me add tests for:
+
+1. `test_find_missing_failure_observed_excludes_deliberate_no_op` — a run with RunCompleted error, no TaskStarted, no tool FailureObserved → should be excluded
+2. `test_find_missing_failure_observed_includes_run_with_tasks` — a run with RunCompleted error and TaskStarted → should be in missing
+3. `test_find_missing_failure_observed_includes_run_with_tool_failure` — a run with RunCompleted error, no TaskStarted, but tool FailureObserved → should be in missing
+
+Let me also add a test for mixed scenarios and existing exclusions (input-validation, cancelled) still work.
+
+Let me write the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me add tests. I'll insert them before the `test_find_missing_model_call_started` tests:
+                self.assertNotIn("cancelled by next hourly session", reason)
+  + 
+  +     # --- find_missing_failure_observed tests ---
+  + 
+  +     def test_find_missing_failure_observed_excludes_deliberate_no_op(self):
+  +         """Deliberate no-op runs (zero TaskStarted, zero tool failures) are excluded."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rc-noop-0",
+  +                 "event_type": "RunCompleted",
+  +                 "run_id": "noop-run",
+  +                 "payload": {"status": "error", "error_detail": "exit code 1"},
+  +                 "timestamp_ms": 3000,
+  +             },
+  +         ]
+  +         missing, diagnostics = append_terminal_state_events.find_missing_failure_observed(events)
+  +         self.assertEqual(len(missing), 0,
+  +                          "Deliberate no-op runs should not be in missing")
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (3 → 124 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (3 → 124 lines)
+                self.assertNotIn("cancelled by next hourly session", reason)
+  + 
+  +     # --- find_missing_failure_observed tests ---
+  + 
+  +     def test_find_missing_failure_observed_excludes_deliberate_no_op(self):
+  +         """Deliberate no-op runs (zero TaskStarted, zero tool failures) are excluded."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rc-noop-0",
+  +                 "event_type": "RunCompleted",
+  +                 "run_id": "noop-run",
+  +                 "payload": {"status": "error", "error_detail": "exit code 1"},
+  +                 "timestamp_ms": 3000,
+  +             },
+  +         ]
+  +         missing, diagnostics = append_terminal_state_events.find_missing_failure_observed(events)
+  +         self.assertEqual(len(missing), 0,
+  +                          "Deliberate no-op runs should not be in missing")
+  +         self.assertEqual(diagnostics["deliberate_no_op_excluded"], 1)
+  +         self.assertEqual(diagnostics["input_validation_excluded"], 0)
+  ... (104 more lines)
+ ✓ (894ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the tests to verify everything works.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the tests:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I have 5 failing tests. Let me analyze them:
+
+1. `test_appends_failure_observed_for_error_completed_run` — expects `missing_failure_observed` to be 1, but got 0. The test creates a run with just RunCompleted (error status) and expects it to be in `missing`. But my change now classifies it as a deliberate no-op (zero TaskStarted, zero tool FailureObserved).
+
+2. `test_cancelled_run_gets_specific_failure_observed_reason` — expects 1 FailureObserved row, got 0. This test likely creates a cancelled run and expects the retroactive FO to be appended. But cancelled runs should already be excluded from `error_completed` in my code (line `if status == "cancelled": cancelled_excluded += 1; continue`).
+
+Wait, actually looking at the tests that fail, these are tests in the `append_terminal_events` function, not unit tests of `find_missing_failure_observed`. The `append_terminal_events` function calls `find_missing_failure_observed` and uses its results to decide which retroactive FailureObserved events to append.
+
+Let me look at the failing tests to understand what data they create and which runs they expect to get retroactive FailureObserved.
+
+The problem: some existing tests create runs with only RunCompleted (error status) and no other events — no TaskStarted, no FailureObserved. These runs are now being classified as "deliberate no-ops" and excluded from `missing`, which means no retroactive FailureObserved is appended for them.
+
+But wait — the existing tests weren't trying to test the deliberate-no-op scenario. They were testing the normal "run completed with error but no FailureObserved" scenario. The runs in those tests are simple test fixtures that don't include the full lifecycle.
+
+The key insight: In the real world, deliberate no-op sessions have RunCompleted error status + zero TaskStarted + zero tool FailureObserved. But in the test fixtures, the runs also have zero TaskStarted and zero tool FailureObserved — they were just simplified.
+
+The issue is that my new exclusion logic is too aggressive for the existing tests. Let me think about how to fix this while still achieving the objective.
+
+Looking at the failing tests more carefully:
+
+1. `test_appends_failure_observed_for_error_completed_run` (line ~489): Creates events with RunCompleted status="error" for "error-run", and probably some RunStarted/ModelCallStarted events. Let me read the test.
+
+2. `test_cancelled_run_gets_specific_failure_observed_reason` (line ~1159): This test is about cancelled runs, but the test creates a non-cancelled error run and expects FO to be appended. Wait, let me re-read the test name — it's about cancelled runs getting a specific FO reason. Let me look at it.
+
+3. `test_detects_and_closes_orphaned_run_from_previous_session` (line ~407): This is about orphaned runs from previous sessions. Let me look.
+
+4. `test_error_run_keeps_generic_failure_observed_reason` (line ~1195): Similar to #1.
+
+5. `test_skips_retroactive_failure_observed_on_second_invocation` (line ~578): Looking at the FailureObserved being appended for "error-run".
+
+Let me read these tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Some existing tests fail because they create simple error runs without TaskStarted/tool-failure events. Let me examine these:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:440..490  ▶ read scripts/test_append_terminal_state_events.py:370..420 ✓ (975ms)
+ ✓ (4.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The `test_appends_failure_observed_for_error_completed_run` test creates:
+- "error-run": RunStarted, ModelCallStarted, RunCompleted(error)
+- "success-run": RunStarted, ModelCallStarted, RunCompleted(completed)
+- "current-run": RunStarted, ModelCallStarted, ModelCallCompleted, RunCompleted(completed)
+
+The "error-run" has RunStarted and ModelCallStarted but no TaskStarted. My exclusion logic says: if no TaskStarted AND no tool FailureObserved, it's a deliberate no-op.
+
+The problem is that a real error run should have at least a RunStarted event, and I need to distinguish between:
+1. A real run that started (has RunStarted) but had no tasks (unlikely but possible)
+2. A deliberate no-op session that had no TaskStarted
+
+Wait — actually the real issue is more subtle. The `test_appends_failure_observed_for_error_completed_run` test has a `RunStarted` event but NOT a `TaskStarted` event. And `RunStarted` is different from `TaskStarted`.
+
+Let me check: in the real world, what events does a deliberate no-op session produce?
+
+A journal-only or assessment-only session would have:
+- RunStarted (always)
+- ModelCallStarted (maybe, if it made any API calls)
+- ModelCallCompleted (maybe)
+- RunCompleted (error status, since no tasks completed)
+- NO TaskStarted events
+
+And a real implementation session that failed would have:
+- RunStarted
+- ModelCallStarted
+- TaskStarted (for the actual task)
+- Maybe file edits etc.
+- RunCompleted (error status)
+- Possibly tool FailureObserved events
+
+So the distinction between a deliberate no-op and a real failure IS the absence of TaskStarted events. But the issue is: in the test, the "error-run" has RunStarted + ModelCallStarted + RunCompleted(error) — this could be a real session that had model calls but no tasks. Without seeing TaskStarted, it looks like a deliberate no-op.
+
+The problem is that my test for the no-op scenario is too simple — in the real world, a deliberate no-op session has RunStarted + (optionally ModelCallStarted) + RunCompleted(error) and ZERO TaskStarted events. That's exactly what the "error-run" in the test looks like!
+
+So either:
+1. The test is testing an unrealistic scenario (a real implementation session always has TaskStarted), or
+2. I need a different signal to distinguish no-op from real failure.
+
+Let me think about this more carefully. The task says:
+
+> Add a tracking set for runs that have TaskStarted events and another for runs that have FailureObserved with tool-call lineage (i.e., non-harness FailureObserved).
+
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded).
+
+So the task explicitly defines the signal as: zero TaskStarted AND zero tool FailureObserved. This means the test for "error-run" (which has RunStarted + ModelCallStarted + RunCompleted but no TaskStarted) would be classified as a deliberate no-op.
+
+The question is: is this correct behavior? In the real world, would a real implementation session ever have zero TaskStarted events? 
+
+Looking at the harness: `TaskStarted` is emitted when a task attempt begins (in `scripts/evolve.sh` via `append_state_event` or in the Rust code). In a normal implementation session, the harness always starts tasks. A session that crashed before starting any tasks would still have RunStarted events but no TaskStarted — but such a crash would likely produce a `rust_panic` FailureObserved (via the panic hook).
+
+So the scenario:
+- Session starts → RunStarted
+- Crashes before task starts → no TaskStarted
+- Panic hook records FailureObserved + RunCompleted(error)
+
+This would be caught by my tool_failure check? No — the panic hook FailureObserved doesn't have `source: "tool"`. It has `{"panic_message": ..., "panic_location": ...}`. So a crashed session before task start would have:
+- RunStarted
+- FailureObserved (from panic hook, no source field)
+- RunCompleted(error)
+
+This WOULD be classified as a deliberate no-op! And that seems wrong — a crash is not a deliberate no-op.
+
+Hmm, but the task says "zero non-harness FailureObserved events". A panic hook FailureObserved IS a harness FailureObserved. So my logic is correct per the task spec.
+
+But the task also says the test should work. The failing tests create runs with RunStarted + ModelCallStarted + RunCompleted(error) — no TaskStarted, no FailureObserved of any kind. This is:
+1. Not a real implementation session (no tasks)
+2. Not a crash (no FailureObserved)
+3. A simplified test fixture
+
+The problem is that these tests use a simplified event stream, and my new exclusion logic treats the simplified runs as deliberate no-ops.
+
+I think the right fix is to update the failing tests. The tests that expect retroactive FailureObserved for error-run should either:
+- Add TaskStarted to the error-run to make it a "real" implementation session, or
+- Accept that the error-run is now classified as a deliberate no-op
+
+But wait — there's a subtlety. Let me re-read the task more carefully:
+
+> If the fix would require reading full transcripts or external session data (not available in the events stream), narrow scope to only the event-level check and skip deeper session analysis.
+
+So the task acknowledges that the event-level check might not be perfect. The key signal is: zero TaskStarted + zero tool FailureObserved = deliberate no-op.
+
+Looking at the failing tests:
+
+`test_appends_failure_observed_for_error_completed_run`: "error-run" has RunStarted + ModelCallStarted + RunCompleted(error). This represents a session that started, made model calls, but exited with error. In reality, a session that made model calls but never started a task is... a planning/assessment session that failed to pick any tasks. That IS a deliberate no-op scenario! The assessment ran, decided there were no tasks, and exited. The error status is because no tasks completed, not because something broke.
+
+So classifying this as a deliberate no-op is actually CORRECT. The test needs to be updated to either:
+1. Add TaskStarted to the error-run, or
+2. Accept the new behavior
+
+Let me update the tests that fail. I need to read each one to understand what they test.
+
+For `test_appends_failure_observed_for_error_completed_run`: The test is about retroactive FailureObserved for error-completed runs. The error-run has RunStarted + ModelCallStarted + RunCompleted(error) but no tasks. To make this a "real" error, I should add a TaskStarted event.
+
+For `test_error_run_keeps_generic_failure_observed_reason`: Similar.
+
+For `test_cancelled_run_gets_specific_failure_observed_reason`: Wait, this test is about cancelled runs...
+
+Let me read these tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 18.6s (2 ✓)
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1150..1210  ▶ read scripts/test_append_terminal_state_events.py:530..600 ✓ (3.5s)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the failing tests:
+
+1. `test_appends_failure_observed_for_error_completed_run` (line 453-489): Creates "error-run" with RunStarted + ModelCallStarted + RunCompleted(error) — no TaskStarted. Expects it to be in `missing` and get a retroactive FO.
+
+2. `test_skips_retroactive_failure_observed_on_second_invocation` (line 550): Same pattern — "error-run" with RunStarted + ModelCallStarted + RunCompleted(error). First invocation expects FO appended.
+
+3. `test_error_run_keeps_generic_failure_observed_reason` (line 1165): Same pattern.
+
+4. `test_cancelled_run_gets_specific_failure_observed_reason`: Let me read this one too.
+
+5. `test_detects_and_closes_orphaned_run_from_previous_session`: Let me re-read this.
+
+Wait — for test 4 (cancelled), let me look at it. Let me also think about test 5.
+
+Actually, for `test_cancelled_run_gets_specific_failure_observed_reason`: The test name says "cancelled run" but the test at line 1159 checks `fo_rows` with `run_id == "cancelled-run"`. Let me read the full test to see how it creates `cancelled-run`.
+
+For `test_detects_and_closes_orphaned_run_from_previous_session`: The assertion at line 407 checks `len(rows) == 8` but got 9. This is an orphan detection test — the extra event is likely not related to my change. Wait, actually it might be because the test has 6 original events, and the orphan closure adds a RunCompleted (making 7). But the result says 8 expected, 9 got. The extra one might be a retroactive FailureObserved that was NOT added before but IS being added now? No, the opposite — I'm REMOVING retroactive FO, so count should go DOWN, not up.
+
+Actually wait — looking at the error: `AssertionError: 9 != 8`. This means there are now 9 rows instead of the expected 8. That doesn't make sense with my change removing retroactive FO. Let me re-read the test.
+
+Let me look at the orphan test more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 11.2s (2 ✓)
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:340..370  ▶ read scripts/test_append_terminal_state_events.py:1120..1170 ✓ (3.5s)
+ ✓ (2.4s)
+  2 tools completed in 4.7s (2 ✓)
+
+

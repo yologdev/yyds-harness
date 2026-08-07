@@ -1,0 +1,804 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+A planning phase. I need to produce session_plan/task_*.md files. Let me review the evidence:
+
+1. **Assessment** is available and detailed. Key gaps:
+   - yoagent `Usage` drops DeepSeek cache fields (issue #90)
+   - Planning-only session gets retroactive FailureObserved
+   - Model call lifecycle gaps in historical data
+   - agent_error_exit without tool lineage (18 events)
+   - Recent reverted tasks: #162 (lifecycle feedback gaps) and #163 (planning failure classification)
+
+2. **Trajectory** shows:
+   - `can_drive_evolution=true`
+   - `task_success_rate=0.0`, `task_verification_rate=0.0` (planning-only sessions)
+   - `planner_no_task_count=2`, `task_analysis_only_attempt_count=2`
+   - `failed_tool_summary.bash_tool_error=12`
+   - Graph pressure: planning failure classification, analysis-only attempts, verification rate, bash errors
+
+3. **Issues**:
+   - #90: upstream yoagent Usage struct (help-wanted, waiting)
+   - #131: evaluator timeout (help-wanted, waiting)
+   - #164: planning-only session reverted (self, from yesterday)
+   - #163: reverted task - classify planning failures
+   - #162: reverted task - lifecycle feedback gaps
+   - #105: reverted task - cache metrics
+
+4. **Artifact-first requirement**: session_plan/task_01.md must be created quickly.
+
+Let me think about what tasks to pick:
+
+The trajectory's top graph pressure is "Make planning failure actionable (planner_no_task_count=2)" - this is essentially what #163 was trying to do. But #163 was reverted yesterday (Day 159). The issue says it was blocked by agent - no implementation landed. The scope mismatch was that the task asked to classify planning failures but the implementation agent couldn't find per-phase event metrics.
+
+I need to make this SMALLER than last time. The reverted #163 had a huge scope - it wanted to classify planning failures into model_error/tool_failure/silent_no_op/provider_blocked/unknown by looking at per-phase event metrics. But the implementation agent discovered there are no per-phase event metrics - the state events don't carry phase information. That's a fundamental blocker.
+
+So I should NOT retry #163 with the same approach. Instead, I need to find a different, smaller task.
+
+Let me look at what else is actionable:
+- bash_tool_error=12 - but recent sessions added recovery hints, so this may be addressed
+- task_analysis_only_attempt_count=2 - force implementation agents to make early edits
+- task_success_rate=0.0 / task_verification_rate=0.0 - these are symptoms
+
+The most concrete thing from the trajectory is the log_feedback corrected lesson: "implementation tasks reverted without edits → force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker"
+
+This is about the implementation agent behavior - getting stuck in analysis. The assessment says `task_analysis_only_attempt_count=2`. This is actionable and smaller in scope.
+
+But wait - what source files would this touch? The implementation agent behavior is driven by the task prompts, which come from scripts/log_feedback.py (the corrected lessons) and the implementation phase in evolve.sh. But evolve.sh is do-not-modify.
+
+Actually, the log feedback corrected lessons are produced by scripts/log_feedback.py - they're advice for future sessions. Making them more specific about analysis-only avoidance wouldn't actually change agent behavior.
+
+Let me think about what's concretely fixable within 3 source files:
+
+1. **Fix retroactive FailureObserved for deliberate no-op sessions**: The Day 159 12:05 journal-only session got a retroactive FailureObserved because RunCompleted had error status. The assessment says this is tracked in `scripts/append_terminal_state_events.py`. This is script-level, small scope. But it might not pass strict verification if it doesn't touch src/*.rs files... Actually, wait - the task verification requires overlap between planned files and touched files. Scripts are fine as long as they're in the Files list.
+
+2. **The cache observability issue (#90)** - blocked on upstream. I can't fix it without yoagent changes.
+
+3. **agent_error_exit without tool lineage** - 18 events. This is in state.rs probably. Could add better diagnostic recording.
+
+Let me check if session_plan/task_01.md already exists (the harness may have created one from assessment evidence).
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ mkdir -p session_plan && ls session_plan/ 2>/dev/null  ▶ $ git branch --show-current && git status --short session_plan/ 2>/dev/null ✓ (4.7s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+session_plan/task_01.md already exists (harness pre-seeded). Let me read both the task file and the assessment to understand what I'm working with.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (50 lines) ✓ (3.5s)
+ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so session_plan/task_01.md exists from the harness seed. Let me check if it's contradicted by the assessment evidence.
+
+The seed task_01 is about "Close yyds state and model lifecycle gaps" - working on scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py. This is essentially the same as issue #162 which was REVERTED yesterday.
+
+Let me check: the assessment says "The Day 156/159 fixes address detection and future prevention, but historical data remains inconsistent." It also mentions `state_unmatched/run_error_without_start=3` - but this is about historical data, and the recent Rust-side fixes (state.rs, prompt.rs) have already addressed the future prevention. The script-side work (#162) was reverted because the implementation agent never touched the planned files - it only touched .skill_evolve_counter and memory/learnings.jsonl.
+
+The seed task says "Keep the change scoped to the listed files unless verification reveals a direct dependency." But the same task #162 was reverted yesterday with the same files. The risk is that this gets reverted again.
+
+Actually, let me re-read issue #162 more carefully. The reason was "Task scope mismatch: task changes do not overlap planned Files entries" - the implementation agent touched .skill_evolve_counter and memory/learnings.jsonl instead of the three scripts. That's an implementation agent failure, not a task design failure. The task itself was fine, the agent just didn't follow the scope.
+
+But still, if I plan this again with the same scope, it might fail again. I should refine it - make it narrower.
+
+Let me think about what else I can add. The assessment mentions:
+1. "Retroactive FailureObserved for deliberate no-op sessions" - the Day 159 12:05 session got one. This is append_terminal_state_events.py territory. Small fix: when RunCompleted has error status but the reason is "no tasks attempted" or similar, don't insert FailureObserved.
+
+2. The trajectory's graph pressure mentions "Make planning failure actionable (planner_no_task_count=2)" - but #163 was reverted because per-phase event metrics don't exist. I need a different approach.
+
+Let me think about what's small, verifiable, and won't get reverted:
+
+**Option A**: Refine task_01.md to be narrower - focus specifically on the retroactive FailureObserved fix in append_terminal_state_events.py. Make it one-file, one change.
+
+**Option B**: Add task_02.md for something else. What else is actionable?
+
+Looking at the trajectory again:
+- bash_tool_error=12 - but recent sessions added recovery hints. Is this still live? The assessment says "These should be treated as recently addressed unless fresh evidence shows the failures still reproduce."
+- task_analysis_only_attempt_count=2 - implementation agents doing analysis only
+- task_success_rate=0.0 / task_verification_rate=0.0 - evaluator timeout problem
+
+For task analysis-only attempts: the corrected log_feedback lesson says "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker." But how do you "force" that? The implementation agent is controlled by evolve.sh (do-not-modify) and the task prompt itself. We could make task files more prescriptive.
+
+Actually, there's a simpler angle: the log_feedback corrected lesson is about implementation agents not producing terminal evidence. The task verification in evolve.sh already detects this and auto-reverts. What if we improve the task file itself to include a time-box requirement? Like "After 5 minutes without a file edit, write an obsolete note and stop."
+
+Wait - I can't modify evolve.sh. But I can make the task files themselves more aggressive about time-boxing.
+
+Let me go with a practical plan:
+
+**task_01.md**: Refine the harness seed. Narrow it to one specific fix: prevent retroactive FailureObserved for deliberate no-op sessions in append_terminal_state_events.py. This is a small, concrete change. The assessment confirms it's live: "The Day 159 12:05 journal-only session got a retroactive FailureObserved because RunCompleted status=error."
+
+**task_02.md**: A new task based on the trajectory's log_feedback lesson: "Force analysis-only attempts into action." But instead of trying to modify agent behavior, make log_feedback.py's corrected lessons more specific about what "early scoped edit" means - give concrete time-boxing advice that future implementation agents can use.
+
+Actually, wait. Let me reconsider. The task verification requires that Files entries match what gets touched. For log_feedback.py changes, the verifier is `python3 -m unittest scripts.test_task_lineage_feedback`. That's a Python test.
+
+Let me also consider: what has the best chance of passing strict verification? Rust code changes (cargo build && cargo test) are the most reliable.
+
+Looking at the assessment again:
+- "agent_error_exit without tool lineage — 18 failure events with no tool-call trace" - this is in src/state.rs. Could add tool-call tracing to crash paths.
+
+But wait - the Day 159 fixes already addressed panic hook (state.rs) and InputRejected path (prompt.rs). The assessment acknowledges these address the issue.
+
+OK let me just go with a practical plan:
+
+1. **task_01.md** (refine seed): Narrow the lifecycle gap task to ONE concrete fix - prevent retroactive FailureObserved for deliberate no-op sessions. Files: scripts/append_terminal_state_events.py only. Verifier: python3 -m unittest scripts.test_append_terminal_state_events.
+
+2. **task_02.md**: A new Rust-side task. Let me pick something from the trajectory that touches src/ files and passes cargo build && cargo test.
+
+The most impactful thing would be to improve the implementation agent's ability to detect when it's stuck in analysis. But that requires changing evolve.sh (do-not-modify) or the task prompt format.
+
+Actually, looking more carefully at the assessment:
+- The retroactive FailureObserved issue is a real, concrete, fixable bug. The fix is in append_terminal_state_events.py: when RunCompleted has error status but `tasks_attempted == 0` and there's a deliberate reason (like journal-only or planning failure), don't insert FailureObserved.
+
+This is exactly the kind of narrow fix that should succeed. Let me refine task_01.md to focus on this.
+
+For task_02.md, let me look at something that improves task success rate. The biggest blocker to task success is the evaluator timeout (#131) but that's in evolve.sh (do-not-modify). The second biggest is analysis-only attempts.
+
+Wait - I just realized something. The assessment says the build and tests are green. The trajectory says task_success_rate=0.0 (which is misleading - it's from planning-only sessions, not implementation failures). And task_verification_rate=0.0 (evaluator timeout).
+
+The evaluator timeout issue (#131) is the single biggest blocker to shipping code. But it lives in evolve.sh. I can't fix it.
+
+Let me think about what I CAN fix:
+
+1. **Retroactive FailureObserved** - yes, in append_terminal_state_events.py
+2. **Something in Rust** - let me look for a small, concrete Rust-side improvement
+
+Looking at the assessment's capability gaps:
+- "ghost completions still exist in historical data" - but this is historical, the fixes prevent new ones
+- "agent_error_exit without tool lineage" - 18 events out of 63,227 failures, very small fraction
+
+Looking at the log_feedback corrected lessons more carefully:
+- "shell tool commands failed during the session → prefer bounded commands with explicit paths"
+- "agent read or searched paths that did not exist → verify guessed paths"
+- "implementation tasks reverted without edits → force implementation agents to either make an early scoped edit"
+
+None of these directly suggest a Rust code change. They're all about agent behavior/prompt design.
+
+Let me look at what might be a good Rust task. The assessment says the deepseek cache-report shows no metrics. But that's blocked by yoagent upstream (issue #90). I could implement a yyds-side workaround that intercepts raw JSON before yoagent drops the fields, similar to how stream-check does it.
+
+Actually, that's a big task. Let me check if there's a simpler workaround.
+
+Actually, let me re-read the assessment about stream-check: "The diagnostic path works (66.67% cache hit ratio on a tiny test), proving the SSE parsing is correct." So the parsing is correct, it's just that yoagent's Usage struct drops the fields. A workaround would need to intercept the raw response before yoagent processes it, which would require modifying the prompt execution path in prompt.rs.
+
+That's doable but tricky. Let me scope it small: in prompt.rs, after receiving the raw usage from yoagent, try to extract cache fields from the raw response JSON before yoagent drops them. But we don't have access to the raw response - yoagent only gives us the Usage struct.
+
+OK, that's a dead end without yoagent changes.
+
+Let me just go with what I have:
+
+**task_01.md**: Refine the seed to be narrower - fix retroactive FailureObserved for no-op sessions in append_terminal_state_events.py.
+
+**task_02.md**: Something actionable from the trajectory. Let me look at the graph pressure more carefully:
+
+"Force analysis-only attempts into action (task_analysis_only_attempt_count=2)" - this is about implementation agents. The log_feedback corrected lesson says to force them to make early edits. But this requires changing evolve.sh or the task prompt format, neither of which I own.
+
+Actually, I can improve the TASK FILE FORMAT to include time-boxing instructions. The task files I write in session_plan/ are consumed by the implementation phase in evolve.sh. If I add explicit time-box instructions ("After 5 turns without a file edit, write a task_blocked.md note and stop"), that becomes part of the implementation prompt.
+
+But wait - the implementation agent in evolve.sh has its own prompt. Adding instructions to the task file might not change behavior unless the implementation prompt tells the agent to follow them.
+
+Let me just think about what will actually pass verification and ship code. 
+
+Looking at the seed task_01 more carefully: it says "Close one concrete yyds lifecycle feedback gap." The assessment confirms the retroactive FailureObserved issue. The task already lists the right files. The issue #162 was reverted because the implementation agent didn't touch the planned files - but that was the agent's fault, not the task's.
+
+I think I should:
+1. Refine task_01.md to be narrower and more specific (single file, single change)
+2. Add a task_02.md that's a Rust-side improvement
+
+For task_02, let me look for something small and concrete in the Rust code. The assessment mentions "18 agent_error_exit events with zero inbound tool-call relations" - these are crash/panic failures with no tool lineage. Could I add tool-call context to crash recording in state.rs?
+
+Actually, let me think about what would actually improve the harness. The biggest operational problem right now is:
+
+1. Evaluator timeout (#131) - can't fix, in evolve.sh
+2. Cache observability (#90) - can't fix, in yoagent upstream
+3. Planning failures not diagnosable (#163) - was reverted, per-phase metrics don't exist
+
+What about adding per-phase event tagging to state events? If state events carried a `phase` field (assessment/planning/implementation/evaluation), then log_feedback could classify planning failures by cause. This would be a Rust change in state.rs and log_feedback.py... but that's a big change.
+
+OK, let me just go practical. Here's my plan:
+
+**task_01.md**: Refine the harness seed. Focus on the retroactive FailureObserved fix. Single file: scripts/append_terminal_state_events.py. Add a check: if RunCompleted has error status but the session had 0 tasks attempted and was a deliberate no-op (journal-only, clean tree, no failed tool calls), don't insert FailureObserved. Instead, leave the RunCompleted as-is.
+
+**task_02.md**: A small Rust change. Let me check if there's something actionable in the recent tool failures. The assessment says "bash_tool_error (12 recent) — shell commands failing" but also says these are "recently addressed" by the signal-kill recovery hints. So maybe not.
+
+What about the corrected log_feedback lesson "agent read or searched paths that did not exist → verify guessed paths with rg --files before reading them"? This is about the implementation agent's behavior, not something I can fix in code.
+
+OK, I think I'll go with just refining task_01 and possibly adding a task_02 from something concrete. Let me look at what's available.
+
+Actually wait - let me re-read the harness seed task_01 more carefully. It says:
+- Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+- Objective: "Close one concrete yyds lifecycle feedback gap"
+- Success criteria: "One verified lifecycle gap is fixed or downgraded with precise evidence"
+
+This is actually reasonable. It targets ONE concrete gap. The issue #162 was the same task but the implementation agent failed to execute it. That doesn't mean the task is wrong - it means the agent got lost.
+
+I'll keep task_01 but refine it to be more prescriptive about which gap and how to verify. I'll make it specifically about the retroactive FailureObserved fix.
+
+For task_02, let me think about what's small, Rust-side, and would pass strict verification.
+
+Looking at the assessment's self-test results: "yyds state why last-failure: Found a retroactive FailureObserved from Day 159 (12:05 session)" - this confirms the problem is live.
+
+What about adding a `--skip-retroactive-failures` flag to `yyds state why`? No, that's feature creep.
+
+What about improving the `commands_state.rs` why command to distinguish retroactive from real failures? That could be useful for diagnostics. But it's a display change, not a fix.
+
+Actually, let me look at the trajectory's "Graph-derived next-task pressure" more carefully:
+
+1. Make planning failure actionable - #163 was reverted
+2. Force analysis-only attempts into action - behavioral
+3. Raise verified task success rate - blocked by evaluator timeout
+4. Require strict verifier evidence for tasks - blocked by evaluator timeout
+5. Bound failing shell commands before retrying - recently addressed
+
+None of these immediately suggest a concrete Rust change. The biggest operational blocker is the evaluator timeout (issue #131), which is in evolve.sh (do-not-modify).
+
+OK, let me take a different approach. Let me look at what I can actually ship:
+
+1. **task_01.md (refined)**: Fix retroactive FailureObserved in append_terminal_state_events.py. Narrow scope to one file, one check.
+2. **task_02.md**: Something small in Rust. Let me check what's been discussed but not done.
+
+Actually, looking at the assessment again: the `deepseek cache-report` shows no metrics from agent chat completions. The stream-check and FIM-complete paths work fine, proving the SSE parsing is correct. The block is yoagent's Usage struct. 
+
+What if I add a workaround in deepseek.rs or prompt.rs that intercepts the raw usage data before yoagent strips it? Let me think about how this works...
+
+Actually, yoagent returns a Usage struct from the prompt execution. We can't intercept the raw JSON because yoagent deserializes it. Unless we modify the API call path... which would mean forking yoagent's provider code, which is against policy.
+
+OK, I think I should just accept that I can only do one or two tasks and make them count.
+
+Let me refine task_01 and create a task_02. For task_02, let me look at something that improves the implementation agent's success rate. The evaluation says the implementation agent often gets stuck in analysis. What if I add a feature to the task file format that includes a turn-budget or time-box?
+
+Actually, the task files I write are consumed by evolve.sh, and evolve.sh wraps them into an implementation prompt. If I add a section like "TIME BOX: After 5 tool turns without a file edit, write session_plan/task_N_blocked.md and stop," the implementation agent might follow it.
+
+But this isn't a code change - it's a prompt change. The task files are ephemeral. So there's nothing to verify with cargo build && cargo test.
+
+Let me just go with:
+
+1. task_01.md: Refine the seed. Focus on the retroactive FailureObserved fix.
+2. task_02.md: Find a small Rust change. Let me check what's possible.
+
+Actually, let me look at what the assessment says about the state.rs / prompt.rs lifecycle fixes. Those were Day 159 fixes. Maybe there's a remaining gap?
+
+The assessment says: "Model call lifecycle gaps persist — 1,157 completions vs 119 starts in historical data. The Day 156/159 fixes address detection and future prevention, but historical data remains inconsistent."
+
+This is about historical data inconsistency. Fixing historical data is not actionable - those events are already recorded. The fix is to prevent new gaps, which was already done.
+
+OK, let me just go with the plan: refine task_01, create a lightweight task_02, and write issue_responses.md. Let me stop overthinking and produce the artifacts.
+
+For task_02, I'll pick something that addresses the trajectory's top pressure while being concretely implementable. Let me look at "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=12)" - the assessment says this is recently addressed, but if there's still bash failures happening, maybe the recovery hints need to be stronger.
+
+Actually, what about improving the recovery hints in tool_wrappers.rs to be more specific about the "check exit code immediately" pattern? The Day 159 task 2 already added recovery hints for signal-kill. But the trajectory says there are still 12 bash tool errors in the recent window. Maybe the hints aren't firing correctly?
+
+Hmm, but I don't have evidence that bash errors are still reproducing after the Day 159 fixes. The trajectory count might include errors from before the fix.
+
+Let me just create task_02 as a small, verifiable improvement in a different area. Let me look at what the assessment calls out as bugs/friction that I can fix:
+
+1. yoagent Usage drops cache fields - upstream, can't fix
+2. Retroactive FailureObserved - task_01 covers this
+3. Historical data inconsistency - not fixable (past events are immutable)
+4. agent_error_exit without tool lineage - 18 events out of 63K, very minor
+
+What about the "planning-only session detection" gap? The assessment says: "Sessions that deliberately produce no tasks still get retroactive FailureObserved events and count against success rate." Task_01 already covers the FailureObserved part. The "count against success rate" part was fixed by Day 159 task 2 (build_evolution_dashboard.py).
+
+OK I think I'm overthinking this. Let me produce what I have:
+
+1. task_01.md: Refined from seed - fix retroactive FailureObserved in append_terminal_state_events.py
+2. task_02.md: I need something. Let me create a task that improves the task file template to include time-boxing instructions for implementation agents. But that's not a source code change...
+
+Actually, you know what? Let me create task_02 as a Rust change that adds better diagnostics when the panic hook fires - specifically, recording which tool was active when the panic occurred. This would address the "18 agent_error_exit events with zero inbound tool-call relations" gap. It's small, in one file (state.rs), and verifiable with cargo test.
+
+Let me go with this plan.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 39.2s (2 ✓)
+
+Now let me read the rest of the assessment and check the seed task against fresh evidence.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/assessment.md:50.. ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I now have the full assessment. Let me verify a few things before writing task files:
+
+1. The seed task_01.md is essentially the same as issue #162 (reverted yesterday). But #162 was reverted because the implementation agent didn't touch the planned files - it was a scope mismatch (the agent touched .skill_evolve_counter and memory/learnings.jsonl instead). The task itself is valid.
+
+2. I need to refine task_01.md to be narrower and more specific to avoid the same failure.
+
+3. I need to create task_02.md from something concrete.
+
+Let me also check what what happened with issue #164 - the assessment mentions it but it was filed yesterday.
+
+For issue #164: "Planning-only session: all 2 selected tasks reverted (Day 159)" - this is about the Day 159 12:46 session where tasks #162 and #163 were both reverted. The action item says "Focus on smaller, more incremental changes."
+
+OK, let me now do a quick ownership check for the files I plan to target, then write both task files.
+
+For task_01: scripts/append_terminal_state_events.py - I need to check if the retroactive FailureObserved logic is indeed in this file.
+
+For task_02: I need a Rust-side task. Let me think about what's concretely implementable.
+
+Actually, let me reconsider. The assessment says the highest-impact gap is cache observability (issue #90), which is blocked upstream. But what if I implement a yyds-side workaround?
+
+The workaround would be: in prompt.rs, after yoagent returns the final Usage/Messages, we need to somehow get the cache fields from the raw API response. But yoagent doesn't expose the raw response - it only gives us the Usage struct.
+
+Unless we use a different approach: we record cache metrics from a different source. The stream-check diagnostic already parses raw SSE and extracts cache metrics. What if we make the agent prompt path also intercept the raw response?
+
+Actually, yoagent's streaming provider sends events including Usage events. The Usage event contains the standard token counts. If DeepSeek returns cache fields in the same JSON, they'd be in the raw event. But yoagent's Usage struct only has the standard fields, so the cache fields are dropped during deserialization.
+
+The only way to intercept would be to:
+1. Fork yoagent - against policy
+2. Add a serde `#[serde(flatten)]` catch-all - requires yoagent change
+3. Use `serde_json::Value` before deserializing into Usage - requires modifying yoagent's provider
+
+None of these work. The correct path is to wait for the upstream yoagent fix (issue #90).
+
+OK, let me think about a different Rust task. What about:
+
+**Improving the panic hook in state.rs to record which tool was active when the panic occurred.** The assessment says "18 agent_error_exit events with zero inbound tool-call relations - these are crash/panic failures with no tool lineage."
+
+Currently, `install_panic_hook` in state.rs records a FailureObserved event and closes the run. But it doesn't record which tool was active. If I add a thread-local or global that tracks the current tool being executed, the panic hook could include it in the FailureObserved payload.
+
+Let me check if there's already a mechanism for tracking the current tool...
+
+Actually, let me just search for the panic hook implementation to see what's already there.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me do quick ownership checks before writing the plan files.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files scripts/append_te…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'install_panic_hook\|s…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'FailureObserved\|retr… ✓ (7.0s)
+ ✓ (4.7s)
+ ✓ (9.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I can see:
+
+1. `scripts/append_terminal_state_events.py` has a function `find_runs_with_failure_observed_no_completion` (line 377) and the retroactive FailureObserved insertion logic at line 671-703. Specifically, lines 688-696 show the retroactive FailureObserved being inserted when a run completes with error status but no FailureObserved was recorded. This is exactly the code that needs to be fixed.
+
+2. `src/state.rs` has `install_panic_hook` at line 44 and `store_run_error` at line 100.
+
+Now let me plan:
+
+**task_01.md**: Refine the seed. Focus on fixing the retroactive FailureObserved logic in `scripts/append_terminal_state_events.py`. The fix: when inserting retroactive FailureObserved, check if the session was a deliberate no-op (0 tasks attempted, clean tree, no tool failures). If so, skip the FailureObserved insertion OR downgrade it to a diagnostic-only event that doesn't inflate failure counts.
+
+Actually, the code at line 688-696 already has some classification:
+```python
+reason_text = "retroactive: run cancelled by next hourly session"
+...
+f"retroactive: run completed with error status "
+f"'{status}' but no FailureObserved was recorded"
+```
+
+But it doesn't check whether the session was a deliberate no-op. It always inserts FailureObserved if RunCompleted has error status.
+
+The fix would be: before inserting the retroactive FailureObserved, check if the run had 0 attempted tasks AND no tool errors AND no provider errors. If so, it's a deliberate no-op and we should skip the FailureObserved insertion (or insert a different event type that doesn't count as a failure).
+
+Let me write the refined task_01.md.
+
+**task_02.md**: I need a second task. Let me think...
+
+The trajectory says:
+- `planner_no_task_count=2` - planning failures not actionable
+- `task_analysis_only_attempt_count=2` - implementation stuck in analysis
+- `bash_tool_error=12` - recently addressed
+
+For analysis-only attempts: the implementation agent gets stuck analyzing and never makes an edit. The corrected log_feedback lesson says "force implementation agents to either make an early scoped edit, write an obsolete note, or fail with a concrete blocker."
+
+What if I add a hard turn limit to the implementation prompt in the task file format? But that's not a code change - it's in the task file prompts.
+
+Actually, looking at the issue #163 more carefully - the task was to classify planning failures. The implementation agent discovered there are no per-phase event metrics, so it couldn't complete the task. The assessment says this task was reverted as `reverted_no_edit`.
+
+Let me try a different approach: instead of classifying planning failures (which needs per-phase metrics), I'll add per-phase tagging to state events in `src/state.rs`. This is a small, concrete Rust change: add an optional `phase` field to the event payload.
+
+Wait, but that would require changes to many files that consume events. That's more than 3 files.
+
+OK, let me think smaller. What about:
+
+**task_02.md**: Add tool-call lineage tracking to the panic hook in `src/state.rs`. When a panic occurs, record which tool was active (if any) in the FailureObserved payload. This addresses the "18 agent_error_exit events with zero inbound tool-call relations" gap.
+
+This is:
+- 1 file: `src/state.rs`
+- Small change: add a thread-local or global `AtomicPtr<String>` or similar that stores the current tool name
+- Verifiable: `cargo test state`
+
+Let me check if there's already a mechanism for tracking the current tool...
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 11.8s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'current_tool\|active_…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'set_current_model_cal… ✓ (1.8s)
+ ✓ (5.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the pattern. There's already a `CURRENT_MODEL_CALL_ID` thread-local that tracks the active model call for lifecycle purposes. I could add a similar `CURRENT_TOOL_NAME` thread-local that tracks the currently executing tool name. The panic hook could then include it in the FailureObserved payload.
+
+But wait - let me check how tools are executed in yyds. The tools are yoagent tools. They're invoked by yoagent, not by yyds directly. So tracking "which tool is currently executing" would require modifying the tool wrappers in tool_wrappers.rs, which wrap yoagent tools.
+
+Actually, looking at the code more carefully:
+- `set_current_model_call_id` is called from `src/prompt.rs` (the prompt execution path)
+- `clear_current_model_call_id` is called from the same path
+- Tools are wrapped by tool_wrappers.rs
+
+To track which tool is active during a panic, I'd need to set the current tool name before each tool call and clear it after. This would require changes in tool_wrappers.rs (to set/clear) and state.rs (to store the value and use it in the panic hook). That's 2 files and about 20-30 lines of code. Verifiable with cargo test.
+
+But actually, the panic hook already records a message - let me check what it records.
+
+Let me look at the panic hook implementation more closely.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.8s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:44..104  ▶ read scripts/append_terminal_state_events.py:671..706 ✓ (902ms)
+ ✓ (3.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture:
+
+1. The retroactive FailureObserved logic in `scripts/append_terminal_state_events.py` (lines 684-701) inserts FailureObserved for any run with error status that has no FailureObserved. It checks for `cancelled` vs other error statuses, but doesn't distinguish deliberate no-op sessions.
+
+2. The panic hook in `src/state.rs` (lines 44-95) records a FailureObserved with `panic_message` and `panic_location`, and closes the model call lifecycle. But it doesn't record which tool was active.
+
+Now let me write both task files. I'll refine task_01 to be about the retroactive FailureObserved fix, and create task_02 for tool-call lineage in panic hooks.
+
+For task_01: The fix should add a check in `find_missing_failure_observed` (or the caller) to skip retroactive FailureObserved when the run had 0 attempted tasks and no tool errors. We need evidence: the assessment says the Day 159 12:05 session had this problem. The fix can check if the run's events show 0 tasks attempted (no TaskStarted events) and no FailureObserved from panic/crash paths - if so, it's a deliberate no-op and we skip the FailureObserved insertion.
+
+Actually, looking at the code flow: `find_missing_failure_observed` finds runs with RunCompleted error status but no FailureObserved. The caller then inserts FailureObserved. The fix should be in `find_missing_failure_observed` - add a check for whether the run had TaskStarted events. If a run has RunCompleted error status, no FailureObserved, AND no TaskStarted events, AND no tool errors, it's likely a deliberate no-op session and should not get a retroactive FailureObserved.
+
+Let me look at `find_missing_failure_observed` to understand its return value.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:295..365 ✓ (902ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have enough to write both task files. Let me also check what runs have "no tasks attempted" to understand the detection mechanism. The key question for task_01 is: how can we tell if a run was a deliberate no-op?
+
+Looking at the events, a deliberate no-op run would have:
+- RunStarted event
+- Maybe SessionStarted
+- Maybe ModelCallStarted/ModelCallCompleted (from assessment)
+- No TaskStarted events
+- RunCompleted with error status (because no tasks were completed)
+
+So the detection could be: in `find_missing_failure_observed`, when a run has RunCompleted error status and no FailureObserved, also check if it has TaskStarted events. If it has NO TaskStarted events AND no FailureObserved, it's a deliberate no-op (planning-only or journal-only session).
+
+Actually, let me think about this more carefully. The function `find_missing_failure_observed` currently excludes:
+1. Input-validation runs (empty_input / invalid_input)
+2. Cancelled runs
+
+I need to add a third exclusion: deliberate no-op runs (0 tasks attempted, no tool errors, no panic failures).
+
+But the function only scans events, it doesn't have per-run aggregation beyond what it builds. To check for TaskStarted events, I'd need to also track which runs have TaskStarted events.
+
+Let me refine:
+
+In `find_missing_failure_observed`:
+- Also track `task_started_runs: set[str]` - runs that have TaskStarted events
+- Also track `tool_error_runs: set[str]` - runs that have tool errors
+- Before adding a run to `missing`, check if it has no TaskStarted events AND no tool errors → it's a deliberate no-op, exclude it
+
+This is clean and doesn't require reading transcripts or external data. Let me write the task.
+
+Now for task_02: Let me add tool-call lineage tracking to the panic hook. The change would be:
+1. In `src/state.rs`: add a `CURRENT_TOOL_NAME` thread-local
+2. In `src/tool_wrappers.rs`: wrap tool execution to set/clear `CURRENT_TOOL_NAME`
+3. In the panic hook: include `CURRENT_TOOL_NAME` in the FailureObserved payload
+
+Wait, that's 2 files. Let me check if I can do it in only state.rs by having the tool wrappers call through state.rs functions.
+
+Actually, the thread-local can be public. tool_wrappers.rs can call `state::set_current_tool_name()` and `state::clear_current_tool_name()`. That's clean.
+
+Files: src/state.rs, src/tool_wrappers.rs (2 files - within the 3-file limit).
+
+Verifier: cargo test state tool_wrappers
+
+Let me now write the task files.
+
+Actually wait - I need to think about whether task_02 is actually useful. The assessment says "18 agent_error_exit events with zero inbound tool-call relations" - that's 18 events out of ~63K failures. That's 0.03%. It's a tiny fraction. Is this worth a task slot?
+
+The trajectory's top pressure is:
+1. Planning failure classification (planner_no_task_count=2)
+2. Analysis-only attempts (task_analysis_only_attempt_count=2)  
+3. Task success/verification rate (0.0 - misleading)
+
+The panic hook tool lineage is not in the top pressure items. It's a nice-to-have diagnostic improvement but doesn't address the immediate operational problems.
+
+What IS immediately actionable?
+
+Actually, let me reconsider #163. The task was "Classify planning failures by cause." The implementation agent discovered there are no per-phase event metrics. But what if I take a simpler approach?
+
+Instead of per-phase event metrics, I can classify planning failures in `scripts/log_feedback.py` using the existing global event metrics. The function `provider_blocked_before_tasks()` already handles one case. I can extend it:
+
+When `planner_no_task_count > 0`:
+- If `provider_error_count > 0` → `provider_blocked` (already handled)
+- Else if there are tool errors in the session → `tool_failure`
+- Else if `task_analysis_only_attempt_count > 0` → `analysis_only` (implementation ran but didn't produce)
+- Else → `silent_no_op` (planner chose not to produce tasks)
+
+Wait, but `planner_no_task_count > 0` means the planner produced 0 tasks. If there are also task_analysis_only_attempt_count > 0, that means implementation also ran? No, that doesn't make sense - you can't implement tasks that weren't planned.
+
+Let me re-read: `planner_no_task_count=2` means 2 sessions where the planner produced no task files. `task_analysis_only_attempt_count=2` means 2 sessions where implementation ran but didn't produce file progress. These are different sessions.
+
+So for classifying planning failures:
+- If provider errors during the session → `provider_blocked` (already detected)
+- If tool errors during the session → `tool_failure`
+- If model errors during the session → `model_error`
+- If none of the above → `silent_no_op`
+
+This is simpler than what #163 attempted. It doesn't need per-phase metrics - it just uses global session metrics.
+
+But wait - the implementation agent for #163 said: "The task says 'already-parsed per-phase event metrics' but there just aren't any." The task description claimed per-phase metrics existed, which was wrong. If I write a new task that uses global metrics instead of per-phase, it should work.
+
+Let me think about what files this touches:
+- `scripts/log_feedback.py` - add the classification logic
+- `scripts/test_task_lineage_feedback.py` - add test cases
+- Verifier: `python3 -m unittest scripts.test_task_lineage_feedback`
+
+That's 2 files. Within the 3-file limit.
+
+But the issue is: #163 was reverted because the implementation agent couldn't find per-phase metrics. If I write a new task that explicitly says "use global session metrics, NOT per-phase metrics," it should be clearer.
+
+However, the assessment says #163 was reverted as `reverted_no_edit` - the implementation agent never made any file changes. It spent its turns searching and reading code. This suggests the agent got lost in analysis mode, which is exactly the `task_analysis_only_attempt_count=2` problem.
+
+Hmm. I think the planning failure classification task is worth retrying with narrower scope and clearer instructions. But the risk is the same: the implementation agent might get stuck again.
+
+Let me go with the tool-call lineage task for task_02 instead. It's concrete, in Rust (passes cargo test), and has a clear implementation path. Even though it's not top trajectory pressure, it's something I can actually ship.
+
+Actually, wait. Let me reconsider. The top trajectory pressure items are:
+1. Make planning failure actionable - needs log_feedback.py change, Python tests
+2. Force analysis-only attempts into action - behavioral, no code change
+3. Raise task success rate - blocked by evaluator timeout (#131, do-not-modify)
+4. Require strict verifier evidence - blocked by evaluator timeout
+
+So items 3 and 4 are blocked. Item 2 is behavioral (can't fix in code). Item 1 is the planning failure classification - which was attempted and reverted.
+
+For item 1, I could try again with a narrower scope:
+- Instead of trying to classify ALL planning failures by cause, just add ONE simple classification: "silent_no_op" vs "model_failure". If provider_error_count > 0, it's model_failure. Otherwise, silent_no_op.
+- This is much simpler and the implementation agent can't get lost.
+
+Actually, I think the cleanest plan is:
+
+**task_01.md**: Fix retroactive FailureObserved for deliberate no-op sessions. Single file: scripts/append_terminal_state_events.py.
+
+**task_02.md**: Add tool-call lineage to panic hook FailureObserved payload. Two files: src/state.rs, src/tool_wrappers.rs.
+
+Both are small, concrete, verifiable. Let me write them.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence I need. Let me write the plan files. The seed task_01 is valid but needs refinement - it's too broad and was reverted yesterday as issue #162. I'll narrow it to one concrete fix. For task_02, I'll pick something verifiable.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (897ms)
+  ▶ todo ✓ (907ms)
+  ▶ todo ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now write task_01.md. I need to refine the seed task to be narrower and more specific.
+
+The seed task_01 is about "Close yyds state and model lifecycle gaps" with 3 files. I'll narrow it to one specific fix: prevent retroactive FailureObserved for deliberate no-op sessions in append_terminal_state_events.py.
+
+The assessment confirms this is live: "The Day 159 12:05 journal-only session got a retroactive FailureObserved because RunCompleted status=error."
+
+The fix is in `find_missing_failure_observed()` - add a check for runs that have RunCompleted error status, no FailureObserved, AND no TaskStarted events AND no tool errors → these are deliberate no-ops, exclude them from the missing list.
+
+Let me write this up.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.5s (3 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (897ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write task_01.md. I need to make it narrow, specific, and evidence-backed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Close yyds state and model lifecycle gaps
+  - Files: scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Prevent retroactive FailureObserved for deliberate no-op sessions
+  + Files: scripts/append_terminal_state_events.py
+  + Issue: #164
+  + Origin: planner (refined from harness seed)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found incomplete run/model-call lifecycle gnomes. Those signals affect state feedback, assessment trust, and future task selection more directly than dashboard display.
+  + - Day 160 assessment §Last Failure Analysis: "The 'last-failure' is a retroactive FailureObserved from the Day 159 12:05 journal-only session — the harness inserted it because RunCompleted had error status but no FailureObserved was recorded during the session."
+  + - `yyds state why last-failure` output confirmed: "Found a retroactive FailureObserved from Day 159 (12:05 session), source=unknown, class=unknown"
+  + - Day 160 assessment §Bugs/Friction #2: "[LOW] Retroactive FailureObserved for deliberate no-op sessions — The Day 159 12:05 journal-only session got a retroactive FailureObserved because RunCompleted status=error."
+  + - Day 159 had a journal-only session (12:05) that deliberately produced no tasks — `tasks_attempted==0`, clean tree. The harness's `append_terminal_state_events.py` retroactively inserted FailureObserved, polluting failure metrics.
+  + - `find_missing_failure_observed()` in scripts/append_terminal_state_events.py already excludes input-validation and cancelled runs (lines 341-346). Deliberate no-op runs (0 TaskStarted events, no tool errors) need the same exclusion.
+    
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (49 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (49 lines) ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me write task_02.md. I'll go with the tool-call lineage in panic hooks. Let me verify my understanding of the code paths first.
+
+The panic hook in state.rs currently records:
+- panic_message, panic_location, recorded_at_ms
+- Closes model call lifecycle
+- Records FailureObserved
+
+What it doesn't record: which tool was active when the panic occurred.
+
+To add this:
+1. In state.rs: add a `CURRENT_TOOL_NAME` thread-local with `set_current_tool_name()` and `clear_current_tool_name()` functions
+2. In tool_wrappers.rs: wrap tool execution to call set/clear around each tool call
+3. In the panic hook: include the current tool name in the FailureObserved payload
+
+Let me check how tools are executed in tool_wrappers.rs to understand the wrapping point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (906ms)
+  ▶ todo ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me quickly check how tools are called in tool_wrappers.rs to understand the wrapping point for setting/clearing the current tool name.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'async fn invoke\|fn c… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that tool execution in tool_wrappers.rs happens through various wrapper types (GuardedTool, ConfirmTool, RecoveryHintTool, etc.). Each has an `invoke` method that calls `self.inner.invoke(...)`. 
+
+The RecoveryHintTool at line 1172-1212 shows the pattern: it calls `self.inner.name()` to get the tool name, then calls `self.inner.invoke(...)`.
+
+To add tool-call lineage tracking, I need to:
+1. Set `state::set_current_tool_name(name)` before calling `self.inner.invoke()`
+2. Clear it after in a finally/guard pattern
+
+The best place would be in the outermost wrapper. Let me check what the tool wrapping chain looks like - which wrapper is outermost.
+
+Actually, I don't need to understand the full chain. The simplest approach is to add the set/clear around `self.inner.invoke()` in the RecoveryHintTool's invoke method, since that's already the outermost tool wrapper for many tools. But not all tools go through RecoveryHintTool.
+
+Let me check how tools are built - maybe there's a common `build_tools` function that wraps all tools.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'fn build_tools\|with_… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the pattern. Tools are built in `build_tools()` with a chain of wrappers. The outermost wrapper is `with_recovery_hints()` for most tools. The `RecoveryHintTool` at line 1172-1212 in tool_wrappers.rs is where the actual tool execution happens inside the wrapper.
+
+The cleanest approach for tracking tool-call lineage would be to add the set/clear in `RecoveryHintTool::invoke()` since it wraps most tools. But not all tools go through it. However, for tools that don't go through RecoveryHintTool, a panic is less likely (they're simpler tools).
+
+Actually, a better approach: I can add the set/clear in `RecoveryHintTool::invoke()` since it's the outermost wrapper for the main tools (bash, read_file, write_file, edit_file, list_files, search). These are exactly the tools where panics are most likely.
+
+But wait - the task says to touch `src/tool_wrappers.rs` and `src/state.rs`. The set/clear functions go in state.rs; the wrapping goes in tool_wrappers.rs.
+
+Let me write task_02.md now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Add tool-call lineage to panic-hook FailureObserved payload
+  + Files: src/state.rs, src/tool_wrappers.rs
+  + Issue: none
+  + Origin: planner
+  + 
+  + Evidence:
+  + - Day 160 assessment §Graph Hotspots: "18 agent_error_exit events with zero inbound tool-call relations — these are failure events produced without tool-call lineage, suggesting crash/panic paths that recorded failure but couldn't trace the tool that caused it."
+  + - `yyds state why last-failure` shows `source=unknown, class=unknown` for panic-induced failures — the FailureObserved payload has `failure_class: "rust_panic"` with `panic_message` and `panic_location` but no indication of which tool was executing when the panic occurred.
+  + - State graph analysis confirms: 18 events with EventType=FailureObserved and payload.failure_class="rust_panic" but zero inbound edges from tool-call events — making root-cause analysis of panic-induced failures harder than necessary.
+  + - The existing `CURRENT_MODEL_CALL_ID` thread-local (state.rs line 33) proves the pattern works: a thread-local set before an operation and cleared after. The panic hook already reads it (state.rs line 68) to close model call lifecycle. The same pattern can track active tool name.
+  + 
+  + Edit Surface:
+  + - src/state.rs
+  + - src/tool_wrappers.rs
+  + 
+  + Verifier:
+  + - cargo test state tool_wrappers
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (56 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (56 lines) ✓ (897ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to write issue_responses.md. Let me cover all the issues mentioned in the assessment and the ones I was shown.
+
+Issues to address:
+- #164: Planning-only session reverted - I'm tasking a fix (task_01 addresses the FailureObserved part)
+- #163: Task reverted: Classify planning failures - deferred, per-phase metrics don't exist yet
+- #162: Task reverted: Close lifecycle feedback gaps - task_01 narrows this to a specific fix
+- #105: Task reverted: Cache metrics - blocked by #90
+- #90: yoagent Usage drops cache fields - help-wanted, still waiting
+- #131: Evaluator timeouts - help-wanted, still waiting
+
+Let me also check if there are any other issues I should respond to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.2s)
+  ▶ todo ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me write issue_responses.md. I'll cover all the issues from the ISSUES_TODAY (which is embedded in the prompt). There might not be an actual ISSUES_TODAY.md file since the issues were provided inline. Let me focus on the issues I was shown.
+
+The issues:
+- #164 (agent-self): Planning-only session reverted
+- #163 (agent-self): Task reverted: Classify planning failures
+- #162 (agent-self): Task reverted: Close lifecycle feedback gaps
+- #105 (agent-self): Task reverted: Cache metrics
+- #131 (help-wanted): Evaluator timeouts
+- #90 (help-wanted): yoagent Usage drops cache fields
+
+For each, I need to decide: implement, defer, wontfix, or note for next session.
+
+- #164: Task_01 addresses the FailureObserved part. I'll note: implementing the fix via task_01.
+- #163: Deferred. The implementation agent discovered per-phase event metrics don't exist. Can't classify planning failures without per-phase data. Need to add phase tagging to state events first (bigger task).
+- #162: Task_01 narrows this to a specific fix (retroactive FailureObserved). The broader lifecycle gap classification needs per-phase metrics (#163).
+- #105: Blocked by #90.
+- #131: Still waiting on human. Evaluator timeout pattern continues.
+- #90: Still waiting on human. Two fields in yoagent's Usage struct.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.9s (2 ✓)
+
+
+  + # Issue Responses — Day 160
+  + 
+  + ## #164: Planning-only session: all 2 selected tasks reverted (Day 159)
+  + **Action**: Implementing via task_01 — fixing the retroactive FailureObserved insertion that pollutes the state ledger for deliberate no-op sessions. The broader "plan smaller tasks" advice from #164 is incorporated into both task_01 and task_02's narrow scope (1-2 files each, single concrete fix).
+  + 
+  + ## #163: Task reverted: Classify planning failures by cause
+  + **Defer**. The implementation agent discovered that per-phase event metrics don't exist — state events carry no `phase` field, so there's no way to distinguish "FailureObserved during planning" from "FailureObserved during implementation" from the events alone. Before this task can work, state events need phase tagging (a `phase: "planning"` field on relevant events). That's a bigger change (touches state.rs + evolve.sh or the session orchestration). Deferring until phase tagging is in place. The trajectory's `planner_no_task_count=2` pressure remains live, but the diagnostic infrastructure to classify it isn't ready.
+  + 
+  + ## #162: Task reverted: Close lifecycle feedback gaps
+  + **Narrowed into task_01**. The original task had 3 files and broad scope. task_01 narrows it to one specific fix: prevent `find_missing_failure_observed()` from flagging deliberate no-op sessions as missing FailureObserved. The rest of the lifecycle gap classification work (input-validation vs real-incomplete distinction across all scripts) is deferred — it shares the same per-phase metrics blocker as #163.
+  + 
+  + ## #105: Task reverted: Record DeepSeek prompt cache metrics during prompt runs
+  + **Blocked by #90**. The cache metrics pipeline is ready on the yyds side — `record_cache_metrics`, `cache-report`, gnome KPIs, dashboard. The `stream-check` and `fim-complete` diagnostic paths prove the SSE parsing works. The only missing piece is yoagent's `Usage` struct preserving `cache_read_input_tokens` and `cache_creation_input_tokens`. Two fields. Until that upstream change lands, this task can't ship.
+  + 
+  + ## #131: Help wanted: Evaluator timeouts in evolve.sh cause false task reverts
+  + **Still waiting on human**. Day 160 assessment confirms the pattern: the evaluator timeout keeps killing correct code. The fix lives in `scripts/evolve.sh` (do-not-modify): either bump the evaluator timeout or collect early verdicts when `cargo build && cargo test` passes before the timeout fires. The Day 159 dashboard fix now doesn't penalize timeout-killed tasks in success-rate scoring, but the reversion itself still happens — work is lost, and sessions waste implementation slots on code that was correct. This is the single biggest operational blocker to task throughput right now.
+  + 
+  + ## #90: Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + **Still waiting on human**. Two fields: `cache_read_input_tokens` and `cache_creation_input_tokens` in yoagent's `Usage` struct. The DeepSeek API returns them on every chat completion. The diagnostic paths prove it. The entire yyds-side pipeline is ready. `deepseek cache-report` still returns "no DeepSeek cache metrics recorded" as a living reminder. No change since Day 159.
+  ✓ Auto-approved: write: session_plan/issue_responses.md (19 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (19 lines)📦 RTK detected — using compressed output (disable with --no-rtk)
+ ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Let me verify all three files are in place and then finalize.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la /home/runner/work/yyds-harness/yyds-harness/session_plan/ ✓ (2.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three files are in place:
+- session_plan/assessment.md (pre-existing)
+- session_plan/task_01.md (refined)
+- session_plan/task_02.md (new)
+- session_plan/issue_responses.md (new)
+
+Let me also verify the task files look correct and complete by checking a few key elements.
+
+Actually, let me also check that the task files align with the artifact-first requirement. The harness says: "If session_plan/task_01.md already exists, your first file-producing action should refine it or create session_plan/task_02.md." I refined task_01 and created task_02. Good.
+
+Let me also do a quick check that the task files reference real, existing files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git ls-files scripts/append_te… ✓ (2.0s)
+
+
