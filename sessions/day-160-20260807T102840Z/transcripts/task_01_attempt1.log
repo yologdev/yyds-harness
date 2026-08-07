@@ -1,0 +1,481 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill. I need to:
+
+1. Read the evolve skill first
+2. Read the relevant source files
+3. Implement the fix
+4. Write tests
+5. Verify
+6. Commit
+
+Let me start by reading the evolve skill and the relevant source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py:280..380 ✓ (17ms)
+ ✓ (14ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code already has the fix partially implemented! Let me read more to see the full `find_missing_failure_observed` function and understand what's already there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:379..439 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code in `find_missing_failure_observed()` already has:
+1. `runs_with_task_lineage` tracking set (from `TaskLineageLinked` events)
+2. `runs_with_non_harness_failure` tracking set (from `FailureObserved` events with actor != "harness")
+3. `deliberate_no_op_excluded` counter
+4. `_is_deliberate_no_op()` helper that checks both conditions
+5. The exclusion in the `missing` list comprehension
+6. The diagnostics dict with `deliberate_no_op_excluded`
+
+Wait, but the task says the fix uses `TaskStarted` events and `FailureObserved` with tool-call actor/source. Let me re-read... The task says:
+- Add a tracking set `runs_with_task_started` — runs that have at least one `TaskStarted` event.
+- Add a tracking set `runs_with_tool_failure` — runs that have at least one `FailureObserved` event with a tool-call actor or `source=tool`
+
+But the existing code uses `TaskLineageLinked` and `non_harness_failure`. This was likely already partially implemented. Let me check the test file to see if tests exist for this feature.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if there's already a test for the deliberate no-op exclusion. Let me search for "deliberate" or "no_op" in the test file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'deliberate' in scripts/test_append_terminal_state_events.py  ▶ search 'no_op' in scripts/test_append_terminal_state_events.py ✓ (12ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a test `test_excludes_deliberate_no_op_from_failure_observed`. Let me read that test to see what it covers.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:611..681 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the code AND the test already exist! The `find_missing_failure_observed` function already has:
+1. `runs_with_task_lineage` tracking set
+2. `runs_with_non_harness_failure` tracking set
+3. `deliberate_no_op_excluded` counter
+4. `_is_deliberate_no_op()` helper
+5. Filtering in the `missing` list comprehension
+6. Diagnostics with `deliberate_no_op_excluded`
+
+And the test `test_excludes_deliberate_no_op_from_failure_observed` already exists.
+
+However, the task says the implementation should use `TaskStarted` events, not `TaskLineageLinked`. And `FailureObserved` with `source=tool` or tool-call actor, not just `actor != "harness"`. Let me re-read the task's implementation notes more carefully...
+
+Task says:
+- Add a tracking set `runs_with_task_started` — runs that have at least one `TaskStarted` event.
+- Add a tracking set `runs_with_tool_failure` — runs that have at least one `FailureObserved` event with a tool-call actor or `source=tool` (not harness/unknown).
+
+But current code uses:
+- `runs_with_task_lineage` — from `TaskLineageLinked` events
+- `runs_with_non_harness_failure` — from `FailureObserved` with `actor != "harness"`
+
+These are slightly different semantics. The task says to use TaskStarted vs TaskLineageLinked. Let me think about this...
+
+Wait. Let me check if the task says the code already satisfies it. Let me re-read the task's Fallback section and see if I should mark it obsolete.
+
+The task says: "If the latest state snapshot shows zero retroactive FailureObserved events from the last 3 sessions, OR if no sessions in the last 5 have both RunCompleted error status AND zero tasks attempted, mark this task obsolete — the problem self-resolved."
+
+But the implementation notes are pretty specific about using `TaskStarted` and `tool_failure` instead of `TaskLineageLinked` and `non_harness_failure`. However, it also says: "Keep the change minimal: one new tracking set, one new exclusion condition, one new diagnostics counter, one new test."
+
+Looking at the existing code more carefully, the task says the fix is "already partially implemented" since the Day 160 assessment was written before the implementation. Let me check if the code as currently written really satisfies the requirements or if there's a gap.
+
+The key question: does the current implementation using `TaskLineageLinked` vs the task's spec of `TaskStarted` matter? Let me think...
+
+`TaskStarted` fires when a task begins execution. `TaskLineageLinked` fires when a task's lineage is recorded. Both should be present for any real task. The difference might matter in edge cases but both effectively answer "did any task run?"
+
+For the failure tracking: `actor != "harness"` vs `source=tool` or tool-call actor. The current code checks `actor != "harness"` which is broader — it catches tool failures AND any other non-harness failures. The task wants `source=tool` which is narrower (only tool failures). But `actor != "harness"` would also catch tool failures. It might catch more than just tool failures but that's actually more conservative (fewer false positives for "real failure").
+
+Actually, wait. Let me re-read the `_is_deliberate_no_op` check:
+
+```python
+def _is_deliberate_no_op(rid: str) -> bool:
+    return (
+        rid not in runs_with_task_lineage
+        and rid not in runs_with_non_harness_failure
+    )
+```
+
+This says: a deliberate no-op is one with no tasks AND no non-harness failures. If the run has a non-harness FailureObserved, it's NOT a no-op (even if it has zero tasks). This is correct — if something failed, even without tasks, it's a real failure.
+
+The task spec says to use `source=tool` for tool failures. The current code uses `actor != "harness"` which is slightly different: if a FailureObserved has `actor=tool` or `actor=model` or `actor=unknown`, it would be counted as non-harness. The task wants to be more specific and only count `source=tool` failures. But the net effect is similar — either way, if there's a non-harness failure, it won't be classified as no-op.
+
+Now the question: should I go with the task's exact spec (TaskStarted + source=tool) or keep the existing implementation (TaskLineageLinked + actor != harness)?
+
+The task says: "Do NOT try to read transcripts, session files, or external state to determine no-op status — rely only on events present in the events list."
+
+Let me check if TaskStarted events are actually emitted in the events stream. Let me search...
+
+Actually, wait. I think the existing code was written as part of a previous task attempt, and this task is asking me to refine or complete it. But looking at the code, it seems pretty complete. Let me run the tests to see if they pass.
+
+But first, let me check whether the `TaskStarted` event type exists in the event stream vs `TaskLineageLinked`. The task spec says to use `TaskStarted` — let me check if that's more appropriate.
+
+Actually, I think the most important thing is: does the current code work and pass tests? Let me run the tests first.
+
+But wait — the task says to follow the evolve skill: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable..."
+
+So if the code already implements this correctly, I should verify and potentially strengthen the test. Let me run the existing test and see.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (64ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me check if the implementation matches what the task specifies. Let me compare:
+
+Task spec says:
+1. `runs_with_task_started` — runs with `TaskStarted` events
+2. `runs_with_tool_failure` — runs with `FailureObserved` with `source=tool` or tool-call actor
+
+Current implementation:
+1. `runs_with_task_lineage` — runs with `TaskLineageLinked` events
+2. `runs_with_non_harness_failure` — runs with `FailureObserved` with `actor != "harness"`
+
+These are different. The task specifically calls for `TaskStarted` and tool-failure tracking. Let me check whether `TaskStarted` events exist in the codebase.
+
+Actually, wait. Let me look at this from the evolve skill perspective. The task says to implement this feature. The code already has a version of it, but with different event types than the task specifies. The question is: should I:
+
+a) Keep the existing implementation as-is (it works, test passes)
+b) Change it to match the task specification exactly (TaskStarted + source=tool)
+
+But looking at the task document more carefully:
+
+> Add a tracking set `runs_with_task_started` — runs that have at least one `TaskStarted` event.
+> Add a tracking set `runs_with_tool_failure` — runs that have at least one `FailureObserved` event with a tool-call actor or `source=tool` (not harness/unknown).
+
+These are specific implementation notes suggesting the use of TaskStarted and tool failures. The current code uses TaskLineageLinked and non-harness failures which might have different semantics.
+
+Let me think about which is better:
+- `TaskLineageLinked`: fires when task lineage is recorded (during planning/implementation)
+- `TaskStarted`: fires when a task begins executing
+
+For detecting "did this session attempt any tasks?" — both should work. `TaskStarted` is arguably more direct.
+
+- `actor != "harness"`: any non-harness FailureObserved
+- `source=tool` or tool-call actor: specifically tool failures
+
+For detecting "was there a real failure?" — `actor != "harness"` is broader and might catch model failures too. `source=tool` is narrower and only catches tool failures.
+
+The task says to use the specific ones. But the current implementation already works. Let me check the Fallback more carefully:
+
+> If the fix would require reading full transcripts or external session data (not available in the events stream), narrow scope to only the event-level check and skip deeper session analysis.
+
+The current code already uses event-level checks. It's just using different event types.
+
+Given the evolve skill rule: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence..."
+
+I think the right approach is to verify the current implementation matches the intent (preventing deliberate no-ops from being flagged), and then the "minimum scoped verification improvement" would be to align the implementation with the task spec where there's a meaningful difference, or to strengthen the test.
+
+Let me check: is `TaskStarted` an actual event type in the system? Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check what event types are available and whether `TaskStarted` is emitted:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskStarted' in src  ▶ search 'TaskStarted' in scripts ✓ (6ms)
+ ✓ (19ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`TaskStarted` doesn't exist in the codebase! So the task specification was aspirational but the actual event type is `TaskLineageLinked`. The current implementation correctly uses `TaskLineageLinked` because that's what the system actually emits.
+
+Now let me check for `source=tool` vs `actor != "harness"` for FailureObserved.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the state module to see how `FailureObserved` is emitted and what fields it carries:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in src/state.rs ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check how `FailureObserved` is recorded with the `actor` field. Let me look at the `record` function in state.rs:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:80..130 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `record` function to see how the `actor` field is set, and also check what actors exist:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn record(' in src/state.rs ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check `Actor` enum:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'enum Actor' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:233..253 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `Actor` has: `Yoyo`, `User`, `Tool`, `Harness`. 
+
+The current implementation uses `actor != "harness"` which would match `yoyo`, `user`, and `tool`. The task spec says to filter for tool-call actor or `source=tool`. Let me check how `FailureObserved` events are recorded with non-harness actors. Let me search for `record.*FailureObserved` in the source.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'record.*FailureObserved' in src ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved.*Actor' in src ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `record` function to see how it stores the actor in events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:576..626 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check what `append` does with actor:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn append(' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:361..441 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me check the `StateEvent` struct to understand its JSON representation - specifically the `actor` field:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'struct StateEvent' in src/state.rs ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at that struct:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:327..357 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand. The `StateEvent` has an `actor` field that's serialized as part of the JSON. When the event is JSON-serialized, the actor field value would be one of "yoyo", "user", "tool", "harness" (from `#[serde(rename_all = "snake_case")]`).
+
+Now let me also check how `append_terminal_state_events.py` reads the actor from events. The current code does:
+
+```python
+elif kind == "FailureObserved":
+    failure_observed_runs.add(rid)
+    actor = event.get("actor", "")
+    if actor != "harness":
+        runs_with_non_harness_failure.add(rid)
+```
+
+OK so the current code uses `actor != "harness"`. 
+
+Now let me think about this more carefully. Is the current implementation correct for the task's intent?
+
+The task says: "A deliberate no-op run has zero TaskStarted events AND zero non-harness FailureObserved events."
+
+The current code says: "A deliberate no-op run has zero TaskLineageLinked events AND zero non-harness FailureObserved events."
+
+The key question is: when does `TaskLineageLinked` fire vs `TaskStarted`? Let me check what `TaskLineageLinked` is:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskLineageLinked' in src ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`TaskLineageLinked` is an event type. Let me search for where it's emitted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskLineageLinked.*record' in src ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for where TaskLineageLinked is recorded:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -Rn 'TaskLineageLinked' -… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`TaskLineageLinked` is defined in the EventType enum but I don't see it being emitted/recorded anywhere. Let me check if it's emitted by the harness scripts (evolve.sh):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -Rn 'TaskLineageLinked' s… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so `TaskLineageLinked` is emitted by `evolve.sh` when a task starts, completes, etc. It IS the main task-start signal. The task spec says to use `TaskStarted` but `TaskStarted` doesn't exist in the codebase - `TaskLineageLinked` is the actual event type. So the existing implementation is correct in using `TaskLineageLinked`.
+
+Now let me check: is the existing implementation fully correct? Let me run the full test suite to confirm everything passes.
+
+Actually, wait. Let me re-read the task more carefully. The task says:
+
+> The fix lives in `find_missing_failure_observed()` (~line 307). The function iterates over events to find runs with RunCompleted error status but no FailureObserved.
+> Add a tracking set `runs_with_task_started` — runs that have at least one `TaskStarted` event.
+> Add a tracking set `runs_with_tool_failure` — runs that have at least one `FailureObserved` event with a tool-call actor or `source=tool` (not harness/unknown).
+
+The existing code already has the equivalent. The implementation notes in the task use placeholder names, but the actual implementation uses `TaskLineageLinked` (which IS the task-start signal in this codebase) and `actor != "harness"` (which catches tool/model/user failures, which is actually more inclusive than just tool failures).
+
+So the code already implements the task successfully. The evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+But wait, there's a subtle issue. Let me check whether the current implementation would incorrectly classify a run as "deliberate no-op" when it has a `FailureObserved` with `actor=harness`. The `actor != "harness"` check would skip harness failures. But harness failures are exactly what `append_terminal_state_events.py` itself creates! So a run with only harness-generated FailureObserved would still be classified as no-op, which is wrong.
+
+Wait, no. The check `not in runs_with_non_harness_failure` means: if it has a non-harness failure, it's NOT a no-op. If it only has harness failures, it IS a no-op (because harness failures are synthetic/retroactive). This is actually correct — the harness failures are the very thing we're avoiding retroactively adding.
+
+But there's a chicken-and-egg problem: the code is checking for existing non-harness FailureObserved BEFORE deciding whether to add a harness FailureObserved. If a run has zero tasks AND zero existing non-harness FailureObserved, we skip it (it's a deliberate no-op). If it has zero tasks but HAS a non-harness FailureObserved, it IS a real failure and we should add a harness FailureObserved to close it.
+
+Wait, that doesn't quite make sense either. Let me re-read the logic:
+
+```python
+def _is_deliberate_no_op(rid: str) -> bool:
+    return (
+        rid not in runs_with_task_lineage
+        and rid not in runs_with_non_harness_failure
+    )
+```
+
+And then:
+```python
+missing = [
+    ...
+    if rid not in failure_observed_runs
+    and not _is_deliberate_no_op(rid)
+]
+```
+
+So a run gets a retroactive FailureObserved if:
+1. It has RunCompleted with error status
+2. It's not in `failure_observed_runs` (no existing FailureObserved of any kind)
+3. It's not a deliberate no-op (has tasks OR has non-harness failure)
+
+Wait, but if it has a non-harness FailureObserved, condition 2 would already exclude it (it would be in `failure_observed_runs`). So the `_is_deliberate_no_op` check is really checking: does this run have zero tasks AND no non-harness FailureObserved?
+
+Actually, re-reading more carefully: `failure_observed_runs` collects ALL runs with FailureObserved (both harness and non-harness). So if a run already has a harness FailureObserved, condition 2 excludes it. If it has a non-harness FailureObserved, condition 2 also excludes it.
+
+So `_is_deliberate_no_op` only matters for runs that have NO FailureObserved at all. The check says: if a run has no FailureObserved AND zero tasks AND zero non-harness failures → it's a deliberate no-op, don't add a synthetic one.
+
+This seems correct. Let me verify with the test:
+
+- no-op-run: RunCompleted error, zero TaskLineageLinked, zero FailureObserved → should be excluded
+- real-fail-run: RunCompleted error, has TaskLineageLinked, zero FailureObserved → should get FailureObserved
+
+The test confirms this works. Now let me check whether there's an edge case: what about a run that has zero TaskLineageLinked but has a non-harness FailureObserved?
+
+This run wouldn't go through `_is_deliberate_no_op` because it has a FailureObserved (condition 2 already catches it). But it wouldn't get a retroactive FailureObserved either because it already has one. This is correct — if the run already has a FailureObserved (even non-harness), we don't need to add another.
+
+OK so the current implementation is correct and complete. The task's implementation notes used `TaskStarted` as a placeholder for the task-start signal, but `TaskLineageLinked` is the correct event type in this codebase.
+
+Now, what should I do? The evolve skill says: "If current code already satisfies the task, do not finish with analysis alone. Either add or strengthen a focused regression test, docs, or state evidence that makes the satisfied behavior mechanically verifiable, or write a clear obsolete-task note explaining the proof and stop without claiming a landed implementation."
+
+I have a few options:
+1. Write an obsolete note explaining the task is already implemented
+2. Add an additional test case for an edge case
+
+Let me think about what edge case might be missing. The current test covers:
+- Deliberate no-op run (zero tasks, zero failures) → excluded
+- Real failing run (has tasks, no failures) → gets FailureObserved
+
+What about:
+- A run with non-harness FailureObserved but zero tasks → should already be in failure_observed_runs so it won't be in missing. But let me verify this is handled correctly.
+- A run with only harness FailureObserved but zero tasks → in failure_observed_runs, so won't be in missing.
+
+Let me add a test for the edge case: a run that has a non-harness FailureObserved but zero tasks. This should NOT be classified as a deliberate no-op (because it has a real failure), but it also shouldn't get a retroactive FailureObserved (because it already has one). Let me check if this case is already handled.
+
+Actually, let me think about this differently. The `failure_observed_runs` set tracks ALL FailureObserved events. If a run has a non-harness FailureObserved, it's in `failure_observed_runs`, so the condition `rid not in failure_observed_runs` is False, and the run is excluded from `missing`. So it doesn't matter whether it's a deliberate no-op or not — it won't get a retroactive FailureObserved. This is correct.
+
+What about a run with zero tasks and a harness-only FailureObserved? Same thing — it's in `failure_observed_runs`, so it won't get a second one.
+
+OK, I think the existing implementation is correct and complete. The task indicates this fix was previously attempted and reverted due to evaluator timeout, not code error. It seems like it was successfully re-implemented and the code is now correct.
+
+Let me run the full test suite to verify everything passes, and if it does, I'll check if there's a meaningful improvement I can add to the test coverage, or write an obsolete note.
+
+Actually wait, let me re-read the task more carefully:
+
+> - Keep the change minimal: one new tracking set, one new exclusion condition, one new diagnostics counter, one new test.
+> - Do NOT try to read transcripts, session files, or external state to determine no-op status — rely only on events present in the events list.
+
+The existing code has:
+- `runs_with_task_lineage` (tracking set)
+- `runs_with_non_harness_failure` (tracking set)
+- `deliberate_no_op_excluded` (diagnostics counter)
+- `_is_deliberate_no_op()` (exclusion condition)
+- `test_excludes_deliberate_no_op_from_failure_observed` (test)
+
+So all the requirements are met. The code already does what the task asks. Let me run the full test suite and then decide whether to add an additional test or write an obsolete note.
+
+Actually, let me also look at the `_is_deliberate_no_op` check more carefully. The task says:
+> Before adding a run to `missing` (the return set), check: does it have zero TaskStarted events AND zero tool failures? If so, skip it — it's a deliberate no-op.
+
+The current check does: zero TaskLineageLinked AND zero non-harness failures. The difference is:
+- Task spec: TaskStarted → current code: TaskLineageLinked (correct, TaskStarted doesn't exist)
+- Task spec: tool failures → current code: non-harness failures (wider, catches more)
+
+The task spec says to only check for tool failures, i.e., `source=tool` or tool actor. The current code checks for `actor != "harness"` which is broader. A `FailureObserved` with `actor=yoyo` (agent failure) would be caught by the current code but NOT by the task spec.
+
+Wait, that's actually a difference: the current code would NOT classify as a deliberate no-op a run that has a `FailureObserved` with `actor=yoyo` but zero tasks. The task spec says a deliberate no-op should only be excluded if there are zero tasks AND zero TOOL failures. So a run with an agent failure but zero tasks would be classified as no-op under the task spec BUT NOT under the current code.
+
+Hmm, but actually having zero tasks AND a FailureObserved event at all means something failed. Whether it's tool or agent, it's still a real failure. I think the current code (checking non-harness, not just tool) is better because it catches more real failures.
+
+But wait, the issue is about DELIBERATE no-op sessions — journal-only or planning-only sessions that exit cleanly with no tasks. These sessions shouldn't have any FailureObserved events at all. If a run has FailureObserved with actor=yoyo but zero tasks, that seems like a genuine failure (the agent crashed without starting any tasks).
+
+I think the current code is actually MORE correct than the task spec — it's better to be conservative and only classify as no-op when there are truly zero failures of any non-harness kind.
+
+But looking at this from the "already implemented" perspective: should I mark this as obsolete, or should I strengthen the test?
+
+Let me run the full test suite:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (87ms)
+
+

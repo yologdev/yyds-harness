@@ -1,0 +1,370 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill rules. The task is about preventing retroactive FailureObserved events for deliberate no-op sessions in `scripts/append_terminal_state_events.py`.
+
+Let me first read the evolve skill, then look at the current code to understand what's already implemented.
+
+The previous attempt's transcript mentions that the code already has:
+- `runs_with_task_lineage` tracking set
+- `runs_with_non_harness_failure` tracking set
+- `deliberate_no_op_excluded` diagnostics counter
+- `_is_deliberate_no_op()` function
+- `test_excludes_deliberate_no_op_from_failure_observed` test
+
+So it seems the implementation may already be in place. Let me check the current state of the code.
+
+Early action requirement: by my 5th tool turn, I must have written a test, edited a file, or written an obsolete/blocked note. Let me be efficient.
+
+Let me read the evolve skill first, then check the current code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "_is_deliberate_no_op\… ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code already has the implementation. Let me verify:
+
+1. `runs_with_task_lineage` tracking set - YES (line 335)
+2. `runs_with_non_harness_failure` tracking set - YES (line 336)
+3. `deliberate_no_op_excluded` counter - YES (line 339)
+4. `_is_deliberate_no_op()` function - YES (line 376)
+5. Diagnostics counter in output - YES (line 403)
+6. Exclusion condition in find_missing_failure_observed - YES (lines 387, 394)
+
+The exclude condition at line 387: `not _is_deliberate_no_op(rid)` - this skips runs that are deliberate no-ops.
+
+And at line 394: it counts `deliberate_no_op_excluded`.
+
+Now let me check if there are existing tests for this and if they pass.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.0s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "deliberate_no_op\|tes…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (21ms)
+ ✓ (78ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 5 failing tests. Let me see the full output to understand which tests are failing.
+
+The code already has the implementation for deliberate_no_op. But there are 5 test failures. Let me see the full test output and understand what's going on.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.8s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (141ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see all the failing tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (91ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 5 failing tests. The `test_excludes_deliberate_no_op_from_failure_observed` test passes. But the core `test_appends_failure_observed_for_error_completed_run` is failing - 0 instead of 1. This suggests the `_is_deliberate_no_op` check is too broad and excluding runs that SHOULD get retroactive FailureObserved.
+
+Let me look at the specific test and the implementation to understand the issue.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:475..505  ▶ read scripts/append_terminal_state_events.py:325..415 ✓ (17ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue. The test `test_appends_failure_observed_for_error_completed_run` creates a run with `RunCompleted status=error` but that run doesn't have any TaskLineageLinked events. Since it also doesn't have any FailureObserved events (non-harness), it gets classified as a deliberate no-op and excluded.
+
+The test creates a very bare run with just RunCompleted - no task lineage and no non-harness failures. Let me look at the full test to understand the setup.
+
+The issue is clear: the `_is_deliberate_no_op` check is too broad. A run that has only `RunCompleted status=error` but no `TaskLineageLinked` events and no `FailureObserved` events could be:
+1. A deliberate no-op session (journal-only, no tasks started)
+2. A run that crashed before it could even start tasks
+
+The problem is that the test `test_appends_failure_observed_for_error_completed_run` creates a minimal run (RunStarted, ModelCallStarted, ModelCallCompleted, RunCompleted error) which doesn't have TaskLineageLinked or FailureObserved. This is being misclassified as a deliberate no-op.
+
+The `_is_deliberate_no_op` check needs to be more precise. A "deliberate no-op" session should have additional signals beyond just missing TaskLineageLinked and non-harness FailureObserved. Maybe it should also check that there are no tool-related events at all, or check the AgentExitReason.
+
+Wait, let me re-read the task:
+> Prevent `find_missing_failure_observed()` from flagging deliberate no-op sessions (planning-only or journal-only sessions that produced zero tasks with zero errors)
+
+The task says "zero tasks with zero errors." The current code checks "zero task lineage AND zero non-harness failures." But a bare run with just RunStarted/ModelCall/ModelCallCompleted/RunCompleted error also has zero tasks and zero failures. 
+
+The fix needs to distinguish between:
+1. A run that had model calls but produced zero tasks (could be a no-op session)
+2. A run that crashed before it could even start tasks (real failure)
+
+How to distinguish? Look at ModelCallCompleted status. If the model call completed normally (`status=completed`) and produced zero tasks, it's a no-op session. If the model call had an error status, it's a real failure.
+
+Or alternatively: check if there are ToolCallCompleted/CommandCompleted events. A no-op session would have zero of those too. But a crash might also have zero.
+
+Actually, the simplest approach: check if there are ModelCallCompleted events with status=completed. If the model completed successfully but produced zero tasks, it's a deliberate no-op (the model chose not to pick tasks). If the model call never completed or completed with error, it's a real failure.
+
+Wait, let me look at the test more carefully. Let me look at what events the test creates:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:450..485 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The test creates a minimal "error-run" with:
+- RunStarted
+- ModelCallStarted
+- RunCompleted (status=error)
+
+It doesn't have ModelCallCompleted, TaskLineageLinked, or FailureObserved. So it has zero TaskLineageLinked AND zero non-harness FailureObserved → classified as deliberate no-op.
+
+But this is clearly NOT a deliberate no-op - there's no ModelCallCompleted, meaning something went wrong. The model call was started but never completed.
+
+The key insight: a deliberate no-op session would have ModelCallCompleted with status=completed (the model ran, produced output, but produced zero tasks). A run that crashes mid-model-call would have ModelCallStarted without ModelCallCompleted.
+
+So the fix is to tighten the `_is_deliberate_no_op` check: only classify a run as deliberate no-op if it has at least one ModelCallCompleted event (indicating the model ran to completion but chose zero tasks).
+
+Or even better: check for TaskStarted events (not TaskLineageLinked). Let me check if TaskStarted exists.
+
+Actually, let me search for the event types used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "TaskStarted\|TaskLine…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "TaskStarted\|TaskLine… ✓ (20ms)
+ ✓ (20ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so TaskLineageLinked is the correct event type for tracking task linkage. TaskStarted doesn't exist in this codebase.
+
+The problem: the current `_is_deliberate_no_op` check is too broad. It catches runs that have no ModelCallCompleted (crashed mid-call) as "deliberate no-op."
+
+A deliberate no-op session should have:
+1. Zero TaskLineageLinked events (no tasks were linked)
+2. Zero non-harness FailureObserved events (no actual tool/agent failures)
+3. At least one ModelCallCompleted event with status=completed (the model actually ran and completed normally, but chose zero tasks)
+
+But wait, even simpler: what about just checking if ModelCallCompleted exists? If there's no ModelCallCompleted at all, the run crashed before the model could complete - that's a real failure.
+
+Alternatively, check if there are any ModelCallCompleted events with status "completed". Let me look at the test for the deliberate no-op:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:605..665 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly. Both `test_excludes_deliberate_no_op_from_failure_observed` and `test_appends_failure_observed_for_error_completed_run` create runs that look very similar:
+
+- `no-op-run`: RunStarted, ModelCallStarted, RunCompleted(error) — no ModelCallCompleted, no TaskLineageLinked
+- `error-run`: RunStarted, ModelCallStarted, RunCompleted(error) — no ModelCallCompleted, no TaskLineageLinked
+
+These are identical! The `_is_deliberate_no_op` check can't distinguish them.
+
+The `error-run` test was designed to check that a bare run with RunCompleted error status gets a retroactive FailureObserved. But with the `_is_deliberate_no_op` check, this run is being treated as a deliberate no-op.
+
+The key difference: a real deliberate no-op session should have ModelCallCompleted (the model ran but chose no tasks). A run that crashed mid-call or was interrupted won't have ModelCallCompleted.
+
+So the fix is to add a tracking set `runs_with_model_completed` and require that a deliberate no-op has at least one ModelCallCompleted event. Let me implement this.
+
+Wait, but the test for deliberate no-op (`test_excludes_deliberate_no_op_from_failure_observed`) doesn't have a ModelCallCompleted either. So I'd need to update that test too.
+
+Let me think about what makes a "deliberate no-op" session distinct:
+1. The model completed its call (ModelCallCompleted exists with status=completed)
+2. Zero tasks were linked (no TaskLineageLinked)
+3. Zero non-harness failures (no non-harness FailureObserved)
+4. RunCompleted with error status (exit code 1 = no tasks completed)
+
+This would accurately identify journal-only or planning-only sessions where the model ran, deliberated, and chose zero tasks.
+
+Let me implement this:
+
+1. Add `runs_with_model_completed` set tracking runs with ModelCallCompleted
+2. Update `_is_deliberate_no_op` to also require `rid in runs_with_model_completed`
+3. Update the no-op test to include a ModelCallCompleted
+4. Verify the `test_appends_failure_observed_for_error_completed_run` test passes (it doesn't have ModelCallCompleted, so it shouldn't be excluded)
+
+Actually wait, let me also check the other failing tests to see if they also break due to the same issue.
+
+Let me check `test_skips_retroactive_failure_observed_on_second_invocation`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:541..571  ▶ read scripts/test_append_terminal_state_events.py:1195..1225 ✓ (6ms)
+ ✓ (23ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All the failing tests:
+1. `test_appends_failure_observed_for_error_completed_run` - a bare error-run with no tasks, no model-complete, no failures → should get FailureObserved but doesn't
+2. `test_skips_retroactive_failure_observed_on_second_invocation` - same bare error-run
+3. `test_cancelled_run_gets_specific_failure_observed_reason` - cancelled run. Let me look at this.
+4. `test_detects_and_closes_orphaned_run_from_previous_session` - orphaned run
+5. `test_error_run_keeps_generic_failure_observed_reason` - bare error-run
+
+Let me look at the cancelled run test and the orphaned run test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1170..1220  ▶ read scripts/test_append_terminal_state_events.py:1222..1272 ✓ (16ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the issue more clearly. The tests that are failing:
+
+1. **`test_cancelled_run_gets_specific_failure_observed_reason`** (line 1186): Creates a run with `status=cancelled`, has ModelCallCompleted. But the cancelled exclusion happens BEFORE the failure check at line 354. So this run gets excluded as "cancelled" and doesn't show in `error_completed` or `missing`. The test expects a FailureObserved to be appended but there's a discrepancy... Wait, let me re-read: the cancelled run status is "cancelled" and it gets excluded with `cancelled_excluded += 1`. Then it's NOT in `error_completed`, so it won't get a retroactive FailureObserved. But the test expects `len(fo_rows) == 1`.
+
+Actually wait, this test was passing before (it's a newly added test for the previous attempt?). Let me check if this test was added as part of the previous implementation attempt.
+
+Let me check git status to see what's changed.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.2s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git status --short scripts/tes… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No output - no changes. Let me check git log to see what was committed recently.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the two previous commits were for other tasks. The code for `_is_deliberate_no_op` is already in the source but there are test failures. Let me check if the test failures existed before the previous implementation attempt or were introduced by it.
+
+Let me check git diff to see what changes are in the working tree vs HEAD.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clean tree - no changes. So the current code with `_is_deliberate_no_op` is already committed to the repo, but it has failing tests. Let me check if this was committed in the previous session's implementation attempt - it seems the code landed but broke other tests.
+
+Let me look at the commit that added this feature.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all | grep… ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `_is_deliberate_no_op` check must have been added at some point. Let me search the git log more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all -20 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `_is_deliberate_no_op` check must have been added in one of the previous commits. Let me search for when it was introduced.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -p --all -- scripts/ap… ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -p -- script… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -p -- script… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -p -- script… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `_is_deliberate_no_op` code was added in commit `ff34df3e` (Day 160 Task 2: "Add input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_completion"). This was the previous task that was completed in this session. But it introduced the `_is_deliberate_no_op` feature that broke the `find_missing_failure_observed` tests because it's too broad.
+
+So the `_is_deliberate_no_op` check was partially implemented as part of Task 2 (which was mainly about `find_runs_with_failure_observed_no_completion`, but it also touched `find_missing_failure_observed`). Now the current Task 1 needs to fix it to be correct.
+
+The fix is simple: add a `runs_with_model_completed` tracking set, and require that a deliberate no-op run has at least one ModelCallCompleted event.
+
+Let me also check if the failing `test_cancelled_run_gets_specific_failure_observed_reason` and `test_detects_and_closes_orphaned_run_from_previous_session` are related.
+
+For `test_cancelled_run_gets_specific_failure_observed_reason`: the run has `status=cancelled` and gets excluded at line 354 with `cancelled_excluded`. So it doesn't get a retroactive FailureObserved. But the test expects `len(fo_rows) == 1`. This test was likely written with the assumption that cancelled runs DO get a retroactive FailureObserved. But that contradicts the existing cancelled exclusion at line 354. Let me check if this is a pre-existing test or also newly added.
+
+Actually, looking more carefully: the `test_cancelled_run_gets_specific_failure_observed_reason` test expects a FailureObserved to be appended. But the existing code at line 354 excludes cancelled status from error_completed entirely. So this test would never pass with the current exclusion logic. It was probably added in the same commit (ff34df3e) as part of Task 2 but was never tested (since it was the last task of the session).
+
+Let me check what commit added these failing tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log -p -- scripts/test_app… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -p -- script… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `test_excludes_deliberate_no_op` test was added in commit `bad5fbd5` (Day 160 02:41). And the `test_cancelled_run_gets_specific_failure_observed_reason` and `test_error_run_keeps_generic_failure_observed_reason` tests were also added in some later commit.
+
+Let me check when those other failing tests were added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -p -- script… ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -- scripts/t… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so all the failing tests (`test_cancelled_run_gets_specific_failure_observed_reason`, `test_error_run_keeps_generic_failure_observed_reason`, and the existing `test_appends_failure_observed_for_error_completed_run`, `test_skips_retroactive_failure_observed_on_second_invocation`, `test_detects_and_closes_orphaned_run_from_previous_session`) were all affected by the changes in `ff34df3e`.
+
+Wait, `test_appends_failure_observed_for_error_completed_run` and `test_skips_retroactive_failure_observed_on_second_invocation` were there before. They now fail because the `_is_deliberate_no_op` check was added. The fix is to make `_is_deliberate_no_op` more precise.
+
+Let me now identify the exact fix:
+
+1. Add `runs_with_model_completed: set[str]` tracking runs that have ModelCallCompleted
+2. Update `_is_deliberate_no_op` to require `rid in runs_with_model_completed`
+3. Update the deliberate no-op test to include a ModelCallCompleted for the no-op run
+4. The cancelled run test and error run test already have ModelCallCompleted, so they should now work (they're not deliberate no-ops)
+
+Wait, but the cancelled run test also needs to get a retroactive FailureObserved. But the cancelled exclusion at line 354 skips cancelled runs from error_completed entirely. Let me check... The cancelled run test expects a FailureObserved to be appended, but the current code skips cancelled runs from error_completed. So the test would never pass.
+
+Actually, looking at the commit ff34df3e (Task 2), that task was about "input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_completion" - a DIFFERENT function, not `find_missing_failure_observed`. But the commit also added `_is_deliberate_no_op` to `find_missing_failure_observed`. The cancelled and input-validation exclusions were added to `find_runs_with_failure_observed_no_completion`, not `find_missing_failure_observed`.
+
+Let me re-read the code carefully. The cancelled exclusion at line 354 is in `find_missing_failure_observed`. It's been there since before the commit. Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show HEAD~1:scripts/append… ✓ (9ms)
+
+
