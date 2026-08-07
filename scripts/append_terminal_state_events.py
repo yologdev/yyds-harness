@@ -415,10 +415,22 @@ def find_runs_with_failure_observed_no_completion(
     closed.  They contribute to ``open_after_FailureObserved`` and inflate
     ``state_run_incomplete_count`` in gnome summaries.
 
+    Input-validation runs (RunCompleted with error_detail ``"empty_input"`` or
+    ``"invalid_input:..."``) are excluded — they are fire-and-forget checks
+    that deliberately exit before starting an agent and do not need synthetic
+    closure (Day 160).
+
+    Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+    are excluded — the missing terminal events are expected behaviour when a
+    session is killed by SIGTERM or GitHub Actions concurrency (Day 160).
+
     Returns (runs_missing_run_completed, diagnostics).
     """
     failure_observed_runs: set[str] = set()
     run_completed_runs: set[str] = set()
+    excluded_runs: set[str] = set()
+    input_validation_excluded = 0
+    cancelled_excluded = 0
 
     for event in events:
         kind = event_type(event)
@@ -430,13 +442,23 @@ def find_runs_with_failure_observed_no_completion(
             failure_observed_runs.add(rid)
         elif kind == "RunCompleted":
             run_completed_runs.add(rid)
+            status = data.get("status", "")
+            detail = str(data.get("error_detail") or "")
+            if detail == "empty_input" or detail.startswith("invalid_input:"):
+                input_validation_excluded += 1
+                excluded_runs.add(rid)
+            elif status == "cancelled":
+                cancelled_excluded += 1
+                excluded_runs.add(rid)
 
-    missing = failure_observed_runs - run_completed_runs
+    missing = (failure_observed_runs - run_completed_runs) - excluded_runs
 
     diagnostics = {
         "failure_observed_runs": len(failure_observed_runs),
         "run_completed_runs_in_fo_scan": len(run_completed_runs),
         "runs_with_failure_observed_no_completion": len(missing),
+        "input_validation_excluded": input_validation_excluded,
+        "cancelled_excluded": cancelled_excluded,
     }
 
     return missing, diagnostics

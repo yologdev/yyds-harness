@@ -1299,6 +1299,125 @@ class AppendTerminalStateEvents(unittest.TestCase):
         self.assertEqual(diagnostics["model_call_started_count"], 1)
         self.assertEqual(diagnostics["model_call_completed_count"], 1)
 
+    def test_find_runs_with_failure_observed_no_completion_excludes_input_validation(self):
+        """A run with FailureObserved and a RunCompleted with error_detail 'empty_input'
+        is excluded from the missing set."""
+        events = [
+            {
+                "event_id": "evt-rc-iv-0",
+                "event_type": "RunStarted",
+                "run_id": "iv-run",
+                "payload": {},
+            },
+            {
+                "event_id": "evt-fo-iv-0",
+                "event_type": "FailureObserved",
+                "run_id": "iv-run",
+                "payload": {"reason": "panic", "error": "panicked"},
+            },
+            {
+                "event_id": "evt-rc-iv-1",
+                "event_type": "RunCompleted",
+                "run_id": "iv-run",
+                "payload": {"status": "error", "error_detail": "empty_input"},
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_runs_with_failure_observed_no_completion(events)
+        self.assertEqual(len(missing), 0,
+                         "Input-validation run should be excluded from missing set")
+        self.assertEqual(diagnostics["input_validation_excluded"], 1)
+        self.assertEqual(diagnostics["cancelled_excluded"], 0)
+        self.assertEqual(diagnostics["failure_observed_runs"], 1)
+        self.assertEqual(diagnostics["runs_with_failure_observed_no_completion"], 0)
+
+    def test_find_runs_with_failure_observed_no_completion_excludes_cancelled(self):
+        """A run with FailureObserved and a RunCompleted with status 'cancelled'
+        is excluded from the missing set."""
+        events = [
+            {
+                "event_id": "evt-rc-cxl-0",
+                "event_type": "RunStarted",
+                "run_id": "cancelled-run",
+                "payload": {},
+            },
+            {
+                "event_id": "evt-fo-cxl-0",
+                "event_type": "FailureObserved",
+                "run_id": "cancelled-run",
+                "payload": {"reason": "signal", "error": "SIGTERM"},
+            },
+            {
+                "event_id": "evt-rc-cxl-1",
+                "event_type": "RunCompleted",
+                "run_id": "cancelled-run",
+                "payload": {"status": "cancelled"},
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_runs_with_failure_observed_no_completion(events)
+        self.assertEqual(len(missing), 0,
+                         "Cancelled run should be excluded from missing set")
+        self.assertEqual(diagnostics["cancelled_excluded"], 1)
+        self.assertEqual(diagnostics["input_validation_excluded"], 0)
+        self.assertEqual(diagnostics["failure_observed_runs"], 1)
+        self.assertEqual(diagnostics["runs_with_failure_observed_no_completion"], 0)
+
+    def test_find_runs_with_failure_observed_no_completion_keeps_normal_error(self):
+        """A run with FailureObserved and a normal error RunCompleted (not
+        input-validation, not cancelled) still appears in the missing set."""
+        events = [
+            {
+                "event_id": "evt-rc-norm-0",
+                "event_type": "RunStarted",
+                "run_id": "normal-run",
+                "payload": {},
+            },
+            {
+                "event_id": "evt-fo-norm-0",
+                "event_type": "FailureObserved",
+                "run_id": "normal-run",
+                "payload": {"reason": "panic", "error": "index out of bounds"},
+            },
+            {
+                "event_id": "evt-rc-norm-1",
+                "event_type": "RunCompleted",
+                "run_id": "normal-run",
+                "payload": {"status": "error", "error_detail": "something else"},
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_runs_with_failure_observed_no_completion(events)
+        # A normal error run with both FailureObserved and RunCompleted should
+        # NOT be in the missing set because RunCompleted exists for it.
+        self.assertEqual(len(missing), 0,
+                         "Run with RunCompleted should not be in missing set regardless")
+        self.assertEqual(diagnostics["input_validation_excluded"], 0)
+        self.assertEqual(diagnostics["cancelled_excluded"], 0)
+
+    def test_find_runs_with_failure_observed_no_completion_only_fo_no_rc(self):
+        """A run with FailureObserved but NO RunCompleted at all still appears
+        in the missing set — exclusions require a RunCompleted to check."""
+        events = [
+            {
+                "event_id": "evt-rs-orphan-0",
+                "event_type": "RunStarted",
+                "run_id": "orphan-run",
+                "payload": {},
+            },
+            {
+                "event_id": "evt-fo-orphan-0",
+                "event_type": "FailureObserved",
+                "run_id": "orphan-run",
+                "payload": {"reason": "crash", "error": "segfault"},
+            },
+        ]
+        missing, diagnostics = append_terminal_state_events.find_runs_with_failure_observed_no_completion(events)
+        self.assertEqual(len(missing), 1,
+                         "Run with FailureObserved but no RunCompleted must appear in missing")
+        self.assertIn("orphan-run", missing)
+        self.assertEqual(diagnostics["input_validation_excluded"], 0)
+        self.assertEqual(diagnostics["cancelled_excluded"], 0)
+        self.assertEqual(diagnostics["failure_observed_runs"], 1)
+        self.assertEqual(diagnostics["runs_with_failure_observed_no_completion"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
