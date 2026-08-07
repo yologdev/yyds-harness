@@ -1,0 +1,636 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully. I need to prevent retroactive FailureObserved events for deliberate no-op sessions. Let me start by reading the relevant files.
+
+The task says:
+1. Edit `scripts/append_terminal_state_events.py` - specifically `find_missing_failure_observed()` around line 307
+2. Write tests in `scripts/test_append_terminal_state_events.py`
+3. The fix: track runs with TaskLineageLinked events and exclude runs with zero task lineage + zero FailureObserved from the `missing` set
+
+Let me start by reading the source file and the evolve skill.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (50 lines)  ▶ read scripts/append_terminal_state_events.py:290..390 ✓ (24ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I can see the `find_missing_failure_observed()` function at line 307. Now I need to understand what events track task lineage. Let me search for "TaskLineageLinked" or "TaskStarted" in the events to understand the event types.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+Now let me understand the event types used for task lineage tracking:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskLineageLinked' in scripts/append_terminal_state_events.py  ▶ search 'TaskStarted' in scripts/append_terminal_state_events.py ✓ (13ms)
+ ✓ (13ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+TaskLineageLinked and TaskStarted aren't in this file. Let me search the broader codebase for these event types to understand what they look like.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+Let me find the event types used for task lineage:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskLineageLinked' in src/state.rs  ▶ search 'TaskStarted' in src/state.rs ✓ (14ms)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `TaskLineageLinked` is the event type. Now let me look at how other parts of the codebase detect task lineage from events. Let me check the event_type function and how it's used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+Now let me look at how `event_type` and `payload` work, and read the test file:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_type' in scripts/append_terminal_state_events.py  ▶ search 'def payload' in scripts/append_terminal_state_events.py  ▶ search 'def run_id' in scripts/append_terminal_state_events.py ✓ (26ms)
+ ✓ (31ms)
+ ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read these helper functions and then the test file.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:30..80  ▶ read scripts/test_append_terminal_state_events.py (100 lines) ✓ (6ms)
+ ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find the test for `find_missing_failure_observed` in the test file:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_failure_observed' in scripts/test_append_terminal_state_events.py ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's no test for `find_missing_failure_observed` yet! Let me search for the test class that might contain related tests, and also look for any test that tests the failure observed functionality:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved' in scripts/test_append_terminal_state_events.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the test around line 454 to see the existing test for the failure observed functionality:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:440..560 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I now understand the test structure. Now let me plan the implementation:
+
+1. In `find_missing_failure_observed()`:
+   - Add a tracking set `runs_with_task_lineage: set[str]` and `runs_with_non_harness_failure: set[str]`
+   - In the event loop, when we see a `TaskLineageLinked` event, add the run_id to `runs_with_task_lineage`
+   - When we see a `FailureObserved` event from a non-harness actor (tool-call lineage), add to `runs_with_non_harness_failure`
+   - Before adding a run to `missing`, check if it has zero task lineage AND zero non-harness failures → skip with `deliberate_no_op_excluded`
+   - Add `deliberate_no_op_excluded` counter to diagnostics
+
+2. In the test file:
+   - Add a test for the deliberate no-op scenario: RunCompleted with error status, zero TaskLineageLinked events, zero FailureObserved → run should NOT be in missing
+
+Now let me understand the actor field to know what "harness" vs "non-harness" means:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how the actor field is used for harness vs. non-harness distinction:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'actor' in scripts/append_terminal_state_events.py ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the test writes FailureObserved events and what actor they use. Looking at the test, FailureObserved is written with `actor: harness` (line 502 of the test file). But in the `find_missing_failure_observed` function, the actor is stored in the event payload, not directly checked. Let me look at how FailureObserved events are created.
+
+Actually, let me step back. The task says:
+- Track `runs_with_task_lineage` (events with TaskLineageLinked event type)
+- Track `runs_with_non_harness_failure` (FailureObserved with tool-call lineage, i.e., non-harness actor)
+
+But in the current code, `failure_observed_runs` already tracks ALL FailureObserved regardless of actor. The task wants to distinguish between harness-inserted FailureObserved (retroactive ones we previously added) vs genuine tool-call failures.
+
+Let me check how FailureObserved events look and what distinguishes harness vs tool lineage:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'FailureObserved.*actor' in scripts/test_append_terminal_state_events.py  ▶ search 'FailureObserved' in scripts/append_terminal_state_events.py ✓ (18ms)
+ ✓ (18ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how the FailureObserved events are written and what actor they use, and how they're distinguished:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.9s (2 ✓)
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:540..580 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at where the failure_observed events are actually appended (the part that calls find_missing_failure_observed):
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'find_missing_failure_observed' in scripts/append_terminal_state_events.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the context around line 676 to understand how the failure observed events are appended and how they use actor:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:670..715 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. The `FailureObserved` events are appended with `actor="harness"`. The distinction between "harness" FailureObserved and non-harness FailureObserved is the `actor` field.
+
+For detecting non-harness FailureObserved in the events, I need to check the `actor` field of the event. Looking at the event format from the test:
+```python
+row = {
+    "event_id": f"evt-{event_type}-{run_id}-{line_count}",
+    "event_type": event_type,
+    "run_id": run_id,
+    "payload": payload or {},
+}
+```
+
+But the actual events have an `actor` field. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me look at how FailureObserved events look in real events (with actor field):
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search '"actor"' in scripts/test_append_terminal_state_events.py ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. Looking at the tests, the `actor` field is present on appended events. But in the events stream, the `actor` field might or might not be present. Let me check how `find_missing_failure_observed` currently handles this. It only looks at `event_type` and `run_id` in the event, not `actor`.
+
+For the non-harness FailureObserved check, I should check if the FailureObserved event has `actor != "harness"` (or if no actor is present, treat it as non-harness - since these are real events from the state recorder, not from append_terminal_state_events itself).
+
+Actually, let me look more carefully. The `find_missing_failure_observed` function processes events that are already in the event file. Some FailureObserved events come from the actual agent run (with actors like `yoyo` or tool names), while others are retroactively appended by `append_terminal_state_events` itself (with `actor="harness"`).
+
+So the check for non-harness FailureObserved would be: a `FailureObserved` event where `actor != "harness"`.
+
+But actually, let me reconsider the task description. The task says:
+- "runs_with_non_harness_failure (FailureObserved with tool-call lineage, i.e., non-harness FailureObserved)"
+
+So it's about distinguishing harness-retroactive FailureObserved from genuine tool-call FailureObserved. But as I analyzed in the thinking, this distinction may not be strictly needed for the `missing` computation since:
+- If a run has ANY FailureObserved (harness or not), it's already in `failure_observed_runs` and excluded from `missing`
+- The question is about runs with NO FailureObserved at all
+
+Let me re-read the task's success criteria:
+> `find_missing_failure_observed()` does NOT return runs that have zero `TaskStarted` events and zero tool-call `FailureObserved` events — these are deliberate no-ops, not real failures.
+
+The task wants to check for `TaskStarted` events, but there's no `TaskStarted` event in the codebase. The closest is `TaskLineageLinked`. Let me check if `TaskLineageLinked` is indeed the event used for task start tracking.
+
+Let me also check how `event_type` handles this - it might match on `task.lineage_linked` as well:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3294..3304 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `TaskLineageLinked` is the event type. Now I have all the information I need. Let me plan the implementation:
+
+### In `find_missing_failure_observed()`:
+
+1. Add `runs_with_task_lineage: set[str] = set()` and `runs_with_non_harness_failure: set[str] = set()`
+2. Add `deliberate_no_op_excluded = 0` counter
+
+In the event loop:
+- When we see `TaskLineageLinked`, add the run_id to `runs_with_task_lineage`
+- When we see `FailureObserved` with `actor != "harness"`, add to `runs_with_non_harness_failure`
+
+Before adding to `missing`, add a check:
+```python
+# Exclude deliberate no-op sessions: completed with error but zero tasks and zero failures
+if rid not in runs_with_task_lineage and rid not in runs_with_non_harness_failure:
+    deliberate_no_op_excluded += 1
+    continue
+```
+
+Wait, but actually I need to reconsider. The condition should be:
+- A deliberate no-op has: RunCompleted error status, zero TaskLineageLinked events, zero non-harness FailureObserved
+- But `rid not in failure_observed_runs` is already true (otherwise it wouldn't be in `missing`)
+- So among runs already in `missing` (no FailureObserved of any kind), we additionally check: no task lineage → deliberate no-op
+
+Actually wait, let me re-read the task's definition:
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded).
+
+So the checks are:
+1. RunCompleted with error status (already true for everything in `error_completed`)
+2. Zero TaskLineageLinked events (task lineage)
+3. Zero non-harness FailureObserved events
+4. Not input-validation/cancelled (already excluded)
+
+For the `missing` list:
+- A run in `missing` has: RunCompleted error status, no FailureObserved of any kind
+- We additionally need to check: does it have TaskLineageLinked?
+
+If a run has NO TaskLineageLinked events → it's a deliberate no-op, exclude from `missing`
+
+The "zero non-harness FailureObserved" check is actually redundant for runs in `missing` because `missing` already only contains runs with NO FailureObserved at all.
+
+But the task explicitly asks for `runs_with_non_harness_failure` as a tracking set. Let me add it but simplify the deliberate-no-op check to just: no task lineage.
+
+Wait, actually let me re-read: "zero non-harness FailureObserved events" - the task says this matters because runs can have harness FailureObserved (retroactively inserted) but no real tool failures. But if a run has a harness FailureObserved, it's already in `failure_observed_runs` and excluded from `missing`. So the non-harness check doesn't affect `missing`.
+
+But let me add the tracking anyway as the task requests, for diagnostic purposes.
+
+Let me also consider: what about `runs_with_non_harness_failure`? If a run has a non-harness FailureObserved but no TaskLineageLinked, is that a deliberate no-op? Probably not - it had some tool failure. But such a run would already be in `failure_observed_runs` and excluded from `missing`.
+
+OK, let me just implement the simple version:
+
+1. Track `runs_with_task_lineage` set
+2. In the missing list comprehension, add a condition to exclude runs with no task lineage
+3. Add the diagnostic counter
+
+For the test, I need to add a test case with:
+- RunCompleted with error status
+- NO TaskLineageLinked events
+- NO FailureObserved events
+- The run should NOT be in `missing`
+
+Let me now implement this. First, let me edit `find_missing_failure_observed`:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the context. Let me implement the fix. The key insight: a deliberate no-op session has RunCompleted with error status but zero task activity (no `TaskLineageLinked` events) and zero genuine failures. I need to track runs with task lineage and exclude them from `missing`.
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me implement the fix. First, edit `find_missing_failure_observed()` to add the deliberate no-op exclusion.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 12.3s (4 ✓)
+
+
+        error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+        failure_observed_runs: set[str] = set()
+  +     runs_with_task_lineage: set[str] = set()
+  +     runs_with_non_harness_failure: set[str] = set()
+        input_validation_excluded = 0
+        cancelled_excluded = 0
+  +     deliberate_no_op_excluded = 0
+    
+        for event in events:
+            kind = event_type(event)
+  ···
+                    }
+            elif kind == "FailureObserved":
+                failure_observed_runs.add(rid)
+  +             actor = event.get("actor", "")
+  +             if actor != "harness":
+  +                 runs_with_non_harness_failure.add(rid)
+  +         elif kind == "TaskLineageLinked":
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (44 → 72 lines)
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (24ms)
+  ▶ edit scripts/append_terminal_state_events.py (44 → 72 lines)
+        error_completed: dict[str, dict[str, Any]] = {}  # run_id -> {status, timestamp_ms}
+        failure_observed_runs: set[str] = set()
+  +     runs_with_task_lineage: set[str] = set()
+  +     runs_with_non_harness_failure: set[str] = set()
+        input_validation_excluded = 0
+        cancelled_excluded = 0
+  +     deliberate_no_op_excluded = 0
+    
+        for event in events:
+            kind = event_type(event)
+  ···
+                    }
+            elif kind == "FailureObserved":
+                failure_observed_runs.add(rid)
+  +             actor = event.get("actor", "")
+  +             if actor != "harness":
+  +                 runs_with_non_harness_failure.add(rid)
+  +         elif kind == "TaskLineageLinked":
+  +             runs_with_task_lineage.add(rid)
+  + 
+  ... (36 more lines)
+ ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me also update the docstring to mention the new exclusion. Then I need to add the test.
+
+Let me update the docstring first:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.0s (2 ✓)
+
+Now update the docstring to document the new exclusion:
+        Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+        are excluded — the missing terminal events are expected behaviour when a
+        session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
+  + 
+  +     Deliberate no-op runs (RunCompleted error status with zero
+  +     TaskLineageLinked events and zero non-harness FailureObserved events)
+  +     are excluded — these are journal-only or planning-only sessions that
+  +     produced zero tasks with zero errors and exit with error status because
+  +     no tasks were completed, which is expected behaviour, not a harness
+  +     failure (Day 160).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (16 → 23 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (16 → 23 lines)
+        Externally-cancelled runs (RunCompleted with ``status == "cancelled"``)
+        are excluded — the missing terminal events are expected behaviour when a
+        session is killed by SIGTERM or GitHub Actions concurrency (Day 155).
+  + 
+  +     Deliberate no-op runs (RunCompleted error status with zero
+  +     TaskLineageLinked events and zero non-harness FailureObserved events)
+  +     are excluded — these are journal-only or planning-only sessions that
+  +     produced zero tasks with zero errors and exit with error status because
+  +     no tasks were completed, which is expected behaviour, not a harness
+  +     failure (Day 160).
+    
+        Returns (missing_entries, diagnostics) where each missing entry is a dict
+        with keys run_id, status, timestamp_ms for runs whose RunCompleted
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add a test case. Let me also check the test helper `write_event` - it writes events with `event_type` and `run_id` but no `actor` field. For a non-harness FailureObserved test, I might need to add `actor` to the event. But for the deliberate no-op test, I just need a run with error RunCompleted, no FailureObserved, and no TaskLineageLinked.
+
+Let me now add the test for the deliberate no-op scenario. I'll find a good place to add it in the test file, near the existing failure-observed tests.
+
+Let me first check where the `test_appends_failure_observed_for_error_completed_run` test is and what test class it's in:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me figure out the exact class name and find the right place to add the test. Let me also check the `write_event` helper to see if I can pass actor:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.0s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:18..33 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`write_event` doesn't support `actor`. But for `TaskLineageLinked` events, I just need the event_type to be "TaskLineageLinked", no actor needed. For the deliberate no-op test, I need:
+- A run with RunCompleted error, no FailureObserved, no TaskLineageLinked → should NOT be in missing
+
+For the test that verifies non-harness FailureObserved distinction, I'd need to write events with `actor` field. But the task says I should test the deliberate no-op scenario. Let me add a focused test.
+
+Let me add the test after `test_skips_failure_observed_when_already_present` or near the end of the FailureObserved test section.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me find a good insertion point for the test. Let me see the tests around line 550 and find where the `test_skips_retroactive` test ends:
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:550..630 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me find a good spot to add the test. I'll add it after `test_skips_retroactive_failure_observed_on_second_invocation` (line 610-611 is where that test ends). Let me add it right before `test_skips_failure_observed_for_success_run`.
+
+For the deliberate no-op test, I need:
+1. A run with RunCompleted error status
+2. No FailureObserved events
+3. No TaskLineageLinked events
+4. The run should NOT be in missing (deliberate_no_op_excluded counter should be 1)
+5. Also test that a run WITH TaskLineageLinked but no FailureObserved IS in missing (to prove the distinction works)
+
+Actually, let me keep it simple. Just test:
+- Run with error RunCompleted, no FailureObserved, no TaskLineageLinked → NOT in missing, deliberate_no_op_excluded == 1
+
+And also verify that a run with TaskLineageLinked IS in missing (to make sure we're not just excluding everything).
+
+Let me add the test after line 610:
+────────────────────────────────────────────────────────────────────────────────
+
+
+                self.assertTrue(fo_rows[0]["payload"].get("retroactive"),
+                                "The FailureObserved should be marked retroactive")
+  + 
+  +     def test_excludes_deliberate_no_op_from_failure_observed(self):
+  +         """A RunCompleted with error status, zero tasks, and zero failures is a deliberate no-op."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             # Deliberate no-op run: error status, no task lineage, no failures
+  +             write_event(events, "RunStarted", "no-op-run")
+  +             write_event(events, "ModelCallStarted", "no-op-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "no-op-run", {"status": "error"})
+  +             # A real failing run: error status, has task lineage
+  +             write_event(events, "RunStarted", "real-fail-run")
+  +             write_event(events, "ModelCallStarted", "real-fail-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "TaskLineageLinked", "real-fail-run",
+  +                         {"task_id": "task_01", "attempt": 1})
+  +             write_event(events, "RunCompleted", "real-fail-run", {"status": "error"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (4 → 61 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (4 → 61 lines)
+                self.assertTrue(fo_rows[0]["payload"].get("retroactive"),
+                                "The FailureObserved should be marked retroactive")
+  + 
+  +     def test_excludes_deliberate_no_op_from_failure_observed(self):
+  +         """A RunCompleted with error status, zero tasks, and zero failures is a deliberate no-op."""
+  +         with tempfile.TemporaryDirectory() as tmp:
+  +             events = Path(tmp) / "events.jsonl"
+  +             # Deliberate no-op run: error status, no task lineage, no failures
+  +             write_event(events, "RunStarted", "no-op-run")
+  +             write_event(events, "ModelCallStarted", "no-op-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "RunCompleted", "no-op-run", {"status": "error"})
+  +             # A real failing run: error status, has task lineage
+  +             write_event(events, "RunStarted", "real-fail-run")
+  +             write_event(events, "ModelCallStarted", "real-fail-run", {"model": "deepseek-v4-pro"})
+  +             write_event(events, "TaskLineageLinked", "real-fail-run",
+  +                         {"task_id": "task_01", "attempt": 1})
+  +             write_event(events, "RunCompleted", "real-fail-run", {"status": "error"})
+  +             after_line = len(events.read_text(encoding="utf-8").splitlines())
+  + 
+  +             write_event(events, "RunStarted", "current-run")
+  ... (41 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (77ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see all failures:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests are failing because the existing test runs (like `test_appends_failure_observed_for_error_completed_run`) have error RunCompleted but no TaskLineageLinked events - so they're being treated as deliberate no-ops!
+
+The problem is clear: the existing test runs like `error-run` have RunCompleted with error status but no TaskLineageLinked events. My `_is_deliberate_no_op` check is too broad - it catches all runs without task lineage, not just those that are truly deliberate no-ops.
+
+The issue is: the `write_event` helper doesn't support writing `actor` field. Many existing test runs don't have TaskLineageLinked events or FailureObserved events, so they look like deliberate no-ops.
+
+I need to think about this more carefully. The key question is: what distinguishes a deliberate no-op from a real failure?
+
+A deliberate no-op session:
+- Has RunCompleted with error status
+- Has ModelCallStarted/ModelCallCompleted (the agent did think)
+- Has ZERO TaskLineageLinked events (no tasks were attempted)
+- Has ZERO non-harness FailureObserved events (no tool failures)
+
+A real failure session:
+- Has RunCompleted with error status
+- Has TaskLineageLinked events (tasks were attempted)
+- May or may not have FailureObserved events
+
+But many existing tests don't include TaskLineageLinked events for their error runs. So I need to make my check less aggressive.
+
+Actually, wait. Let me re-read the task description:
+
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded).
+
+The test `test_appends_failure_observed_for_error_completed_run` creates a run with:
+- RunCompleted error status
+- No TaskLineageLinked (no tasks)
+- No FailureObserved
+
+That run should be a deliberate no-op by my logic! But the test expects it to get a FailureObserved. 
+
+The problem is that in real life, many error runs may not have TaskLineageLinked. The distinction isn't clean enough.
+
+I need to think about what actually makes a deliberate no-op:
+
+Looking at the Day 159 scenario: it was a journal-only session. What does that look like in events? It would have:
+- RunStarted
+- ModelCallStarted
+- ModelCallCompleted  
+- AgentExitReason (maybe)
+- RunCompleted with error
+
+No TaskLineageLinked at all (because no tasks were selected/attempted).
+
+But a normal session that crashes might also lack TaskLineageLinked if it crashes during assessment before selecting tasks.
+
+Hmm. The task says:
+> Do NOT try to read transcripts, session files, or external state to determine no-op status — rely only on events present in the events list.
+
+And:
+> If the fix would require reading full transcripts or external session data (not available in the events stream), narrow scope to only the event-level check and skip deeper session analysis.
+
+I think the issue is that the existing tests represent scenarios where a run has ModelCallStarted → RunCompleted with error but no task lineage. In production, these would be sessions where the agent crashed during assessment. But the current harness treats them as needing retroactive FailureObserved.
+
+The question the task raises is: should these sessions get retroactive FailureObserved? Maybe yes - a crashed assessment IS a failure. But a session that deliberately produces no tasks and exits with "nothing to do" is not a failure.
+
+The problem is that from events alone, we can't distinguish "crashed during assessment" from "deliberately produced zero tasks." Both have:
+- ModelCallStarted/Completed
+- RunCompleted error
+- No TaskLineageLinked
+- No FailureObserved
+
+So the event-level check alone is insufficient. This means I should narrow the scope as the task suggests.
+
+Wait, let me re-read the fallback:
+> If the fix would require reading full transcripts or external session data (not available in the events stream), narrow scope to only the event-level check and skip deeper session analysis.
+
+So the fallback says to narrow scope to event-level only. But the event-level check (no TaskLineageLinked, no FailureObserved) catches too much. 
+
+Let me think about what additional event-level signal could help distinguish:
+- If there's an AgentExitReason event with a reason like "no_tasks_selected" or "assessment_complete_no_tasks", that could signal deliberate no-op
+- But that's speculative
+
+Actually wait, let me look at the existing tests more carefully. The test `test_appends_failure_observed_for_error_completed_run` has:
+```python
+write_event(events, "RunStarted", "error-run")
+write_event(events, "ModelCallStarted", "error-run", {"model": "deepseek-v4-pro"})
+write_event(events, "RunCompleted", "error-run", {"status": "error"})
+```
+
+This run has ModelCallStarted but no ModelCallCompleted. That's actually an open model call - the harness's `append_terminal_events` function closes it by adding ModelCallCompleted. So this is the "agent was killed/crashed while running" scenario.
+
+For a deliberate no-op, the model call would complete normally (ModelCallCompleted). Let me check if that's a distinguishing signal.
+
+Actually, looking at the `append_terminal_events` function, the runs that get their FailureObserved retroactively appended are runs that:
+1. Have RunCompleted with error status but no FailureObserved
+2. Are not input-validation or cancelled
+
+The `after_line` parameter filters out current-session events, and the function scans events BEFORE `after_line` for orphaned runs. 
+
+These orphaned runs typically have open model calls (ModelCallStarted without ModelCallCompleted), which means the agent was killed mid-flight. A deliberate no-op would have ModelCallCompleted (the agent finished its turn).
+
+But wait: in production, when `append_terminal_state_events` runs at session end, it processes the whole events file. Some of those runs might have been deliberately no-op. The issue is that the function can't tell from events alone.
+
+OK, I think the issue is simpler than I'm making it. Let me look at what happens with the actual test runs. The test `test_appends_failure_observed_for_error_completed_run` creates a run that is effectively a "crashed session" (open model call, no task lineage). My deliberate no-op check should NOT exclude this.
+
+The key question is: what signal in the events distinguishes "deliberate no-op" from "crashed during assessment"?
+
+For a deliberate no-op in the harness's evolution pipeline:
+- The session ran to completion
+- The agent completed its model calls
+- The agent chose not to select tasks
+- RunCompleted has error status because no tasks were completed
+
+So there would be ModelCallCompleted events AND possibly TaskLineageLinked for the assessment phase (which might create task lineage events even if no implementation tasks were attempted).
+
+Actually, looking at the state events more carefully: TaskLineageLinked fires when the harness links a task lineage entry. This happens when tasks are started. If no tasks are started, there won't be TaskLineageLinked events.
+
+Hmm, but what if the assessment itself creates some lineage? Let me check.
+
+Actually, I think I need to take a different approach. The task says to use `TaskLineageLinked` (representing task lineage), but the issue is that many error runs also lack TaskLineageLinked. 
+
+Let me re-read the task description more carefully:
+
+> The fix lives in `find_missing_failure_observed()` (around line 307). Add a tracking set for runs that have `TaskStarted` events and another for runs that have `FailureObserved` with tool-call lineage (i.e., non-harness FailureObserved).
+
+The task mentions `TaskStarted` but the actual event is `TaskLineageLinked`. The key insight from the task is:
+
+> A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded).
+
+So the definition is clear. The problem is that existing tests use error-completed runs without task lineage, and those should still get retroactive FailureObserved.
+
+Wait - maybe those test scenarios are wrong under the new logic? Maybe the task IS saying that runs without any task lineage should NOT get retroactive FailureObserved, period. The existing tests may need to be updated to include TaskLineageLinked for their error runs.
+
+But the task also says "Existing tests pass." So I can't break existing tests.
+
+Let me look at this from a different angle. What if I look at AgentExitReason events? A deliberate no-op session might have an AgentExitReason like "no_tasks_selected" or "planning_complete". Let me check.
+
+Actually, the simplest approach: let me look at what distinguishes the Day 159 deliberate no-op from a regular crashed session.
+
+Day 159 was a session that:
+- Ran the full pipeline
+- Assessment phase completed
+- Agent decided "nothing to do"
+- Exited with error status
+
+In terms of events, what would distinguish this from a session that crashed during assessment?
+
+The key difference might be: a deliberate no-op has ModelCallCompleted events (the agent ran to completion), while a crashed session has open ModelCallStarted. But `find_missing_failure_observed` doesn't track model calls.
+
+Wait, but the function already processes runs that have ModelCallCompleted because they've been closed by `append_terminal_events`. So by the time `find_missing_failure_observed` runs, all open model calls have been closed.
+
+Hmm. Let me look at this differently. Let me check what AgentExitReason events look like for deliberate no-ops:
+────────────────────────────────────────────────────────────────────────────────
+
+I see the problem. The existing tests have error runs without `TaskLineageLinked` events — my check is too aggressive. Let me look at what distinguishes a deliberate no-op from a crashed session in the event stream:
+  ╭─ Turn 26 ────────────────────────────────────────────────────────────╮
+  ▶ search 'AgentExitReason' in scripts/append_terminal_state_events.py  ▶ search 'AgentExitReason' in src/state.rs ✓ (13ms)
+ ✓ (13ms)
+  2 tools completed in 19ms (2 ✓)
+
+

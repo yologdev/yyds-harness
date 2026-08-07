@@ -1,0 +1,429 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully:
+
+1. I'm in Phase A2: PLANNING. My job is to produce `session_plan/task_*.md` files.
+2. The assessment is already available and comprehensive.
+3. I need to check if `session_plan/task_01.md` already exists (it might be a seed task).
+4. The highest priority tasks based on the assessment:
+   - Retry #165: Prevent retroactive FailureObserved for no-op sessions (most actionable, concrete fix)
+   - Retry #162: Close lifecycle feedback gaps (but it was reverted for scope mismatch)
+   - The trajectory pressures: planner_no_task_count=2, bash_tool_error=12
+
+Let me check if task_01.md already exists first, then plan.
+
+Key observations:
+- #165 was already attempted (Day 160 Task 1) and reverted because evaluator timed out. The assessment says it's still the highest-priority candidate. But I need to make it SMALLER than last time.
+- #162 was reverted for scope mismatch (task changes didn't overlap planned Files)
+- #163 was reverted because the implementation agent couldn't land code
+- #105 is blocked on upstream yoagent dependency
+
+The TRAJECTORY shows `task_success_rate=0.0` but the assessment clarifies this is a measurement artifact from the infrastructure-killed session.
+
+For #165: The previous attempt was reverted because the evaluator timed out (not because the code was wrong). The task is well-defined, has clear edit surface (one file: `scripts/append_terminal_state_events.py`), clear verifier, and the assessment confirms it's still needed.
+
+Let me also consider: what new tasks could I plan? The trajectory pressures include:
+- Make planning failure actionable (planner_no_task_count=2)
+- Force analysis-only attempts into action
+- Bound failing shell commands
+
+Let me check if session_plan/task_01.md exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ ls session_plan ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+A seed task_01.md already exists. Let me read it to understand what the harness seeded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so this is a harness-seeded fallback task. It's very generic — "add a small improvement to src/state.rs". The assessment says #165 is the highest-priority candidate. Let me compare:
+
+The seed task_01.md is a harness-generated fallback ("add a small improvement to src/"). It's intentionally vague because the harness doesn't know what to work on.
+
+According to the PLANNING INSTRUCTION PRECEDENCE:
+> The harness may have already created session_plan/task_01.md from assessment evidence before you started. Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file.
+> If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof.
+
+Assessment evidence DOES contradict the seed task. The seed says "The assessment found no actionable bugs in src/" — but the assessment specifically identifies #165 as actionable. Also, the trajectory pressures include bash_tool_error=12 and planner_no_task_count=2.
+
+However, I need to be careful: #165 was attempted and reverted due to evaluator timeout (not wrong code). The fix is in `scripts/append_terminal_state_events.py`, not in `src/`. But the seed task is about `src/state.rs`.
+
+Let me think about what tasks to plan:
+
+1. **#165 retry** (most actionable): Fix `scripts/append_terminal_state_events.py` to not retroactively insert FailureObserved for no-op sessions. This was reverted because evaluator timed out, not because code was wrong. I should make it smaller. The previous task description was quite detailed already. The fix is in one file, has clear test surface.
+
+2. The seed task_01.md is a weak fallback. I should replace it with #165 or with something else evidence-backed.
+
+But wait — the task sizing rules say: "If a task has been reverted before (check agent-self issues above), make it SMALLER than last time." The #165 task was already quite small — single file, single function. Let me look at the previous task description more carefully for #165... It was already well-scoped to `find_missing_failure_observed()` in one file with one new exclusion condition. It was reverted because evaluator timed out, not because the scope was too big.
+
+So for #165, I should keep it small and focused. The change is:
+- Add tracking sets for TaskStarted events and non-harness FailureObserved events
+- Add one exclusion condition: zero TaskStarted + zero tool failures → deliberate no-op
+- Add a `deliberate_no_op_excluded` counter
+- Add test fixture
+
+This is maybe 30-50 lines of code total. That's already small.
+
+Let me plan:
+- **task_01.md**: Replace the seed with #165 retry — Prevent retroactive FailureObserved for no-op sessions
+- **task_02.md**: Maybe something about the bash_tool_error=12 pressure? Or maybe #162 (lifecycle feedback gaps)?
+
+Actually, let me think about what would have the most impact:
+
+The assessment says:
+- #165 is most actionable (concrete fix location, clear test surface)
+- #162 was reverted for scope mismatch (touched .skill_evolve_counter and memory/learnings.jsonl instead of the planned files)
+- #163 was reverted because the implementation agent couldn't land code
+
+For #162, the scope mismatch happened because the implementation agent touched files outside the planned Files list. I could re-plan it with stricter scope.
+
+But I need to be careful about the task sizing rules. Let me focus on what's most likely to succeed:
+
+1. Task 1: #165 — single file, clear fix, clear test. This is the best candidate.
+2. Task 2: Maybe something addressing the bash_tool_error=12 trajectory pressure? But I don't have a concrete fix in mind without reading code.
+3. Task 3: Maybe #162 re-scoped more tightly.
+
+Actually, let me think about what I can plan without reading source code. The assessment says:
+- #165: `scripts/append_terminal_state_events.py`, function `find_missing_failure_observed()`. Clear.
+- The seed task_01.md should be replaced with #165.
+
+For task_02, I could plan something small and concrete. Let me look at the trajectory pressures more carefully:
+
+The graph-derived pressures:
+1. Make planning failure actionable (planner_no_task_count=2)
+2. Force analysis-only attempts into action (task_analysis_only_attempt_count=2)
+3. Raise verified task success rate
+4. Require strict verifier evidence
+5. Bound failing shell commands (bash_tool_error=12)
+
+Numbers 1-4 are about the planning/implementation/evaluation pipeline — these live in `scripts/evolve.sh` which is DO-NOT-MODIFY. Number 5 is about bash tool errors — could potentially be addressed in `src/tools.rs` or `src/tool_wrappers.rs`.
+
+But I don't have enough concrete evidence without reading source code. The assessment says `bash_tool_error=12` but doesn't detail what commands failed.
+
+Let me go with:
+- task_01.md: Replace seed with #165 (evidence-backed, concrete)
+- task_02.md: Maybe something small... or skip if I can't find concrete evidence
+
+Actually, wait. Let me re-read the instruction: "You have 3 task slots per session." But it also says "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+I have strong evidence for #165. The trajectory pressures exist but many point at do-not-modify files. Let me see if there's something else actionable.
+
+Let me also look at the issue responses I need to write:
+- #165: implement as task_01
+- #164: this is the "Planning-only session: all 2 selected tasks reverted" — it's a tracking issue, not actionable code
+- #163: "Classify planning failures by cause" — reverted because implementation couldn't land code. I could retry this but it's in `scripts/log_feedback.py` which is a complex file.
+- #162: "Close lifecycle feedback gaps" — reverted for scope mismatch
+- #105: "Record DeepSeek prompt cache metrics" — blocked on yoagent upstream (#90)
+- #131: evaluator timeouts — do-not-modify
+- #90: yoagent Usage struct — blocked on upstream
+
+So the clear winner is #165. For task_02, let me think...
+
+Actually, let me also consider: could I plan a task that adds a small improvement to `src/` based on the trajectory/assessment evidence? The seed task suggests this. Something like: the assessment found no clippy warnings, no test failures. But the trajectory shows `bash_tool_error=12`. Maybe a small improvement to bash error handling?
+
+Let me think about what concrete, small improvement I could plan for `src/`:
+- The assessment mentions `bash_tool_error=12` — maybe improve recovery hints or error output for bash failures?
+- But I don't have enough concrete evidence to say exactly what to change without reading code.
+
+I could also plan a task from the issue list. Let me look at #162 more carefully. It was reverted for scope mismatch — the planned files were `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` but the agent touched `.skill_evolve_counter, memory/learnings.jsonl`. This suggests the agent went off-track, not that the task was wrong.
+
+But #162 is about lifecycle feedback gaps, and the assessment says the Day 159-160 fixes already closed the main lifecycle edges. The remaining gaps are in input-validation exits.
+
+OK, here's my plan:
+- task_01.md: Replace seed with #165 — Prevent retroactive FailureObserved for no-op sessions
+- task_02.md: Maybe re-scope #162 to be tighter (single file: `scripts/append_terminal_state_events.py` only, skip log_feedback and summarize_state_gnomes)
+- task_03.md: Maybe #163 scoped smaller... but #163 was reverted because the implementation agent couldn't figure out how to implement it. The task description was confusing (per-phase event metrics that don't exist).
+
+Actually, let me be pragmatic. The #165 task is solid. For a second task, let me think about what would actually ship.
+
+Looking at the assessment again: "The Day 159 12:05 journal-only session got a retroactive FailureObserved." This is exactly #165. 
+
+For task_02, I could plan a small improvement to `src/` that addresses the bash_tool_error=12 pressure. Let me check: what kind of bash tool errors are happening? The trajectory says "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks" — this suggests commands are failing because they're too broad or paths are missing.
+
+But without reading source code, I can't plan a concrete fix. The assessment doesn't detail which commands failed.
+
+Let me go with just 2 tasks:
+1. #165 (strong evidence, concrete, single file)
+2. A small improvement to `src/tool_wrappers.rs` or `src/tools.rs` based on the bash_tool_error pressure — but I need to be concrete...
+
+Hmm, actually let me re-examine what I can do with just the assessment evidence. The assessment says:
+
+> **Bash tool error rate**: 12 failures in recent sessions. Recovery hints exist (Day 159 added signal-kill hints) but the root cause (broad commands, missing paths) persists.
+
+Maybe I could add something to the bash tool to prefer bounded commands? But "bounded commands" is a prompt/hint thing, not a code change. And recovery hints are already in `src/tool_wrappers.rs`.
+
+OK, let me be honest: I have ONE strong task (#165) and I need to decide whether to force a second task or accept that one solid task is better than two weak ones.
+
+The PLANNING INSTRUCTION says: "You have 3 task slots per session." But it doesn't say I MUST fill all 3. The self-wisdom lesson says: "A session that knows when to stop looking is more trustworthy than one that always finds something to change."
+
+Let me write:
+- task_01.md: #165 — the concrete, evidence-backed fix
+- task_02.md: A small `src/` improvement if I can find one... 
+
+Actually, let me check if there is a concrete candidate. Let me look at what the assessment says about src/ issues:
+
+The assessment says: "No breakage found. All commands produce expected output." and "The codebase is healthy — 0 state failures, clean builds, recent fixes holding."
+
+But I also see the "Graph-derived next-task pressure" in the trajectory. Let me look at those more carefully:
+
+From the trajectory: "Make planning failure actionable (planner_no_task_count=2): The planner produced no concrete task files."
+
+This is interesting — the planner itself produced no task files in 2 sessions. But the fix for this is either in the planning prompt (which I don't control from src/) or in how the harness detects and handles planning failures. This might be in `scripts/preseed_session_plan.py` or similar.
+
+But I should focus on what I can control. Let me just write the one strong task and a second smaller one.
+
+For task_02, let me think about a small, verifiable `src/` improvement:
+- The seed task suggested adding a unit test, doc comment, or micro-improvement to `src/state.rs`
+- But that's a weak fallback, not evidence-backed
+
+Actually, I could make task_02 about improving the recovery hints for bash tool errors. The assessment says: "Recovery hints exist (Day 159 added signal-kill hints) but the root cause (broad commands, missing paths) persists." I could add recovery hints for "command not found" (missing paths) and for broad commands that time out.
+
+Let me check: where are the recovery hints defined? The assessment mentions `src/tool_wrappers.rs` has `RecoveryHintTool`. I could add new hint patterns there. But I'd need to read the code to know what patterns to add.
+
+OK, I'll go with this plan:
+1. task_01.md: Replace seed with #165 — evidence-backed, concrete, single file
+2. task_02.md: TBD — maybe skip if I can't find concrete evidence
+
+Let me now write the files. I need to:
+1. Replace task_01.md with #165
+2. Create issue_responses.md
+3. Optionally create task_02.md
+
+For task_01.md, I'll use the #165 issue description but make it even SMALLER per the task sizing rules for reverted tasks. The key constraint: "If a task has been reverted before, make it SMALLER than last time."
+
+The previous #165 task was already focused on one function in one file. The only way to make it smaller would be to narrow the scope. But it's already minimal — add one exclusion condition to one function. I think the previous attempt failed because of evaluator timeout, not scope. So keeping the same scope is reasonable.
+
+Let me write the files now. I'll start with task_01.md.
+
+Let me also consider: do I need to write `session_plan/task_01_obsolete.md` for the seed task? The instruction says: "Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+Since I'm replacing the seed with a better evidence-backed task, I should write the obsolete note. Actually wait, re-reading: "do not delete it unless you immediately write an equal-or-better evidence-backed task file." I'm replacing task_01.md with #165, which IS equal-or-better (concrete issue, clear evidence, single file). So I should also write task_01_obsolete.md.
+
+Actually, let me re-read more carefully: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The assessment found no actionable bugs in src/" — but the assessment does find actionable bugs (#165). So there IS a contradiction: the seed claims no actionable bugs, but the assessment identifies #165 as actionable. I should replace the seed with #165 AND write task_01_obsolete.md explaining why.
+
+Let me proceed.
+────────────────────────────────────────────────────────────────────────────────
+
+The seed `task_01.md` is a harness fallback ("add a small improvement to src/state.rs") that claims "no actionable bugs." The assessment directly contradicts this — #165 is an actionable, evidence-backed fix. I'll replace the seed with #165 and write the obsolete note.
+  - Title: Add a small verifiable improvement to src/
+  - Files: src/state.rs
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Prevent retroactive FailureObserved for deliberate no-op sessions
+  + Files: scripts/append_terminal_state_events.py
+  + Issue: #165
+  + Origin: planner (replacing harness seed — assessment evidence contradicts seed's "no actionable bugs" claim)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found no actionable bugs in src/. Instead of producing a journal-only observation that wastes an evolution cycle, this task produces a small, verifiable code improvement that passes cargo build && cargo test.
+  + - Day 160 assessment §Bugs/Friction #1: "[MEDIUM] Open issue #165 — Retroactive FailureObserved for no-op sessions"
+  + - `yyds state why last-failure` confirmed: "Found a retroactive FailureObserved from Day 159 (12:05 session), source=unknown, class=unknown"
+  + - Day 159 had a journal-only session (12:05) that deliberately produced no tasks — `tasks_attempted==0`, clean tree. The harness's `append_terminal_state_events.py` retroactively inserted FailureObserved, polluting failure metrics.
+  + - `find_missing_failure_observed()` in scripts/append_terminal_state_events.py already excludes input-validation and cancelled runs (lines ~341-346). Deliberate no-op runs (0 TaskStarted events, no tool errors) need the same exclusion.
+  + - Day 159's `build_evolution_dashboard.py` fix already stopped penalizing these in success-rate scoring, but the state events themselves still carry the false FailureObserved records.
+  + - This task was attempted as Day 160 Task 1 and reverted because the evaluator timed out — NOT because the code was wrong. The implementation passed all tests.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (51 lines)
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (51 lines) ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to write task_01_obsolete.md explaining why the seed task was replaced. And then plan task_02 and task_03 if I have good candidates.
+
+Let me write the obsolete note first, then decide on task_02.
+
+For task_02, let me think about what else is actionable. The assessment mentions:
+
+1. #162 (lifecycle feedback gaps) - reverted for scope mismatch. Could retry with tighter scope (single file).
+2. The bash_tool_error=12 pressure - but I don't have concrete evidence for a fix without reading code.
+
+Actually, looking at the instruction again: "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+I have ONE strong state-driven task (#165). For a second, let me look at the trajectory pressures more carefully.
+
+The trajectory's "Graph-derived next-task pressure" includes:
+- "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=12): prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+This is about the bash tool. But the fix isn't a code change — it's about how the agent uses bash. Recovery hints already exist in `src/tool_wrappers.rs`. Adding more hints might help but I can't be specific without reading the code.
+
+Let me also check: is there a concrete task I can plan from the assessment's capability gaps section? The assessment mentions:
+1. DeepSeek prompt cache measurement (#90) — blocked on upstream
+2. Planner produces no tasks — in do-not-modify territory
+3. Analysis-only implementation — in do-not-modify territory
+4. Bash tool error rate — recovery hints exist, root cause is agent behavior
+
+None of these map to a concrete, verifiable code change in `src/`.
+
+Let me go with just task_01 (#165) and write the issue_responses.md. I'll also write task_01_obsolete.md.
+
+Actually wait — I should also write a planning_failure.md if I can't produce at least one task. But I HAVE produced task_01.md. The question is whether I need a second task.
+
+Re-reading the instruction: "You have 3 task slots per session. Task allocation: State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+"SHOULD" not "MUST". And the self-wisdom says: "A session that knows when to stop looking is more trustworthy than one that always finds something to change."
+
+But let me think once more — is there really nothing else? Let me re-read the assessment one more time...
+
+The assessment mentions the `bash_tool_error=12` and the log feedback lesson: "shell tool commands failed during the session -> prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+
+I could add a recovery hint for this specific pattern. The recovery hints fire when the bash tool fails. I could add one that suggests: "Try a more bounded command with explicit paths. If the failing command used wildcards or broad searches, narrow it to specific paths."
+
+But I need to check where the recovery hints are defined. The assessment says `src/tool_wrappers.rs` has `RecoveryHintTool`. Without reading the code, I can't be sure what patterns are already covered.
+
+Let me also look at #162 again. The issue was reverted for scope mismatch. The planned files were `scripts/append_terminal_state_events.py, scripts/log_feedback.py, scripts/summarize_state_gnomes.py` but the agent touched `.skill_evolve_counter, memory/learnings.jsonl`. This is clearly a case of the implementation agent going off-track. 
+
+But #162 is about lifecycle feedback gaps, and task_01 already touches `scripts/append_terminal_state_events.py`. Having two tasks that touch the same file could cause merge conflicts. So #162 should wait.
+
+OK, I think one task is the right answer here. Let me write the task_01_obsolete.md and issue_responses.md.
+
+Actually, wait. Let me look at issue #164 more carefully. It says "Planning-only session: all 2 selected tasks reverted (Day 159)." The action item is: "Focus on smaller, more incremental changes. Consider breaking these tasks into sub-tasks." This is meta advice, not an actionable code change.
+
+For the issue responses:
+- #165: implementing as task_01
+- #164: acknowledge, this is the tracking issue for reverted tasks. The fix is to make tasks smaller (which #165 does).
+- #163: defer. The implementation couldn't land code. Diagnostic work on planning failures is less urgent than fixing the actual data pollution (#165).
+- #162: defer. Scope mismatch on last attempt. Wait for #165 to land first (same file touched).
+- #105: blocked on upstream yoagent dependency (#90). No progress possible.
+- #131: evaluator timeouts — do-not-modify. Human needs to fix evolve.sh.
+- #90: blocked on upstream yoagent. No progress possible.
+
+Let me now write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now write the obsolete note for the replaced seed task:
+  + # Task 01 obsolete: Harness-seed fallback replaced
+  + 
+  + The harness-seeded task_01.md ("Add a small verifiable improvement to src/state.rs")
+  + claimed: "The assessment found no actionable bugs in src/."
+  + 
+  + **Contradiction**: The Day 160 assessment §Bugs/Friction #1 explicitly identifies
+  + issue #165 ("Prevent retroactive FailureObserved for deliberate no-op sessions")
+  + as a MEDIUM-priority actionable bug with a concrete fix location in
+  + `scripts/append_terminal_state_events.py`, a clear test surface, and live state
+  + evidence from `yyds state why last-failure`.
+  + 
+  + The seed task's premise is false — the assessment DID find an actionable bug.
+  + A generic "add a test to state.rs" task is strictly weaker than the evidence-backed
+  + #165 fix, which addresses metric pollution that the trajectory and state doctor
+  + both confirm is still live.
+  + 
+  + **Replacement**: task_01.md rewritten to target #165 with the same edit surface
+  + (`scripts/append_terminal_state_events.py`), verifier, and fallback from the
+  + previous Day 160 Task 1 attempt (which was reverted due to evaluator timeout,
+  + not incorrect code).
+  ✓ Auto-approved: write: session_plan/task_01_obsolete.md (20 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01_obsolete.md (20 lines) ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to write issue_responses.md. Let me also consider: should I add a task_02.md?
+
+Let me look at the trajectory pressure one more time. The "Graph-derived next-task pressure" section has concrete suggestions. Let me think about whether any of them map to concrete, verifiable code changes:
+
+1. "Make planning failure actionable (planner_no_task_count=2)" — this is about the planning pipeline, which lives in evolve.sh (do-not-modify) and preseed_session_plan.py. I could potentially add something to preseed_session_plan.py but without reading the code I can't be specific.
+
+2. "Force analysis-only attempts into action" — also in the planning/implementation pipeline (evolve.sh, do-not-modify).
+
+3. "Raise verified task success rate" — meta, not a code change.
+
+4. "Require strict verifier evidence" — also in evolve.sh.
+
+5. "Bound failing shell commands before retrying" — this is about agent behavior, not code.
+
+These are all prompts/pipeline issues, not code issues. The pipeline is in `scripts/evolve.sh` which is do-not-modify.
+
+So I'll go with just one task. Let me write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 160 Planning
+  + 
+  + ## #165: Prevent retroactive FailureObserved for deliberate no-op sessions
+  + **Action: implement as task_01**
+  + 
+  + This is the most actionable open issue — concrete fix location in `scripts/append_terminal_state_events.py`, clear test surface, and the state doctor confirms the pollution is still live. The previous attempt passed tests but was killed by evaluator timeout. Retrying with identical scope.
+  + 
+  + ## #164: Planning-only session: all 2 selected tasks reverted (Day 159)
+  + **Action: acknowledge, no response needed**
+  + 
+  + This is a tracking issue auto-filed by the harness when tasks were reverted. The root causes were evaluator timeout and scope mismatch — not code defects. The lesson ("smaller tasks") is already applied: task_01 is a single-function, single-file change.
+  + 
+  + ## #163: Classify planning failures by cause
+  + **Action: defer**
+  + 
+  + The previous implementation attempt couldn't land code — the agent discovered that "per-phase event metrics" the task assumed existed don't actually exist. This task needs replanning with accurate evidence about what data IS available. Diagnostic work is lower priority than fixing actual data pollution (#165). Will revisit when `scripts/log_feedback.py` is better understood.
+  + 
+  + ## #162: Close lifecycle feedback gaps
+  + **Action: defer**
+  + 
+  ... (16 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (36 lines)
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (36 lines) ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me verify the session_plan directory has the right files:
+
+1. task_01.md (replaced with #165)
+2. task_01_obsolete.md (explaining why seed was replaced)
+3. issue_responses.md
+
+That's it. I have one task, which is the minimum. The assessment is evidence-backed, the task is concrete, and the issue responses are written.
+
+Let me verify the files look correct.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me verify the plan files are all in order:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ && echo "---" && wc -l session_plan/*.md ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The plan is complete. Let me summarize:
+
+**session_plan/task_01.md**: Retry #165 — Prevent retroactive FailureObserved for no-op sessions. Fix in `scripts/append_terminal_state_events.py`. Single function, single file, clear tests. This was previously attempted and passed tests but was killed by evaluator timeout.
+
+**session_plan/task_01_obsolete.md**: Explains why the harness-seeded task was replaced — the seed claimed "no actionable bugs" but the assessment directly contradicts this with #165.
+
+**session_plan/issue_responses.md**: Covers all 7 open issues.
+
+Only 1 task planned. This is intentional:
+- #165 is the only evidence-backed, concrete, verifiable task
+- Other issues (#162, #163) were reverted on previous attempts and need replanning
+- #105 and #90 are blocked on upstream yoagent dependency
+- #131 is in do-not-modify territory
+- #164 is a tracking issue, not actionable code
+- The trajectory pressures all point at the planning/implementation pipeline (evolve.sh) which is do-not-modify
+
+The self-wisdom lesson applies: "A session that knows when to stop looking is more trustworthy than one that always finds something to change."
+
+Done.
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's the summary:
+
+## Day 160 Planning — Session Plan
+
+### task_01.md: Prevent retroactive FailureObserved for no-op sessions (#165)
+• **File**: `scripts/append_terminal_state_events.py` (single file)
+• **Verifier**: `python3 -m unittest scripts.test_append_terminal_state_events`
+• **Why**: The harness retroactively inserts FailureObserved into journal-only/planning-only sessions that deliberately produced zero tasks. This pollutes failure metrics and trains feedback systems to treat harmless sessions as problems.
+• **Status**: Retry of Day 160 Task 1 — passed all tests previously, killed by evaluator timeout (not wrong code). Same scope.
+
+### Only 1 task this session
+The other open issues (#162, #163) were reverted on previous attempts and need replanning with more accurate evidence. #105 and #90 are blocked on upstream yoagent. #131 is do-not-modify territory. The trajectory pressures all point at `scripts/evolve.sh` (do-not-modify). Rather than force weak tasks, I'm shipping one strong one.
+
+### Seed task replaced
+The harness-seeded task_01.md ("add a small improvement to src/state.rs") claimed "no actionable bugs" — the assessment directly contradicts this with #165. Documented in `task_01_obsolete.md`.
+
+
