@@ -1190,6 +1190,8 @@ impl AgentTool for RecoveryHintTool {
         ctx: yoagent::types::ToolContext,
     ) -> Result<yoagent::types::ToolResult, yoagent::types::ToolError> {
         let tool_name = self.inner.name().to_string();
+        crate::state::set_current_tool_name(tool_name.clone());
+        let _guard = crate::state::CurrentToolNameGuard;
         match self.inner.execute(params, ctx).await {
             Ok(result) => {
                 self.tracker.record_success(&tool_name);

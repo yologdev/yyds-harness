@@ -31,6 +31,10 @@ thread_local! {
     /// this to close model call lifecycles that would otherwise be left
     /// dangling when the process panics mid-call.
     static CURRENT_MODEL_CALL_ID: Cell<Option<String>> = const { Cell::new(None) };
+    /// The name of the currently executing tool, if any.
+    /// Set by tool wrappers before `execute`; cleared after. The panic hook
+    /// reads this to record which tool was executing when a panic occurred.
+    static CURRENT_TOOL_NAME: Cell<Option<String>> = const { Cell::new(None) };
 }
 
 static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -55,12 +59,16 @@ pub fn install_panic_hook() {
                 .location()
                 .map(|loc| format!("{}:{}", loc.file(), loc.line()))
                 .unwrap_or_else(|| "unknown location".to_string());
-            let payload = json!({
+            let tool_name = CURRENT_TOOL_NAME.with(|c| c.take());
+            let mut payload = json!({
                 "failure_class": "rust_panic",
                 "panic_message": msg,
                 "panic_location": location,
                 "recorded_at_ms": now_ms(),
             });
+            if let Some(name) = tool_name {
+                payload["tool_name"] = json!(name);
+            }
             // Close any in-flight model call so the lifecycle is balanced.
             // The panic hook runs on a best-effort basis; we do not have
             // access to the full usage or model info, so we record a
@@ -136,6 +144,33 @@ pub fn clear_current_model_call_id() {
              — ModelCallCompleted may be orphaned"
         );
     }
+}
+
+/// Scope guard that clears `CURRENT_TOOL_NAME` on drop.
+/// Used by tool wrappers to ensure the tool name is always cleared even if
+/// the inner tool `execute` panics or the future is cancelled.
+pub struct CurrentToolNameGuard;
+
+impl Drop for CurrentToolNameGuard {
+    fn drop(&mut self) {
+        CURRENT_TOOL_NAME.with(|c| {
+            let _ = c.take();
+        });
+    }
+}
+
+/// Set the current tool name before a tool executes. The panic hook reads
+/// this to include `tool_name` in `FailureObserved` payloads.
+pub fn set_current_tool_name(name: String) {
+    CURRENT_TOOL_NAME.with(|c| c.set(Some(name)));
+}
+
+/// Clear the current tool name after a tool completes. Also available as
+/// `CurrentToolNameGuard` for automatic cleanup via Drop.
+pub fn clear_current_tool_name() {
+    CURRENT_TOOL_NAME.with(|c| {
+        let _ = c.take();
+    });
 }
 
 static GLOBAL_RECORDER: Mutex<Option<StateRecorder>> = Mutex::new(None);
