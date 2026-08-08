@@ -1103,6 +1103,27 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      early termination."
                         .to_string(),
                 )
+            } else if msg_lower.contains("fatal:") {
+                Some(
+                    "Git reported a fatal error. Check `git status` for repo state, \
+                     resolve conflicts or detached HEAD before retrying. \
+                     Use `git log --oneline -5` to verify you're on the right branch. \
+                     Inspect `.git/config` if the remote or branch configuration may be wrong."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("could not resolve host")
+                || msg_lower.contains("connection refused")
+                || msg_lower.contains("connection reset")
+                || msg_lower.contains("name or service not known")
+                || msg_lower.contains("network is unreachable")
+            {
+                Some(
+                    "Network request failed. Check connectivity with `curl -I <url>` \
+                     or `ping -c 1 <host>`. Verify the URL is correct and the service \
+                     is reachable. Retry with a short timeout. If behind a proxy, \
+                     check `$HTTP_PROXY` and `$HTTPS_PROXY` settings."
+                        .to_string(),
+                )
             } else {
                 Some(
                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
@@ -3220,6 +3241,51 @@ mod tests {
         assert!(hint.contains("pipeline"));
         assert!(hint.contains("head -n N"));
         assert!(hint.contains("sed -n"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_git_fatal() {
+        let hint = targeted_recovery_hint("bash", "fatal: not a git repository");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("git status"));
+        assert!(hint.contains("git log --oneline"));
+        assert!(
+            hint.contains("detached HEAD") || hint.contains("conflicts"),
+            "git fatal hint should mention detached HEAD or conflicts: {hint}"
+        );
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_network_refused() {
+        let hint = targeted_recovery_hint(
+            "bash",
+            "curl: (7) Failed to connect to example.com port 443: Connection refused",
+        );
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ping -c 1"));
+        assert!(hint.contains("curl -I"));
+        assert!(hint.contains("HTTP_PROXY"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_network_unreachable() {
+        let hint = targeted_recovery_hint("bash", "Network is unreachable");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ping -c 1"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_name_not_known() {
+        let hint = targeted_recovery_hint(
+            "bash",
+            "ssh: Could not resolve hostname github.com: Name or service not known",
+        );
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ping -c 1"));
     }
 
     #[test]
