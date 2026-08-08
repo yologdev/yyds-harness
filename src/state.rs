@@ -226,6 +226,12 @@ pub enum EventType {
     JsonOutputFailure,
     ToolSchemaFailure,
     AgentExitReason,
+    /// Recorded when a ModelCallCompleted event is about to be recorded
+    /// but no CURRENT_MODEL_CALL_ID is active, indicating the completion
+    /// arrived without a matching ModelCallStarted. This is a diagnostic
+    /// event that helps classify unmatched model call completions in the
+    /// dashboard lifecycle gnomes.
+    ModelCallCompletedWithoutStart,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -583,6 +589,29 @@ pub fn record(event_type: EventType, actor: Actor, payload: Value) {
     let Some(recorder) = guard.as_ref() else {
         return;
     };
+    // Diagnostic: when a ModelCallCompleted arrives without a matching
+    // ModelCallStarted (CURRENT_MODEL_CALL_ID is None), emit a
+    // ModelCallCompletedWithoutStart event to classify the orphan.
+    // This closes the model_completion_without_start lifecycle gap
+    // by identifying unmatched completions at the recording boundary.
+    if event_type == EventType::ModelCallCompleted {
+        let had_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+            let val = c.take();
+            let had = val.is_some();
+            c.set(val);
+            had
+        });
+        if !had_call_id {
+            // Use recorder.append directly to avoid recursion through
+            // ensure_run_started (already called above) and to avoid
+            // re-entering this same guard for the diagnostic event.
+            let _ = recorder.append(
+                EventType::ModelCallCompletedWithoutStart,
+                Actor::Harness,
+                json!({"note": "ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"}),
+            );
+        }
+    }
     if let Err(e) = recorder.append(event_type, actor, payload) {
         if recorder.fail_soft {
             eprintln!("warning: failed to record state event: {e}");
@@ -3294,6 +3323,7 @@ fn event_type_label(event_type: &EventType) -> &'static str {
         EventType::ToolSchemaFailure => "ToolSchemaFailure",
         EventType::AgentExitReason => "AgentExitReason",
         EventType::SessionStarted => "SessionStarted",
+        EventType::ModelCallCompletedWithoutStart => "ModelCallCompletedWithoutStart",
     }
 }
 
@@ -3308,6 +3338,9 @@ fn parse_event_type_label(label: &str) -> Result<EventType, String> {
         "FailureObserved" | "failure.observed" => EventType::FailureObserved,
         "PatchProposed" | "patch.proposed" => EventType::PatchProposed,
         "TaskLineageLinked" | "task.lineage_linked" => EventType::TaskLineageLinked,
+        "ModelCallCompletedWithoutStart" | "model.completed_without_start" => {
+            EventType::ModelCallCompletedWithoutStart
+        }
         other => serde_json::from_value(Value::String(other.to_string()))
             .map_err(|e| format!("invalid event type '{other}': {e}"))?,
     };
