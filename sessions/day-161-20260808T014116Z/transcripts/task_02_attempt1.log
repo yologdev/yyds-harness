@@ -1,0 +1,511 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill. I need to:
+
+1. Read `skills/evolve/SKILL.md` first
+2. Read the relevant source files
+3. Read the test file 
+4. Implement `find_incomplete_model_calls()` in `scripts/append_terminal_state_events.py`
+5. Add a test case
+6. Verify with the unittest
+7. Commit
+
+Let me start by reading the skill and the source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py  ▶ read scripts/test_append_terminal_state_events.py ✓ (43ms)
+ ✓ (36ms)
+ ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the full `append_terminal_state_events.py` file to understand the existing functions, particularly `find_missing_model_call_started()` and `find_stale_orphaned_runs()`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.4s (3 ✓)
+
+Let me read the full file in sections to understand the existing patterns:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:200..400  ▶ read scripts/append_terminal_state_events.py:400..600 ✓ (8ms)
+ ✓ (33ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting - `find_orphaned_model_calls()` (line 537) ALREADY detects ModelCallStarted events that have no matching ModelCallCompleted! This is exactly what the task is asking for. Let me read more to confirm, but it looks like this is already implemented.
+
+Let me read more to see the rest of the file and understand its context better.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:600..800 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `find_orphaned_model_calls()` (line 537) already does exactly what the task is asking for! It detects ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+
+Let me verify - the function:
+1. Scans ALL events (not just a window)
+2. Pairs by model_call_id (natural key in production events), falls back to run_id
+3. Returns orphaned entries (started but never completed) 
+4. Diagnostics include `orphaned_model_calls` count
+
+Read the function again (lines 537-599):
+- It collects model_started_entries (keyed by model_call_id or run_id)
+- It collects model_completed_keys 
+- It finds started entries whose key is NOT in completed_keys
+- Returns orphaned entries with diagnostics including "orphaned_model_calls" count
+
+So this task is already satisfied. The task says to add `find_incomplete_model_calls()` but the function already exists as `find_orphaned_model_calls()`. 
+
+The task says:
+- "Add `find_incomplete_model_calls()` to `scripts/append_terminal_state_events.py` that detects ModelCallStarted events whose model_call_id never appears in a ModelCallCompleted event"
+- "Model the function on the existing `find_missing_model_call_started()` (around line 450)"
+
+But `find_orphaned_model_calls()` already exists at line 537 and does exactly this. 
+
+Now, the question is: does `find_orphaned_model_calls()` get called from `append_terminal_events()`? Let me check... Looking at the `append_terminal_events` function (lines 624-899), I see it calls `find_stale_orphaned_runs()`, `find_missing_failure_observed()`, `find_runs_with_failure_observed_no_completion()`, `find_missing_model_call_started()`, and `find_orphaned_model_calls()`.
+
+Let me read the rest:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:800..936 ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now understand the current state:
+
+1. `find_orphaned_model_calls()` already exists (line 537) and does exactly what the task asks: it detects ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+
+2. It's already called from `append_terminal_events()` (line 860) and its diagnostics are included in the output.
+
+3. The task specifically asks for the diagnostic counter name `model_incomplete_detected` - but the current diagnostics key is `orphaned_model_calls`.
+
+So the task is actually already implemented, but uses slightly different naming from what the task specifies. The task says to add `find_incomplete_model_calls()` but the function already exists as `find_orphaned_model_calls()`.
+
+Now, per the evolve skill: "If current code already satisfies this task, make the smallest scoped verification improvement that proves it stays satisfied, such as a regression test, docs clarification, state-evidence guard, or dashboard assertion in the listed task surface."
+
+So I should add a test that verifies `find_orphaned_model_calls()` detects incomplete model calls, and potentially add the `model_incomplete_detected` counter name. But actually, looking more carefully... the task says the diagnostic counter should be named `model_incomplete_detected`. The current one is named `orphaned_model_calls`. 
+
+Let me think about what the right approach is:
+
+1. The detect function exists as `find_orphaned_model_calls()`. 
+2. It works, it's called, it produces diagnostics.
+3. The diagnostics key is `orphaned_model_calls` not `model_incomplete_detected`.
+
+The task asks for:
+- A function `find_incomplete_model_calls()` 
+- A diagnostic counter `model_incomplete_detected`
+- A test case
+
+Since the function already exists but with different names, I should:
+1. Not add a duplicate function
+2. Either rename it or add an alias
+3. Add the `model_incomplete_detected` diagnostic counter alongside `orphaned_model_calls`
+4. Add a test case for the incomplete model call scenario
+
+Actually wait - let me re-read the task more carefully. The success criteria says:
+- `find_incomplete_model_calls()` identifies model calls with ModelCallStarted but no ModelCallCompleted.
+- A new `model_incomplete_detected` counter appears in diagnostics output.
+- Existing tests pass; new test case covers the incomplete-model-call scenario.
+- The function does NOT generate synthetic events — it only reports the gap for diagnostic purposes.
+
+So `find_orphaned_model_calls()` already does this detection and also generates synthetic events (via `append_terminal_events`). The task specifically says "does NOT generate synthetic events — it only reports the gap for diagnostic purposes."
+
+This is different from `find_orphaned_model_calls()` which both detects AND generates events (via the main `append_terminal_events`). The task wants a pure detection function that only reports the gap, with its diagnostic counter, without generating events.
+
+So the task is asking for a separate, simpler, detection-only function. The existing `find_orphaned_model_calls()` does BOTH detection and (via append_terminal_events) synthesis. The new function should be detection-only.
+
+Let me also check: does the existing `find_orphaned_model_calls()` diagnostics appear in the final output? Yes - it's `orphaned_model_call_diagnostics` in the result dict.
+
+The task wants `model_incomplete_detected` as a separate counter specifically for diagnostic reporting, independent of the event-generation path.
+
+Wait, actually re-reading the task objective: "Add `find_incomplete_model_calls()` to `scripts/append_terminal_state_events.py` that detects ModelCallStarted events whose model_call_id never appears in a ModelCallCompleted event, and reports them as incomplete."
+
+And "The function does NOT generate synthetic events — it only reports the gap for diagnostic purposes."
+
+So I need to add a NEW function `find_incomplete_model_calls()` that does the detection but does NOT generate events (unlike the existing `find_orphaned_model_calls()` which feeds into event generation). The existing function handles both detection AND event generation; the new one is pure diagnostics.
+
+Let me add this function. It can share logic with `find_orphaned_model_calls()` but be simpler. It should:
+1. Scan events for ModelCallStarted and ModelCallCompleted
+2. Pair by model_call_id (fallback to run_id) 
+3. Report incomplete ones (started but no completed)
+4. Return a diagnostics dict with `model_incomplete_detected` count
+5. NOT generate synthetic events
+
+And I need to:
+1. Add the function to append_terminal_state_events.py
+2. Add a test case to test_append_terminal_state_events.py
+3. Call it from append_terminal_events() to include its diagnostics in the output
+
+Let me also check: what does the test file already have for model calls? Let me search for orphaned model call tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I see the full picture. `find_orphaned_model_calls()` (line 537) already does the detection AND also generates retroactive events in `append_terminal_events()`. The task wants a **detection-only** diagnostic function that reports the gap without synthesizing events. Let me check what tests exist:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'orphaned_model_call' in scripts/test_append_terminal_state_events.py ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the test for orphaned model calls and see what's tested:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:960..1030 ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me plan:
+
+**Current state:**
+- `find_orphaned_model_calls()` (line 537) detects ModelCallStarted without matching ModelCallCompleted AND feeds into `append_terminal_events()` which generates retroactive ModelCallCompleted events.
+- The diagnostics from `find_orphaned_model_calls()` appear as `orphaned_model_call_diagnostics` in the output, with `orphaned_model_calls` as the count key.
+
+**What the task asks:**
+- A separate `find_incomplete_model_calls()` function that is **detection-only** — it reports the gap but does NOT generate synthetic events.
+- A `model_incomplete_detected` counter.
+
+**What I should do:**
+Since `find_orphaned_model_calls()` already does the detection, but the task specifically wants a detection-only function separate from the event-generation path, I can:
+
+1. Add a `find_incomplete_model_calls()` function that is a simpler, detection-only version. It can reuse the same scan logic but only return diagnostics.
+2. Add `model_incomplete_detected` to the diagnostics output.
+3. Add a test for the detection-only scenario (ModelCallStarted without ModelCallCompleted, verifying detection without event generation).
+4. Call `find_incomplete_model_calls()` from `append_terminal_events()` so its diagnostics appear in the output.
+
+But wait — this seems redundant with `find_orphaned_model_calls()`. The task says "The function does NOT generate synthetic events — it only reports the gap for diagnostic purposes." This implies it's separate from the event-generation path that `find_orphaned_model_calls()` feeds into.
+
+Actually, I think the cleanest approach is:
+1. Add `find_incomplete_model_calls()` as a detection-only function.
+2. Have `append_terminal_events()` call it to add its diagnostics to the output.
+3. Add a test.
+4. The existing `find_orphaned_model_calls()` continues to handle event generation — the new function is purely for diagnostic visibility.
+
+Let me write the function. It should be modeled after `find_orphaned_model_calls()` but simpler, since it only reports:
+
+```python
+def find_incomplete_model_calls(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Find ModelCallStarted events whose model_call_id has no matching ModelCallCompleted.
+    
+    This is a detection-only diagnostic function — it reports the gap but does
+    NOT generate synthetic events.  Use find_orphaned_model_calls() for the
+    combined detection+synthesis path (which this function complements).
+    
+    Returns (incomplete_entries, diagnostics).
+    """
+    model_started_entries: dict[str, dict[str, Any]] = {}
+    model_completed_keys: set[str] = set()
+
+    for event in events:
+        kind = event_type(event)
+        data = payload(event)
+        rid = run_id(event, data)
+        if not rid:
+            continue
+        if kind == "ModelCallStarted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                key = mcid
+            else:
+                key = rid
+            model_started_entries[key] = {
+                "run_id": rid,
+                "model": data.get("model"),
+                "model_call_id": mcid if isinstance(mcid, str) and mcid else None,
+                "timestamp_ms": event.get("timestamp_ms", 0),
+            }
+        elif kind == "ModelCallCompleted":
+            mcid = data.get("model_call_id")
+            if isinstance(mcid, str) and mcid:
+                model_completed_keys.add(mcid)
+            else:
+                model_completed_keys.add(rid)
+
+    incomplete = sorted(
+        [
+            info
+            for key, info in model_started_entries.items()
+            if key not in model_completed_keys
+        ],
+        key=lambda m: m["run_id"],
+    )
+
+    diagnostics = {
+        "model_incomplete_detected": len(incomplete),
+    }
+
+    return incomplete, diagnostics
+```
+
+Then in `append_terminal_events()`, I should call it and include diagnostics.
+
+Actually, looking more carefully, I think this can be much simpler. The function already exists - `find_orphaned_model_calls()`. The issue is the task wants a diagnostic counter called `model_incomplete_detected`. I could just add that counter alongside `orphaned_model_calls` in the existing function, or add a thin wrapper.
+
+But the task explicitly says: "The function does NOT generate synthetic events — it only reports the gap for diagnostic purposes." This is the key distinction: `find_orphaned_model_calls()` is used by `append_terminal_events()` to generate retroactive events. The new function is detection-only.
+
+Let me add the new function and a test. I'll also add it to the output in `append_terminal_events()`.
+
+Now, let me also check that I'm within 5 tool turns. This is tool turn 4 (read skill, read append source, read test source, read more source). I need to act by turn 5.
+
+Let me implement this now.
+
+Plan:
+1. Add `find_incomplete_model_calls()` function after `find_orphaned_model_calls()` 
+2. Add a call to it in `append_terminal_events()` including its diagnostics
+3. Add a test case
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. `find_orphaned_model_calls()` already does the detection AND feeds into event generation. The task wants a **detection-only** diagnostic function (`find_incomplete_model_calls`) with a `model_incomplete_detected` counter. Let me implement it.
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (10ms)
+  ▶ todo ✓ (13ms)
+  ▶ todo ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me add the function first.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 14.6s (4 ✓)
+
+
+        }
+    
+        return orphaned, diagnostics
+  + 
+  + 
+  + def find_incomplete_model_calls(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Detect ModelCallStarted events that have no matching ModelCallCompleted.
+  + 
+  +     This is a **detection-only** diagnostic function — it reports the lifecycle
+  +     gap but does NOT generate synthetic events.  Use find_orphaned_model_calls()
+  +     for the combined detection+synthesis path that feeds into
+  +     append_terminal_events().
+  + 
+  +     Pairs events by model_call_id (the natural key in production events);
+  +     falls back to run_id when model_call_id is absent (legacy fixtures).
+  + 
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (63 → 126 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (21ms)
+  ▶ edit scripts/append_terminal_state_events.py (63 → 126 lines)
+        }
+    
+        return orphaned, diagnostics
+  + 
+  + 
+  + def find_incomplete_model_calls(
+  +     events: list[dict[str, Any]],
+  + ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+  +     """Detect ModelCallStarted events that have no matching ModelCallCompleted.
+  + 
+  +     This is a **detection-only** diagnostic function — it reports the lifecycle
+  +     gap but does NOT generate synthetic events.  Use find_orphaned_model_calls()
+  +     for the combined detection+synthesis path that feeds into
+  +     append_terminal_events().
+  + 
+  +     Pairs events by model_call_id (the natural key in production events);
+  +     falls back to run_id when model_call_id is absent (legacy fixtures).
+  + 
+  +     Returns (incomplete_entries, diagnostics) where each incomplete entry is a
+  +     dict with keys run_id, model, model_call_id, timestamp_ms, and diagnostics
+  ... (46 more lines)
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to wire `find_incomplete_model_calls()` into `append_terminal_events()` so its diagnostics appear in the output. Let me add it alongside the existing orphaned_model_calls scan in append_terminal_events.
+
+I need to find the right spot to add it. After the orphaned_model_calls_appended block (around line 917+), before the return statement. Let me add the call and diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+Now wire it into `append_terminal_events()`:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the exact spot to add the diagnostic call. I need to add it before the return statement in append_terminal_events. Let me read the area around the orphaned_model_call_ diagnostics.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.9s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:910..955 ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the `find_incomplete_model_calls()` diagnostic call right before the return statement, after the orphaned_model_calls block. I'll add it as diagnostics-only — no event generation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                "skipped": True,
+                "reason": "ambiguous_reset_full_scan",
+            }
+  + 
+  +     # Detection-only diagnostic scan for incomplete model calls: find any
+  +     # ModelCallStarted events that have no matching ModelCallCompleted.
+  +     # This reports the gap for dashboard/metric visibility without generating
+  +     # synthetic events — the event-generation path is handled by
+  +     # find_orphaned_model_calls above.
+  +     _incomplete_calls, incomplete_diag = find_incomplete_model_calls(events)
+  +     diagnostics["model_incomplete_diagnostics"] = incomplete_diag
+    
+        return {
+  ✓ Auto-approved: edit: scripts/append_terminal_state_events.py (7 → 15 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/append_terminal_state_events.py (7 → 15 lines)
+                "skipped": True,
+                "reason": "ambiguous_reset_full_scan",
+            }
+  + 
+  +     # Detection-only diagnostic scan for incomplete model calls: find any
+  +     # ModelCallStarted events that have no matching ModelCallCompleted.
+  +     # This reports the gap for dashboard/metric visibility without generating
+  +     # synthetic events — the event-generation path is handled by
+  +     # find_orphaned_model_calls above.
+  +     _incomplete_calls, incomplete_diag = find_incomplete_model_calls(events)
+  +     diagnostics["model_incomplete_diagnostics"] = incomplete_diag
+    
+        return {
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add a test. Let me find a good spot in the test file. I'll look for the end of the orphaned model call tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the test case. Let me find where to insert:
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (10ms)
+  ▶ read scripts/test_append_terminal_state_events.py:1100..1180 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the end of the test class to know where to add the new test. Let me look for the last test method.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.6s (3 ✓)
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:1375..1425 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test case right before the `if __name__ == "__main__":` line. Let me add a test that:
+1. Creates events with ModelCallStarted that has no matching ModelCallCompleted
+2. Calls `find_incomplete_model_calls()`
+3. Verifies `model_incomplete_detected` is 1
+4. Also verifies that when all calls are matched, the count is 0
+────────────────────────────────────────────────────────────────────────────────
+
+
+            self.assertEqual(diagnostics["failure_observed_runs"], 1)
+            self.assertEqual(diagnostics["runs_with_failure_observed_no_completion"], 1)
+  + 
+  +     def test_find_incomplete_model_calls_detects_started_without_completed(self):
+  +         """ModelCallStarted with no matching ModelCallCompleted is detected."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rs-inc-0",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "incomplete-run",
+  +                 "payload": {},
+  +             },
+  +             {
+  +                 "event_id": "evt-mcs-inc-0",
+  +                 "event_type": "ModelCallStarted",
+  +                 "run_id": "incomplete-run",
+  +                 "payload": {"model_call_id": "mc-abc123", "model": "deepseek-v4-pro"},
+  +             },
+  ... (3 more lines)
+  ✓ Auto-approved: edit: scripts/test_append_terminal_state_events.py (6 → 79 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit scripts/test_append_terminal_state_events.py (6 → 79 lines)
+            self.assertEqual(diagnostics["failure_observed_runs"], 1)
+            self.assertEqual(diagnostics["runs_with_failure_observed_no_completion"], 1)
+  + 
+  +     def test_find_incomplete_model_calls_detects_started_without_completed(self):
+  +         """ModelCallStarted with no matching ModelCallCompleted is detected."""
+  +         events = [
+  +             {
+  +                 "event_id": "evt-rs-inc-0",
+  +                 "event_type": "RunStarted",
+  +                 "run_id": "incomplete-run",
+  +                 "payload": {},
+  +             },
+  +             {
+  +                 "event_id": "evt-mcs-inc-0",
+  +                 "event_type": "ModelCallStarted",
+  +                 "run_id": "incomplete-run",
+  +                 "payload": {"model_call_id": "mc-abc123", "model": "deepseek-v4-pro"},
+  +             },
+  +         ]
+  +         incomplete, diagnostics = append_terminal_state_events.find_incomplete_model_calls(events)
+  ... (58 more lines)
+ ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run the tests to verify.
+────────────────────────────────────────────────────────────────────────────────
+
+Now run the tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (123ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 5 test failures. Let me look at them. These failures are NOT related to my changes — they're all in `test_appends_failure_observed_for_error_completed_run`, `test_cancelled_run_gets_specific_failure_observed_reason`, `test_detects_and_closes_orphaned_run_from_previous_session`, `test_error_run_keeps_generic_failure_observed_reason`, and `test_skips_retroactive_failure_observed_on_second_invocation`. 
+
+Wait, let me check if these tests were passing before my changes. The `test_detects_and_closes_orphaned_run_from_previous_session` failure says "9 != 8" — meaning 9 rows where 8 were expected. This could be because my new diagnostics call happens AFTER the events are counted, and somehow the events file is being mutated.
+
+Wait, let me think... The `find_incomplete_model_calls()` function is called in `append_terminal_events()` after all event-generation code. It's a read-only scan of events. It shouldn't affect any of these tests.
+
+But wait, `test_detects_and_closes_orphaned_run_from_previous_session` checks `len(rows)` where rows come from reading the events file. The count went from expected 8 to actual 9. That means an extra event was added. But `find_incomplete_model_calls()` is detection-only — it doesn't append events.
+
+Hmm, let me look more carefully. The `test_appends_failure_observed_for_error_completed_run` test failed because `missing_failure_observed` was 0 instead of 1. That's about the `find_missing_failure_observed()` function. My change shouldn't have affected that at all.
+
+Let me check if these tests were already failing before my change by looking at git status and the pre-existing test state.
+
+Actually wait, let me check if these tests pass on the current codebase without my changes. Maybe these are pre-existing failures.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check if these failures are pre-existing by running against the original file:
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash && python3 -m unitte… ✓ (82ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+5 failures even without my changes. So these are pre-existing failures. Let me restore my changes and verify that my new tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+Pre-existing failures (5). Let me restore my changes and verify only my new tests:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git stash pop ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me run just the new tests to see if they pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (67ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 3 new tests pass. Now let me also verify that the `model_incomplete_diagnostics` key appears in the output of `append_terminal_events`. Let me run one of the existing integration tests to check:
+────────────────────────────────────────────────────────────────────────────────
+
+All 3 new tests pass. Let me also verify the diagnostics appear in the integration output:
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (20 lines) ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both the new `model_incomplete_diagnostics` with `model_incomplete_detected: 1` and the existing `orphaned_model_call_diagnostics` appear in the output. The new detection-only function correctly reports the incomplete model call.
+
+Now let me verify the full test suite still runs (same pre-existing failures):
+────────────────────────────────────────────────────────────────────────────────
+
+Both diagnostics appear correctly. Let me run all tests to confirm no regressions beyond the 5 pre-existing failures:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (67ms)
+
+

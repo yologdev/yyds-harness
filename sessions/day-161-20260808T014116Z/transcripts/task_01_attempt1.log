@@ -1,0 +1,507 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and reading the evolve skill file first, then examining the relevant source code.
+
+The task is about closing a lifecycle gap in `src/state.rs` where model calls complete without ever recording a `ModelCallStarted` event. The evidence says there are 8 `model_completion_without_start` cases out of 166 `deepseek_model_call_unmatched_completed_count`.
+
+Let me:
+1. Read the evolve skill
+2. Read the relevant source code in `src/state.rs`
+3. Understand the lifecycle tracking and find the gap
+
+Let me start by reading the evolve skill and the state.rs file.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ read skills/evolve/SKILL.md (60 lines)  ▶ $ wc -l src/state.rs ✓ (2.7s)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The state.rs is 8770 lines. Let me search for the relevant functions and model call lifecycle code. I need to find:
+- `set_current_model_call_id`
+- `clear_current_model_call_id`
+- `record_cache_metrics_direct`
+- `ModelCallStarted` / `ModelCallCompleted` events
+- `CURRENT_MODEL_CALL_ID`
+
+Let me search for these patterns.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'set_current_model_call_id' in src/state.rs  ▶ search 'clear_current_model_call_id' in src/state.rs  ▶ search 'CURRENT_MODEL_CALL_ID' in src/state.rs  ▶ search 'ModelCallStarted' in src/state.rs ✓ (3.6s)
+ ✓ (3.6s)
+ ✓ (3.6s)
+ ✓ (3.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the relevant sections around lines 29-150 to understand the model call ID tracking, then look at where ModelCallCompleted is recorded and the completion-without-start scenario.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 6.3s (4 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:25..185  ▶ read src/state.rs:8650..8780 ✓ (3.0s)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand where `ModelCallCompleted` is recorded in the normal path. The `clear_current_model_call_id` already has a diagnostic warning when called with no active model call ID. But the task is about `ModelCallCompleted` being recorded without a matching `ModelCallStarted`. 
+
+Let me search for where ModelCallCompleted is recorded - it should be in `record_cache_metrics_direct` or a similar function. Let me also look at `record_cache_metrics`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src/state.rs  ▶ search 'fn record_cache_metrics' in src/state.rs ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the `record_cache_metrics` and `record_cache_metrics_direct` functions to understand how ModelCallCompleted is recorded.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:685..765 ✓ (899ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see where `ModelCallCompleted` is recorded. Let me find the main codepath. Looking at the search results, line 4390 records `ModelCallCompleted`. Let me look at that context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:4360..4440 ✓ (899ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's just test data. I need to find where in the actual application code (not tests) `ModelCallCompleted` is recorded. The only production recording of ModelCallCompleted I've seen so far is in the panic hook at line 78. Let me search more broadly for where ModelCallCompleted is emitted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'ModelCallCompleted' src/state.rs | grep -v '^[[:space:]]*//' | grep -v …  ▶ $ grep -n 'EventType::ModelCallCompleted' src/state.rs ✓ (3.6s)
+ ✓ (3.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the only production recording of `ModelCallCompleted` in state.rs is:
+1. Line 78: inside `install_panic_hook` (panic hook closure)
+2. Line 8676: in a test for panic hook closure
+
+That means `ModelCallCompleted` is NOT recorded in the normal path within state.rs. It must be recorded elsewhere - probably in prompt.rs. Let me search there.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src  ▶ search 'ModelCallStarted' in src ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that ModelCallCompleted and ModelCallStarted are both recorded in `prompt.rs`. Let me look at those recording sites to understand the lifecycle flow and find where completions-without-starts can occur.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:775..835  ▶ read src/prompt.rs:940..1090 ✓ (2.7s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to see the rest of the function, especially the part after the loop ends and how `model_call_completed` is handled when the stream ends.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1089..1169 ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `handle_prompt_events` function in prompt.rs:
+
+1. Line 780: `set_current_model_call_id(model_call_id)` is called
+2. Line 781: `ModelCallStarted` is recorded
+3. Multiple places record `ModelCallCompleted`:
+   - Line 954 (AgentEnd): normal completion
+   - Line 999 (InputRejected): input rejected
+   - Line 1071 (ctrl_c): interrupted
+   - Line 1132 (stream closed): stream_closed_without_agent_end
+
+All of these paths have the pattern:
+```rust
+if !model_call_started {
+    // record ModelCallStarted
+    model_call_started = true;
+}
+// record ModelCallCompleted
+```
+
+So there IS fallback for ModelCallStarted when it hasn't been recorded before completion.
+
+But wait - the task says there are `model_completion_without_start` cases. This means ModelCallCompleted is recorded somewhere WITHOUT a preceding ModelCallStarted. Let me think about where else ModelCallCompleted could be recorded...
+
+The only place in state.rs that records ModelCallCompleted is the panic hook (line 78). But the panic hook checks for CURRENT_MODEL_CALL_ID before recording:
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(EventType::ModelCallCompleted, ...)
+}
+```
+
+So if CURRENT_MODEL_CALL_ID is set, it records a completion. If it's not set, it doesn't.
+
+But wait - there could be another path. Let me look at other call sites of `record` with `ModelCallCompleted` outside of prompt.rs. Let me also search for `deepseek` module that might record ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'EventType::ModelCallCompleted\|"ModelCallCompleted"' src/ --include='*…  ▶ search 'deepseek.rs' in src ✓ (2.7s)
+ ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the ModelCallCompleted recording sites are:
+1. `src/state.rs:78` — panic hook (only fires if CURRENT_MODEL_CALL_ID is set)
+2. `src/prompt.rs:955,1000,1072,1133` — all in `handle_prompt_events`
+
+Now let me look at the `record` function to understand the actual recording mechanism. There might be a case where `record` is called for `ModelCallCompleted` from outside the normal path - maybe through the `append_event` path or from external sources.
+
+Actually, wait. The task says "model calls that completed without ever recording a start event." The prompt.rs code already handles this with the `if !model_call_started` guard before recording completions. But this is only in `handle_prompt_events`.
+
+Maybe the problem is elsewhere. Let me think about what `deepseek_model_call_unmatched_completed_count` means - it suggests a dashboard metric that counts `ModelCallCompleted` events without matching `ModelCallStarted` events. This could be an analysis-time classification done by the dashboard scripts, not something that needs a Rust fix.
+
+But the task says "Close the model_completion_without_start lifecycle gap in state.rs" and the edit surface is `src/state.rs`. 
+
+Let me look at the `record` function and the `append_event` function to see if there's a way ModelCallCompleted gets recorded without ModelCallStarted.
+
+Also, let me check if the `clear_current_model_call_id` function already produces the diagnostic warning (it does - line 141-146). But this warning only fires if `clear_current_model_call_id` is called when no model call ID is active. If ModelCallCompleted is recorded without going through `clear_current_model_call_id`, no warning is emitted.
+
+Let me look at the `record` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub fn record\b\|fn record\b' src/state.rs ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record` function and the `append` method that's called within it, to see how events are recorded.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:576..676 ✓ (901ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear understanding. The `record` function itself doesn't do any lifecycle checking - it just appends the event. So `ModelCallCompleted` could be recorded without a matching `ModelCallStarted` if someone calls `record(EventType::ModelCallCompleted, ...)` without first calling `record(EventType::ModelCallStarted, ...)`.
+
+The main question is: WHERE in the code does ModelCallCompleted get recorded WITHOUT a prior ModelCallStarted? From what I've seen, all the production recording paths in prompt.rs already guard against this with `if !model_call_started`.
+
+But wait - there's the panic hook in state.rs (line 76-90). The panic hook records `ModelCallCompleted` only if `CURRENT_MODEL_CALL_ID` is set. But it doesn't record `ModelCallStarted` if it's missing. So if somehow `CURRENT_MODEL_CALL_ID` is set by `set_current_model_call_id` but `ModelCallStarted` wasn't recorded (perhaps because the model call ID was set but the `record` call for `ModelCallStarted` failed or was bypassed), then the panic hook would record a `ModelCallCompleted` without a matching `ModelCallStarted`.
+
+Actually, a more likely scenario: `CURRENT_MODEL_CALL_ID` is set by a previous model call that never got cleared, and then a new model call starts, recording ModelCallStarted, but the OLD model call ID is still in the thread-local cell. Then when that new call completes, things work fine. But if a panic happens between calls, the panic hook picks up the stale (previous call's) model call ID, records ModelCallCompleted for it, and now we have a ModelCallCompleted with no matching ModelCallStarted (because that started was for a different call ID - the previous one - and it already has a proper completion).
+
+Wait, that scenario doesn't quite work either because each call gets a unique `model_call_id`.
+
+Let me think about this differently. The task says there are 8 `model_completion_without_start` cases. The `clear_current_model_call_id` function already emits a warning to stderr when no model call ID is active. But this warning doesn't produce a state event.
+
+The approach should be:
+1. Add a diagnostic: when `ModelCallCompleted` is recorded, verify that a `ModelCallStarted` with the same `model_call_id` was previously recorded. If not, record a new diagnostic event.
+
+But that's complex because we'd need to track previous events in memory. A simpler approach: add a guard in the `record` function that detects when `ModelCallCompleted` is being recorded but `CURRENT_MODEL_CALL_ID` is not set, since that implies the completion wasn't properly paired with a start.
+
+Actually, wait. Let me re-read the task more carefully. It says:
+> If the fix would require reading full transcripts or external session data to diagnose which codepath causes the missing start events, narrow scope to adding a diagnostic counter in `record_cache_metrics_direct` or `record` that logs when a ModelCallCompleted is recorded without a prior ModelCallStarted, so future sessions can identify the codepath.
+
+And the fallback says:
+> If no clear single-function fix is visible within 10 minutes of implementation, add the diagnostic counter and stop — do not attempt a broad refactor.
+
+So the task is OK with a diagnostic-only approach. Let me add a diagnostic to `clear_current_model_call_id` that records a state event when ModelCallCompleted is being closed without an active model call ID.
+
+Actually, looking at the code more carefully, I see that `clear_current_model_call_id` already has a diagnostic (stderr warning), but no state event. The task wants a state EVENT that captures this. Let me add a `ModelCallCompletedWithoutStart` event or enhance `clear_current_model_call_id` to record a state event.
+
+But wait — `clear_current_model_call_id` is called AFTER `ModelCallCompleted` is already recorded (see prompt.rs line 974: `record(ModelCallCompleted...)` → `clear_current_model_call_id()`). So by the time `clear_current_model_call_id` detects the orphan, the `ModelCallCompleted` is already in the event stream. The diagnostic at this point would be after the fact.
+
+A better approach: add a guard in `record()` that, when event_type is `ModelCallCompleted`, checks whether `CURRENT_MODEL_CALL_ID` is set. If it's not set, record an additional `ModelCallCompletedWithoutStart` diagnostic event.
+
+Let me implement this. I'll:
+1. Add a new `EventType::ModelCallCompletedWithoutStart` variant
+2. In the `record` function, when `ModelCallCompleted` is being recorded without `CURRENT_MODEL_CALL_ID` being set, also record the diagnostic event
+
+Wait, but this won't work because by the time we're in `record()`, the `CURRENT_MODEL_CALL_ID` may have already been cleared or not set. Actually, looking at prompt.rs again:
+
+Line 954-975: `record(ModelCallCompleted)` → `clear_current_model_call_id()` — so at the time of recording, `CURRENT_MODEL_CALL_ID` is still set.
+
+Line 999-1016: Same pattern — record completion, then clear.
+
+Line 1071-1087: Same pattern.
+
+Line 1132-1148: Same pattern.
+
+So the CURRENT_MODEL_CALL_ID should be set when ModelCallCompleted is recorded in prompt.rs. If it's not set, that's the gap.
+
+But there's also the panic hook (state.rs:76-90). In the panic hook, CURRENT_MODEL_CALL_ID is first taken from the cell, then ModelCallCompleted is recorded. The panic hook doesn't record a ModelCallStarted - it assumes one was already recorded. But if the panic happens between `set_current_model_call_id` and the `record(ModelCallStarted, ...)` call (line 781-786 in prompt.rs), then we'd have a ModelCallCompleted without ModelCallStarted.
+
+Here's the race: 
+```
+Line 780: set_current_model_call_id(model_call_id.clone()); // CURRENT_MODEL_CALL_ID is set
+// PANIC HERE -> panic hook takes the ID, records ModelCallCompleted
+Line 781: record(ModelCallStarted, ...);  // never reached
+```
+
+This is the gap! Between `set_current_model_call_id` and `record(ModelCallStarted)`, if a panic happens, the panic hook records ModelCallCompleted without a matching ModelCallStarted.
+
+The fix: swap the order — record `ModelCallStarted` BEFORE setting `CURRENT_MODEL_CALL_ID`. This way the panic hook only fires if the model call was actually started and recorded.
+
+Wait, but the panic hook is supposed to close model calls that panic mid-call. If we record ModelCallStarted first and THEN set_current_model_call_id, the panic could happen between those two lines and the panic hook wouldn't know about the in-flight call.
+
+Actually, the better fix is to record ModelCallStarted BEFORE setting CURRENT_MODEL_CALL_ID. The panic could technically happen between these two, and in that case the ModelCallStarted was already recorded, but the panic hook wouldn't close it. That's less bad than having a completion without a start.
+
+Actually the truly correct fix is to swap the order in prompt.rs:
+```rust
+// Before (line 780-786):
+set_current_model_call_id(model_call_id.clone());
+record(ModelCallStarted, ...);
+
+// After:
+record(ModelCallStarted, ...);
+set_current_model_call_id(model_call_id.clone());
+```
+
+This way:
+- If panic happens before `record(ModelCallStarted)`: no started event, no completed event (clean)
+- If panic happens after `record(ModelCallStarted)` but before `set_current_model_call_id`: started event but no completion (started-without-completion, which is a different gap)
+- If panic happens after `set_current_model_call_id`: started + completed via panic hook (balanced)
+
+But wait, the task says the edit surface is `src/state.rs`, not `src/prompt.rs`. And the task specifically says "Keep the change minimal: one diagnostic counter addition or one guard in the completion path."
+
+So I should add the diagnostic in state.rs. Let me add a check in `clear_current_model_call_id` that, when called with no active model call ID, records a `ModelCallCompletedWithoutStart` event.
+
+Actually, even better: I should add the diagnostic inside `record()` where `ModelCallCompleted` is being recorded. Let me add a new EventType and record it when a ModelCallCompleted arrives without CURRENT_MODEL_CALL_ID being set.
+
+But actually, the simplest and most targeted fix is to enhance `clear_current_model_call_id` to emit a state event instead of (or in addition to) the stderr warning. This way the dashboard can track when completions arrive without starts.
+
+Let me also look at what EventTypes already exist:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the architecture. Let me look at the EventType enum and understand the full picture before making changes.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:190..270  ▶ read src/state.rs:3260..3320 ✓ (2.7s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture. Let me now look at the `append_event` function (the one used by the `append_terminal_state_events.py` script) to see if there's an alternative path that creates ModelCallCompleted without ModelCallStarted.
+
+Actually, the key insight is: the `clear_current_model_call_id` function already detects the orphaned case (model call completed without start) and emits a stderr warning. But it doesn't record a state event. The fix should be to make it record a state event too.
+
+But wait - I need to check if the problem might also be in the `append_event` function. Let me check that too.
+
+Let me also look at log_feedback.py to understand how `deepseek_model_call_unmatched_completed_count` is computed.
+
+Actually, let me focus on the minimal fix. The task says:
+- "A diagnostic guard or fix in state.rs detects (or prevents) ModelCallCompleted events that lack a corresponding ModelCallStarted"
+- "If a diagnostic: the state event stream includes a new counter or event type that identifies which codepath produces unmatched completions"
+
+The `clear_current_model_call_id` function is called in all normal completion paths (prompt.rs lines 974, 1015, 1086, 1147). It detects when no model call ID is active. But it only emits a stderr warning - no state event.
+
+The fix: add a new `EventType::ModelCallCompletedWithoutStart` and record it in `clear_current_model_call_id` when `old.is_none()`.
+
+But wait, is `clear_current_model_call_id` a public API that could be called with the recorder uninitialized? Let me check - yes, there's a `#[cfg(test)]` test at line 8752 that tests it. For the test, the recorder would be initialized.
+
+But there's also the case where `clear_current_model_call_id` is called before `init_global`. In that case, `record()` would silently return because `GLOBAL_RECORDER` is `None`. That's the fail-soft behavior.
+
+Let me now plan the implementation:
+
+1. Add `ModelCallCompletedWithoutStart` to `EventType` enum
+2. Add it to `event_type_label` 
+3. Add it to `parse_event_type_label` (optional - since it's only for recording, not parsing, we might skip this but let's add it for completeness)
+4. In `clear_current_model_call_id`, when `old.is_none()`, record the new event instead of just eprintln
+5. Add a test
+
+Wait, let me check if `clear_current_model_call_id` is called in contexts where the recorder might not be initialized. Looking at prompt.rs, it's called after `record(ModelCallCompleted...)` which is after the recorder is initialized. But in the test at line 8761, the recorder would be initialized. Let me verify.
+
+Actually, the `record` function is fail-soft — if the recorder isn't initialized, it just returns. So calling `record` from `clear_current_model_call_id` is safe.
+
+Let me also think about what payload to include. The task says "with a stack-approximating source label." I can add a `source` field indicating this is from `clear_current_model_call_id`.
+
+OK let me implement this. First let me also check what the `append_event` function looks like - it might also be relevant:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.1s (2 ✓)
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me trace the remaining gap. I've identified the panic hook race condition as one possible cause. Let me also verify that there are no other recording paths. Let me check the `append_event` function (used by `append_state_event.py`) since it's the API used by scripts to inject events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'pub fn append_event\|fn append_event' src/state.rs ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `append_event` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:770..820 ✓ (898ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `append_event` is an external API that allows scripts to inject arbitrary events into the state. This means the `append_terminal_state_events.py` script could potentially inject `ModelCallCompleted` without `ModelCallStarted`. But that's outside the scope of Rust code changes.
+
+Now let me focus on the fix. The task says to add a diagnostic inside `src/state.rs`. The best approach is:
+
+1. Add `ModelCallCompletedWithoutStart` to the `EventType` enum
+2. Add it to `event_type_label` and `parse_event_type_label` 
+3. In `clear_current_model_call_id`, when `old.is_none()`, record a state event instead of (or in addition to) the stderr warning
+4. Add a test
+
+This is a diagnostic counter approach - it doesn't prevent the gap, but it records a state event when it occurs, so future sessions can identify the codepath and the dashboard can classify it properly.
+
+Let me also check: could the gap be caused by a scenario where the recorder itself isn't initialized when ModelCallCompleted is recorded? In that case, `record()` silently returns, and the event is lost. But `CURRENT_MODEL_CALL_ID` would still be set, and when `clear_current_model_call_id` is called later, it would detect that and emit the warning. So in that scenario, the warning fires but ModelCallCompleted was never actually recorded. This would NOT cause a `completion_without_start` gap in the event stream (because neither was recorded). So this isn't the cause.
+
+The real cause must be:
+1. Panic between `set_current_model_call_id` and `record(ModelCallStarted)` → panic hook records ModelCallCompleted, then process restarts without the started event
+2. Some external script injects ModelCallCompleted via `append_event` API without injecting ModelCallStarted
+3. Some code path in prompt.rs that records ModelCallCompleted bypasses the `if !model_call_started` guard
+
+Let me check case 3: looking at prompt.rs lines 944-976 (AgentEnd), 977-1022 (InputRejected), 1058-1107 (ctrl+c), 1123-1148 (post-loop). All paths check `if !model_call_terminal_recorded` and then check `if !model_call_started` before recording ModelCallStarted. So the guard is in place.
+
+Case 2: `append_event` API allows arbitrary events. The `scripts/append_terminal_state_events.py` script could potentially add ModelCallCompleted without ModelCallStarted. But this is a harness script bug, not a state.rs bug.
+
+Case 1: This is the most likely cause. The window between `set_current_model_call_id` and `record(ModelCallStarted)` is where a panic would create a completion without start.
+
+But wait, the data shows 8 cases out of 166 unmatched. That's ~5%. If the panic window is the ONLY cause, then we'd expect less than that (panics are rare). Let me also check if there's a scenario where `clear_current_model_call_id` is called when no model call ID is active but ModelCallCompleted was NOT recorded. This would mean the warning fires but there's no actual completion-without-start in the event stream.
+
+Actually, I'm overthinking this. The task says to add a diagnostic. Let me just add the `ModelCallCompletedWithoutStart` event type and emit it from `clear_current_model_call_id` when no model call ID is active. This will help future sessions trace which codepath is the culprit.
+
+Let me implement now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (900ms)
+  ▶ todo ✓ (900ms)
+  ▶ todo ✓ (901ms)
+  ▶ todo ✓ (900ms)
+  ▶ todo ✓ (899ms)
+  ▶ todo        JsonOutputFailure,
+        ToolSchemaFailure,
+        AgentExitReason,
+  +     /// Recorded when a ModelCallCompleted event is about to be recorded
+  +     /// but no CURRENT_MODEL_CALL_ID is active, indicating the completion
+  +     /// arrived without a matching ModelCallStarted. This is a diagnostic
+  +     /// event that helps classify unmatched model call completions in the
+  +     /// dashboard lifecycle gnomes.
+  +     ModelCallCompletedWithoutStart,
+    }
+  ✓ Auto-approved: edit: src/state.rs (4 → 10 lines)
+ ✓ (902ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear plan. Let me analyze the gap I found:
+
+**The gap**: In `prompt.rs` line 780-786, `set_current_model_call_id` is called BEFORE `record(ModelCallStarted)`. If a panic occurs between these two lines, the panic hook (state.rs:76-90) picks up the `CURRENT_MODEL_CALL_ID` and records `ModelCallCompleted` without a corresponding `ModelCallStarted`.
+
+But wait - the task says the edit surface is ONLY `src/state.rs`. I cannot fix prompt.rs. So my approach should be:
+
+1. Add diagnostic event in `clear_current_model_call_id` to record when completions arrive without starts
+2. Also, I should fix the ordering in state.rs by ensuring the ModelCallStarted is recorded before CURRENT_MODEL_CALL_ID is set... but that's in prompt.rs, not state.rs.
+
+Actually, looking at the task more carefully: "The key functions are in src/state.rs: `set_current_model_call_id`, `clear_current_model_call_id`, `record_cache_metrics_direct`, and the `record`/`append_event` path."
+
+The diagnostic approach: when `clear_current_model_call_id` detects no active model call ID (orphaned completion), record a `ModelCallCompletedWithoutStart` state event. This is the diagnostic.
+
+Let me implement this now. I'll start with the EventType addition.
+────────────────────────────────────────────────────────────────────────────────
+  6 tools completed in 9.9s (6 ✓)
+
+Now I'll implement the fix. The gap analysis shows that:
+1. `clear_current_model_call_id()` already detects orphaned completions (stderr warning), but doesn't emit a state event
+2. The diagnosable gap: between `set_current_model_call_id()` and `record(ModelCallStarted)` in prompt.rs, a panic would leave ModelCallCompleted (from the panic hook) without ModelCallStarted
+
+I'll add a `ModelCallCompletedWithoutStart` diagnostic event emitted from `clear_current_model_call_id` when no model call ID is active.
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (903ms)
+  ▶ edit src/state.rs (4 → 10 lines)
+        JsonOutputFailure,
+        ToolSchemaFailure,
+        AgentExitReason,
+  +     /// Recorded when a ModelCallCompleted event is about to be recorded
+  +     /// but no CURRENT_MODEL_CALL_ID is active, indicating the completion
+  +     /// arrived without a matching ModelCallStarted. This is a diagnostic
+  +     /// event that helps classify unmatched model call completions in the
+  +     /// dashboard lifecycle gnomes.
+  +     ModelCallCompletedWithoutStart,
+    }
+            EventType::AgentExitReason => "AgentExitReason",
+            EventType::SessionStarted => "SessionStarted",
+  +         EventType::ModelCallCompletedWithoutStart => "ModelCallCompletedWithoutStart",
+        }
+  ✓ Auto-approved: edit: src/state.rs (3 → 4 lines)
+ ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add it to `event_type_label`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.6s (2 ✓)
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (901ms)
+  ▶ todo            "AgentExitReason" | "agent.exited" => EventType::AgentExitReason,
+            "SessionStarted" | "session.started" => EventType::SessionStarted,
+  +         "ModelCallCompletedWithoutStart" | "model.completed_without_start" => EventType::ModelCallCompletedWithoutStart,
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+ ✓ (900ms)
+  ▶ edit src/state.rs (3 → 4 lines)
+            EventType::AgentExitReason => "AgentExitReason",
+            EventType::SessionStarted => "SessionStarted",
+  +         EventType::ModelCallCompletedWithoutStart => "ModelCallCompletedWithoutStart",
+        }
+ ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add it to `parse_event_type_label`:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.5s (3 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+            "AgentExitReason" | "agent.exited" => EventType::AgentExitReason,
+            "SessionStarted" | "session.started" => EventType::SessionStarted,
+  +         "ModelCallCompletedWithoutStart" | "model.completed_without_start" => EventType::ModelCallCompletedWithoutStart,
+ ✗ (1.8s)
+    │ old_text not found in src/state.rs.
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me re-read the relevant section around parse_event_type_label to see the exact text:
+────────────────────────────────────────────────────────────────────────────────
+
+
+            "TaskLineageLinked" | "task.lineage_linked" => EventType::TaskLineageLinked,
+  +         "ModelCallCompletedWithoutStart" | "model.completed_without_start" => EventType::ModelCallCompletedWithoutStart,
+            other => serde_json::from_value(Value::String(other.to_string()))
+  ✓ Auto-approved: edit: src/state.rs (2 → 3 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3307..3337 ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see that `parse_event_type_label` doesn't explicitly list all event types - it uses a catch-all `other` pattern that falls through to `serde_json::from_value`. Since `EventType` derives `Deserialize` with `#[serde(rename_all = "PascalCase")]`, the new variant `ModelCallCompletedWithoutStart` will automatically deserialize from the PascalCase form. But I should also add it to the match for the alternate labels. Let me add an explicit entry:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (2 → 3 lines)
+            "TaskLineageLinked" | "task.lineage_linked" => EventType::TaskLineageLinked,
+  +         "ModelCallCompletedWithoutStart" | "model.completed_without_start" => EventType::ModelCallCompletedWithoutStart,
+            other => serde_json::from_value(Value::String(other.to_string()))
+ ✓ (901ms)
+
+

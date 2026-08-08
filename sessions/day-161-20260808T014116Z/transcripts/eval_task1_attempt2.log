@@ -1,0 +1,117 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the provided evidence.
+
+The task is: "Close model_completion_without_start lifecycle gap in state.rs"
+
+The task description says:
+- There are 8 `model_completion_without_start` cases where ModelCallCompleted fires but no matching ModelCallStarted
+- The goal: add a diagnostic guard or fix in state.rs
+
+The changes made section is empty (=== CHANGES MADE (git diff) === has nothing below it).
+
+Build: PASS, Tests: PASS - but there are NO changes. 
+
+Wait, let me re-read. The diff section is empty - there are no changes. But Build and Tests say PASS. This could mean the task wasn't actually implemented yet, or the diff wasn't captured.
+
+Let me check if there are actually changes in the working tree or if this task was truly not implemented.
+
+I need to check the git status and see if there are uncommitted changes, or if this was already committed.
+
+Actually, wait - the task description says "Changes Made (git diff)" is empty. This strongly suggests no implementation was done. Build and Tests pass just means baseline passes.
+
+But let me verify - maybe the task was marked as obsolete (the fallback says "If deepseek_model_call_unmatched_completed_count is already 0 in the latest state snapshot, write an obsolete-task note").
+
+Let me check the actual git state and the state.rs file to understand what happened.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat && echo "---" …  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 ✓ (16ms)
+ ✓ (52ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are changes - git diff --stat shows 33 insertions in src/state.rs. The diff section was empty in the prompt but there are actual changes. Let me view them.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 1.8s (2 ✓)
+
+There are changes. Let me see the actual diff.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the full diff to understand the diagnostic guard being added. The truncated output is missing the key logic. Let me get the full diff.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/state.rs --no-col… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me fix the git command ordering.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git --no-pager diff -- src/sta… ✓ (12ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is being truncated by the tool. Let me read the specific section of the file to see the full implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:586..621  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:224..239 ✓ (6ms)
+ ✓ (28ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. The implementation:
+
+1. Adds a new `EventType::ModelCallCompletedWithoutStart` variant to the enum with a doc comment
+2. In the `record` function, before recording a `ModelCallCompleted` event, checks if `CURRENT_MODEL_CALL_ID` is set. If not, emits the new `ModelCallCompletedWithoutStart` diagnostic event.
+3. Updates `event_type_label` and `parse_event_type_label` to handle the new variant.
+
+This is a diagnostic approach (not a full fix) - it records when ModelCallCompleted arrives without a matching ModelCallStarted. This matches the task's fallback instruction: "narrow scope to adding a diagnostic counter in record_cache_metrics_direct or record that logs when a ModelCallCompleted is recorded without a prior ModelCallStarted."
+
+The implementation:
+- Is minimal: one diagnostic guard added in the `record` function
+- Detects the exact gap described: ModelCallCompleted without CURRENT_MODEL_CALL_ID
+- Uses `recorder.append` directly to avoid recursion
+- Adds the new event type to serialization/deserialization
+- Clear comments explaining the purpose
+
+Now I need to verify: cargo test state. The task says Build: PASS, Tests: PASS. Let me run the specific test to be sure.
+
+Let me also check if there's any issue with the implementation. The `CURRENT_MODEL_CALL_ID.with(|c| { let val = c.take(); ... c.set(val); })` pattern seems correct - it checks if there's a value without permanently removing it.
+
+One concern: the check happens AFTER `ensure_run_started()` but BEFORE the actual `recorder.append(event_type, actor, payload)`. The original ModelCallCompleted event will still be recorded after the diagnostic event. This is correct behavior - we want to still record the completion AND also record the diagnostic.
+
+The implementation matches the task's fallback criteria perfectly: "add a diagnostic: record a ModelCallCompletedWithoutStart event with a stack-approximating source label, and stop."
+
+Now let me run the verifier: cargo test state
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.9s (2 ✓)
+
+Good - the implementation adds a `ModelCallCompletedWithoutStart` diagnostic event in the `record` function, catching the exact gap where `ModelCallCompleted` fires without a matching `CURRENT_MODEL_CALL_ID`. This matches the task's fallback instruction. Let me verify with the specified test.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state 2>&1 | tail -… ✓ (4.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 338 state tests pass, 0 failures. The implementation adds a diagnostic event that fires when ModelCallCompleted arrives without a matching CURRENT_MODEL_CALL_ID. This exactly matches the task's fallback instruction: "add a diagnostic counter in record_cache_metrics_direct or record that logs when a ModelCallCompleted is recorded without a prior ModelCallStarted."
+
+The implementation:
+1. New `EventType::ModelCallCompletedWithoutStart` variant
+2. Guard in `record()` that checks `CURRENT_MODEL_CALL_ID` before recording `ModelCallCompleted`
+3. Updates `event_type_label` and `parse_event_type_label`
+4. All tests pass
+
+This is a PASS. The diagnostic approach is exactly what the task asks for when a full fix isn't feasible within the time budget.
+────────────────────────────────────────────────────────────────────────────────
+
+All 338 state tests pass. Now I'll write the verdict.
+  + Verdict: PASS
+  + Reason: Adds a ModelCallCompletedWithoutStart diagnostic event in the record() function that fires when ModelCallCompleted arrives without an active CURRENT_MODEL_CALL_ID, exactly matching the task's fallback criteria. The implementation is minimal (new EventType variant, guard check in record(), label/parse updates), all 338 state tests pass, and the diagnostic will identify unmatched completions so future sessions can trace the codepath.
+  ✓ Auto-approved: write: /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ write /home/runner/work/yyds-harness/yyds-harness/session_plan/eval_task_1.md (2 lines) ✓ (7ms)

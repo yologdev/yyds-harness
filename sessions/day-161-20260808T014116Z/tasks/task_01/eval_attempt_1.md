@@ -1,0 +1,2 @@
+Verdict: FAIL
+Reason: The diff adds the `ModelCallCompletedWithoutStart` enum variant, label, and parser entry but never records/emits this event anywhere — no guard in `record_cache_metrics_direct`, no detection in the `ModelCallCompleted` recording path, and no diagnostic counter wired to fire when a completion arrives without a start. The event type is dead code that cannot reduce `deepseek_model_call_unmatched_completed_count`.

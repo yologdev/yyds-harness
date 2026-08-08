@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: Adds a ModelCallCompletedWithoutStart diagnostic event in the record() function that fires when ModelCallCompleted arrives without an active CURRENT_MODEL_CALL_ID, exactly matching the task's fallback criteria. The implementation is minimal (new EventType variant, guard check in record(), label/parse updates), all 338 state tests pass, and the diagnostic will identify unmatched completions so future sessions can trace the codepath.
