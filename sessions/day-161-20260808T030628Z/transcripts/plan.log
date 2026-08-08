@@ -1,0 +1,790 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully before writing task files.
+
+## Current State Analysis
+
+### Evidence from Assessment & Trajectory
+
+1. **Build: green** — `cargo build && cargo test` both pass.
+
+2. **Recent work pattern**: Six+ sessions of lifecycle gap-closing. The most recent commit (f0499c61) closed the `model_completion_without_start` gap in `src/state.rs`.
+
+3. **Log feedback score**: 0.6625 with recurring_failures=0. Provider errors are zero.
+
+4. **Graph-derived next-task pressure** (5 items):
+   - Make planning failure actionable (planner_no_task_count=1)
+   - Close yyds state and model lifecycle gaps (deepseek_model_call_unmatched_completed_count=166)
+   - Raise session success rate (session_success_rate=0.0)
+   - Validate seeded tasks against fresh assessment (task_seed_contradiction_count=1)
+   - Force analysis-only attempts into action (task_analysis_only_attempt_count=1)
+
+5. **Open issues**: #165 (retroactive FailureObserved), #163 (planning failure classification), #162 (lifecycle feedback gaps), #105 (cache metrics — blocked on upstream #90), #131 (evaluator timeouts — blocked on human), #90 (upstream yoagent change — blocked on human).
+
+6. **Evo readiness**: `can_drive_evolution=false` — no task evidence captured in latest session. Provider errors zero. The bottleneck is planning/task selection.
+
+7. **Bugs found**:
+   - [MEDIUM] Retroactive FailureObserved for silent failures
+   - [LOW] 158 unresolved model_completion_without_start gaps
+   - [MEDIUM] Planning phase produces no task files
+   - [LOW] Cache metrics invisible for agent chat (upstream blocked)
+
+### Backlog Analysis
+
+**#165** (Retroactive FailureObserved): Was attempted Day 160, reverted due to evaluator timeout. The code was fine — the evaluator timed out before reaching a verdict. This is a real problem: the `find_missing_failure_observed()` function flags deliberate no-op sessions as needing retroactive FailureObserved events.
+
+**#163** (Planning failure classification): Was attempted Day 159, reverted because implementation agent couldn't land code. The scope was too broad — the agent was exploring `log_feedback.py` without landing changes.
+
+**#162** (Lifecycle feedback gaps): Was attempted Day 159, reverted due to scope mismatch — task said it would touch `scripts/append_terminal_state_events.py`, `scripts/log_feedback.py`, `scripts/summarize_state_gnomes.py` but the agent only touched `.skill_evolve_counter` and `memory/learnings.jsonl`.
+
+**#105** (Cache metrics): Blocked on upstream #90. Cannot proceed.
+
+### Task Selection
+
+Given the constraints:
+- #105 and #131 are blocked (upstream/human-needed)
+- #90 is blocked (upstream)
+- #162 had scope mismatch — needs to be narrowed
+- #163 had no-progress implementation — needs to be narrowed significantly
+- #165 had evaluator timeout on correct code — could retry with narrower scope
+
+The top graph pressures point to:
+1. Planning failure (planner_no_task_count) → #163 territory
+2. Lifecycle gaps (166 unmatched) → #162 territory  
+3. Session success rate → broad, not a single fix
+4. Task seed contradiction → needs detection improvement
+5. Analysis-only attempts → needs behavioral change
+
+Given the rule that reverted tasks must be made SMALLER, let me focus on what's achievable:
+
+**Task 1**: #165 - Prevent retroactive FailureObserved — this is the most concrete, has clear edit surface (one file: `scripts/append_terminal_state_events.py`), and the previous attempt was reverted only due to evaluator timeout (not wrong code). Make it smaller: just add the deliberate-no-op exclusion with a test.
+
+**Task 2**: #162 - Close lifecycle feedback gaps — but narrowed to just `scripts/log_feedback.py`. The core issue is `is_input_validation_completion()` not being used consistently. Narrow to one file.
+
+**Task 3**: #163 - Planning failure classification — but MUCH narrower. Instead of "classify all planning failures," just add ONE field (`planning_failure_cause`) when `planner_no_task_count > 0`, using only already-parsed metrics.
+
+Let me think about which to prioritize:
+
+#165 is the most actionable and has the clearest path. The previous attempt was killed by evaluator timeout, not wrong code. Making it smaller: just the deliberate-no-op exclusion.
+
+For #163, the previous attempt shows the agent got lost exploring code. The scope needs to be dramatically narrower — maybe just adding `planning_failure_cause` as a single field in `build_assessment()`.
+
+Let me look at what the assessment says about the current state more carefully...
+
+The assessment says "158 unresolved model_completion_without_start gaps" — the most recent commit addressed the code path for new occurrences but historical gaps remain. This is a different problem from #162.
+
+OK, let me plan:
+
+**Task 1**: #165 - Prevent retroactive FailureObserved for deliberate no-op sessions. Single file, clear success criteria, was previously reverted only due to evaluator timeout. If I make it narrower (just the event-level check), it should succeed.
+
+**Task 2**: #163 - Classify planning failures by cause. BUT make it dramatically smaller than the last attempt. Instead of broad exploration, just add one field. The implementation agent last time spent 24+ turns exploring without landing code. This time: specify exact line numbers and the minimal change.
+
+Actually, wait. Let me re-read the task sizing rules more carefully:
+
+> If a task has been reverted before (check agent-self issues above), make it SMALLER than last time. The previous approach was too ambitious — simplify, don't retry the same scope.
+
+For #163, the implementation agent got lost. The fix needs to be so narrow that an agent can do it in 5 turns. Let me think about what the absolute minimum change would be...
+
+The task asks for `planning_failure_cause` field. The minimum:
+1. In `build_assessment()` in `scripts/log_feedback.py`, when `planner_no_task_count > 0`, add a `planning_failure_cause` field.
+2. Derive it from existing metrics: if `provider_blocked_before_tasks()` → `provider_blocked`, else if `provider_error_count > 0` → `model_error`, else if `tool_error_count > 0` → `tool_failure`, else → `silent_no_op`.
+3. Add a test case.
+
+This is maybe 20-30 lines of Python. Very doable.
+
+But actually, the previous implementation attempt for #163 had the agent exploring for 24 turns and never landing code. The transcript shows the agent was confused about whether per-phase event metrics existed. The task description said "inferred from already-parsed per-phase event metrics" but there are no per-phase metrics — the agent discovered this contradiction and got stuck.
+
+For the re-attempt, I should be explicit: use GLOBAL (not per-phase) metrics. The classification is coarse: `provider_blocked`, `model_error`, `tool_failure`, `silent_no_op`, `unknown`.
+
+Let me finalize the task plan:
+
+**Task 1**: #165 - Prevent retroactive FailureObserved for deliberate no-op sessions
+- Files: `scripts/append_terminal_state_events.py`
+- Key: Add deliberate-no-op exclusion to `find_missing_failure_observed()`
+- Verifier: `python3 -m unittest scripts.test_append_terminal_state_events`
+
+**Task 2**: #163 - Classify planning failures by cause
+- Files: `scripts/log_feedback.py`
+- Key: Add `planning_failure_cause` field using global (not per-phase) metrics
+- Verifier: `python3 -m unittest scripts.test_task_lineage_feedback`
+
+**Task 3**: #162 - Close lifecycle feedback gaps (narrowed to input-validation exclusion in log_feedback)
+- Files: `scripts/log_feedback.py`
+- Key: Ensure `is_input_validation_completion()` is used in the right places
+- But wait, this overlaps with Task 2 on `scripts/log_feedback.py`. Two tasks touching the same file is fine if they touch different functions.
+
+Actually, let me reconsider. Task #162 was reverted due to scope mismatch — the planned files didn't match what was touched. The issue was that the implementation agent touched `.skill_evolve_counter` and `memory/learnings.jsonl` instead of the planned files. This suggests the task was confusing or the agent went off-track. 
+
+For a re-attempt, I should make #162 even narrower. But what's the core issue? The assessment says `state_unmatched/run_error_without_start=3`. The task is about distinguishing input-validation exits from real incomplete runs. The key function is `is_input_validation_completion()`.
+
+But actually, #162 and #163 both touch `scripts/log_feedback.py`. I could combine them into one task. But the task sizing rules say each task should touch at most 3 files. Both could go into one task... but they're different concerns.
+
+Better: have #162 focus only on `scripts/log_feedback.py` (input-validation classification), and #163 also on `scripts/log_feedback.py` (planning failure cause). Two tasks on the same file are fine if they touch different parts.
+
+Actually, let me reconsider the priorities. The graph-derived pressures are:
+1. Make planning failure actionable — #163
+2. Close lifecycle gaps — #162 / recent commit already partially addressed
+3. Raise session success rate — broad
+4. Validate seeded tasks — needs harness change
+5. Force analysis-only attempts into action — broad
+
+And the open issue prioritization:
+- #165 is MEDIUM impact, concrete fix
+- #163 is MEDIUM impact, was reverted
+- #162 is about lifecycle gaps — partially addressed by recent commit
+
+Let me go with:
+
+**Task 1**: #165 - Prevent retroactive FailureObserved (highest impact, clearest path)
+**Task 2**: #163 - Classify planning failures (narrower than last time, explicit global metrics)
+**Task 3**: Something from the graph pressures that isn't covered by the above...
+
+Actually, the assessment mentions "158 unresolved model_completion_without_start gaps" — the recent commit only fixes new occurrences but doesn't close historical gaps. This could be a task: add a retroactive closure in `scripts/append_terminal_state_events.py`.
+
+But wait, the recent commit (f0499c61) was about `src/state.rs` creating missing ModelCallStarted events retroactively when ModelCallCompleted arrives without one. The 158 remaining gaps are historical — they need a batch fix in the state doctor.
+
+Hmm, that's a different concern. Let me stick with #165 and #163 as the two most actionable tasks.
+
+For a third task, what about the "Validate seeded tasks against fresh assessment" pressure? This could be a small fix in `scripts/preseed_session_plan.py` to improve the contradiction detector. But actually, looking at the trajectory, `task_seed_contradiction_count=1` — this is a single occurrence, not a recurring pattern.
+
+Let me go with just 2 tasks. The assessment says I have "3 task slots" but I don't need to fill all of them. Two focused, achievable tasks are better than three half-baked ones.
+
+Actually, let me reconsider. The rules say:
+- "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+So I should have at least 2 tasks, which I do. Let me finalize with 2 tasks.
+
+Now, let me also think about the artifact-first requirement:
+- I need to check if `session_plan/task_01.md` already exists
+- If it does, refine it or create task_02.md
+- If not, create task_01.md first
+
+Let me start by creating the directory and checking for existing files.
+
+Wait, I need to also check: the harness may have already created session_plan/task_01.md from assessment evidence. Let me check for that.
+
+Also need `session_plan/issue_responses.md`.
+
+Let me proceed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ▶ $ mkdir -p session_plan && ls -la session_plan/  ▶ $ git log --oneline -5 ✓ (4.7s)
+ ✓ (4.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a `session_plan/task_01.md` from the harness seed. Let me read it to understand what was pre-seeded, then decide whether to refine it or add task_02.md.
+
+Also, there's an `assessment.md` in session_plan — let me check what that is.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment.md (30 lines) ✓ (3.5s)
+ ✓ (2.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there's a pre-seeded task_01.md. The assessment text above (in the prompt) is actually the same as this session_plan/assessment.md — it's the Phase A1 output that was already generated.
+
+The pre-seeded task_01.md is a "small verifiable improvement to src/" — essentially a fallback task that says "if you don't have better evidence, add a test or doc comment to src/state.rs." This is the kind of self-referential fallback task that the journal has warned about (Day 115 lesson: "Fallback self-reference turns 'nothing broken' into busywork you can't refuse").
+
+I have stronger evidence now: the trajectory shows specific graph-derived pressures and the assessment identifies concrete bugs. The pre-seeded task_01.md should be replaced with a real evidence-backed task.
+
+Let me now write the plan:
+
+**Task 1 (replaces harness seed)**: #165 - Prevent retroactive FailureObserved for deliberate no-op sessions
+- This is the most concrete, actionable task
+- Previous attempt was reverted due to evaluator timeout, not wrong code
+- Single file: `scripts/append_terminal_state_events.py`
+- Narrower than previous: just add the deliberate-no-op exclusion
+
+**Task 2**: #163 - Classify planning failures by cause
+- Narrower than previous: use GLOBAL metrics, not per-phase
+- Single file: `scripts/log_feedback.py`
+- Just add one field: `planning_failure_cause`
+
+I should NOT replace task_01.md blindly. The harness says: "Treat that as a valid seed task. You may refine it or add task_02.md/task_03.md, but do not delete it unless you immediately write an equal-or-better evidence-backed task file."
+
+The harness-seed task_01.md is a fallback "add a test" task with no real evidence. The #165 task IS an equal-or-better evidence-backed task. I should replace it.
+
+Let me also check: does the assessment contradict the seed task? The seed task says "The assessment found no actionable bugs in src/" but the assessment actually found bugs:
+- [MEDIUM] Retroactive FailureObserved for silent failures
+- [LOW] 158 unresolved model_completion_without_start gaps
+- [MEDIUM] Planning phase produces no task files
+
+So the seed task's premise is wrong — the assessment DID find actionable issues. The seed task should be replaced.
+
+Let me write task_01.md for #165 and task_02.md for #163.
+
+Actually, wait — should I do Task 3 as well? The rules say "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." Two tasks is enough. But I could add a third if there's a clear small task.
+
+What about the "158 unresolved model_completion_without_start gaps"? The recent commit (f0499c61) fixed the code path for new occurrences. The historical gaps could be closed by adding a retroactive fix in `scripts/append_terminal_state_events.py`. But that might touch the same file as task_01. And it's a different concern.
+
+Let me check: could I add a task to retroactively close historical model_completion_without_start gaps? The function `find_missing_model_call_started` in `scripts/append_terminal_state_events.py` already flags the pattern. Adding retroactive closure would be adding synthetic ModelCallStarted events. But this is complex and risky — creating synthetic events for 158 historical gaps is a batch operation that could go wrong.
+
+Let me stick with 2 tasks. Both are independently verifiable and address concrete trajectory pressures.
+
+Now let me write the task files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.7s (2 ✓)
+
+The harness-seed task_01.md is a fallback "add a test" task that claims "no actionable bugs in src/" — but the assessment found concrete bugs (#165, #163). I'm replacing it with evidence-backed tasks. Let me verify the edit surfaces before writing.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/append_terminal_state_events.py scripts/log_feedback.py scr…  ▶ $ grep -n 'def find_missing_failure_observed\|def find_missing_model_call_started\…  ▶ $ grep -n 'planner_no_task\|PLANNER_NO_TASK\|planning_failure_cause\|provider_bloc… ✓ (4.7s)
+ ✓ (4.6s)
+ ✓ (12.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The `find_missing_failure_observed()` in `scripts/append_terminal_state_events.py` already has `deliberate_no_op_excluded` logic at lines 339, 376, 387, 394-395, and 403. It seems the previous implementation attempt (Day 160, Task 1) actually landed some code but the task was reverted due to evaluator timeout. Let me check if this code is currently in the file or was reverted.
+
+Let me check git status and the actual state of the file more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 12.1s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:335..410 ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code for #165 is ALREADY IMPLEMENTED. The `deliberate_no_op_excluded` logic is in the file at lines 339, 369-380, 387, 394-395, 403. This means the Day 160 Task 1 implementation actually landed this code, but the task was reverted due to evaluator timeout. However, looking at git log, I see the most recent commits don't mention a revert of this code.
+
+Wait, let me check: the assessment says the Day 160 (09:03) session added "input-validation and cancelled-run exclusion to `find_runs_with_failure_observed_no_completion`". And the deliberate_no_op code is in `find_missing_failure_observed()`. These are different functions!
+
+Let me check if the deliberate_no_op code was committed as part of a different session. Let me look at git log for the file.
+
+Actually, let me just check git blame or log for the file to see when this code was added.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -- scripts/append_terminal_state_events.py | head -10  ▶ $ git log -1 --format="%H %s" -- scripts/append_terminal_state_events.py ✓ (4.7s)
+ ✓ (4.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The most recent commit touching the file is `ff34df3e` — "Day 160 (09:03): Add input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_completion (Task 2)." But the code I'm seeing for `deliberate_no_op_excluded` is in `find_missing_failure_observed()`, not `find_runs_with_failure_observed_no_completion()`.
+
+Wait — the commit message says "Add input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_completion". But the deliberate_no_op code is in `find_missing_failure_observed()`. These are different functions! 
+
+Let me check: was the deliberate_no_op code part of this commit? The commit message only mentions input-validation and cancelled-run exclusion. But the actual code changes might have included the deliberate_no_op logic too.
+
+Actually, the assessment says the Day 160 (09:03) session had two fixes: (1) input-validation/cancelled-run exclusion, and (2) exit code 42 recovery hint. It doesn't mention deliberate_no_op.
+
+So the deliberate_no_op code in `find_missing_failure_observed()` was added as part of the Day 160 Task 2 commit. Even though the commit message only mentions "find_runs_with_failure_observed_no_completion", the actual diff likely included changes to `find_missing_failure_observed()` as well.
+
+This means #165 is ALREADY IMPLEMENTED. The deliberate_no_op exclusion is in the codebase. Let me verify by checking if there are tests for it.
+
+Let me also check the test file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.1s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'deliberate_no_op\|no_op\|_is_deliberate' scripts/test_append_terminal_s…  ▶ $ git diff ff34df3e^..ff34df3e -- scripts/append_terminal_state_events.py | head -… ✓ (3.6s)
+ ✓ (3.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the commit `ff34df3e` added input-validation and cancelled-run exclusion to `find_runs_with_failure_observed_no_completion()` — that was Task 2 of Day 160.
+
+But the `deliberate_no_op` code in `find_missing_failure_observed()` was NOT part of this commit. The diff only shows changes to `find_runs_with_failure_observed_no_completion()`.
+
+So when was the `deliberate_no_op` code added? Let me check the previous commit.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --all --oneline -- scripts/append_terminal_state_events.py | head -15  ▶ $ git log --oneline -1 bad5fbd5 && git diff bad5fbd5^..bad5fbd5 -- scripts/append_… ✓ (1.8s)
+ ✓ (5.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `deliberate_no_op` code was added in commit `bad5fbd5` — "Day 160 (02:41): fix build errors". This was a fix commit, and it includes the deliberate_no_op logic.
+
+Now I see the full picture:
+- Day 160 had two sessions: 02:41 (Task 1: #165) and 09:03 (Task 2: input-validation exclusion)
+- Task 1 (#165) was IMPLEMENTED in commit `bad5fbd5` — the deliberate_no_op logic is already in the codebase
+- The issue #165 says the task was "automatically reverted by the verification gate" with "evaluator timed out without a verifier verdict" — but the code IS in the repo!
+
+Wait, if the code was reverted, it shouldn't be in the repo. Let me check more carefully...
+
+Actually, looking at it again: the issue #165 says the task was reverted ("automatically reverted by the verification gate"). But the code is clearly in the file. This means either:
+1. The revert didn't happen (the evaluator timeout caused a false revert signal, but the code wasn't actually reverted)
+2. The revert was fixed in the "fix build errors" commit
+
+Given that the commit message is "fix build errors" and the diff shows the deliberate_no_op code being added (not removed), it seems like the code was successfully committed. The "reverted" in the issue might be wrong — maybe it was reverted during the session but then re-applied in the fix commit.
+
+In any case, #165 is ALREADY IMPLEMENTED. The deliberate_no_op exclusion logic is in the codebase with tests.
+
+Now I need to re-evaluate my task plan. #165 is done. What remains?
+
+Let me check what's still open:
+
+Looking at the assessment bugs:
+1. [MEDIUM] Retroactive FailureObserved for silent failures — #165 is DONE (code is in place)
+2. [LOW] 158 unresolved model_completion_without_start gaps — partially addressed
+3. [MEDIUM] Planning phase produces no task files — #163
+4. [LOW] Cache metrics invisible for agent chat — blocked upstream
+
+For #163 (planning failure classification), the code was reverted due to the implementation agent not landing code. The issue is still open.
+
+For #162 (lifecycle feedback gaps), the code was reverted due to scope mismatch. The task touched wrong files.
+
+Let me re-plan:
+
+**Task 1**: Replace the harness-seed fallback with a real task. Since #165 is already done, let me focus on #163 (planning failure classification). But I need to make it MUCH narrower than last time.
+
+**Task 2**: Address one of the remaining assessment bugs. The "158 unresolved model_completion_without_start gaps" — the recent commit fixed new occurrences, but historical gaps remain. Could add a retroactive closure in `scripts/append_terminal_state_events.py`.
+
+Actually wait, let me check if the 158 historical gaps are still an issue. The recent commit `f0499c61` added the retroactive ModelCallStarted creation in `src/state.rs`. But this only works going forward — it creates missing start events when a completion arrives. Historical gaps (from before this commit) wouldn't be fixed because there's no new completion arriving to trigger the retroactive start creation.
+
+But fixing 158 historical gaps requires a batch operation that reads old events and synthesizes missing ones. That's complex and risky.
+
+Let me focus on #163 — planning failure classification. This directly addresses the #1 graph pressure: "Make planning failure actionable."
+
+For #163, the key insight from the previous failed attempt is: the implementation agent got confused about "per-phase event metrics" because they don't exist. The task should explicitly say to use GLOBAL metrics only.
+
+Let me also check if there's anything else I can do. What about the task seed contradiction pressure? That's `task_seed_contradiction_count=1` — a single occurrence. Maybe I can add a small improvement to `scripts/preseed_session_plan.py`.
+
+Actually, let me focus on writing two solid tasks:
+
+**Task 1**: #163 — Add `planning_failure_cause` field to log_feedback.py. Use global metrics only. Single file. Test with existing test infrastructure.
+
+**Task 2**: Something small and verifiable. Let me look at the assessment more carefully...
+
+"158 unresolved model_completion_without_start gaps" — could I add a retroactive closure in `scripts/append_terminal_state_events.py`? The function `find_missing_model_call_started` already detects these gaps. Adding retroactive ModelCallStarted events would close them.
+
+But hold on — the recent commit `f0499c61` in `src/state.rs` adds retroactive ModelCallStarted when a completion arrives. The state doctor could also retroactively close historical gaps. But this is a batch operation on historical data that could corrupt the event ledger.
+
+Let me check what `find_missing_model_call_started` currently does and what `append_terminal_events` does with its output.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.4s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:493..573 ✓ (905ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, I now have a clear picture. Let me re-evaluate.
+
+#165 is ALREADY DONE — the `deliberate_no_op_excluded` logic is in the codebase with tests. The issue #165 in the backlog is stale.
+
+So my new task plan:
+
+**Task 1**: #163 — Classify planning failures by cause. This is the #1 graph pressure ("Make planning failure actionable"). The last attempt failed because the implementation agent got lost exploring. I need to make this MUCH narrower.
+
+**Task 2**: Add a small, concrete improvement. Looking at the assessment:
+- "158 unresolved model_completion_without_start gaps" — the recent commit added retroactive start creation in state.rs, but historical gaps aren't closed. Could add retroactive closure in `append_terminal_state_events.py`.
+- Or: improve the contradiction detector in `preseed_session_plan.py` per the `task_seed_contradiction_count=1` pressure.
+
+Actually, let me look at this differently. The harness-seed task_01.md is a "fallback: add a test" task with no real evidence. I should replace it with a real evidence-backed task. But I also want to make sure the tasks are achievable.
+
+Let me go with:
+
+**Task 1**: #163 — Add `planning_failure_cause` field to `log_feedback.py`
+- Much narrower than last attempt
+- Use ONLY global metrics (no per-phase parsing)
+- The classification: `provider_blocked` (existing), `model_error`, `tool_failure`, `silent_no_op`
+- Add one test case
+
+**Task 2**: Improve `preseed_session_plan.py` contradiction detection
+- The `task_seed_contradiction_count=1` pressure
+- This was addressed in a Day 118 lesson: "detection vocabularies drift"
+- But the lesson says the fix was already added (semantic fallback)
+- Let me check if this is still an issue...
+
+Actually, the trajectory says `task_seed_contradiction_count=1` — one seeded task was contradicted by assessment evidence. This is a single occurrence, likely not recurring. The Day 118 fix already added a semantic fallback. This might not be worth a task.
+
+Let me check the recent `preseed_session_plan.py` for contradiction detection state.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'contradict\|obsolete\|stale.*seed\|already.*done\|already.*fixed\|resol… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The contradiction detector already has extensive logic — `_line_shows_obsolete_or_reverted()`, `_check_fixture_already_exists()`, `_check_code_already_exists()`, and `check_task_contradiction()`. It seems well-developed. The `task_seed_contradiction_count=1` might be a one-off edge case that the existing detection didn't catch but isn't worth a whole task.
+
+Let me focus on actionable tasks:
+
+**Task 1** (replaces harness seed): #163 — planning failure cause classification
+- The #1 graph pressure
+- Narrow scope: single field, global metrics only
+- Single file: `scripts/log_feedback.py`
+- Test file: `scripts/test_task_lineage_feedback.py`
+
+**Task 2**: Close historical model_completion_without_start gaps in the state doctor
+- 158 remaining gaps
+- The `find_missing_model_call_started()` function already detects them
+- Add a retroactive closure path that creates synthetic ModelCallStarted events
+- This is a companion to the recent `src/state.rs` fix (f0499c61) which only handles new occurrences
+
+Actually, wait — there's a risk with creating synthetic historical events. Let me think about this more carefully.
+
+The state.rs fix (f0499c61) creates a retroactive ModelCallStarted when a ModelCallCompleted arrives without one. This happens at event-recording time. For historical gaps, there's no new ModelCallCompleted arriving — the events are already in the ledger. The only way to close them is to append synthetic events.
+
+`append_terminal_state_events` already creates synthetic events (FailureObserved, RunCompleted, etc.) for gaps it finds. Adding ModelCallStarted for historical gaps would be consistent with this pattern.
+
+But 158 gaps is a lot. The implementation would need to:
+1. In `find_missing_model_call_started()`, return the missing entries
+2. In `append_terminal_events()`, synthesize ModelCallStarted events for each missing entry
+3. Or, do it as a separate function
+
+This is doable but adds complexity. Let me check if the 158 count is still current or if some were closed by the recent commit.
+
+Actually, the 158 number is from the trajectory: `deepseek_model_call_unmatched_completed_count=166` with `model_completion_without_start=8` being the subset addressed by the recent commit. So 166 - 8 = 158 remain. But the trajectory also says "The most recent commit partially addressed this; 158 remain." This is an assessment-time estimate, not a live count.
+
+Given the complexity and risk of batch-synthesizing 158 historical events, let me skip this and focus on #163.
+
+Actually, let me reconsider the task plan more carefully. I have two high-priority graph pressures:
+1. "Make planning failure actionable" — #163
+2. "Close yyds state and model lifecycle gaps" — partially addressed
+
+And I have #162 (lifecycle feedback gaps) which was reverted.
+
+Let me go with:
+
+**Task 1**: #163 — Add `planning_failure_cause` field
+**Task 2**: A small companion task — maybe the "Validate seeded tasks" or "Force analysis-only attempts" pressure. But let me check if analysis-only is a recurring pattern...
+
+The trajectory shows `task_analysis_only_attempt_count=1` — one session had this. Not a strong recurring pattern.
+
+OK, I think 2 tasks are enough. Let me write them.
+
+Actually, wait. Let me also check the `planning_failure_cause` code to see if there's any existing classification logic in `build_assessment()` at line 2081.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2070..2130 ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `top_lessons()` function at line 2081 already classifies planning failures into two categories:
+1. `provider_blocked_planning` — when there are provider errors AND no tasks (line 2081)
+2. `planner_no_tasks` — when there are no tasks but no provider errors (line 2089)
+
+But it doesn't distinguish between `model_error`, `tool_failure`, and `silent_no_op` among the non-provider-blocked cases. The `planner_no_tasks` kind lumps them all together.
+
+The task #163 asks for `planning_failure_cause` field to be added. The classification would be:
+- `provider_blocked` — already detected by `provider_blocked_before_tasks(metrics)`
+- `model_error` — provider errors but tasks were attempted (not blocked)
+- `tool_failure` — tool errors during planning
+- `silent_no_op` — no errors, no tasks
+- `unknown` — fallback
+
+This is a small addition: add one field to the metrics dict and maybe refine the lesson classification. The implementation would be:
+1. Add `planning_failure_cause` to the metrics dict in the parsing/artifact function
+2. Use existing global metrics to determine the cause
+
+Let me also check where the metrics are assembled — around line 2051 or the `build_assessment` function.
+
+Actually, let me look at where `provider_blocked_before_tasks` is used and where the `planner_no_task_count` metric is set.
+
+Let me now write the task files. I have a clear picture:
+
+**Task 1**: #163 — Add `planning_failure_cause` to log_feedback.py
+- Single file: `scripts/log_feedback.py`  
+- Test file: `scripts/test_task_lineage_feedback.py`
+- Classification: `provider_blocked`, `model_error`, `tool_failure`, `silent_no_op`, `unknown`
+- Use GLOBAL metrics only
+- ~30 lines of Python
+
+**Task 2**: I need a second task. Let me think about what's most impactful...
+
+Actually, let me also check if there's something small I can do in src/ that addresses a graph pressure. The "Force analysis-only attempts into action" pressure — this is about implementation sessions that don't land code. Could I add better recovery hints or timeout handling?
+
+Actually, that's too vague. Let me look at the concrete state evidence more carefully.
+
+The assessment says "158 unresolved model_completion_without_start gaps" but also "The most recent commit addressed the code path for new occurrences." The state.rs fix creates retroactive ModelCallStarted when a new completion arrives. For the 158 historical gaps, the state doctor's `find_missing_model_call_started()` already flags them but doesn't close them.
+
+I could add retroactive closure in `append_terminal_state_events()` — similar to how it already creates retroactive FailureObserved and RunCompleted events.
+
+Let me check how `append_terminal_events()` handles the output of `find_missing_model_call_started()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'find_missing_model_call_started\|ModelCallStarted\|model_call_started\|… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There it is! Lines 877-908 already have retroactive ModelCallStarted creation! Let me read this section.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:875..935 ✓ (829ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+This is already implemented! Lines 876-908 have the retroactive ModelCallStarted creation for historical gaps. The state doctor already:
+1. Finds unmatched ModelCallCompleted events via `find_missing_model_call_started()`
+2. Filters out input-validation runs
+3. Creates retroactive ModelCallStarted events for the remaining gaps
+
+And lines 915-934 do the reverse — find orphaned ModelCallStarted and create retroactive ModelCallCompleted.
+
+So the "158 unresolved gaps" from the assessment might be from before this code was added, OR the code exists but the gaps haven't been processed yet (the state doctor needs to be run to close them).
+
+Given that both #165 AND the model_completion_without_start retroactive closure are already implemented, the only remaining actionable task from the assessment is #163 — planning failure cause classification.
+
+Let me now focus on writing the task files. But I only have one clear task (#163). I need at least 2 tasks per the policy ("at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists").
+
+Let me think about what else I can do...
+
+The assessment mentions:
+- [LOW] Cache metrics invisible for agent chat — blocked upstream
+- The graph pressure "Raise session success rate" — too broad
+- The graph pressure "Validate seeded tasks" — one-off
+- The graph pressure "Force analysis-only attempts into action" — one-off
+
+What about the "Make planning failure actionable" (#163) and a companion task?
+
+Let me look at the assessment more carefully for concrete small fixes.
+
+Actually, let me check the "corrected lessons" from log feedback more carefully. The trajectory says:
+```
+Corrected top lessons for next run:
+- seeded tasks contradicted the fresh assessment -> validate seeded tasks against fresh assessment evidence and replace contradicted seeds before implementation
+- planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts
+- commands timed out during the session -> prefer bounded targeted checks and record timeout-specific remediation
+```
+
+The "commands timed out" lesson — this could be addressed by improving timeout recovery in the bash tool. But that's in `src/tool_wrappers.rs` and would be a Rust change. The assessment doesn't mention any specific tool timeout pattern as recurring.
+
+Let me look at what else changed recently that might need follow-up. The most recent commit (f0499c61) added retroactive ModelCallStarted in state.rs. Maybe there's test coverage to add?
+
+Actually, let me take a different approach. Let me check what specific graph pressures haven't been addressed:
+
+1. Make planning failure actionable → #163
+2. Close lifecycle gaps → Mostly done (state.rs + state doctor)
+3. Raise session success rate → Broad
+4. Validate seeded tasks → One occurrence
+5. Force analysis-only attempts → One occurrence
+
+From the "Historical unrecovered tool-failure categories": "From trajectory, the log feedback score is 0.6625 with recurring_failures=0. Recent tool failures are not a current pressure point."
+
+So tool failures aren't a problem.
+
+OK, I think I should write:
+1. Task 1: #163 — planning failure cause (the only clear actionable gap)
+2. Task 2: A small improvement based on a different angle
+
+For Task 2, what about improving the `task_analysis_only_attempt_count` detection? Looking at the assessment: "Force analysis-only attempts into action (task_analysis_only_attempt_count=1): Recent task session day-160-20260807T102840Z: Implementation ended without code changes."
+
+This could be a task to add a lesson in `log_feedback.py` for analysis-only attempts, or to improve the detection. But the count is only 1 — not recurring.
+
+Alternatively, what about addressing the "commands timed out" lesson? I could add timeout-specific recovery hints to the bash tool wrapper. Let me check `src/tool_wrappers.rs` for existing timeout handling.
+
+Actually, that would be a Rust change requiring cargo build/test. The assessment says build is green. A small timeout recovery hint addition would be verifiable.
+
+But actually, the assessment says the "corrected lessons" are from log_feedback's output. These are suggestions, not recurring failures. The `recurring_failures=0` means none of these are recurring.
+
+Let me just go with 2 tasks where Task 2 is a smaller, low-risk improvement.
+
+Option A: Add `analysis_only` lesson to log_feedback.py when `task_analysis_only_attempt_count > 0`
+Option B: Add timeout-specific bash recovery hints to tool_wrappers.rs
+Option C: Fix a small edge case in the state doctor or state.rs
+
+Let me go with Option A since it builds on the same file as Task 1 and addresses a trajectory pressure.
+
+Actually, no — having two tasks on the same file is fine but they should be clearly separate. Let me think...
+
+Actually, I just realized: the `task_analysis_only_attempt_count` is already tracked as a metric. Adding a lesson for it in `top_lessons()` would be a truly minimal change — ~8 lines. But the current count is 1, which is below the threshold for a recurring pattern.
+
+Let me think about what would actually move the needle on harness evolution...
+
+OK, I'll go with:
+
+**Task 1**: #163 — Add `planning_failure_cause` field to log_feedback.py (addresses #1 graph pressure)
+
+**Task 2**: A small improvement to `scripts/append_terminal_state_events.py` — ensure the state doctor's diagnostic output is clearer about what was already fixed vs what remains. The assessment says "158 unresolved gaps" but the code already handles retroactive closure. The gap might be in reporting/communication, not functionality. Add a summary line to show how many gaps were closed during the run.
+
+Actually, that's too vague. Let me look at the diagnostics output for `model_call_started_diagnostics`.
+
+You know what, let me just write two focused tasks. Task 1 is the main one (#163). Task 2 can be a smaller improvement.
+
+Let me check: is there anything in the `state.rs` code that needs refinement? The most recent commit (f0499c61) added retroactive ModelCallStarted. Let me check if there's test coverage for it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show --stat f0499c61 ✓ (900ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the most recent commit was 33 lines in state.rs. Let me check what was added — specifically the test coverage.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ git show f0499c61 -- src/state.rs | head -60 ✓ (905ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see — the commit added:
+1. A new `EventType::ModelCallCompletedWithoutStart` variant
+2. Logic in `record()` to detect when a ModelCallCompleted arrives without a matching ModelCallStarted and emit the diagnostic event
+3. Updated `event_type_label()`
+
+This only detects/goes forward. It doesn't retroactively close historical gaps. The state doctor (append_terminal_state_events.py) handles retroactive closure (lines 876-908).
+
+OK so everything is in place. The only clear actionable gap is #163 — planning failure classification.
+
+Let me finalize my plan:
+
+**Task 1**: #163 — Add `planning_failure_cause` field to log_feedback.py
+- Replaces harness-seed fallback task
+- Narrow: one field, global metrics only
+- Files: `scripts/log_feedback.py`, `scripts/test_task_lineage_feedback.py`
+
+**Task 2**: Improve analysis-only attempt lesson in log_feedback.py
+- The `task_analysis_only_attempt_count` metric exists but isn't used in `top_lessons()`
+- Add a lesson when this count > 0
+- Small, complementary to Task 1
+- Files: `scripts/log_feedback.py`, `scripts/test_task_lineage_feedback.py`
+
+Actually, wait — the task_analysis_only_attempt_count is a one-off (count=1). Adding a lesson for a non-recurring pattern might add noise. Let me check what other lessons exist that I could improve.
+
+Looking at the "corrected lessons" again:
+1. seeded tasks contradicted → already has a lesson in `top_lessons()` at line 2113
+2. planner produced no usable task → already has a lesson at line 2089
+3. commands timed out → no lesson exists for this
+
+"Commands timed out" could be a useful lesson to add. Let me check if there's a metric for timeouts.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'timeout\|timed_out\|command_timeout' scripts/log_feedback.py | head -20 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are metrics for `command_timeout_count` and `evaluator_timeout_count`. Let me check if there are lessons for them in `top_lessons()`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'command_timeout\|evaluator_timeout' scripts/log_feedback.py | grep -i '… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There ARE lessons for `command_timeout` and `evaluator_timeout` already! Let me see them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:2225..2265 ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so both `command_timeout` and `evaluator_timeout` already have lessons. The timeout-related corrected lesson from the trajectory ("commands timed out during the session -> prefer bounded targeted checks") is already handled.
+
+So the only uncovered item from the "corrected lessons" is:
+- "seeded tasks contradicted the fresh assessment" → already handled (line 2113)
+- "planner produced no usable task" → already handled but without cause classification (line 2089)
+- "commands timed out" → already handled (line 2249)
+
+The only real gap is #163 — classifying WHY the planner produced no tasks. The current code has two categories: `provider_blocked_planning` and `planner_no_tasks`. It doesn't distinguish between `model_error`, `tool_failure`, and `silent_no_op` within the non-provider-blocked case.
+
+Now, for a second task, let me think about what else is truly needed...
+
+Actually, you know what, the assessment says I should produce at least 2 tasks from state evidence when it exists. But I only have 1 clear task (#163). Let me think about what else could be impactful but small.
+
+Looking at the graph pressures again:
+1. "Make planning failure actionable" — #163 ✓
+2. "Close yyds state and model lifecycle gaps" — Already addressed by state.rs fix + state doctor
+3. "Raise session success rate" — Broad
+4. "Validate seeded tasks against fresh assessment" — Handled by preseed + log_feedback lessons
+5. "Force analysis-only attempts into action" — One-off
+
+What about adding test coverage for the recent state.rs fix (f0499c61)? The commit added 33 lines but I don't see new tests in the diff. Let me check if tests were added.
+
+Actually, the diff only shows changes to state.rs — no test file changes. The `event_type_label` function has a test that checks all variants are covered. Let me check...
+
+Let me run the state tests to see if they pass.
+
+Actually, the assessment already says build/tests are green. And the commit was already pushed. So tests must pass.
+
+Let me think about this differently. What's a small, verifiable improvement that:
+1. Touches at most 3 files
+2. Is completable in 20 minutes
+3. Addresses a real gap
+
+Here's an idea: the `deepseek cache-report` command returns "no metrics recorded" as a known limitation. But the command could be more useful by also reporting the diagnostic-path cache metrics (stream-check, fim-complete). This would give users a partial view instead of a completely empty report. But this is blocked on upstream #90 fundamentally.
+
+Another idea: the assessment mentions `yyds deepseek stream-check` shows 66.67% cache hit ratio. This is a strong signal that the cache infrastructure works. But there's no way to surface this in the dashboard or trajectory. Adding a `diagnostic_cache_hit_ratio` gnome to the state summary would make this visible. But this might be too complex for a 20-minute task.
+
+Let me just go with 2 tasks where Task 2 is genuinely small:
+
+**Task 2**: Add `analysis_only` lesson to `top_lessons()` when `task_analysis_only_attempt_count > 0`. The metric already exists; it just needs a lesson entry. This addresses the "Force analysis-only attempts into action" graph pressure. Even though the count is 1, having the lesson in place means future occurrences will generate actionable feedback.
+
+No wait, a lesson with count=1 won't be surfaced unless there's a recurring pattern. The `top_lessons()` function generates lessons regardless of recurrence. The recurrence filtering happens later.
+
+OK, let me just go with:
+
+**Task 1**: #163 — Add `planning_failure_cause` field. This is the main task.
+
+**Task 2**: Add `analysis_only_attempt` lesson to `top_lessons()`. Small, ~8 lines, addresses a graph pressure.
+
+Actually, I just realized these are both in the same file (`scripts/log_feedback.py`). Two tasks editing the same file can cause merge conflicts. But the harness runs them sequentially, so it should be fine — Task 2 will see Task 1's changes.
+
+Let me finalize and write the files.
+
+Wait, one more consideration: the issue_responses.md. I need to write issue responses for the open issues.
+
+For #165: ALREADY IMPLEMENTED — code is in the repo (commit bad5fbd5). The deliberade_no_op exclusion is in `find_missing_failure_observed()`. Tests exist in `test_append_terminal_state_events.py`. Close the issue.
+
+For #163: Being addressed as Task 1 in this session.
+
+For #162: The lifecycle feedback gaps task was reverted. But the core issue (distinguishing input-validation exits from real incomplete runs) is partially addressed by the state doctor's retroactive closure logic (lines 876-908). The `is_input_validation_completion()` function exists in log_feedback.py. The remaining gap might be in `summarize_state_gnomes.py`. But since the task was reverted and the pressure is low (recurring_failures=0), I'll defer to next session.
+
+For #105: Still blocked on upstream #90. No change.
+
+For #131: Still blocked — needs human to modify evolve.sh (do-not-modify). I'll note this in issues_responses.md.
+
+For #90: Still blocked — needs upstream yoagent change.
+
+Now let me write the files.
+
+Let me double-check the test file to make sure I know where to add tests for #163.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'planning_failure\|planner_no_task\|planning_failed\|provider_blocked' s…  ▶ $ grep -n 'def test.*planning\|def test.*provider_blocked\|class.*Planning\|class.… ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test file has references to `planner_no_task_count` in expected output text, but no dedicated test for planning failure cause classification. Let me check the test structure more carefully to understand where I should add tests.
+
+Let me look at the test class structure and find the right place to add test cases.
+
+Actually, for planning purposes, I don't need to read the full test file. I know:
+1. `scripts/test_task_lineage_feedback.py` is the test file for log_feedback
+2. Tests use `unittest` framework
+3. The existing `top_lessons` test at line 2630 tests provider_blocked
+
+I have enough information to write the task files. Let me now create them.
+
+Task 1: #163 — Add planning_failure_cause field
+Task 2: Add analysis_only_attempt lesson to top_lessons()
+
+Actually, wait. Let me reconsider whether Task 2 is worth it. The `task_analysis_only_attempt_count=1` is a single occurrence. Adding a lesson for a non-recurring pattern might be noise. The assessment says "recurring_failures=0" — meaning none of the corrected lessons are recurring.
+
+Let me think about what ELSE I could do for Task 2...
+
+What about: the assessment mentions that `yyds deepseek cache-report` returns "no metrics" as a known limitation. But the command could be improved to also show the diagnostic-path cache metrics. This would be in `src/commands_deepseek.rs`. The change would be: when agent chat cache metrics are empty, also query and display the diagnostic cache metrics (from stream-check, fim-complete) as a partial report.
+
+This would:
+- Give users partial visibility into cache performance
+- Be a small change (~20 lines)
+- Be verifiable with `cargo test deepseek`
+- Touch 1 file: `src/commands_deepseek.rs`
+
+But wait, the assessment says cache metrics ARE recorded for diagnostic paths. The `cache-report` command already knows this. Let me check what it currently shows.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.7s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'cache.report\|cache-report\|no DeepSeek cache\|cache_read\|cache_creati… ✓ (1.1s)
+
+
