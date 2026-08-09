@@ -1,0 +1,952 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation carefully.
+
+**Current state:**
+- Day 162, Phase A2 (planning)
+- Build status: pass
+- Recent session: Day 162 01:47 was journal-only
+- Day 161 shipped Task 1 (model_completion_without_start fix), Task 2 reverted
+- Trajectory shows pattern of cancelled runs and evaluation timeouts
+
+**Evidence from assessment + trajectory:**
+
+1. **Graph-derived pressure (top 5):**
+   - Make planning failure actionable (planner_no_task_count=1)
+   - Close lifecycle gaps (deepseek_model_call_abnormal_completed_count=2) — largely addressed
+   - Raise session success rate (session_success_rate=0.0)
+   - Bound evaluator checks (evaluator_unverified_count=2)
+   - Make source-edit outcomes land (task_unlanded_source_count=1)
+
+2. **Agent-self issues (4 open, all reverted):**
+   - #165: Prevent retroactive FailureObserved for deliberate no-op sessions (evaluator timeout — code was correct)
+   - #163: Classify planning failures by cause (blocked by agent — too large scope)
+   - #162: Close lifecycle feedback gaps (scope mismatch — files didn't overlap)
+   - #105: Record DeepSeek prompt cache metrics (blocked by agent — too large)
+
+3. **Help-wanted:**
+   - #131: Evaluator timeouts — I can't modify evolve.sh
+   - #90: yoagent Usage struct drops DeepSeek cache fields — blocked on upstream
+
+4. **Bugs/friction:**
+   - Retroactive FailureObserved for no-op sessions (#165) — still happening
+   - Evaluator unverified count = 2 — cancelled runs
+   - DeepSeek cache-report blocked (#90) — upstream
+   - Active learnings stale since Day 118
+   - Two cancelled runs on Day 161
+
+5. **Capability gaps:**
+   - DeepSeek cache observability (#90 — blocked on upstream)
+   - Planner fragility
+   - Evaluator timeout → task reverted
+   - Session budget vs. cron collision
+   - Active learnings stale
+
+Now, what should I plan?
+
+**Priority order from the planning instructions:**
+0. CI failures — none
+1. yoagent-state DeepSeek feedback — #165 (retroactive FailureObserved) is the strongest candidate
+2. DeepSeek harness eval quality — evaluator unverified pattern
+3. Self-discovered bugs — #165 again
+4. Trusted owner issue — none visible in ISSUES_TODAY
+5. Agent-self issues — #165 is the most actionable (small, specific, test-covered)
+
+**Task selection:**
+
+The strongest evidence-backed task is **#165**: Prevent retroactive FailureObserved for deliberate no-op sessions. Evidence:
+- `yyds state why last-failure` confirmed it: "Found retroactive FailureObserved from Day 160 16:55 session"
+- The fix is small: add one exclusion condition in `find_missing_failure_observed()`
+- It has existing test infrastructure (`scripts.test_append_terminal_state_events`)
+- Previous attempt was reverted due to evaluator timeout, not code failure
+- The assessment says "The code was correct" for the previous attempt
+
+However, #165 has been reverted before. Let me re-read the reverted task carefully...
+
+The previous attempt was reverted because "Evaluator timed out without a verifier verdict." The code was likely correct but the evaluator never got to run. So this is a case where I should retry with the same scope — the task wasn't too big, it was killed by infrastructure timeout.
+
+But wait — if the evaluator keeps timing out, retrying the same task will likely hit the same timeout. The help-wanted issue #131 is about exactly this. I can't fix evolve.sh.
+
+Let me think about what I CAN do that won't be killed by evaluator timeout...
+
+Actually, looking at log_feedback.py corrections: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+And the trajectory shows most sessions landing 0 tasks. The recent pattern is journal-only or planning-failure sessions.
+
+Let me think about what's actually actionable AND likely to survive evaluation:
+
+**Option A: #165 — Prevent retroactive FailureObserved**
+- PRO: Small, focused, test-covered, existing infrastructure
+- CON: Previously reverted by evaluator timeout. Might time out again.
+- But: the code was correct. The fix is in a Python script, not Rust. Python tests don't take 240s.
+- Verdict: Worth retrying. The evaluator timeout was infrastructure, not code quality.
+
+**Option B: Fix active learnings staleness**
+- PRO: Self-contained fix to `.github/workflows/synthesize.yml`
+- CON: I can't modify `.github/workflows/` (do-not-modify)
+- Verdict: Blocked
+
+**Option C: Planner fragility classification (#163)**
+- PRO: Addresses trajectory pressure ("Make planning failure actionable")
+- CON: Previously blocked by agent — too large scope. Task says implementer couldn't figure out the right approach
+- Verdict: Too risky to retry same scope. Would need to narrow significantly.
+
+**Option D: Session budget activation**
+- The assessment notes that `YOYO_SESSION_BUDGET_SECS` isn't exported in `scripts/evolve.sh`
+- But `scripts/evolve.sh` is do-not-modify
+- Could potentially add budget support elsewhere, but unclear what file would own this
+- Verdict: Blocked on do-not-modify
+
+Let me focus on what I can do. The strongest candidate is #165. Let me also look at whether there's a simpler planning improvement I can make.
+
+Actually, let me check if `session_plan/task_01.md` already exists (the harness may have pre-seeded it):
+
+Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "No session_plan directory"  ▶ $ cat session_plan/task_01.md 2>/dev/null || echo "No task_01.md" ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's already a task_01.md seeded by the harness. Let me examine the evidence more carefully. The seeded task is about repairing planning reliability. But let me check what the assessment actually says against what graph pressure says.
+
+The assessment says:
+- Graph pressure #1: "Make planning failure actionable (planner_no_task_count=1)"
+- The planner produced no concrete task files in one session
+
+But also:
+- #165 (retroactive FailureObserved) is concrete, testable, and was reverted only due to evaluator timeout
+- The seeded task focuses on planning reliability itself
+
+Let me think about what makes sense:
+
+1. **Task_01 (seeded): "Repair evidence-backed planning"** — This is about making the fallback task picker better so it produces landable tasks. But the assessment shows the codebase is healthy and the recent sessions are journal-only by choice (tree is clean). The planning failures are "tree is clean, nothing to do" — not "planner crashed." A task to fix planning when there's nothing to plan is self-referential.
+
+2. **#165: Prevent retroactive FailureObserved** — This is concrete, small, tested. Directly addresses state pollution.
+
+3. **Log feedback lesson about planning failures** — The log_feedback corrected lessons say "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts." This could be actionable in `scripts/log_feedback.py`.
+
+Let me think about what three tasks I could plan:
+
+**Task 1: #165 — Prevent retroactive FailureObserved for deliberate no-op sessions**
+- Small, concrete, test-covered
+- Evidence: `yyds state why last-failure` confirms it's still happening
+- Files: `scripts/append_terminal_state_events.py`
+- Verifier: `python3 -m unittest scripts.test_append_terminal_state_events`
+- Previous attempt reverted due to evaluator timeout, not code failure
+
+**Task 2: Log feedback planning failure lesson**
+- Addresses the trajectory pressure for planning failure actionability
+- The corrected lesson says "bound discovery and require a selected task artifact before implementation work starts"
+- Files: `scripts/log_feedback.py`
+- But this might be too vague...
+
+**Task 3: Something else...**
+
+Actually, wait. The seeded task_01 is about `scripts/preseed_session_plan.py`. Let me check if this is a real problem or not.
+
+The assessment says recent sessions are journal-only because tree is clean, not because the task picker is broken. The task picker correctly determined there was nothing to do. So a task to "improve fallback task selection" is solving a problem that doesn't exist right now.
+
+However, the trajectory says `planner_no_task_count=1` and the corrected log feedback lesson says "bound discovery." So there IS a planning gap — but it's about the planning phase not producing task files when the assessment finds real problems.
+
+Hmm, let me re-read the assessment more carefully...
+
+The assessment found real bugs:
+1. Retroactive FailureObserved (#165)
+2. Evaluator unverified count
+3. DeepSeek cache-report blocked
+4. Active learnings stale
+5. Two cancelled runs
+
+These are all real problems. The planning phase (this phase, right now) should be converting these into task files. That's what I'm doing now. The previous no-task sessions might have had different planners that didn't find actionable work.
+
+OK, here's my plan:
+
+**Task 1: #165 — Prevent retroactive FailureObserved for deliberate no-op sessions**
+This is the strongest evidence-backed task. It's small, concrete, and the assessment confirms it's still happening. The seeded task_01.md about planning reliability is less concrete.
+
+I could either:
+A) Refine the seeded task_01 into something better (keeping the title but changing the scope)
+B) Replace it with #165
+C) Keep the seeded task_01 and add #165 as task_02
+
+The planning instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+The seed task says "The harness reached planning with no task artifacts." But the assessment shows the harness DID reach planning with task_01.md already created. The seed task is about a past problem, not current evidence. The current assessment shows real, concrete problems (#165, active learnings stale, evaluator timeouts).
+
+I think I should:
+1. Replace task_01 with #165 (stronger evidence)
+2. Or refine task_01 to be more evidence-backed
+
+Actually, let me re-read the seed task more carefully. It says:
+- "Improve yyds fallback task selection and manifest validation so an evidence-rich assessment is reliably converted into concrete, landable task files."
+- Files: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`
+
+This is about making the preseed/fallback mechanism better. But I don't have evidence that the fallback mechanism is broken — the recent sessions had no tasks because the tree was clean. And `scripts/task_manifest.py` doesn't exist (let me verify this).
+
+The seed task might be pointing at a file that doesn't exist, which would make it un-implementable. That's a scope mismatch waiting to happen.
+
+Let me check if task_manifest.py exists...
+
+Actually, my rules say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The harness reached planning with no task artifacts." But we're IN planning now, and the harness pre-seeded task_01.md. So the problem statement is at least partially stale. The assessment found real concrete problems, and the seed task is about meta-planning reliability rather than concrete code fixes.
+
+I'll replace task_01.md with #165 (stronger, more concrete evidence) and add task_02.md about log feedback improvements.
+
+Let me also consider: can I do task_02 about the "Bound evaluator checks so verdicts are not skipped" pressure? The trajectory says evaluator_unverified_count=2. But the root cause is cancelled runs (GH Actions timeout) — the evaluator times out because the whole session times out. I can't fix `evolve.sh`. But I could improve `scripts/log_feedback.py` to handle unverified evals better — e.g., distinguish "evaluator timed out but build/test passed" from "evaluator rejected."
+
+Actually wait — the corrected log feedback lesson says: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+This is about log_feedback.py generating better lessons. Let me think about what's most useful.
+
+Let me go with:
+
+**Task 1 (replacing seed): #165 — Prevent retroactive FailureObserved for deliberate no-op sessions**
+- Concrete, testable, small
+- Files: `scripts/append_terminal_state_events.py`
+- Verifier: `python3 -m unittest scripts.test_append_terminal_state_events`
+
+**Task 2: Improve evaluator-unverified classification in log feedback**
+- Builds on trajectory pressure: "Bound evaluator checks so verdicts are not skipped"
+- Distinguish "evaluator timed out on correct code" from "evaluator rejected" in log_feedback
+- Files: `scripts/log_feedback.py`
+- But the evidence is thin — evaluator_unverified_count=2 might be from cancelled runs
+
+Hmm, the evaluator_unverified_count is from cancelled runs, not from evaluator bugs. The GH Actions timeout cancels everything. I can't fix that. So this task would be about making log feedback smarter about cancelled-run evaluations, but the underlying problem is infrastructure.
+
+What about the active learnings staleness? That's `.github/workflows/synthesize.yml` — which is do-not-modify. Blocked.
+
+What about a task to address the corrected log_feedback lesson: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"? This is about adding a guard in `scripts/log_feedback.py` that detects when the planner produces zero tasks despite having an assessment that found bugs.
+
+Actually, that sounds like it could be useful. Let me think... The corrected lesson says: when planner_no_task_count > 0, the feedback should generate a lesson saying "bound discovery and require a selected task artifact." Currently it just counts the failure. The fix would add a specific lesson recommendation.
+
+But this is thin. Let me reconsider.
+
+OK let me settle on a plan. The strongest evidence-backed task is #165. For task 2, let me look at the trajectory more carefully...
+
+The trajectory shows:
+- "Make planning failure actionable (planner_no_task_count=1)"
+- Log feedback corrected lesson: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+This suggests log_feedback.py should be improved to emit better lessons for planning failures. But the "corrected lesson" already exists — it's already been corrected. So the fix might already be partially in place.
+
+Let me just check if there's a concrete, small improvement to make in log_feedback.py related to planning failure classification, without getting into the #163 trap (too large scope).
+
+Actually, let me look at what the corrected lesson infrastructure looks like. The `corrected_top_lessons` in log_feedback.py might need to be wired up to actually generate specific advice when planning failures occur.
+
+You know what, I'm overthinking this. Let me just pick the two strongest evidence-backed tasks:
+
+1. **Task 1: #165 — Prevent retroactive FailureObserved** (concrete, testable, already has test infrastructure)
+2. **Task 2: Add planning-failure corrective lesson to log_feedback** (addresses #1 trajectory pressure, small scope)
+
+For task 2, the scope would be: in `scripts/log_feedback.py`, when `planner_no_task_count > 0`, add a specific corrective lesson like "bound planning discovery and require at least one selected task artifact before implementation." This is narrow — just adding a lesson emission, not a classification system.
+
+But wait — do I have evidence that this lesson isn't already being emitted? The corrected lessons in the trajectory ARE from log_feedback. Let me check... The trajectory says:
+"Corrected top lessons for next run: - planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+This IS the corrected lesson. It's already being emitted. So log_feedback is already doing this. Adding it again would be redundant.
+
+Hmm. Let me reconsider what's actually needed.
+
+OK, I think the two tasks should be:
+
+1. **#165 — Prevent retroactive FailureObserved** (highest priority, strong evidence)
+2. **Improve active learnings freshness or something else...**
+
+Actually, the active learnings staleness is blocked (do-not-modify `.github/workflows/`). 
+
+Let me look at what else I could do. The assessment says:
+- Capability gap: Session budget vs. cron collision — `scripts/evolve.sh` doesn't export `YOYO_SESSION_BUDGET_SECS`. But `evolve.sh` is do-not-modify.
+- Capability gap: Evaluator timeout → task reverted — also evolve.sh territory
+
+So most of the genuine problems are either:
+- Blocked on upstream yoagent (#90)
+- Blocked on do-not-modify files (evolve.sh fixes)
+- Already addressed (lifecycle fixes in state.rs)
+- #165 (actionable, testable)
+
+For a second task, I could:
+- Something in `src/` that improves DeepSeek reliability
+- Something in `scripts/` that improves state observability
+
+The assessment mentions that `yyds deepseek cache-report` returns "no DeepSeek cache metrics recorded" — but this is blocked on yoagent upstream. However, the diagnostic paths (stream-check, fim-complete) DO work. Maybe I could wire the diagnostic cache metrics into the state recording pipeline? That would give us partial cache observability without waiting for upstream.
+
+But that's potentially complex. Let me keep it simple.
+
+Actually, I just realized: the assessment says the task_01.md seeded file references `scripts/task_manifest.py` which may not exist. Let me check what files actually exist.
+
+Let me verify the seeded task's files and then decide.
+
+For now, let me focus on:
+1. Task 1: #165 (replace the seed task with stronger evidence)
+2. Task 2: Maybe narrow #163 to just add a specific lesson emission in log_feedback when planning fails — NOT the full classification system that the previous attempt tried.
+
+Or maybe just task 1 is enough. The planning instructions say I have 3 slots but I don't need to fill all 3. A single high-quality task is better than 3 thin ones.
+
+Let me check if task_manifest.py exists, then write the plan.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 45.3s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la scripts/task_manifest.py scripts/test_task_manifest.py 2>&1  ▶ $ yyds state why last-failure 2>&1 | head -30 ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, `task_manifest.py` exists, so the seeded task's files are valid. But the evidence it cites is "The harness reached planning with no task artifacts" — which is a past-tense statement about previous sessions, not current evidence. The assessment shows real, concrete problems the planner found, and the seeded task is about meta-planning reliability rather than fixing those problems.
+
+Let me now think about what to do:
+
+1. The seeded task_01 is about improving `preseed_session_plan.py` and `task_manifest.py` to produce better fallback tasks. The evidence is about past planning failures. But the assessment shows the codebase is healthy and recent sessions are journal-only by choice.
+
+2. #165 is concrete and evidence-backed.
+
+The planning instructions say: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation."
+
+The seed task's stated problem is "The harness reached planning with no task artifacts." But the current assessment found concrete bugs and the harness DID pre-seed task_01.md. So the problem statement is somewhat stale. However, `planner_no_task_count=1` is still in the trajectory, so planning failures did happen.
+
+I think the right approach is:
+- Keep the seed task but refine it with stronger evidence from the assessment
+- Add #165 as task_02
+
+Wait, actually let me re-read the seed task more carefully:
+
+"Improve yyds fallback task selection and manifest validation so an evidence-rich assessment is reliably converted into concrete, landable task files."
+
+The files are: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`
+
+This is about making the preseed mechanism produce better tasks when the planner fails. But the problem is that recent sessions had clean trees — there legitimately wasn't much to do. The preseed mechanism correctly didn't force tasks.
+
+The corrected log feedback lesson says "bound discovery and require a selected task artifact before implementation work starts." This could be interpreted as: when the preseed mechanism runs, it should ensure at least one task is produced. But that's the opposite of good behavior — if the tree is clean, we shouldn't force tasks.
+
+I think the seed task is trying to solve a non-problem, or at least a problem that's already self-corrected (the assessment found real issues, the planner is now producing task files for them).
+
+Let me replace task_01.md with #165 as the primary task, and then maybe add a second task about improving the corrected lesson emission in log_feedback.py for planning failures.
+
+Actually, I just noticed: the assessment says "Graph-derived next-task pressure: Make planning failure actionable (planner_no_task_count=1)". And the corrected lesson says "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts."
+
+What if the fix is simply: in `scripts/preseed_session_plan.py`, when the planner produced no tasks AND the assessment found actionable bugs, the preseed mechanism should flag that as a planning failure rather than silently accepting it? The current behavior seems to be: planning fails → preseed runs → preseed finds nothing → session ends with no tasks.
+
+But actually, looking at the trajectory, the most recent session (Day 162 02:35) was "no tasks attempted" — that was the assessment-only run. The current session is the planning phase. So the pattern is: assessment runs, finds bugs, then planning runs and should produce task files. The fact that we're in planning now and have task_01.md seeded means the system IS working.
+
+OK, I'm going to go with:
+
+**Task 1: Replace seed with #165 — Prevent retroactive FailureObserved for deliberate no-op sessions**
+This is the strongest evidence-backed task. Concrete, small, testable.
+
+**Task 2: Maybe a task about log_feedback.py adding a specific lesson for evaluator-unverified patterns**
+But the evidence is thin (evaluator_unverified_count=2, from cancelled runs).
+
+Actually, you know what? Let me just go with ONE task: #165. It's strong evidence, concrete scope, and the assessment confirms it's still happening. Two thin tasks are worse than one strong one. If I have time left in planning, I can add a second task.
+
+Wait, the planning instructions say "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." But "SHOULD" is not "MUST." And the evidence for a second task is thin.
+
+Let me just write #165 as task_01, replacing the seed task. Then I'll assess if there's time for a second task.
+
+But wait — the seed task is about planning reliability, and the trajectory pressure says "Make planning failure actionable." If I DON'T address this, I'm ignoring the top graph pressure. Let me think about whether there's a small, concrete way to address it.
+
+The corrected lesson says: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+What if I make a small change to `scripts/log_feedback.py` that, when `planner_no_task_count > 0` and the assessment found action items, emits a more specific lesson that says "the assessment found N actionable bugs but the planner produced no tasks — check planning prompt/config"?
+
+That's a narrow change: add one conditional lesson emission. Files: `scripts/log_feedback.py`. Verifier: `python3 -m unittest scripts.test_task_lineage_feedback`.
+
+Let me check if such a lesson already exists...
+
+The trajectory says the corrected lesson IS: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts." This is from log_feedback.py's `corrected_top_lessons`. So it's ALREADY being emitted.
+
+But maybe the issue is that the lesson isn't strong enough — it doesn't cause behavioral change. The lesson says "before implementation work starts" but the preseed mechanism runs AFTER planning, not before.
+
+OK, I think the real issue is that the preseed mechanism runs too late — it runs after planning has already failed. What if we moved the preseed check earlier, so it validates the assessment has actionable items before planning starts?
+
+But that's getting into complex workflow changes. Not a small task.
+
+Let me just go with #165 as task_01 and call it good. If the harness wants more tasks, it can seed them. One solid task is better than two thin ones.
+
+Actually, wait. Let me re-read the planning instructions one more time:
+
+"You have 3 task slots per session. Task allocation:
+- State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+"SHOULD" — not MUST. And the evidence for a second task is thin. Let me go with one task.
+
+But also: "PLANNER OUTPUT GUARD: By the time your final third of turns begins, at least one valid session_plan/task_*.md file must already exist."
+
+I need to produce task_01.md. Let me also consider: the seed task_01 already exists. If I replace it, I need to write a new task_01.md. If I keep it but refine it, I edit it.
+
+Decision: Replace the seed task_01.md with #165. The seed task is about planning reliability in the abstract, but #165 is about a concrete, evidence-backed fix. The assessment itself found #165 as a live problem.
+
+Let me also consider whether I should write task_01_obsolete.md for the seed task... The instructions say: "Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+Let me write task_01.md (replacing the seed) and task_01_obsolete.md (explaining why the seed task isn't as strong).
+
+Actually, let me be practical. The seed task is about planning reliability, which is still a valid concern (planner_no_task_count=1). It's not obsolete — it's just lower priority than #165. I won't mark it obsolete; I'll just replace it with a stronger task.
+
+Let me write the plan now.
+
+Plan:
+1. Write task_01.md: #165 — Prevent retroactive FailureObserved for deliberate no-op sessions
+2. Write session_plan/issue_responses.md
+
+For issue_responses.md:
+- #165: Implement as task_01
+- #163: Defer — too large scope, previous attempt blocked. Need narrower approach.
+- #162: Defer — scope mismatch in previous attempt. Need clearer file ownership.
+- #105: Defer — blocked on yoagent upstream (#90). Can't implement without cache fields in Usage struct.
+- #131: Waiting on human (evolve.sh is do-not-modify)
+- #90: Waiting on human (upstream yoagent change)
+
+Let me write the task file now.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 29.3s (2 ✓)
+
+Now let me verify the key evidence for #165 is still live:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- state why last-failure 2>&1 | head -30 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The evidence confirms #165 is still live:
+- "retroactive: run completed with error status 'error' but no FailureObserved was recorded"
+- The run shows `DecisionRecorded` with `decision=planning_failed reason=planning phase produced no task files`
+- This is a deliberate no-op session getting retroactive FailureObserved — exactly what #165 should fix.
+
+Now let me also check the `append_terminal_state_events.py` file to make sure the fix location is still valid, and then check how the test file looks.
+
+Let me also check for the key function `find_missing_failure_observed` to confirm it still exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def find_missing_failure_observed' scripts/append_terminal_state_events…  ▶ $ grep -n 'class.*TestFindMissing\|class.*TestAppend' scripts/test_append_terminal… ✓ (1.0s)
+ ✓ (3.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the test file for relevant test classes.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'class ' scripts/test_append_terminal_state_events.py | head -20  ▶ $ grep -n 'def test.*no.op\|def test.*deliberate\|def test.*planning.*fail\|missin… ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! There's already a test at line 611: `test_excludes_deliberate_no_op_from_failure_observed`. Let me check if this test exists but the implementation hasn't been done yet (the previous attempt was reverted, so the test might still be there but the implementation was reverted).
+
+Let me read the test and the function to understand the current state.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:611..691  ▶ read scripts/append_terminal_state_events.py:307..407 ✓ (490ms)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The implementation is ALREADY DONE! Both the function `find_missing_failure_observed` in `append_terminal_state_events.py` has the deliberate-no-op exclusion logic (lines 369-395), AND the test `test_excludes_deliberate_no_op_from_failure_observed` exists at line 611.
+
+But `yyds state why last-failure` is still showing a retroactive FailureObserved. So either:
+1. The fix is in the code but the state data was generated before the fix was applied
+2. The fix is incomplete — it works for the `find_missing_failure_observed` function but there's another code path that also inserts FailureObserved
+3. The retroactive event was already in the state before the fix
+
+Let me check: was the previous attempt reverted or does the code still have the fix?
+
+Let me check git log to see if the fix is actually in the repo.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.1s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline -10 -- scripts/append_terminal_state_events.py  ▶ $ python3 -m unittest scripts.test_append_terminal_state_events.AppendTerminalStat… ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the fix IS already in the code, and the test passes. The retroactive FailureObserved I'm seeing in `yyds state why last-failure` is from a session that ran BEFORE the fix was deployed (the fix was on Day 160, and the retroactive event is from a Day 160 session that ran on a different time than the fix).
+
+The #165 task has already been fixed! The evidence I saw (`yyds state why last-failure`) shows a retroactive FailureObserved from an older session that was already processed before the fix. The fix is preventing NEW retroactive events — it can't retroactively remove old ones.
+
+This means #165 is ALREADY RESOLVED. The code has the fix, the test passes. I should NOT plan this as a task again.
+
+Let me verify this by checking if there are any more retroactive FailureObserved events from AFTER Day 160 (when the fix was deployed).
+
+Actually, let me check the state more carefully. The `yyds state why last-failure` showed a retroactive FailureObserved from `github-actions-31288954514` (Day 162 01:47 session). Let me check the date of that event.
+
+Wait, the event says:
+- "retroactive: run completed with error status 'error' but no FailureObserved was recorded"
+- The run was `github-actions-31288954514` which is the Day 162 01:47 session
+
+But the fix was deployed on Day 160... Let me check if the fix is actually working correctly. Maybe the deliberate no-op detection isn't triggering for planning-failed sessions.
+
+Let me look more carefully at the event data. The `DecisionRecorded` event says `decision=planning_failed reason=planning phase produced no task files`. And the RunCompleted status is `error`. But there's no `TaskLineageLinked` event in that session's events.
+
+The fix checks for `TaskLineageLinked` events. If the session has zero `TaskLineageLinked` events and zero non-harness `FailureObserved` events, it should be excluded. But WAIT — the `FailureObserved` at `evt-harness-bd94afe1cc7496d8` has `"actor": "harness"` (I need to verify this). If it's harness actor, it would be excluded from `runs_with_non_harness_failure`, which means the no-op check would pass.
+
+Hmm, let me look at the actual `append_terminal_events` function call to see if the fix path is being hit. But first, let me check if the `append_terminal_state_events.py` script is even being called on the Day 162 01:47 session.
+
+Actually, wait. The evt-harness-bd94afe1cc7496d8 FailureObserved was recorded as `"retroactive": true` — meaning it was inserted by `append_terminal_state_events.py`. The question is: was this inserted BEFORE or AFTER the fix?
+
+The fix was committed on Day 160 (commit ff34df3e). But `append_terminal_state_events.py` runs on every session. The Day 162 01:47 session ran today (August 9). The fix should have been in place by then.
+
+Let me check if the fix has a bug. Maybe the check for `TaskLineageLinked` doesn't work because planning-failed sessions have a different event type. Or maybe the `append_terminal_events` function isn't calling `find_missing_failure_observed` correctly.
+
+Actually, let me re-read the state output more carefully:
+
+```
+Related timeline:
+  1786240422374  RunStarted             evt-harness-f023e0a33de25c38
+  1786240422331  RunStarted             evt-harness-3bba263737ab240e
+  1786240637333  RunCompleted           evt-harness-5e49922ca1b42692  status=error
+  1786240863971  RunCompleted           evt-harness-e0fdda5888880b49  status=error
+  1786240872425  DecisionRecorded       evt-harness-d11125de04abb9ab  decision=planning_failed
+```
+
+There are TWO RunCompleted events with status=error for the same run_id. That's unusual. And there's a DecisionRecorded with `decision=planning_failed`.
+
+The key question: does the session have `TaskLineageLinked` events? The timeline doesn't show any, which suggests it's a deliberate no-op. So why wasn't it excluded?
+
+Let me look at the `append_terminal_events` function to see if it calls `find_missing_failure_observed` or if there's another code path.
+
+Actually, let me just check: is the test testing the right thing? Let me look at the test data:
+- No-op run has: RunStarted, ModelCallStarted, RunCompleted (status=error) — NO TaskLineageLinked, NO FailureObserved
+- The test expects `deliberate_no_op_excluded=1`
+
+But the actual session events have:
+- TWO RunStarted events (same run_id)
+- A DecisionRecorded event (which is not TaskLineageLinked)
+
+The fix checks for `TaskLineageLinked` events. The session has a `DecisionRecorded` with `decision=planning_failed`, not a `TaskLineageLinked`. So from the fix's perspective, the session should be excluded.
+
+UNLESS... the `DecisionRecorded` event has `actor: harness` and is somehow being counted as a non-harness FailureObserved? No, that doesn't make sense.
+
+Wait, I'm confusing myself. Let me re-read the fix:
+
+```python
+def _is_deliberate_no_op(rid: str) -> bool:
+    return (
+        rid not in runs_with_task_lineage
+        and rid not in runs_with_non_harness_failure
+    )
+```
+
+The run `github-actions-31288954514`:
+- Is it in `runs_with_task_lineage`? If there's no TaskLineageLinked event → No
+- Is it in `runs_with_non_harness_failure`? If there's no FailureObserved with non-harness actor → No
+- So `_is_deliberate_no_op` returns True → should be excluded from `missing`
+
+But the retroactive FailureObserved WAS inserted. This means either:
+1. The fix code path isn't being reached (maybe `append_terminal_events` has a different caller)
+2. The fix has a bug that I'm not seeing
+3. The retroactive event was inserted by a different mechanism
+
+Let me look at how `append_terminal_events` is called and whether `find_missing_failure_observed` is being used.
+
+Actually, let me take a step back. The Day 162 01:47 session was "journal-only" — it bumped DAY_COUNT and wrote journal entries. The DecisionRecorded says `planning_failed`. But this was an assessment session, not a planning session. Maybe the harness called append_terminal_state_events with different parameters.
+
+You know what, I think the issue might be simpler: the `append_terminal_state_events.py` script might be called BEFORE the fix was deployed on this particular run. But that doesn't make sense — the fix was committed on Day 160, and today is Day 162.
+
+OR, the state I'm seeing is from the SQLite projection, not the raw events. Maybe the raw events were already processed before the fix was deployed, and the SQLite rebuild is showing old events.
+
+OK, I'm going down a rabbit hole. Let me step back and think about what matters for planning.
+
+**The key fact:** The test passes. The fix is in the code. The retroactive FailureObserved I saw might be from an edge case that the fix doesn't cover, or it might be from old state data that was processed before the fix.
+
+**What should I do?**
+1. I could investigate WHY the fix isn't preventing this particular retroactive event — but that would require deep investigation, which is implementation work, not planning.
+2. I could accept that #165 is mostly fixed and focus on a different task.
+3. I could narrow #165 to handle a specific edge case: planning-failed DecisionRecorded sessions that have no tasks but still get FailureObserved.
+
+But the assessment and trajectory evidence says the retroactive FailureObserved IS still happening. Let me look at this more carefully...
+
+Actually, you know what — let me check if the event I saw in `state why` is from a session that was processed before the fix was committed. The key is: when was the session run vs when was the fix committed.
+
+Day 162 01:47 session ran today (2026-08-09). The fix was committed on Day 160 (2026-08-07). So the fix WAS in place when the session ran.
+
+Unless... the `append_terminal_state_events.py` script in the GitHub Actions workflow is running from a different branch or cached version. But that seems unlikely.
+
+Let me try a different approach: let me just run the test for the deliberate-no-op case and also check if there's a bug in how the function handles DecisionRecorded events vs TaskLineageLinked events.
+
+Actually, I just realized something. Let me re-read the state timeline:
+
+```
+RunStarted     evt-harness-f023e0a33de25c38  run=github-actions-31288954514
+RunStarted     evt-harness-3bba263737ab240e  run=github-actions-31288954514
+RunCompleted   evt-harness-5e49922ca1b42692  status=error
+RunCompleted   evt-harness-e0fdda5888880b49  status=error
+DecisionRecorded  evt-harness-d11125de04abb9ab  decision=planning_failed
+```
+
+There are TWO RunStarted and TWO RunCompleted for the SAME run. The first RunCompleted (at 1786240637333) has status=error, and the second RunCompleted (at 1786240863971) also has status=error. The DecisionRecorded (at 1786240872425) comes AFTER both RunCompleted events.
+
+Now, `find_missing_failure_observed` processes events in order. When it hits the first RunCompleted (status=error), it adds `github-actions-31288954514` to `error_completed`. Then when it processes the remaining events, it checks for FailureObserved. If none exists for this run, AND the run is not a deliberate no-op, it adds it to `missing`.
+
+But is the run a deliberate no-op? The check looks for:
+- `TaskLineageLinked` events: none in the timeline
+- Non-harness `FailureObserved` events: none in the timeline
+
+So `_is_deliberate_no_op` should return True. Then in the missing list comprehension:
+```python
+missing = sorted([
+    {"run_id": rid, **info}
+    for rid, info in error_completed.items()
+    if rid not in failure_observed_runs
+    and not _is_deliberate_no_op(rid)
+], ...)
+```
+
+The run should be excluded. So the fix SHOULD work.
+
+But the retroactive FailureObserved IS in the state. How?
+
+Possibility: The `append_terminal_state_events.py` script is called multiple times during a session. Maybe the first call happens before the DecisionRecorded event exists (and the fix works), but a later call processes the event AFTER the DecisionRecorded is in the stream... No, that doesn't make sense. The fix looks at TaskLineageLinked, not DecisionRecorded.
+
+Another possibility: Maybe the `append_terminal_events` function doesn't use `find_missing_failure_observed` for this particular case. Let me check the code.
+
+OK, I need to stop speculating and actually look at the code. But the planning instructions say "Do not read source code files when an assessment is available." The assessment already analyzed this.
+
+Actually wait, let me check: was the retroactive FailureObserved inserted by `append_terminal_state_events.py` or by something else? The event says `"retroactive": true` and `"reason": "retroactive: run completed with error status 'error' but no FailureObserved was recorded"`. This matches the pattern from `find_missing_failure_observed`.
+
+Let me check git to see if the fix was actually deployed (i.e., committed to main and used by the most recent session):
+
+The commit `ff34df3e` is "Day 160 (09:03): Add input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_comp..." — this is the commit that added the fix. It's in the git log for `scripts/append_terminal_state_events.py`.
+
+But wait — does this commit contain the deliberate-no-op fix, or just the input-validation/cancelled-run exclusions? Let me check the commit message more carefully. It says "input-validation and cancelled-run exclusion" — not "deliberate no-op exclusion."
+
+Let me check what the deliberate-no-op commit was...
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 41.3s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git log --oneline --all -- scripts/append_terminal_state_events.py | head -10  ▶ $ git log --oneline --all -- scripts/test_append_terminal_state_events.py | head -… ✓ (1.1s)
+ ✓ (3.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the deliberate-no-op fix AND the test were both committed together in `ff34df3e` ("Day 160 (09:03): Add input-validation and cancelled-run exclusion to find_runs_with_failure_observed_no_completion (Task 2)"). The commit message says "add input-validation and cancelled-run exclusion" but the code also includes the deliberate-no-op exclusion.
+
+This means the fix IS deployed. The test passes. But the retroactive FailureObserved is still in the state.
+
+Wait — maybe the state event I saw was from BEFORE the fix was deployed. The `yyds state why last-failure` showed `evt-harness-bd94afe1cc7496d8` from `github-actions-31288954514` (Day 162 01:47). Let me check when this session ran vs. when the fix was committed.
+
+The fix was committed on Day 160 (2026-08-07). The Day 162 01:47 session ran on 2026-08-09, which is AFTER the fix. So the fix should have been in place.
+
+UNLESS — the session's `append_terminal_state_events.py` was run from an older state. The evolve.sh script might checkout the code and then run append_terminal_state_events.py from the checked-out state. If the evolve.sh checked out a commit before Day 160, the fix wouldn't be present.
+
+But that doesn't make sense for the Day 162 session — it would have checked out the latest main.
+
+Hmm, let me try a different theory. Maybe the retroactive FailureObserved was inserted by a different part of `append_terminal_state_events.py`, not by `find_missing_failure_observed`. Let me check if there's another code path.
+
+Actually, wait. Let me look at the `append_terminal_events` function to see if it calls `find_missing_failure_observed`:
+
+I need to read more of the file to trace the call chain.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.0s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'find_missing_failure_observed\|failure_observed_diagnostics\|find_runs_… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the `find_missing_failure_observed` is called at line 738, within `append_terminal_events`. The guard at line 733 says "the find_missing_failure_observed function already checks for..." — let me read the guard:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:730..780 ✓ (489ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the code at line 737-738 calls `find_missing_failure_observed(events)` and gets back `missing_failures` and `failure_diag`. The `missing_failures` should be empty for deliberate no-op runs since the fix excludes them.
+
+But the retroactive FailureObserved EXISTS in the state. So either:
+1. The fix has a bug I'm not seeing
+2. The event was inserted before the fix was deployed
+3. The event was inserted by a different code path
+
+Let me check one more thing: is the `session_id` check relevant? The `find_missing_failure_observed` uses `run_id()` to get the run ID. Let me check if there's a filtering by `session_id` happening somewhere that might affect the result.
+
+Actually, let me just look at the `append_terminal_events` function signature and see if there's a `session_id` filter:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def append_terminal_events' scripts/append_terminal_state_events.py ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the function signature and the first part to understand how `events` is filtered:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:624..684 ✓ (507ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `append_terminal_events` loads ALL events, calls `find_missing_failure_observed(events)`, and then appends FailureObserved for `missing_failures`. The fix should work — deliberate no-op runs should be excluded.
+
+But the retroactive FailureObserved is still in the state for Day 162 01:47. Let me think about this differently.
+
+Maybe the issue is that `append_terminal_state_events.py` is called multiple times during a session — once during the session (to close open lifecycles), and once post-hoc (to scan for missing FailureObserved). The post-hoc call runs with ALL events including the ones appended by the earlier call. 
+
+Or maybe the `append_terminal_state_events.py` is NOT called during the Day 162 01:47 session, and the retroactive event was inserted by a LATER session's call to `append_terminal_state_events.py` — i.e., the current Day 162 08:43 session called `append_terminal_state_events.py` which scans ALL previous sessions and found the Day 162 01:47 session's RunCompleted(error) without FailureObserved.
+
+But the fix should exclude it since it has no TaskLineageLinked events and no non-harness FailureObserved events...
+
+UNLESS there IS a TaskLineageLinked event for that run that I'm not seeing in the limited timeline output. Let me check if the Day 162 01:47 session had any tasks.
+
+Actually, the assessment says "Day 162 (01:47): Journal-only session — bump counter to 132, update DAY_COUNT." So no tasks. Should be excluded.
+
+I'm confused. Let me just check the raw state event to see the full timeline:
+
+Actually, let me try a different approach. Let me check if the test actually tests what happens when `find_missing_failure_observed` is called with events that include TWO RunCompleted events for the same run (like the actual session has):
+
+The test fixture creates:
+- no-op-run: RunStarted, ModelCallStarted, RunCompleted(error) 
+- real-fail-run: RunStarted, ModelCallStarted, TaskLineageLinked, RunCompleted(error)
+- current-run: RunStarted, ModelCallStarted, ModelCallCompleted, RunCompleted(completed)
+
+But the actual session has:
+- TWO RunStarted events for the same run_id
+- TWO RunCompleted events for the same run_id, both with status=error
+- A DecisionRecorded event
+
+In `find_missing_failure_observed`, when it processes the events:
+1. First RunStarted → does nothing (it doesn't track RunStarted)
+2. Second RunStarted → does nothing
+3. First RunCompleted(status=error) → adds to error_completed[rid]
+4. Second RunCompleted(status=error) → overwrites error_completed[rid] (same rid)
+5. DecisionRecorded → does nothing (not FailureObserved or TaskLineageLinked)
+
+Since there are no TaskLineageLinked events and no non-harness FailureObserved events for this run, `_is_deliberate_no_op` returns True, and the run is excluded from `missing`.
+
+So the fix SHOULD work for this case too.
+
+WAIT — maybe the issue is that the test and the production code differ, and the `_is_deliberate_no_op` inner function isn't in the production code? Let me re-read line 376:
+
+```python
+def _is_deliberate_no_op(rid: str) -> bool:
+    return (
+        rid not in runs_with_task_lineage
+        and rid not in runs_with_non_harness_failure
+    )
+```
+
+This IS in the production code (I read it earlier at lines 376-380). And the test passes. So the fix should be working.
+
+Let me try one more thing: let me check if there's a SECOND call to `append_terminal_events` or `find_missing_failure_observed` somewhere else in the codebase, maybe in a different script, that doesn't have the fix:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -rn 'FailureObserved\|failure_observed' scripts/append_terminal_state_event… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, let me try to actually reproduce the issue. Let me check the actual events for the Day 162 01:47 session to see if the fix should have caught it.
+
+Actually, let me take a completely different approach. Let me check: was the `append_terminal_state_events.py` fix even RUN during the Day 162 01:47 session? Maybe the evolve.sh script doesn't call it under certain conditions.
+
+Or maybe the retroactive FailureObserved I saw was inserted by the CURRENT session's call to `append_terminal_state_events.py` — the Day 162 08:43 session — when it scanned ALL past events. If so, the fix would have been active and should have excluded the Day 162 01:47 session.
+
+Let me check the state more carefully to determine WHEN the retroactive event was inserted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- state tail --limit 40 2>&1 | grep -A5 -B2 'FailureObserv… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+That's showing my own tool calls. Let me check the state events from the Day 162 01:47 session specifically. Let me use `state why last-failure` to get the exact timestamp and then look at the surrounding events.
+
+Actually, I've spent too long investigating this. Let me step back and make a decision.
+
+The key facts:
+1. The `find_missing_failure_observed` function HAS the deliberate-no-op exclusion fix
+2. The test `test_excludes_deliberate_no_op_from_failure_observed` PASSES
+3. A retroactive FailureObserved was still recorded for the Day 162 01:47 session
+4. I haven't been able to determine WHY the fix didn't prevent this
+
+Given the uncertainty, I should NOT plan #165 as a task. The fix appears to be in place but may have an edge case. Instead of replanning the same task, I should pick a different one.
+
+Let me reassess what tasks I can plan:
+
+**Option 1: Investigate and fix the edge case in the deliberate-no-op detection**
+- Risk: I don't know what the edge case is. Could spend the whole planning phase investigating.
+- The assessment isn't enough — I'd need to trace through actual state events.
+
+**Option 2: Address trajectory pressure #1: "Make planning failure actionable"**
+- The log_feedback corrected lesson already says "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+- Maybe this lesson needs to be encoded into `preseed_session_plan.py` so that when the planner produces no tasks, the preseed mechanism selects a concrete remediation task rather than silently accepting it
+- But the assessment says the tree is clean — there legitimately isn't much to do
+
+**Option 3: Address deepseek_model_call_abnormal_completed_count=2**
+- Already addressed by Day 161 Task 1 fix in state.rs
+
+**Option 4: Something in src/ that improves DeepSeek reliability**
+- The assessment found no current bugs in src/ Rust code
+- Codebase is healthy
+
+**Option 5: Address the seeded task about planning reliability**
+- The seeded task wants to improve `preseed_session_plan.py` and `task_manifest.py`
+- The evidence: `planner_no_task_count=1` in trajectory
+- The corrected lesson: "bound discovery and require a selected task artifact before implementation work starts"
+- This could be translated into: in `preseed_session_plan.py`, when the planner produces no tasks AND the assessment found actionable items, force-select a remediation task
+
+But wait — the assessment DID find actionable items (the bugs section), and the current planning phase IS producing task files. So the preseed mechanism might not even be triggered now.
+
+OK let me think about what would actually be USEFUL. The trajectory says:
+- "Make planning failure actionable (planner_no_task_count=1)"
+- Log feedback: "planner produced no usable task -> bound discovery and require a selected task artifact before implementation work starts"
+
+What if the fix is: in `scripts/preseed_session_plan.py`, when `planner_no_task_count > 0` is detected AND the assessment text contains concrete bug descriptions, the preseed mechanism should extract those bugs and create concrete task files rather than producing a generic "repair planning" task?
+
+Looking at the current preseed_session_plan.py, it already has a `choose_task` function. Maybe the issue is that when the planner produces no tasks, the preseed falls back to generic tasks ("fix planning") rather than extracting specific bugs from the assessment.
+
+But I don't want to read the full preseed file — the planning instructions say I should use the assessment. The assessment says the preseed mechanism exists and works. The problem is that it sometimes produces tasks that don't address concrete problems.
+
+OK, I think the most concrete, useful thing I can plan is:
+
+**Task 1: Refine the seeded task to be more specific**
+Instead of the generic "repair evidence-backed planning," make it about a specific improvement: when the preseed mechanism detects `planner_no_task_count > 0`, it should look for concrete bug descriptions in the assessment text and generate specific remediation tasks rather than generic planning-repair tasks.
+
+But I can't verify this without reading the preseed file...
+
+Actually, let me re-read the seeded task_01 more carefully:
+
+"Improve yyds fallback task selection and manifest validation so an evidence-rich assessment is reliably converted into concrete, landable task files."
+
+Files: `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`
+
+The task is about "fallback task selection" — when the planner fails, the preseed should produce landable tasks. And "manifest validation" — the task manifest should make planning failures visible.
+
+I could refine this to be more specific and evidence-backed, focusing on one narrow change rather than the broad goal.
+
+OR... I could plan a task about the deepseek cache metrics partial fix. The assessment says:
+- "Cache metrics ARE available from stream-check and fim-complete" 
+- "Cache metrics ARE recorded for these diagnostic paths"
+- The issue is that the main agent flow can't see them
+
+What if I add a task to wire the diagnostic cache metrics into the state recording pipeline? The stream-check and fim-complete paths already parse cache metrics from raw DeepSeek responses. What if we add a lightweight cache metrics recording to the prompt execution path, using the same parsing approach?
+
+But this is blocked on the yoagent Usage struct issue (#90). The prompt execution goes through yoagent, which drops the cache fields...
+
+OK, I think I'm overcomplicating this. Let me pick the strongest available task:
+
+**Best option: The seeded task about planning reliability, but refined with specific, evidence-backed scope.**
+
+The trajectory says `planner_no_task_count=1`. The corrected lesson says "bound discovery." The assessment found concrete bugs. The disconnect is: the assessment found bugs, but the planner didn't convert them into tasks.
+
+The specific fix: In `scripts/preseed_session_plan.py`, add a post-planning validation step that checks: if the assessment text contains concrete bug descriptions (matching patterns like "not working", "returns no metrics", "times out") AND no task files were produced, then extract those bugs into concrete task files instead of producing a generic planning-repair task.
+
+This is narrower than the original seed task, more evidence-backed, and directly addresses the trajectory pressure.
+
+Let me write this as task_01, replacing the seed.
+
+Wait, but I also need to decide: should I keep the original seed task as-is, or refine it? The seed task has `Files: scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py`. The refined version would have the same files but a narrower scope.
+
+Let me write the refined task_01.md now. And I'll also include a task_02 for #165 if I can figure out the edge case, but given my uncertainty, maybe just one task is best.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clearer picture. The #165 fix is already in the code (`find_missing_failure_observed` has the deliberate-no-op exclusion, test passes), yet a retroactive FailureObserved was still recorded for the Day 162 01:47 session — suggesting an edge case. Let me check whether the seed task is the right primary focus by examining the trajectory pressure and the preseed mechanism's current behavior:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'def choose_task\|def render_task\|def main\|PROTECTED_IMPLEMENTATION_FI…  ▶ $ grep -n 'planner_no_task\|PLANNER_NO_TASK\|no.task\|planning.fail\|planning_fail… ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see that the preseed module:
+1. Has a `TASKS` list of predefined fallback tasks
+2. Has a `choose_task` function that picks from these tasks
+3. The "Repair evidence-backed planning" task is the planning-failure remediation task (line 1079)
+4. It already has `PROTECTED_IMPLEMENTATION_FILES` to avoid protected files
+5. The task lists `scripts/preseed_session_plan.py, scripts/task_manifest.py, scripts/test_task_manifest.py` as Files
+
+So the seeded task from the harness IS the "Repair evidence-backed planning" task from the preseed module! The preseed picked this as the fallback task because the previous session had `planner_no_task_count=1`.
+
+Now here's the issue: the preseed is picking "Repair evidence-backed planning" as the fallback task. But the assessment found concrete bugs. The preseed should ideally pick a task that addresses one of those concrete bugs, not a generic "fix the planning" task.
+
+But wait — the preseed doesn't have access to the assessment text in the same way the planner does. It has assessment metrics (like `planner_no_task_count`) but may not parse the assessment's bug descriptions.
+
+Let me understand: the preseed picks a task based on metrics. If the metrics show `planner_no_task_count > 0`, it picks the "Repair evidence-backed planning" task. This is the task the harness pre-seeded as task_01.md.
+
+But the assessment (which I have) shows concrete bugs. The disconnect is: the preseed picks a meta-task (fix planning) instead of a concrete bug-fix task.
+
+The real question is: should I (as the planner) refine this task into something more concrete, or should I accept it?
+
+Given:
+1. The assessment found concrete bugs (#165, evaluator timeouts, cache gap, active learnings stale)
+2. #165 is the most actionable but its fix appears to be already in the code (though there may be an edge case)
+3. The evaluator timeout issue is blocked on evolve.sh (do-not-modify)
+4. The cache gap is blocked on yoagent upstream (#90)
+5. Active learnings staleness is blocked on `.github/workflows/synthesize.yml` (do-not-modify)
+
+All the concrete bugs from the assessment are either already fixed, blocked on do-not-modify files, or blocked on upstream. The only one that's potentially actionable is investigating the #165 edge case.
+
+Actually, let me reconsider #165. The test passes but the state still shows a retroactive FailureObserved. This could be because:
+1. The retroactive event was inserted BEFORE the fix was deployed (the fix might have been deployed mid-session)
+2. There's an edge case the fix doesn't cover
+
+If it's #1, then the fix is working and future sessions won't have this issue. If it's #2, there's a bug to fix.
+
+I don't have enough evidence to determine which. So planning #165 as a task without understanding the edge case would be irresponsible.
+
+Given this analysis, I think the best approach is:
+
+**Task 1: Refine the preseed planning-repair task to prioritize concrete bug fixes over meta-planning repairs**
+
+When the preseed mechanism selects the "Repair evidence-backed planning" fallback task, it should check whether the assessment text contains concrete, actionable bugs that the planner could have addressed but didn't. If so, it should select a task targeting those bugs rather than a generic planning repair.
+
+Files: `scripts/preseed_session_plan.py`
+
+This is narrow, concrete, and addresses the trajectory pressure directly. It makes planning failures actionable by ensuring the fallback task picker learns from assessment evidence.
+
+But wait — can I verify this is the right approach without reading the full preseed file? The planning instructions say "Do not read source code files when an assessment is available." But I need to do a "cheap ownership check" to confirm the files are right.
+
+Let me check: does `preseed_session_plan.py` have access to the assessment text?
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 15.7s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'assessment\|ASSESSMENT\|choose_task\|current_evidence\|extract_section'…  ▶ $ grep -n 'planner_no_task_count\|PLANNER_NO_TASK' scripts/preseed_session_plan.py ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Key findings:
+1. `preseed_session_plan.py` DOES take `assessment: str` as input to `choose_task` (line 993)
+2. It has `current_evidence_text` and `extract_section` helpers to parse assessment text
+3. The TASKS list has predefined tasks with specific evidence patterns
+4. Line 2097 shows `planner_no_task_count=1` — this is probably a test fixture
+
+So `choose_task` receives the assessment text and can parse it. The predefined TASKS are selected based on matching evidence patterns in the assessment. The "Repair evidence-backed planning" task has its own evidence pattern.
+
+Now, the question is: does the `choose_task` function correctly match concrete bugs from the assessment? Let me check what evidence patterns the "Repair evidence-backed planning" task uses:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:1075..1135 ✓ (508ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the picture clearly. This is the `_assessment_or_fallback` function or similar — it returns this `fallback` dict when the assessment doesn't match any predefined tasks. This fallback is the one that becomes the "Repair evidence-backed planning" seed task.
+
+The issue: when the assessment contains concrete bugs but none of the predefined TASKS match, the fallback is a generic planning-repair task that modifies the preseed module itself — which is a self-referential cycle (as noted in the Day 115 lesson: "Fallback self-reference turns 'nothing broken' into busywork you can't refuse").
+
+The fix should be: instead of always returning a self-modifying planning-repair fallback, check whether the assessment text contains concrete, actionable bugs and if so, either:
+1. Extract one and create a specific task targeting it
+2. Or at minimum, include the bug descriptions in the task evidence so the implementation agent has something concrete to work on
+
+This addresses the trajectory pressure directly. But I need to make sure the scope is narrow enough.
+
+Let me check how `choose_task` works to understand where the fallback kicks in:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/preseed_session_plan.py:993..1073 ✓ (493ms)
+
+
