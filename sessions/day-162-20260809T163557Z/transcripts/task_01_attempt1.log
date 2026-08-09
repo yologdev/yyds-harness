@@ -1,0 +1,517 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to prevent `find_missing_failure_observed()` in `scripts/append_terminal_state_events.py` from flagging deliberate no-op sessions as needing retroactive FailureObserved events.
+
+Let me first read the evolve skill, then the source files.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/append_terminal_state_events.py ✓ (1.6s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `find_missing_failure_observed` function and the test file more carefully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:307..407  ▶ read scripts/test_append_terminal_state_events.py ✓ (1.6s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, it looks like the code already has the deliberate no-op exclusion! Let me re-read the code carefully.
+
+Looking at lines 321-326 in the docstring and lines 335-339, 369-395 in the code:
+
+1. `runs_with_task_lineage: set[str]` is tracked (line 335)
+2. `runs_with_non_harness_failure: set[str]` is tracked (line 336)  
+3. `deliberate_no_op_excluded = 0` counter (line 339)
+4. `TaskLineageLinked` events are tracked (line 366-367)
+5. `_is_deliberate_no_op` function (lines 376-380)
+6. The missing list excludes deliberate no-ops (line 387)
+7. Diagnostics counter is populated (lines 393-395, 403)
+
+So the code already has the logic! But I need to check:
+
+1. Whether `TaskLineageLinked` is the right event to track, or if the task says `TaskStarted`. Let me re-read the task description.
+
+The task says: "A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events"
+
+But the code uses `TaskLineageLinked` instead of `TaskStarted`. Let me check what events are actually emitted during a session. The task says `TaskStarted` but the code already uses `TaskLineageLinked`. Let me search for what events exist.
+
+Let me also check if the tests already cover this case.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.5s (2 ✓)
+
+Let me check what events are actually emitted during sessions and look at the existing test coverage:
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'TaskStarted' in scripts  ▶ search 'TaskLineageLinked' in scripts  ▶ search 'deliberate_no_op' in scripts ✓ (1.6s)
+ ✓ (1.6s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The code already has the deliberate no-op exclusion and there's already a test for it. Let me read the test to understand what's already covered:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:611..711 ✓ (492ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code already has the fix! Looking at the evidence:
+
+1. `find_missing_failure_observed()` (lines 307-406) already tracks:
+   - `runs_with_task_lineage` (tracked via `TaskLineageLinked`)
+   - `runs_with_non_harness_failure` (FailureObserved with actor != "harness")
+   - `deliberate_no_op_excluded` counter
+   - `_is_deliberate_no_op()` function
+   - The exclusion in the missing list construction
+
+2. There's already a test `test_excludes_deliberate_no_op_from_failure_observed` (line 611)
+
+So this looks like the fix was already implemented (likely on Day 160 based on the docstring "Day 160"). But the task says "Day 161 Task 1 attempted this fix but was reverted due to evaluator timeout". Maybe the fix partially landed but was reverted? Let me check git log.
+
+Wait, but the code I'm reading HAS the fix. Let me check if the test passes:
+────────────────────────────────────────────────────────────────────────────────
+
+The code already appears to have the deliberate no-op exclusion. Let me verify whether this is actually working and run the tests:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -10 -- scrip… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The commit history for `append_terminal_state_events.py` doesn't show the deliberate no-op exclusion being committed separately, but the code definitely has it. Let me check git blame to see when the deliberate no-op exclusion was added.
+
+Actually wait - maybe the code was added as part of a larger commit. Let me check git log with more detail.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all -20 --…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git blame -L 335,339 scripts/a… ✓ (1.0s)
+ ✓ (3.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The deliberate no-op exclusion was added in commit `bad5fbd5` on Day 160 (2026-08-07). The `find_missing_failure_observed` function already has:
+
+1. `runs_with_task_lineage` tracking set
+2. `runs_with_non_harness_failure` tracking set
+3. `deliberate_no_op_excluded` counter
+4. `_is_deliberate_no_op()` function
+5. The exclusion in the missing list filtering
+6. Diagnostics counter
+
+And the test `test_excludes_deliberate_no_op_from_failure_observed` exists.
+
+So the code already has the fix. But the task evidence says "Day 162 assessment §Bugs/Friction #1" found this as a problem, and the task says "Day 161 Task 1 attempted this fix but was reverted due to evaluator timeout — NOT because the code was wrong. The bug persists."
+
+Hmm, maybe the Day 160 fix uses `TaskLineageLinked` but the real sessions that are problematic don't emit `TaskLineageLinked` at all? Or maybe the fix is in the code but there's a gap - maybe the `find_runs_with_failure_observed_no_completion` function (a different function) doesn't have this exclusion?
+
+Let me read `find_runs_with_failure_observed_no_completion`:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'find_runs_with_failure_observed_no_completion' in scripts/append_terminal_state_events.py ✓ (537ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `find_runs_with_failure_observed_no_completion` function to see if it also needs the exclusion.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:409..489 ✓ (509ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so now I see the full picture. The `find_missing_failure_observed` function already has the deliberate no-op exclusion. But let me now check: does the code *actually* work? Let me run the tests.
+
+But more importantly, the task description says the Day 162 assessment found this as an active bug. The fix was supposedly done on Day 160 but maybe it's not working in practice or there's a gap.
+
+Let me check what happened. The key question: is the fix already in the code and working? If so, the task should be marked obsolete with evidence.
+
+Let me run the tests first.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Now let me check whether there's a gap in the implementation. The task says:
+
+- "Day 162 assessment §Bugs/Friction #1: [MEDIUM] Retroactive FailureObserved for deliberate no-op sessions (#165)"
+- "Day 161 Task 1 attempted this fix but was reverted due to evaluator timeout"
+
+So maybe the fix IS in the code (from Day 160), but the problem is that the `find_missing_failure_observed` function uses `TaskLineageLinked` as its signal, but in a planning-only or journal-only session, `TaskLineageLinked` events are never emitted at all. So the deliberate no-op check does work.
+
+But wait - maybe the problem is at a different level. Let me re-read the task evidence:
+- "Sessions that produce no task files (planning_failed or clean-tree no-op) get retroactive FailureObserved events inserted because RunCompleted has error status"
+- The code already checks for `TaskLineageLinked` absence
+
+So the code DOES handle this case. The question is whether the code actually works in practice.
+
+Let me look more carefully. The Day 162 assessment says it found this problem. Maybe the issue is that the `find_missing_failure_observed` function is working, but the `append_terminal_events` function which calls it is doing something else, or the `RunCompleted` events have the wrong status.
+
+Actually wait, let me re-read the task more carefully:
+
+"Day 162 assessment §Bugs/Friction #1: '[MEDIUM] Retroactive FailureObserved for deliberate no-op sessions (#165)'"
+
+Maybe the issue is that the fix was added to `find_missing_failure_observed()` but there's another code path that also appends FailureObserved - like the `find_stale_orphaned_runs` or the `append_terminal_events` main path. Let me look at `append_terminal_events`:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the full flow - particularly `append_terminal_events` and `find_stale_orphaned_runs`:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:700.. ✓ (499ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the flow clearly. The `append_terminal_events` function:
+1. Calls `find_missing_failure_observed()` (line 738) — this already has the deliberate no-op exclusion
+2. For each run in `missing_failures`, appends `FailureObserved` (lines 741-758)
+
+So the deliberate no-op exclusion in `find_missing_failure_observed` should already work. Let me verify: the `_is_deliberate_no_op` function checks:
+- `rid not in runs_with_task_lineage` (no TaskLineageLinked events) 
+- `rid not in runs_with_non_harness_failure` (no non-harness FailureObserved)
+
+And then in `missing` list construction (lines 382-390), runs that are in `failure_observed_runs` or are deliberate no-ops are excluded.
+
+But wait - there's a subtlety. The `_is_deliberate_no_op` function checks `failure_observed_runs` for harness failures, and `runs_with_non_harness_failure` for non-harness failures. But what about the `append_terminal_events` function itself - it appends `FailureObserved` with `actor` set to `"harness"` (line 758). So a harness-emitted retroactive FailureObserved has `actor="harness"`.
+
+So the logic is:
+1. `failure_observed_runs` tracks ALL FailureObserved regardless of actor
+2. `runs_with_non_harness_failure` tracks FailureObserved where actor != "harness"
+3. A deliberate no-op is one with no TaskLineageLinked AND no non-harness FailureObserved
+
+The key insight: if a retroactive FailureObserved was already inserted (actor="harness"), the run WOULD be in `failure_observed_runs` so it would be excluded from `missing` anyway. The problem is the FIRST time it runs - before any retroactive FailureObserved exists.
+
+So the fix does work for the first run: if a session has RunCompleted error but no TaskLineageLinked and no non-harness FailureObserved, it's excluded from `missing` and no retroactive FailureObserved is generated.
+
+But now the question: is there actually a bug remaining? Let me check whether the deliberate no-op sessions actually have `TaskLineageLinked` events. If they don't, the exclusion works. If they do (because some harness process emits them), then the exclusion wouldn't catch them.
+
+Also, I should check: is the issue that `find_stale_orphaned_runs` (called earlier in `append_terminal_events`) is ALSO creating RunCompleted events for no-op sessions, which then triggers the `find_missing_failure_observed` scan?
+
+Actually wait, let me re-read the flow more carefully. The `append_terminal_events` function first handles the current run's closure (ModelCallCompleted, RunCompleted, FailureObserved for the current process), then scans for stale orphans, then scans for missing FailureObserved.
+
+The specific problem path is:
+1. A planning-only session runs, produces no tasks, exits with error status
+2. `find_stale_orphaned_runs` may or may not close it
+3. `find_missing_failure_observed` scans and finds the RunCompleted with error status
+4. Unless excluded as deliberate no-op, it adds a retroactive FailureObserved
+
+With the Day 160 fix, step 4 should now exclude deliberate no-ops. Let me verify this is actually working by checking if there's a gap.
+
+But wait - let me re-read the task statement ONE MORE TIME: "Day 162 assessment §Bugs/Friction #1: [MEDIUM] Retroactive FailureObserved for deliberate no-op sessions (#165): Sessions that produce no task files (planning_failed or clean-tree no-op) get retroactive FailureObserved events inserted because RunCompleted has error status."
+
+If the code already has the fix from Day 160, but the Day 162 assessment still found the problem, then either:
+1. The fix doesn't work in practice (maybe the sessions DO have TaskLineageLinked events?)
+2. The fix is in the code but hasn't been deployed/run yet
+3. The assessment was looking at older data from before Day 160
+
+Let me check the git log more carefully to understand the timeline.
+
+Actually, the timeline:
+- Day 160 (Aug 7): Fix was committed in `bad5fbd5`
+- Day 161 (Aug 8): Task 1 attempted this fix but was reverted due to evaluator timeout
+- Day 162 (Aug 9): Current session, assessment still finds the problem
+
+Maybe the Day 161 reversion removed the fix? Let me check.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the git history more carefully to see if the fix was reverted:
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -20 -- scrip…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline -5 --all -- … ✓ (2.1s)
+ ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The code already has the fix. Looking at `bad5fbd5` (Day 160, Aug 7): "fix build errors" - this actually contains the deliberate no-op exclusion code (as shown by git blame). And `ff34df3e` (Day 160, 09:03) added input-validation and cancelled-run exclusion.
+
+So the code already handles:
+1. Input-validation exclusion
+2. Cancelled-run exclusion
+3. Deliberate no-op exclusion (via TaskLineageLinked tracking)
+
+The task description says Day 162 assessment found this as an active bug. But the code already has the fix. This could be:
+
+1. The code fix is there but it's not complete - maybe there's an edge case
+2. The assessment was looking at stale data
+3. The fix is there and the task should be marked obsolete
+
+Let me check: does the task's Fallback clause apply here?
+
+"If the latest state snapshot (from `yyds state tail --limit 100`) shows zero retroactive FailureObserved events from the last 3 sessions, OR if no sessions in the last 5 have both RunCompleted error status AND zero tasks attempted, mark this task obsolete — the problem self-resolved."
+
+But wait, I should also check whether there's a gap. The task says the sessions should be identified by "zero TaskStarted events" but the code uses `TaskLineageLinked`. Are these the same? Let me check whether a planning-only session would have TaskLineageLinked events.
+
+Actually, from what I can see in the evolve.sh, `TaskLineageLinked` events are emitted when a task starts (line 2004: `record_state_event "TaskLineageLinked" "$(task_lineage_payload "started" "$PRE_TASK_SHA")"`) and when it completes. So if no tasks are selected, no TaskLineageLinked events are emitted.
+
+But the assessment might have found a case where the exclusion didn't work. Let me think about what could go wrong...
+
+Actually, looking at the evidence again: "Day 161 Task 1 attempted this fix but was reverted due to evaluator timeout — NOT because the code was wrong." This suggests the fix from Day 160 is what was attempted on Day 161 (maybe as a re-do) and got reverted. But the Day 160 commit `bad5fbd5` is still in the tree.
+
+Let me check the current state more carefully. Let me look at whether there's a `find_stale_orphaned_runs` function that might be the actual source of the problem, or whether `find_missing_failure_observed` is being called from somewhere that doesn't have the exclusion.
+
+Wait, actually, I just noticed something. The `find_missing_failure_observed` function tracks `runs_with_non_harness_failure` via checking `actor != "harness"`. But what if the event uses a different actor field location? Let me check how FailureObserved events are structured.
+
+But more importantly, let me re-examine the task evidence. The assessment says the problem is still present on Day 162. If the code fix has been in place since Day 160, why would the assessment still see this problem?
+
+Option A: The fix works for new sessions but old data still has the retroactive FailureObserved events. The assessment is looking at historical data.
+
+Option B: There's a gap in the fix - maybe some sessions DO get TaskLineageLinked events even when they're planning-only.
+
+Option C: The fix needs additional coverage in `find_runs_with_failure_observed_no_completion` or `find_stale_orphaned_runs`.
+
+Looking at the task again: "Prevent `find_missing_failure_observed()` from flagging deliberate no-op sessions" - but the code already has this. Unless the task is asking me to add something that wasn't done before.
+
+Actually, let me look more carefully at what exactly was committed in `bad5fbd5`. The commit message says "fix build errors" which is vague. Let me look at the actual diff.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 25.0s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show bad5fbd5 --stat ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the actual diff of what was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git show bad5fbd5 -- scripts/a… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the fix IS in the code from Day 160. Now I need to determine whether:
+
+1. The code is complete and working, and the task should be marked obsolete
+2. There's a gap in the code that needs to be fixed
+
+Let me run the full test suite to see if the existing tests pass:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 5 test failures! Let me see all of them:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -m unittest scripts.te… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Five test failures! These are existing test failures, not caused by me. Let me check if these failures are pre-existing or caused by the Day 160 fix. Let me look at the failing tests:
+
+1. `test_appends_failure_observed_for_error_completed_run` - expects `missing_failure_observed == 1` but gets 0
+2. `test_cancelled_run_gets_specific_failure_observed_reason` - expects 1 FO row but gets 0
+3. `test_detects_and_closes_orphaned_run_from_previous_session` - expects 8 rows but gets 9
+4. `test_error_run_keeps_generic_failure_observed_reason` - expects 1 FO row but gets 0
+5. `test_skips_retroactive_failure_observed_on_second_invocation` - expects ["error-run"] but gets []
+
+The common pattern: `missing_failure_observed` is 0 when tests expect 1, and rows counts are off by 1. This suggests the deliberate no-op exclusion is TOO aggressive - it's excluding runs that SHOULD get FailureObserved.
+
+Let me look at the test cases that fail. Let me read `test_appends_failure_observed_for_error_completed_run`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/test_append_terminal_state_events.py:445..545 ✓ (490ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem! Look at `test_appends_failure_observed_for_error_completed_run` (line 453):
+
+The test creates:
+- `error-run`: RunStarted, ModelCallStarted, RunCompleted(error) — no TaskLineageLinked, no FailureObserved
+- `success-run`: RunStarted, ModelCallStarted, RunCompleted(completed)
+
+The `error-run` has: error status, no TaskLineageLinked, no non-harness FailureObserved. According to `_is_deliberate_no_op`, this run IS a deliberate no-op! But it shouldn't be — it's a real error run that just happened to not have task lineage events because those are emitted AFTER the task is started by evolve.sh.
+
+The bug is that `_is_deliberate_no_op` is too aggressive. It classifies ANY run with no TaskLineageLinked AND no non-harness FailureObserved as a deliberate no-op. But a real error run might also lack TaskLineageLinked events if the failure happened before a task was started.
+
+Wait, but this test was added BEFORE the Day 160 fix. Let me check when this test was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --oneline --all -- scr… ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check when the `test_appends_failure_observed_for_error_completed_run` test was added:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git log --all --oneline -p -- … ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me use git blame to find when the test was added and more importantly, when the test started failing:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git blame scripts/test_append_… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `test_appends_failure_observed_for_error_completed_run` was added in `46d3f8fe` (Day 158) and it's now failing because of the Day 160 fix (`bad5fbd5`).
+
+The Day 160 fix broke this test because the `_is_deliberate_no_op` check is too broad: it excludes ANY run without TaskLineageLinked and without non-harness FailureObserved. But many error runs that SHOULD get retroactive FailureObserved also lack these.
+
+The root cause: the test creates an `error-run` with just RunStarted, ModelCallStarted, and RunCompleted(error). This run has no TaskLineageLinked events (because the test doesn't simulate a task being started) and no non-harness FailureObserved. So `_is_deliberate_no_op` returns True and it's excluded.
+
+This is exactly the bug the task is asking me to fix! The Day 160 fix was incomplete — it's too aggressive in excluding runs. The `_is_deliberate_no_op` function needs to be more precise.
+
+Wait, but the task says: "Day 161 Task 1 attempted this fix but was reverted due to evaluator timeout — NOT because the code was wrong. The bug persists."
+
+Hmm, but the code IS in the tree. `bad5fbd5` is still there. Maybe the Day 161 task tried to fix the broken tests but was reverted?
+
+Actually, let me re-read the situation:
+
+1. Day 160 (`bad5fbd5`): The deliberate no-op exclusion was added to `find_missing_failure_observed`. But it broke 5 existing tests.
+2. The tests were already broken at this point, and maybe nobody noticed (since CI might not run the Python tests?)
+3. Day 161: Someone tried to fix this but was reverted.
+
+So the task is asking me to fix the implementation so that:
+- Deliberate no-op runs (planning-only, no tasks, no real failures) are excluded
+- Real error runs with no TaskLineageLinked (because they failed before a task started) still get FailureObserved
+
+The problem is distinguishing between:
+1. A run that deliberately did nothing (planning failed, no tasks selected)
+2. A run that errored before tasks could start or task lineage wasn't recorded
+
+Both have: no TaskLineageLinked, no non-harness FailureObserved, RunCompleted error status.
+
+How can we distinguish them? The task says: "rely only on events present in the events list." 
+
+Actually wait, let me think about this differently. In the real harness flow:
+- A deliberate no-op session: has DecisionRecorded (planning_failed), zero tasks, exits. It has RunStarted, ModelCallStarted, ModelCallCompleted, and RunCompleted(error). No TaskLineageLinked, no FailureObserved.
+- A real error run: has RunStarted, ModelCallStarted, then crashes. It has RunCompleted(error). No TaskLineageLinked (no tasks started), no FailureObserved.
+
+These look identical in the events! Without external data, there's no way to distinguish them from events alone.
+
+But wait - the task says "The fix lives in `find_missing_failure_observed()`". Let me re-read the success criteria:
+
+"`find_missing_failure_observed()` does NOT return runs that have zero `TaskStarted` events and zero tool-call `FailureObserved` events — these are deliberate no-ops, not real failures."
+
+Hmm, but the test `test_appends_failure_observed_for_error_completed_run` creates a run with zero TaskLineageLinked AND zero FailureObserved events, and it expects the run to get a retroactive FailureObserved. So this test conflicts with the success criteria.
+
+Let me re-read the task more carefully...
+
+Actually, the task says "zero TaskStarted events" but the code uses "TaskLineageLinked". The task says to add tracking sets for "TaskStarted" events. But looking at the code, `TaskLineageLinked` is the event that's actually used.
+
+OK so I think the issue is: the existing Day 160 fix used `TaskLineageLinked` as a proxy for "tasks were started", but that's too aggressive because a real error run that crashes before a task is started also lacks TaskLineageLinked.
+
+The fix should be more nuanced. Let me think about what distinguishes a deliberate no-op from a real error run:
+
+A deliberate no-op session:
+- Has DecisionRecorded with reason=planning_failed or similar
+- Has NO errors, NO crashes
+- ModelCallCompleted normally
+
+A real error run:
+- Has some error (but no FailureObserved recorded)
+- May have crashed mid-model-call (no ModelCallCompleted)
+
+Wait, but the test `test_appends_failure_observed_for_error_completed_run` shows "error-run" with RunCompleted(error) but without any actual failure evidence. This is the problematic case - the test itself represents a legitimate case where a run completed with error status but without recorded failures.
+
+Actually, let me look at the real-world scenario more carefully. In a deliberate no-op:
+- RunStarted
+- ModelCallStarted
+- ModelCallCompleted (model ran, decided no tasks)
+- DecisionRecorded (planning_failed)
+- RunCompleted(error)
+
+In a real error run without tasks:
+- RunStarted
+- ModelCallStarted
+- (maybe ModelCallCompleted, maybe not if crashed)
+- RunCompleted(error) - no FailureObserved
+
+The key difference: in a deliberate no-op, the model call completes normally. In a real error, the model call might be interrupted or have errors.
+
+Hmm, but that's still not a reliable signal from events alone.
+
+Let me look at this from a different angle. The test `test_appends_failure_observed_for_error_completed_run` was written to test the case where a real error run lacks FailureObserved. The Day 160 fix broke this test by being too aggressive. 
+
+I think the right fix is: the deliberate no-op exclusion should only apply when there's positive evidence of a deliberate no-op, not just absence of evidence of tasks. 
+
+Looking at the test that PASSES (`test_excludes_deliberate_no_op_from_failure_observed`), the deliberate no-op test fixture does NOT check for any positive signal of "this was deliberate" — it just has zero TaskLineageLinked and zero failures. The test passes because the exclusion is applied, but it shouldn't be applied to ALL runs without TaskLineageLinked.
+
+The key insight: we need a POSITIVE signal that a run was a deliberate no-op, not just the absence of task lineage. What positive signal exists?
+
+Let me check: does a planning-only session emit a `DecisionRecorded` event?
+────────────────────────────────────────────────────────────────────────────────
+
+I see the issue. The Day 160 fix is in the code but is too aggressive — it breaks 5 tests by excluding ALL runs without `TaskLineageLinked` as "deliberate no-ops", including real error runs. Let me understand what distinguishes a deliberate no-op from a real error:
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ search 'DecisionRecorded' in scripts/append_terminal_state_events.py  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'DecisionRecorded\|pla… ✓ (1.6s)
+ ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me think about this problem differently. 
+
+The existing implementation classifies ANY run as "deliberate no-op" if it has:
+- No TaskLineageLinked events (no tasks attempted)
+- No non-harness FailureObserved events
+
+But this is too broad. A real error run that crashes before starting a task also has neither.
+
+The task says to use `TaskStarted` events, but the code uses `TaskLineageLinked`. These are different event types. Let me check what events actually exist.
+
+Actually wait, the task says:
+
+"A deliberate no-op run has ALL of: RunCompleted error status, zero TaskStarted events, zero non-harness FailureObserved events, AND is not input-validation/cancelled (already excluded)."
+
+But the real question is: what distinguishes a "real error with no tasks" from a "deliberate no-op"? Both have zero TaskLineageLinked and zero non-harness FailureObserved.
+
+The answer might be: we can't distinguish them from events alone without some positive signal. The task says "Do NOT try to read transcripts, session files, or external state to determine no-op status — rely only on events present in the events list."
+
+So maybe the approach should be different. Instead of using TaskLineageLinked as the signal, maybe we need a different approach entirely.
+
+Wait, let me re-read the Fallback clause:
+
+"If the fix would require reading full transcripts or external session data (not available in the events stream), narrow scope to only the event-level check and skip deeper session analysis."
+
+So maybe the right approach is:
+1. We CAN'T reliably distinguish deliberate no-ops from real errors using events alone
+2. The current Day 160 fix is wrong because it's too aggressive
+3. We should either revert it or make it narrower
+
+Actually, let me look at the failing tests more carefully to understand what the correct behavior should be:
+
+1. `test_appends_failure_observed_for_error_completed_run`: error-run has NO TaskLineageLinked, NO FailureObserved → should get retroactive FO. Currently excluded by `_is_deliberate_no_op`.
+
+2. `test_cancelled_run_gets_specific_failure_observed_reason`: cancelled run should get specific FO reason. Let me read this test.
+
+3. `test_error_run_keeps_generic_failure_observed_reason`: error run should keep generic FO reason. Similar issue.
+
+4. `test_skips_retroactive_failure_observed_on_second_invocation`: first invocation should append FO for error-run.
+
+All these tests share the pattern: an error run with no TaskLineageLinked and no FailureObserved, which should get a retroactive FailureObserved.
+
+The problem is clear: the `_is_deliberate_no_op` check is too broad. We need a POSITIVE signal of "this was deliberate."
+
+What positive signals exist in the event stream for a deliberate no-op?
+- `DecisionRecorded` event with a reason indicating no tasks selected
+- Maybe a specific `RunCompleted` error_detail
+
+Let me check what events are emitted during a planning_failed session:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.2s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'DecisionRecorded\|pla… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see - `DecisionRecorded` event is emitted with `planning_failed` info. Let me look at the evolve.sh more carefully around line 1818-1819:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/evolve.sh:1810..1840 ✓ (496ms)
+
+
