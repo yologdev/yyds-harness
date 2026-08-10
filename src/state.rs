@@ -73,12 +73,22 @@ pub fn install_panic_hook() {
             // The panic hook runs on a best-effort basis; we do not have
             // access to the full usage or model info, so we record a
             // minimal "interrupted" completion.
-            if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+            // Use a peek-before-record pattern: clone the ID without
+            // consuming it so that record() sees CURRENT_MODEL_CALL_ID is
+            // still active, avoiding a false ModelCallCompletedWithoutStart
+            // diagnostic. After recording, clear the cell explicitly.
+            let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+                let val = c.take(); // take ownership
+                let clone = val.clone(); // clone for the payload
+                c.set(val); // restore so record() sees it
+                clone
+            });
+            if let Some(ref id) = model_call_id {
                 record(
                     EventType::ModelCallCompleted,
                     Actor::Harness,
                     json!({
-                        "model_call_id": model_call_id,
+                        "model_call_id": id,
                         "model": "",
                         "status": "interrupted",
                         "detail": "rust_panic",
@@ -87,6 +97,12 @@ pub fn install_panic_hook() {
                         "thinking_observed": false,
                     }),
                 );
+                // Clear the model call ID after recording so record() saw it
+                // was active (to avoid ModelCallCompletedWithoutStart) but
+                // the lifecycle is properly closed afterward.
+                CURRENT_MODEL_CALL_ID.with(|c| {
+                    c.take();
+                });
             }
             // fail-soft: the global recorder might not be initialized yet
             RUN_HAD_ERROR.with(|c| c.set(true));
@@ -8695,16 +8711,24 @@ mod tests {
         let model_call_id = "model-call-panic-test-42";
         set_current_model_call_id(model_call_id.to_string());
 
-        // Simulate the panic hook closure (lines 64-82):
-        // 1. Take the model call ID
-        let active_id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+        // Simulate the panic hook closure (lines 64-83):
+        // 1. Peek at (clone) the model call ID without consuming it,
+        //    so that record() sees CURRENT_MODEL_CALL_ID is still active.
+        let active_id = CURRENT_MODEL_CALL_ID.with(|c| {
+            let val = c.take();
+            let clone = val.clone();
+            c.set(val);
+            clone
+        });
         assert_eq!(
             active_id.as_deref(),
             Some(model_call_id),
             "should have the active model call ID"
         );
 
-        // 2. Record ModelCallCompleted with "interrupted" status
+        // 2. Record ModelCallCompleted with "interrupted" status while
+        //    CURRENT_MODEL_CALL_ID is still active (avoids false
+        //    ModelCallCompletedWithoutStart diagnostic).
         record(
             EventType::ModelCallCompleted,
             Actor::Harness,
@@ -8718,6 +8742,11 @@ mod tests {
                 "thinking_observed": false,
             }),
         );
+        // Clear the model call ID after recording so that it is properly
+        // closed (the real panic hook does this at line 90).
+        CURRENT_MODEL_CALL_ID.with(|c| {
+            c.take();
+        });
 
         // 3. Then record FailureObserved (line 85)
         RUN_HAD_ERROR.with(|c| c.set(true));
@@ -8773,11 +8802,87 @@ mod tests {
             "ModelCallCompleted should have interrupted status: {raw}"
         );
 
+        // The peek-before-record pattern must prevent false
+        // ModelCallCompletedWithoutStart diagnostics: the panic hook
+        // restores CURRENT_MODEL_CALL_ID before recording, so record()
+        // sees an active call and does not emit the diagnostic.
+        assert!(
+            !raw.contains("ModelCallCompletedWithoutStart"),
+            "should NOT contain ModelCallCompletedWithoutStart (false positive): {raw}"
+        );
+
         // Verify the Cell is empty after the panic hook logic ran.
         let remaining = CURRENT_MODEL_CALL_ID.with(|c| c.take());
         assert!(
             remaining.is_none(),
             "model call ID cell should be empty after panic hook logic"
+        );
+    }
+
+    #[test]
+    fn model_call_completed_without_start_emitted_when_no_id_active() {
+        // True-positive test: when ModelCallCompleted is recorded without
+        // a prior set_current_model_call_id, the record() guard must emit
+        // a ModelCallCompletedWithoutStart diagnostic. This verifies the
+        // diagnostic path is not broken, so that genuine lifecycle gaps
+        // (unmatched completions) are correctly detected.
+        let _state_lock = state_global_test_lock();
+        reset_global_recorder_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let events_path = dir.path().join("events.jsonl");
+        let config = StateConfig {
+            enabled: true,
+            fail_soft: true,
+            events_path: events_path.clone(),
+            store_path: None,
+        };
+        init_global(config, json!({})).unwrap();
+
+        // Ensure no model call ID is active (precondition).
+        CURRENT_MODEL_CALL_ID.with(|c| {
+            c.take();
+        });
+
+        // Record ModelCallCompleted when no CURRENT_MODEL_CALL_ID is active.
+        // This should trigger the ModelCallCompletedWithoutStart diagnostic.
+        record(
+            EventType::ModelCallCompleted,
+            Actor::Harness,
+            json!({
+                "model_call_id": "orphan-call-1",
+                "model": "deepseek-v4",
+                "status": "completed",
+                "detail": "",
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "thinking_observed": false,
+            }),
+        );
+
+        // Close the run lifecycle so the event stream is well-formed.
+        {
+            let _guard = RunCompletionGuard::completed_on_drop();
+        }
+
+        let raw = std::fs::read_to_string(&events_path).unwrap();
+
+        // Verify ModelCallCompleted was recorded.
+        assert!(
+            raw.contains("ModelCallCompleted"),
+            "should contain ModelCallCompleted: {raw}"
+        );
+
+        // Verify the diagnostic was emitted.
+        assert!(
+            raw.contains("ModelCallCompletedWithoutStart"),
+            "should contain ModelCallCompletedWithoutStart diagnostic: {raw}"
+        );
+
+        // Verify the diagnostic payload includes the note about no active
+        // CURRENT_MODEL_CALL_ID.
+        assert!(
+            raw.contains("ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"),
+            "diagnostic should note no active model call ID: {raw}"
         );
     }
 
