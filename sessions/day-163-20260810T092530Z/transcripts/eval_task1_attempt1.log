@@ -1,0 +1,54 @@
+warning: skipping corrupted event at line 42493 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 3413
+warning: skipping corrupted event at line 42494 of '.yoyo/state/events.jsonl': expected ident at line 1 column 2
+warning: skipping corrupted event at line 44531 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 440
+note: skipped 3 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the task and the diff carefully.
+
+The task is to fix a false `ModelCallCompletedWithoutStart` diagnostic in the panic hook. The issue is that the panic hook at line 76 takes `CURRENT_MODEL_CALL_ID` via `c.take()` before calling `record()`, which means `record()` sees `None` and emits a bogus `ModelCallCompletedWithoutStart` diagnostic.
+
+The fix uses the peek-before-record pattern:
+1. Clone the model call ID without consuming it (take, clone, set back)
+2. Record ModelCallCompleted while CURRENT_MODEL_CALL_ID is still set
+3. Clear it after recording
+
+Let me verify the diff against the task requirements:
+
+1. ✅ The panic hook now uses peek-before-record (clone pattern)
+2. ✅ The test `panic_hook_closes_model_call_before_failure_observed` is updated to match the new pattern
+3. ✅ The existing test now asserts that `ModelCallCompletedWithoutStart` is NOT in the output
+4. ✅ A new test `model_call_completed_without_start_emitted_when_no_id_active` verifies the true-positive path
+5. ✅ Build: PASS, Tests: PASS
+
+The diff looks correct and complete. Let me quickly verify one thing - does the test check for the right diagnostic string "ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"?
+
+Looking at the diff, the new test checks for `"ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"` in the raw output. Let me verify this string exists in the source. Let me check if `record()` actually emits this diagnostic with that message.
+
+Let me look at the record() function to confirm the diagnostic message format.
+
+Actually, let me verify by searching for the diagnostic message in the source.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ search 'ModelCallCompleted recorded without active' (*.rs) ✓ (240ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diagnostic message matches. The `record()` function at line 627 emits exactly that string, and the new test at line 8884 checks for it.
+
+The implementation is correct:
+1. Panic hook uses peek-before-record pattern ✓
+2. Existing test updated ✓
+3. Existing test now asserts no false `ModelCallCompletedWithoutStart` ✓
+4. New true-positive test added ✓
+5. Build and tests PASS ✓
+
+This is a clear PASS.
+────────────────────────────────────────────────────────────────────────────────
+
+The diagnostic string in the test matches the actual `record()` output at line 627. The implementation is complete and correct.
+  + Verdict: PASS
+  + Reason: The panic hook now uses peek-before-record (clone, restore, record, then clear), eliminating false `ModelCallCompletedWithoutStart` diagnostics. The existing test is updated to verify the fix, and a new true-positive test (`model_call_completed_without_start_emitted_when_no_id_active`) confirms the diagnostic still fires for genuine lifecycle gaps. Build and all tests pass.
+  ✓ Auto-approved: write: session_plan/eval_task_1.md (2 lines)

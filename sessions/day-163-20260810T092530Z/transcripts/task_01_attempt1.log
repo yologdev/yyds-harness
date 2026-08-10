@@ -1,0 +1,543 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze this task carefully:
+
+1. **The problem**: The panic hook at lines 72-90 in `src/state.rs` calls `CURRENT_MODEL_CALL_ID.with(|c| c.take())` which removes the ID, then calls `record(EventType::ModelCallCompleted, ...)`. The `record()` function checks if `CURRENT_MODEL_CALL_ID` is set - finding it None, it emits a false `ModelCallCompletedWithoutStart` diagnostic.
+
+2. **The fix**: Use a replace-to-peek pattern to clone the ID without consuming it, record ModelCallCompleted while the ID is still set, then clear it after.
+
+3. **Tests needed**:
+   - Update existing `panic_hook_closes_model_call_before_failure_observed` test
+   - Add new test `model_call_completed_without_start_emitted_when_no_id_active`
+
+Let me start by reading the relevant code sections and the evolve skill.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:70..95  ▶ read src/state.rs:590..620 ✓ (6.7s)
+ ✓ (5.4s)
+ ✓ (4.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the problem clearly:
+
+1. The panic hook at line 76 does `CURRENT_MODEL_CALL_ID.with(|c| c.take())` - this consumes the ID, setting the cell to None.
+2. Then at line 77, it calls `record(EventType::ModelCallCompleted, ...)`.
+3. Inside `record()` at line 597-614, it checks if `CURRENT_MODEL_CALL_ID` is set. Since the panic hook already `.take()`'d it, the cell is None, so `had_call_id` is false.
+4. This means line 604-613 fires: it emits a bogus `ModelCallCompletedWithoutStart` event.
+
+But wait - looking at the code at lines 598-603 more carefully, the `record()` function ALSO does a peek pattern: it takes, checks, and restores. But the problem is that the panic hook has already consumed the ID via `c.take()` in the `if let` pattern, so when `record()` runs, `CURRENT_MODEL_CALL_ID` is already None.
+
+The fix is: make the panic hook peek at (clone) the ID without consuming it, record ModelCallCompleted while the ID is still set, then clear it after recording.
+
+The task suggests:
+```rust
+let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+    let val = c.take();      // take ownership
+    let clone = val.clone(); // clone for the payload
+    c.set(val);              // restore so record() sees it
+    clone
+});
+if let Some(ref id) = model_call_id {
+    record(EventType::ModelCallCompleted, Actor::Harness, json!({...}));
+    CURRENT_MODEL_CALL_ID.with(|c| { c.take(); }); // now clear it
+}
+```
+
+This is correct. Let's also read the test to understand it.
+
+Let me now read the test and the rest of the panic hook.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 9.4s (3 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8670..8730  ▶ read src/state.rs:55..105 ✓ (4.0s)
+ ✓ (2.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me plan the changes:
+
+**Problem**: The panic hook at line 76 does `CURRENT_MODEL_CALL_ID.with(|c| c.take())` which consumes the ID. When `record()` is then called at line 77, it checks if `CURRENT_MODEL_CALL_ID` is set (line 597-614) — finding it None, it emits a false `ModelCallCompletedWithoutStart`.
+
+**Fix**: 
+1. In the panic hook (lines 76-90): use a peek-before-record pattern. Take the ID, clone it, restore it, then record ModelCallCompleted while the ID is still set, then clear it after recording.
+
+2. Update the test at line 8677 to match the new pattern and verify no `ModelCallCompletedWithoutStart` in the event stream.
+
+3. Add a new test `model_call_completed_without_start_emitted_when_no_id_active` that records ModelCallCompleted without setting CURRENT_MODEL_CALL_ID first and verifies the diagnostic is emitted.
+
+Let me also check the rest of the test to see what assertions are made.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.5s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8729..8759 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see the end of this test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8756..8786 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the complete picture. Let me also check if the record function at line 597 has the peek pattern or if it actually consumes. Let me re-read lines 597-614 more carefully.
+
+Actually, I already saw it. The `record()` function does:
+```rust
+if event_type == EventType::ModelCallCompleted {
+    let had_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+        let val = c.take();
+        let had = val.is_some();
+        c.set(val);
+        had
+    });
+    if !had_call_id {
+        // emit ModelCallCompletedWithoutStart
+    }
+}
+```
+
+So `record()` itself uses a peek pattern — it takes, checks, and restores. But the problem is that the panic hook has already consumed the ID via `c.take()` in the `if let` pattern, so by the time `record()` runs, the cell is None.
+
+Now let me implement the fix:
+
+**1. Fix the panic hook (lines 72-90)**
+
+Replace:
+```rust
+if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+    record(
+        EventType::ModelCallCompleted,
+        ...
+    );
+}
+```
+
+With:
+```rust
+let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+    let val = c.take();      // take ownership
+    let clone = val.clone(); // clone for the payload
+    c.set(val);              // restore so record() sees it's active
+    clone
+});
+if let Some(ref id) = model_call_id {
+    record(
+        EventType::ModelCallCompleted,
+        Actor::Harness,
+        json!({
+            "model_call_id": id,
+            "model": "",
+            "status": "interrupted",
+            "detail": "rust_panic",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "thinking_observed": false,
+        }),
+    );
+    CURRENT_MODEL_CALL_ID.with(|c| { c.take(); }); // now clear it after recording
+}
+```
+
+**2. Update the test**
+
+The test at line 8700 also does `CURRENT_MODEL_CALL_ID.with(|c| c.take())` — simulating the panic hook. I need to update it to match the new pattern AND add an assertion that `ModelCallCompletedWithoutStart` is NOT in the event stream.
+
+**3. Add a new test**
+
+Add `model_call_completed_without_start_emitted_when_no_id_active` that:
+- Initializes state
+- Records ModelCallCompleted WITHOUT calling set_current_model_call_id first
+- Verifies the event stream contains ModelCallCompletedWithoutStart
+
+Let me now implement this.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the full picture. Let me implement the fix. I'll:
+
+1. Fix the panic hook (lines 72-90) with the peek-before-record pattern
+2. Update the existing test to match
+3. Add a new test for the true-positive path
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.3s)
+  ▶ todo ✓ (1.3s)
+  ▶ todo ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start with the panic hook fix.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 7.0s (3 ✓)
+
+
+                // The panic hook runs on a best-effort basis; we do not have
+                // access to the full usage or model info, so we record a
+                // minimal "interrupted" completion.
+  -             if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+  +             // Use a peek-before-record pattern: clone the ID without
+  +             // consuming it so that record() sees CURRENT_MODEL_CALL_ID is
+  +             // still active, avoiding a false ModelCallCompletedWithoutStart
+  +             // diagnostic. After recording, clear the cell explicitly.
+  +             let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+  +                 let val = c.take();      // take ownership
+  +                 let clone = val.clone(); // clone for the payload
+  +                 c.set(val);              // restore so record() sees it
+  +                 clone
+  +             });
+  +             if let Some(ref id) = model_call_id {
+                    record(
+                        EventType::ModelCallCompleted,
+                        Actor::Harness,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (19 → 33 lines)
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4.0s)
+  ▶ edit src/state.rs (19 → 33 lines)
+                // The panic hook runs on a best-effort basis; we do not have
+                // access to the full usage or model info, so we record a
+                // minimal "interrupted" completion.
+  -             if let Some(ref model_call_id) = CURRENT_MODEL_CALL_ID.with(|c| c.take()) {
+  +             // Use a peek-before-record pattern: clone the ID without
+  +             // consuming it so that record() sees CURRENT_MODEL_CALL_ID is
+  +             // still active, avoiding a false ModelCallCompletedWithoutStart
+  +             // diagnostic. After recording, clear the cell explicitly.
+  +             let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+  +                 let val = c.take();      // take ownership
+  +                 let clone = val.clone(); // clone for the payload
+  +                 c.set(val);              // restore so record() sees it
+  +                 clone
+  +             });
+  +             if let Some(ref id) = model_call_id {
+                    record(
+                        EventType::ModelCallCompleted,
+                        Actor::Harness,
+                        json!({
+  -                         "model_call_id": model_call_id,
+  ... (13 more lines)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the panic hook is fixed. Now let me update the test. The test simulates the panic hook behavior on lines 8698-8733. I need to:
+
+1. Change the "take" at line 8700 to the peek-before-record pattern
+2. After recording ModelCallCompleted, clear the cell
+3. Add an assertion that ModelCallCompletedWithoutStart is NOT in the event stream
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.2s (2 ✓)
+
+
+  -         // Simulate the panic hook closure (lines 64-82):
+  -         // 1. Take the model call ID
+  -         let active_id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         // Simulate the panic hook closure (lines 64-83):
+  +         // 1. Peek at (clone) the model call ID without consuming it,
+  +         //    so that record() sees CURRENT_MODEL_CALL_ID is still active.
+  +         let active_id = CURRENT_MODEL_CALL_ID.with(|c| {
+  +             let val = c.take();
+  +             let clone = val.clone();
+  +             c.set(val);
+  +             clone
+  +         });
+            assert_eq!(
+                active_id.as_deref(),
+                Some(model_call_id),
+                "should have the active model call ID"
+            );
+    
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (23 → 34 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (4.0s)
+  ▶ todo ✓ (1.4s)
+            assert!(
+                raw.contains("\"status\":\"interrupted\""),
+                "ModelCallCompleted should have interrupted status: {raw}"
+  +         );
+  + 
+  +         // The peek-before-record pattern must prevent false
+  +         // ModelCallCompletedWithoutStart diagnostics: the panic hook
+  +         // restores CURRENT_MODEL_CALL_ID before recording, so record()
+  +         // sees an active call and does not emit the diagnostic.
+  +         assert!(
+  +             !raw.contains("ModelCallCompletedWithoutStart"),
+  +             "should NOT contain ModelCallCompletedWithoutStart (false positive): {raw}"
+            );
+  ✓ Auto-approved: edit: src/state.rs (4 → 13 lines)
+  ▶ edit src/state.rs (23 → 34 lines)
+  -         // Simulate the panic hook closure (lines 64-82):
+  -         // 1. Take the model call ID
+  -         let active_id = CURRENT_MODEL_CALL_ID.with(|c| c.take());
+  +         // Simulate the panic hook closure (lines 64-83):
+  +         // 1. Peek at (clone) the model call ID without consuming it,
+  +         //    so that record() sees CURRENT_MODEL_CALL_ID is still active.
+  +         let active_id = CURRENT_MODEL_CALL_ID.with(|c| {
+  +             let val = c.take();
+  +             let clone = val.clone();
+  +             c.set(val);
+  +             clone
+  +         });
+            assert_eq!(
+                active_id.as_deref(),
+                Some(model_call_id),
+                "should have the active model call ID"
+            );
+    
+  -         // 2. Record ModelCallCompleted with "interrupted" status
+  +         // 2. Record ModelCallCompleted with "interrupted" status while
+  ... (12 more lines)
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the assertion that `ModelCallCompletedWithoutStart` is NOT in the event stream. Let me find the right place - after `raw` is read.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 13.5s (3 ✓)
+
+Now add the assertion that `ModelCallCompletedWithoutStart` is absent from the event stream. I'll add it right after the existing assertions at the end of the test:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 13 lines)
+            assert!(
+                raw.contains("\"status\":\"interrupted\""),
+                "ModelCallCompleted should have interrupted status: {raw}"
+  +         );
+  + 
+  +         // The peek-before-record pattern must prevent false
+  +         // ModelCallCompletedWithoutStart diagnostics: the panic hook
+  +         // restores CURRENT_MODEL_CALL_ID before recording, so record()
+  +         // sees an active call and does not emit the diagnostic.
+  +         assert!(
+  +             !raw.contains("ModelCallCompletedWithoutStart"),
+  +             "should NOT contain ModelCallCompletedWithoutStart (false positive): {raw}"
+            );
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to add the new test `model_call_completed_without_start_emitted_when_no_id_active`. Let me find a good place for it — right after the `panic_hook_closes_model_call_before_failure_observed` test and before `clear_current_model_call_id_warns_when_no_id_is_active`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.3s)
+  ▶ todo ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add the new test. Let me find the right insertion point — right after the `panic_hook_closes_model_call_before_failure_observed` test ends at line ~8796 and before `clear_current_model_call_id_warns_when_no_id_is_active`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.0s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8792..8802 ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the exact line where the test block ends and the next test begins.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[test]
+  +     fn model_call_completed_without_start_emitted_when_no_id_active() {
+  +         // True-positive test: when ModelCallCompleted is recorded without
+  +         // a prior set_current_model_call_id, the record() guard must emit
+  +         // a ModelCallCompletedWithoutStart diagnostic. This verifies the
+  +         // diagnostic path is not broken, so that genuine lifecycle gaps
+  +         // (unmatched completions) are correctly detected.
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/state.rs (4 → 69 lines)
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:8810..8830 ✓ (4.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. The test ends at line 8816 and `clear_current_model_call_id_warns_when_no_id_is_active` starts at line 8818. I'll insert the new test between lines 8816 and 8818.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (4 → 69 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn model_call_completed_without_start_emitted_when_no_id_active() {
+  +         // True-positive test: when ModelCallCompleted is recorded without
+  +         // a prior set_current_model_call_id, the record() guard must emit
+  +         // a ModelCallCompletedWithoutStart diagnostic. This verifies the
+  +         // diagnostic path is not broken, so that genuine lifecycle gaps
+  +         // (unmatched completions) are correctly detected.
+  +         let _state_lock = state_global_test_lock();
+  +         reset_global_recorder_for_test();
+  +         let dir = tempfile::tempdir().unwrap();
+  +         let events_path = dir.path().join("events.jsonl");
+  +         let config = StateConfig {
+  +             enabled: true,
+  +             fail_soft: true,
+  +             events_path: events_path.clone(),
+  +             store_path: None,
+  +         };
+  +         init_global(config, json!({})).unwrap();
+  ... (48 more lines)
+ ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run the focused tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me run the focused tests:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::panic… ✓ (29.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Existing test passes. Now let me run the new test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::model… ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test output shows that the `ModelCallCompletedWithoutStart` event IS being emitted and it contains `"note":"ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"`. But my assertion was checking for the exact string `"no active CURRENT_MODEL_CALL_ID"` — which is different from what's in the actual event.
+
+The actual note in the diagnostic is: `"ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"`
+
+My assertion uses: `"no active CURRENT_MODEL_CALL_ID"` -- that's not in the note.
+
+The original code in the record function (line 611) uses: `"note": "ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"`.
+
+So my test assertion string is wrong. Let me fix it to match the actual note text.
+────────────────────────────────────────────────────────────────────────────────
+
+The test assertion string doesn't match the actual event payload. Let me fix it:
+            // Verify the diagnostic payload includes the note about no active
+            // CURRENT_MODEL_CALL_ID.
+            assert!(
+  -             raw.contains("no active CURRENT_MODEL_CALL_ID"),
+  +             raw.contains("ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"),
+                "diagnostic should note no active model call ID: {raw}"
+            );
+  ✓ Auto-approved: edit: src/state.rs (6 → 6 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/state.rs (6 → 6 lines)
+            // Verify the diagnostic payload includes the note about no active
+            // CURRENT_MODEL_CALL_ID.
+            assert!(
+  -             raw.contains("no active CURRENT_MODEL_CALL_ID"),
+  +             raw.contains("ModelCallCompleted recorded without active CURRENT_MODEL_CALL_ID"),
+                "diagnostic should note no active model call ID: {raw}"
+            );
+ ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now re-run the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests::model… ✓ (31.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Both tests pass. Now let me run the full `state::tests::` suite to make sure nothing else is broken.
+────────────────────────────────────────────────────────────────────────────────
+
+Both focused tests pass. Now let me run all state tests:
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test state::tests:: 2>&1 ✓ (5.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 277 state tests pass. Now let me run cargo fmt and then cargo build to complete verification.
+────────────────────────────────────────────────────────────────────────────────
+
+All 277 state tests pass. Now format and build:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Formatting issues. Let me fix by running cargo fmt.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (2.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, formatted. Now build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 ✓ (14.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Let me now run fmt check once more to make sure it's clean, then run the state tests one more time.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check && cargo … ✓ (34.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All checks pass. Now let me verify the git diff and commit.
+────────────────────────────────────────────────────────────────────────────────
+
+All checks pass. Let me verify the diff and commit:
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat 2>&1 ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff only touches `src/state.rs`, which matches the task's Edit Surface. Let me commit now.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (2.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All done. Let me update the todo list and provide the final summary.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three tasks are done. Let me summarize what changed.
+────────────────────────────────────────────────────────────────────────────────
+
+## Summary
+
+**Changed file**: `src/state.rs` (111 insertions, 6 deletions)
+
+### What changed
+
+**1. Panic hook (lines 72-100)**: Replaced `CURRENT_MODEL_CALL_ID.with(|c| c.take())` in an `if let` pattern with a peek-before-record pattern:
+• Take the ID, clone it, restore it, then record `ModelCallCompleted` while the cell is still populated
+• Clear the cell explicitly after recording so the lifecycle is properly closed afterward
+
+This eliminates the false `ModelCallCompletedWithoutStart` diagnostic that was emitted every time the panic hook closed an in-flight model call — because `record()` now sees `CURRENT_MODEL_CALL_ID` is still set when it checks.
+
+**2. Updated test `panic_hook_closes_model_call_before_failure_observed` (line 8693)**: Matches the new peek-before-record pattern and adds an assertion that `ModelCallCompletedWithoutStart` is NOT in the event stream.
+
+**3. New test `model_call_completed_without_start_emitted_when_no_id_active` (line 8818)**: Verifies the true-positive path — recording `ModelCallCompleted` without an active `CURRENT_MODEL_CALL_ID` correctly emits the `ModelCallCompletedWithoutStart` diagnostic.
+
+### Verification
+• `cargo fmt -- --check`: pass
+• `cargo build`: pass
+• `cargo test state::tests::`: 277 passed, 0 failed
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
