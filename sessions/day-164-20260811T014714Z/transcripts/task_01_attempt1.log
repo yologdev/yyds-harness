@@ -1,0 +1,713 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. The `yyds state trace <run-id>` command times out on large event histories (288K events)
+2. I need to make it complete in under 5 seconds
+3. The fix should be in `src/commands_state.rs`
+4. Strategy: scan events in reverse from newest to oldest, stop when trace is complete
+5. Keep under 50 lines, no new dependencies
+
+Let me first:
+1. Read the evolve skill
+2. Read the current source code for the trace command
+3. Understand the current scanning strategy
+4. Verify the problem exists
+5. Implement the fix
+
+Let me start by reading the evolve skill and the relevant source.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_state.rs (100 lines) ✓ (1.6s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `handle_trace` function in this large file.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn handle_trace' in src/commands_state.rs ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `handle_trace` function and surrounding context.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:560..760 ✓ (539ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to find `build_trace_report` and `read_events` to understand how the trace works and why it's slow. Let me search for these functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn build_trace_report' in src/commands_state.rs  ▶ search 'fn read_events\b' in src/commands_state.rs ✓ (1.1s)
+ ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `build_trace_report` and find `read_events`.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.7s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:2090..2290  ▶ search 'read_events' in src/commands_state.rs ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The problem is clear: `build_trace_report` iterates over ALL events (the entire `events` slice), filtering for those matching the run_id or trace_id. The `handle_trace` function reads ALL events via `read_events`, then passes them to `build_trace_report`. 
+
+The fix: instead of reading all events into memory and then filtering, I should scan the events in reverse (from newest to oldest). Since runs are chronologically ordered, a trace for a recent run will be found near the end of the file. Once all matching events for the trace are collected and we see events older than the trace's time window, we can stop.
+
+Let me also find the `read_events` function to understand it, and check if there's a reverse-reading version.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.9s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events\b' in src/commands_state.rs ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for `read_events(` to find where it's defined.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn read_events\|fn read_limited_events\|fn read_events_bounded' src/com… ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the read_events function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1440..1500 ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the problem clearly:
+
+1. `handle_trace` calls `read_events` which loads ALL 288K+ events into memory
+2. `build_trace_report` then iterates through ALL events to find those matching the run_id
+
+The fix: Instead of reading all events, I need a strategy that scans fewer events. The best approach is:
+1. Read events in reverse from the end of the file (using `read_tail` or similar)
+2. Once we've collected all matching events for a trace AND we encounter events that are older than the trace window, stop scanning
+3. Sort the matched events back into forward order for output
+
+Let me look at how `read_tail` works and how `handle_tail` handles the `--run-id` filter, since it already has a similar pattern.
+
+Let me also look at the test for `trace_report_reconstructs_run_timeline_with_counts`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'trace_report_reconstructs_run_timeline_with_counts' in src/commands_state.rs ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14680..14740 ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me understand the approach:
+
+The current flow:
+1. `handle_trace` → `read_events(path)` reads ALL 288K events into memory
+2. `build_trace_report(&events, id)` filters ALL events for those matching the run_id/trace_id
+
+The fix approach per the task spec: "Scan backwards from the end of the event store (runs are recent, trace events are near the end)"
+
+Strategy:
+1. In `handle_trace`, instead of `read_events` (full read), read events in reverse using a bounded read from the end
+2. Filter matching events, and stop when we've gone deep enough past the trace's time window
+3. Reverse the collected events back to forward order for the report
+
+But wait — I need to think about this more carefully. The `build_trace_report` takes `&[Value]` and filters. I could instead modify `handle_trace` to do a reverse scan instead of reading the full file.
+
+Let me look at how `read_tail` works, since it already reads lines from the end of a file:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_tail' in src/commands_state.rs ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read `read_tail`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1400..1445 ✓ (552ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me design the fix:
+
+The approach for `handle_trace`:
+1. Instead of calling `read_events(path)` which reads ALL events, I'll read events in chunks from the tail
+2. Start with a reasonable chunk size (e.g., last 50K events' worth of bytes)
+3. Scan backwards through those events, collecting all that match the trace id
+4. If we haven't found the trace start (RunStarted event) yet, read more from earlier in the file
+5. Once we have all matching events, sort them forward and format
+
+Actually, a simpler approach: read events in reverse from the end, using a bounded scan. Since run events for a recent trace will be among the most recent events, I can start from the end and read backwards.
+
+Let me look at how the event file grows - events are appended, so the most recent events are at the end. A specific run's events will be contiguous in time and likely contiguous-ish in the file.
+
+The simplest and most robust approach:
+1. Read events from the tail in chunks (e.g., 10K events at a time)
+2. For each chunk, filter matching events by run_id or trace_id
+3. Stop when: (a) we've accumulated matching events AND the earliest matching event's timestamp is older than the oldest event in the current chunk, signaling we've read past all matching events; OR (b) we've read the entire file
+4. Sort the accumulated events and build the report
+
+Wait, actually let me think simpler. The trace events for a given run are temporally contiguous - they all happen during the same run which typically lasts 20 minutes max. They won't be spread across the entire file. So:
+
+1. Read events from the tail in reverse chunks until we find any matching event
+2. Once we find one, continue reading backwards until we stop seeing matching events (i.e., we're past the run's time window)
+3. Sort and format
+
+The key insight: since events are appended chronologically, the events for run X are in a contiguous block. If we scan backwards from the end and find matching events, we just keep scanning until we stop matching. Then we have the complete set.
+
+But wait - there could be interleaved events from different runs if the system records multiple runs concurrently. Let me look at how events are recorded to understand if runs are strictly sequential or can be interleaved.
+
+Actually, looking at the task spec: "scan events in reverse (from newest to oldest) and stop when the trace is complete or when events are older than the trace's start time"
+
+So the logic:
+1. Scan events backwards from newest
+2. Collect events where run_id matches OR trace_id matches
+3. Once we collect at least one event AND we've seen a RunStarted event for this run, we can stop when we encounter events whose timestamp is older than the RunStarted timestamp
+4. Or: collect all matching events from the tail, and once we've gone past the window of the trace (say, we've seen no matching events for a while), stop
+
+The simplest approach that handles interleaved events: scan backwards until we find no more matching events OR we've read a reasonable amount past the earliest matching event's timestamp.
+
+Actually, the most robust approach: use a bounded backward scan. Read N events at a time from the tail, filter for matches, stop when we either:
+- Find all events (we found a RunStarted for this run and events before it have older timestamps)
+- Exceed a reasonable scan limit (e.g., 100K events)
+
+Let me implement this. I'll modify `handle_trace` to use a reverse-chunk scanning approach.
+
+Here's my plan:
+
+```rust
+fn handle_trace(id: &str) {
+    let path = default_events_path();
+    
+    // Read events in reverse chunks from the tail to avoid full scan.
+    // A run's events are temporally contiguous; scanning backwards means
+    // we stop once we've passed the run's time window.
+    match read_trace_events(&path, id) {
+        Ok(events) => match build_trace_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        },
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    // ...read from tail in chunks, filter by id, stop when trace is complete
+}
+```
+
+Let me think about the chunk sizes and stopping conditions more carefully.
+
+The file has 288K events. If I read 20K event chunks from the tail, that's at most ~15 chunks, or really just 1-2 chunks since the trace is near the end. Each chunk read via `read_tail` is efficient because it uses a byte-estimate seek.
+
+Actually, looking more carefully at `read_tail`, it estimates bytes based on event count and seeks to the right position. It reads forward from there. So `read_tail(path, 20000)` would read approximately the last 20K events.
+
+Here's my refined approach:
+
+```rust
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    const CHUNK_SIZE: usize = 20_000;  // Events per reverse chunk
+    const MAX_TOTAL_SCAN: usize = 200_000;  // Safety cap
+    
+    let file = std::fs::File::open(path).map_err(|e| format!("cannot open state log: {e}"))?;
+    let file_size = file.metadata().map_err(|e| format!("cannot read state log metadata: {e}"))?.len();
+    
+    const EST_BYTES_PER_LINE: u64 = 500;
+    let chunk_bytes = (CHUNK_SIZE as u64).saturating_mul(EST_BYTES_PER_LINE).saturating_mul(3);
+    
+    let mut matched: Vec<Value> = Vec::new();
+    let mut scan_offset = file_size;
+    let mut total_scanned = 0usize;
+    let mut found_run_started = false;
+    
+    while scan_offset > 0 && total_scanned < MAX_TOTAL_SCAN {
+        let chunk_start = scan_offset.saturating_sub(chunk_bytes);
+        // Read events in this byte range
+        let events_in_chunk = read_events_in_range(path, chunk_start, scan_offset)?;
+        total_scanned += events_in_chunk.len();
+        
+        let mut chunk_matched = false;
+        for event in events_in_chunk.iter().rev() {
+            let matches = event_string(event, "run_id").map(|r| r == id).unwrap_or(false)
+                || event_string(event, "trace_id").map(|t| t == id).unwrap_or(false);
+            if matches {
+                matched.push(event.clone());
+                chunk_matched = true;
+                if event_string(event, "event_type").map(|t| t == "RunStarted").unwrap_or(false) {
+                    found_run_started = true;
+                }
+            }
+        }
+        
+        // Stop if we've found the trace start and the current chunk had no matches
+        if found_run_started && !chunk_matched {
+            break;
+        }
+        
+        if chunk_start == 0 {
+            break;
+        }
+        scan_offset = chunk_start;
+    }
+    
+    if matched.is_empty() {
+        return Err(format!("no state trace found for '{id}'"));
+    }
+    
+    // Reverse to restore forward chronological order
+    matched.reverse();
+    Ok(matched)
+}
+```
+
+Hmm, but `read_events_in_range` doesn't exist. I'd need to implement it, which adds complexity. Let me simplify.
+
+Alternative: use `read_tail` to read N events from the end. If we find matches but no RunStarted, read more from further back. The `read_tail` function already handles the byte-level seeking.
+
+Actually, let me look at this differently. The simplest approach with the least code:
+
+```rust
+fn handle_trace(id: &str) {
+    let path = default_events_path();
+    // Read events in reverse from the tail. Trace events are near the end
+    // of the chronologically-ordered event store, so this avoids the full
+    // 288K+ event scan that caused timeouts.
+    match read_trace_events(&path, id) {
+        Ok(events) => match build_trace_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        },
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+```
+
+Wait, actually I can be even simpler. I can use `read_tail` to read events from the tail in increasing chunk sizes until I've found all matching events.
+
+Let me think about the simplest possible implementation:
+
+1. Start with reading last 10K events
+2. Filter for matching run_id/trace_id
+3. If we found matches but no RunStarted event, the trace starts earlier - double the chunk size and retry
+4. Continue until we find RunStarted or hit a reasonable limit
+
+Actually, I think the cleanest approach is:
+
+```rust
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    const CHUNK: usize = 20_000;
+    const MAX_SCAN: usize = 200_000;
+    
+    let file = std::fs::File::open(path)
+        .map_err(|e| format!("cannot open state log: {e}"))?;
+    let file_size = file.metadata()
+        .map_err(|e| format!("cannot read state log metadata: {e}"))?.len();
+    
+    // Read from the tail in chunks, collecting matching events.
+    // Stop when we've seen RunStarted and are past the trace window.
+    let mut matched: Vec<Value> = Vec::new();
+    let mut offset = file_size;
+    let mut total = 0usize;
+    let mut found_start = false;
+    
+    while offset > 0 && total < MAX_SCAN {
+        let chunk_lines = read_file_tail_chunk(&file, offset, CHUNK)?;
+        total += chunk_lines.len();
+        
+        let mut any_match = false;
+        // Process in reverse (newest first) since we read from the tail
+        for line in chunk_lines.iter().rev() {
+            let event: Value = serde_json::from_str(line)
+                .map_err(|e| format!("invalid event JSON: {e}"))?;
+            let matches = event_string(&event, "run_id").map_or(false, |r| r == id)
+                || event_string(&event, "trace_id").map_or(false, |t| t == id);
+            if matches {
+                if event_string(&event, "event_type").map_or(false, |t| t == "RunStarted") {
+                    found_start = true;
+                }
+                matched.push(event);
+                any_match = true;
+            }
+        }
+        
+        if found_start && !any_match {
+            break;
+        }
+        
+        // Move offset back by estimated bytes
+        offset = offset.saturating_sub((CHUNK as u64) * 500 * 3);
+    }
+    
+    if matched.is_empty() {
+        return Err(format!("no state trace found for '{id}'"));
+    }
+    
+    matched.reverse();  // restore chronological order
+    Ok(matched)
+}
+```
+
+Wait, but this approach has a problem: `read_file_tail_chunk` doesn't exist. Let me look at what we have...
+
+OK, let me take the simplest possible approach. I'll modify `handle_trace` to use `read_tail` to get events from the tail, and iteratively expand the window until we have the full trace. The key functions available:
+- `read_tail(path, limit)` → Vec<String> (raw lines from end of file)
+- `read_tail_events(path, limit)` → (Vec<Value>, String) (parsed events from tail)
+
+Let me use `read_tail_events` iteratively:
+────────────────────────────────────────────────────────────────────────────────
+
+Now I understand the problem and the available tools. Let me check the existing test and verify the current behavior by also looking at what `event_string` and `event_timestamp` helpers look like:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn event_string\b' in src/commands_state.rs  ▶ search 'fn event_timestamp\b' in src/commands_state.rs ✓ (1.1s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search more broadly for these helper functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'fn event_string\|fn event_timestamp' src/commands_state.rs | head -10 ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, let me read those helpers quickly and also the `read_tail_events` function more carefully.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:14475..14500  ▶ read src/commands_state.rs:1755..1770 ✓ (1.6s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have all the pieces. Let me also check the `read_tail_events` function:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_state.rs:1482..1507 ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a complete understanding. Let me design the fix.
+
+Current flow:
+```
+handle_trace:
+  events = read_events(path)  // reads ALL 288K events
+  build_trace_report(&events, id)  // filters all events for matching run_id/trace_id
+```
+
+The fix: Replace `read_events` with a bounded reverse scan.
+
+My approach:
+1. Use `read_tail` to read events from the end of the file in increasing chunks
+2. Start with 20K events; if matches found but no RunStarted, expand to 50K, 100K, 200K
+3. Once RunStarted is found, the trace is complete - stop scanning
+4. Reverse the collected events to restore forward chronological order
+
+Actually, let me think about this more carefully. The trace consists of events that have either:
+- `run_id == id` OR `trace_id == id`
+
+A run typically has events like: RunStarted, ToolCallCompleted, FailureObserved, RunCompleted, etc.
+
+The events for a single run are in a contiguous-ish block in the file. If I scan from the tail and collect matching events, I need to know when to stop.
+
+Simplest: scan from tail in one chunk of, say, 50K events. If we find matches AND a RunStarted, we have the complete trace. If we find matches but NO RunStarted, double the chunk. This should handle the vast majority of cases since traces are recent.
+
+Implementation:
+
+```rust
+fn handle_trace(id: &str) {
+    let path = default_events_path();
+    match read_trace_events(&path, id) {
+        Ok(events) => match build_trace_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        },
+        Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+    }
+}
+
+/// Read events for a trace from the tail of the event store.
+/// Scans backwards in chunks rather than reading all events,
+/// avoiding timeouts on large event histories.
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    // Start with a small chunk and expand if the trace start isn't found.
+    const INITIAL_CHUNK: usize = 20_000;
+    const MAX_CHUNK: usize = 200_000;
+
+    let mut limit = INITIAL_CHUNK;
+    let mut matched: Vec<Value> = Vec::new();
+
+    while limit <= MAX_CHUNK {
+        let (chunk_events, _) = read_tail_events(path, limit)?;
+        if chunk_events.is_empty() {
+            break;
+        }
+
+        // Collect matching events in reverse order
+        matched.clear();
+        let mut found_start = false;
+        for event in chunk_events.iter().rev() {
+            let matches = event_string(event, "run_id").map_or(false, |r| r == id)
+                || event_string(event, "trace_id").map_or(false, |t| t == id);
+            if matches {
+                if event_string(event, "event_type").map_or(false, |t| t == "RunStarted") {
+                    found_start = true;
+                }
+                matched.push(event.clone());
+            }
+        }
+
+        if found_start {
+            // Trace is complete — we have RunStarted
+            matched.reverse(); // restore forward chronological order
+            return Ok(matched);
+        }
+
+        if matched.is_empty() {
+            // No matching events in this chunk — trace not found
+            break;
+        }
+
+        // Found matches but no RunStarted — trace starts earlier, expand window
+        limit *= 2;
+    }
+
+    if matched.is_empty() {
+        Err(format!("no state trace found for '{id}'"))
+    } else {
+        matched.reverse();
+        Ok(matched)
+    }
+}
+```
+
+Wait, there's a bug: each call to `read_tail_events` re-reads from the file. When I expand from 20K to 40K, I'm reading the same 20K tail events again plus 20K more. That's fine — it's at most 200K events read total.
+
+But there's another issue: if the chunk contains matching events but not RunStarted, and we expand the chunk, we'll re-read those same matching events and push them again, creating duplicates. I need to handle deduplication carefully.
+
+Actually, let me reconsider. I need a different approach:
+- Read the tail in one go with a reasonable limit
+- If we find matches but no RunStarted, read a larger chunk 
+- Since events in the new larger chunk are a superset of the previous chunk, I should just re-collect
+
+Let me simplify: just read a single large chunk (e.g., 100K events) from the tail and filter. For 288K events with each event being ~500 bytes, 100K events is ~50MB which should be fast. And 100K events is enough to cover many days of sessions.
+
+Actually, let me be even simpler and more robust. The core insight is: a run's events are temporally contiguous. If I read N events from the tail and find matches but no RunStarted, I need to read more. But instead of iteratively expanding, I can just read a generous chunk once.
+
+For a trace that happened recently (within the last few sessions), even 20K events should be enough (each session adds ~1-2K events). For an older trace, I might need more.
+
+Let me take the iterative approach but handle dedup correctly:
+
+```rust
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    const INITIAL_CHUNK: usize = 20_000;
+    const MAX_CHUNK: usize = 200_000;
+
+    let mut limit = INITIAL_CHUNK;
+
+    while limit <= MAX_CHUNK {
+        let (chunk_events, _) = read_tail_events(path, limit)?;
+        if chunk_events.is_empty() {
+            return Err(format!("no state trace found for '{id}'"));
+        }
+
+        // Collect matching events in reverse (newest first)
+        let mut matched: Vec<Value> = Vec::new();
+        let mut found_start = false;
+        for event in chunk_events.iter().rev() {
+            let matches = event_string(event, "run_id").map_or(false, |r| r == id)
+                || event_string(event, "trace_id").map_or(false, |t| t == id);
+            if matches {
+                if event_string(event, "event_type").map_or(false, |t| t == "RunStarted") {
+                    found_start = true;
+                }
+                matched.push(event.clone());
+            }
+        }
+
+        if matched.is_empty() {
+            return Err(format!("no state trace found for '{id}'"));
+        }
+
+        if found_start {
+            matched.reverse();
+            return Ok(matched);
+        }
+
+        // Found matches but no RunStarted — expand window
+        if limit == MAX_CHUNK {
+            // At max, return what we have even if incomplete
+            matched.reverse();
+            return Ok(matched);
+        }
+        limit = (limit * 2).min(MAX_CHUNK);
+    }
+
+    Err(format!("no state trace found for '{id}'"))
+}
+```
+
+This is clean. At most we read 20K + 40K + 80K + 160K = 300K events across all iterations, which is still the same order as reading all 288K events. But the key insight is: in practice, the trace is in the most recent 20K events, so we'll succeed on the first iteration.
+
+Actually wait, I just realized: `read_tail_events` uses `read_tail` which seeks to an estimated byte offset. Each call is independently efficient - it only reads the estimated bytes needed. So the total I/O is proportional to the chunk sizes, not the full file.
+
+But there's a subtlety: `read_tail` seeks to `file_size - estimated_bytes` and reads forward from there. If `estimated_bytes > file_size`, it seeks to 0. This means reading 200K events worth of bytes (~300MB) from a 288K event file would effectively read most of the file. But since we start with 20K, we should usually succeed on the first try.
+
+Let me now implement this. I need to:
+1. Add `read_trace_events` function
+2. Modify `handle_trace` to use it instead of `read_events` + `build_trace_report`
+
+Wait, but `build_trace_report` also does sorting and reporting. If I pass the already-filtered events to it, it should work fine because it filters by id internally too. But if I've already filtered, the internal filter becomes a no-op (all events already match). That's fine.
+
+Let me also think about edge cases:
+- What if the run_id is the same as the trace_id? The filter handles both.
+- What if there are interleaved events from different runs? The reverse scan collects all events with matching run_id or trace_id. If events from different runs are interleaved, we'd collect events from other runs that happen to be near the matching events. But those other events won't have matching run_id or trace_id, so they won't be collected. The reverse scan only collects events that match.
+- What about ordering? The matched events are collected newest-first (from the reverse iteration), then reversed to forward chronological order. `build_trace_report` then sorts by (timestamp, event_id), which should produce the same ordering regardless.
+
+This approach is correct. Let me implement it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a full understanding. Let me implement the fix. The plan:
+
+1. Add a `read_trace_events` function that reads from the tail in expanding chunks
+2. Modify `handle_trace` to use it instead of full `read_events`
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (553ms)
+  ▶ todo ✓ (490ms)
+  ▶ todo ✓ (552ms)
+  ▶ todo ✓ (537ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement. First, let me add the `read_trace_events` function near `handle_trace`, and modify `handle_trace` to use it.
+
+Let me re-read the exact area around `handle_trace` to make a clean edit.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 3.7s (4 ✓)
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (508ms)
+  ▶ read src/commands_state.rs:566..586 ✓ (550ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I'll make the surgical edit. I'll replace `handle_trace` and add `read_trace_events` right after it.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 7.4s (2 ✓)
+
+
+    fn handle_trace(id: &str) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  -     match build_trace_report(&events, id) {
+  -         Ok(report) => println!("{report}"),
+  +     match read_trace_events(&path, id) {
+  +         Ok(events) => match build_trace_report(&events, id) {
+  +             Ok(report) => println!("{report}"),
+  +             Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         },
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  + }
+  + 
+  + /// Read events matching a trace/run id from the tail of the event store.
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_state.rs (11 → 62 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_state.rs (11 → 62 lines)
+    fn handle_trace(id: &str) {
+        let path = default_events_path();
+  -     let Ok(events) = read_events(&path) else {
+  -         eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
+  -         return;
+  -     };
+  -     match build_trace_report(&events, id) {
+  -         Ok(report) => println!("{report}"),
+  +     match read_trace_events(&path, id) {
+  +         Ok(events) => match build_trace_report(&events, id) {
+  +             Ok(report) => println!("{report}"),
+  +             Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +         },
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+  +     }
+  + }
+  + 
+  + /// Read events matching a trace/run id from the tail of the event store.
+  + ///
+  + /// Scans backwards in expanding chunks rather than reading all events,
+  ... (48 more lines)
+ ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me run cargo build to see if it compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (549ms)
+  ▶ todo ✓ (505ms)
+  ▶ todo ✓ (553ms)
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -20 ✓ (12.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now let me run the state_trace tests.
+────────────────────────────────────────────────────────────────────────────────
+  4 tools completed in 18.6s (4 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- state_trace -- -… ✓ (30.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The tests filtered out to 0 matching. Let me search for the exact test names that match the trace functionality.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test -- trace_report -- … ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test passes. Let me also run `cargo fmt -- --check` and then check if the event store exists to try a live test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Format check passes. Now let me try to do a live test with the actual event store if it exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/events.json… ✓ (1.1s)
+
+

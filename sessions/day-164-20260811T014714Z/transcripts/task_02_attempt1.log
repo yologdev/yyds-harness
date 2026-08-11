@@ -1,0 +1,391 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the task:
+
+1. There's a remaining model-call lifecycle gap where `deepseek_model_call_abnormal_completed_count=1` 
+2. Day 163 already fixed a panic hook path
+3. I need to find the remaining path that produces an unmatched ModelCallCompleted event
+
+Let me start by reading the evolve skill, then investigating the code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/state.rs:1..201 ✓ (19ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me understand the current state. The Day 163 fix seems to be the panic hook (lines 72-106). Let me now look at the `record()` function where ModelCallCompletedWithoutStart diagnostic is emitted, and understand the lifecycle.
+
+Let me read the record function and search for key call sites.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 6.1s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompletedWithoutStart' in src/state.rs  ▶ search 'clear_current_model_call_id' in src  ▶ search 'set_current_model_call_id' in src ✓ (20ms)
+ ✓ (19ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at the record function that diagnoses ModelCallCompletedWithoutStart (lines ~600-630), and the call sites in prompt.rs where clear_current_model_call_id is called. This will help me understand all the paths that produce unmatched completions.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.1s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:595..645  ▶ read src/prompt.rs:960..1060 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at lines around 1059-1150 in prompt.rs to see the ctrl+c and other paths that call clear_current_model_call_id. Also let me look at the AgentEvent::Stopped path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1055..1175 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the initial part of this function where `model_call_id` is generated and `set_current_model_call_id` is called. Let me look around line 780.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:750..950 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read more around the AgentEnd handler (lines 944-975) to see the complete logic:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:944..974 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the complete flow:
+
+1. `handle_prompt_events` creates a `model_call_id`, calls `set_current_model_call_id(model_call_id.clone())`, records `ModelCallStarted`, and sets `model_call_started = true`.
+
+2. Then it loops through events. For `AgentEnd`, `InputRejected`, `ctrl_c`, and stream-close-without-agent-end, it records `ModelCallCompleted` and calls `clear_current_model_call_id()`.
+
+3. In `record()` at line 613-629, when a `ModelCallCompleted` is recorded and `CURRENT_MODEL_CALL_ID` is None, it emits `ModelCallCompletedWithoutStart`.
+
+So the diagnostic gap (abnormal_completed_count=1) happens when:
+- A `ModelCallCompleted` event is recorded but `CURRENT_MODEL_CALL_ID` is `None`
+- This can happen if someone records a `ModelCallCompleted` that isn't going through `handle_prompt_events`
+
+But wait — the task says "The Day 163 fix proved src/state.rs lifecycle fixes are productive." Let me check git log to see what was changed.
+
+Actually, let me step back. The key insight is: where could a `ModelCallCompleted` be recorded that doesn't go through `handle_prompt_events`? Or where could `CURRENT_MODEL_CALL_ID` be cleared before `record(ModelCallCompleted)` is called?
+
+Let me check if there are other places that record ModelCallCompleted.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'ModelCallCompleted' in src ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The only places in src/ that actually call `record(EventType::ModelCallCompleted, ...)` are:
+1. `src/prompt.rs` - the `handle_prompt_events` function (multiple paths: AgentEnd, InputRejected, ctrl_c, stream close)
+2. `src/state.rs` - the panic hook
+
+All of these go through `record()`. The diagnostic at line 613-629 checks if `CURRENT_MODEL_CALL_ID` is None when a `ModelCallCompleted` is being recorded.
+
+Now the question is: are there any code paths that clear `CURRENT_MODEL_CALL_ID` before `ModelCallCompleted` is recorded? Let me think about this...
+
+The `clear_current_model_call_id()` calls are:
+1. After AgentEnd completion (line 974)
+2. After InputRejected completion (line 1015)
+3. After ctrl+c completion (line 1086)
+4. After stream-close completion (line 1147)
+
+All of these are called AFTER `record(ModelCallCompleted, ...)` - so they're fine.
+
+The panic hook (state.rs lines 80-106):
+- Takes the model_call_id (clone)
+- Records ModelCallCompleted
+- Then clears (line 103-105)
+This is also correct.
+
+But wait - what about the interaction between `record()` itself and the panic hook? Let me re-read:
+
+```rust
+fn record(event_type: EventType, actor: Actor, payload: Value) {
+    ensure_run_started();
+    let guard = GLOBAL_RECORDER.lock().unwrap_or_else(|e| e.into_inner());
+    ...
+    if event_type == EventType::ModelCallCompleted {
+        let had_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+            let val = c.take();
+            let had = val.is_some();
+            c.set(val);
+            had
+        });
+        if !had_call_id {
+            let _ = recorder.append(
+                EventType::ModelCallCompletedWithoutStart,
+                ...
+            );
+        }
+    }
+    if let Err(e) = recorder.append(event_type, actor, payload) {
+```
+
+Here's the problem: The `record()` function takes the Mutex lock FIRST, then checks CURRENT_MODEL_CALL_ID. But the panic hook can fire at any time! If the panic hook fires while record is holding the lock, the panic hook will try to call `record()` which will try to lock the Mutex... but the Mutex is already locked by the same thread. This would deadlock, not produce a false diagnostic.
+
+Wait, that's a deadlock issue, not a false-diagnostic issue. Let me think differently...
+
+Actually, the real question is: what could cause `CURRENT_MODEL_CALL_ID` to be `None` when a legitimate `ModelCallCompleted` is being recorded from `handle_prompt_events`?
+
+Looking at `handle_prompt_events` (prompt.rs):
+- Line 780: `set_current_model_call_id(model_call_id.clone())` is called BEFORE the loop
+- Line 781-785: `ModelCallStarted` is recorded
+- Then inside the loop, when `ModelCallCompleted` is recorded via AgentEnd or other paths, it calls `record(ModelCallCompleted, ...)` and then `clear_current_model_call_id()`
+
+The only way `CURRENT_MODEL_CALL_ID` would be None when a legitimate completion arrives:
+1. Something calls `clear_current_model_call_id()` before the completion is recorded (bug)
+2. The thread_local is reset (process restart?)
+3. Something else takes the value without restoring it
+
+Wait! Let me look at the `record()` function more carefully at line 614-619:
+
+```rust
+let had_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+    let val = c.take();
+    let had = val.is_some();
+    c.set(val);
+    had
+});
+```
+
+This takes and then restores the value - it's a peek. This is correct.
+
+But the panic hook (lines 80-85):
+```rust
+let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+    let val = c.take(); // take ownership
+    let clone = val.clone(); // clone for the payload
+    c.set(val); // restore so record() sees it
+    clone
+});
+```
+
+This also takes and restores. Correct.
+
+Hmm. Let me think about this differently. What if there's a case where `handle_prompt_events` is entered but `set_current_model_call_id` is NOT called? Or where `CURRENT_MODEL_CALL_ID` is set but there's some early return before the loop?
+
+Actually, let me look at the function more carefully. `handle_prompt_events` always sets the model call ID at line 780. And it records ModelCallStarted at 781-785. This always happens.
+
+Now, inside the loop, when an `AgentEnd` arrives and `model_call_started` is false, it records a `ModelCallStarted` (lines 946-952) - but note this is a DIFFERENT `ModelCallStarted` with the SAME `model_call_id`. If `model_call_started` is already true, it doesn't re-record. But it always records `ModelCallCompleted`.
+
+Wait, I think I might need to look at this from a different angle. The task says "deepseek_model_call_abnormal_completed_count=1". Let me check what counts as "abnormal" and how this gnome is computed.
+
+Let me look at log_feedback.py or build_evolution_dashboard.py for how abnormal_completed_count is computed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'abnormal_completed' in scripts  ▶ search 'model_completion_without_start' in scripts ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at how `abnormal_model_completion_status` is computed:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2245..2325 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `deepseek_model_call_abnormal_completed` counts when `abnormal_model_completion_status(data)` returns a non-None value on a ModelCallCompleted. Let me look at that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def abnormal_model_completion_status' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read that function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:435..505 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `abnormal_model_completion_status` checks:
+1. If status is not in NORMAL_MODEL_COMPLETION_STATUSES → abnormal
+2. If there's an error field → abnormal
+3. If error_detail exists and is not benign → abnormal
+
+Let me check what NORMAL_MODEL_COMPLETION_STATUSES contains:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'NORMAL_MODEL_COMPLETION_STATUSES' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `abnormal_model_completion_status` considers these as normal: `completed`, `success`, `ok`, `stopped_after_completion_file`.
+
+Now let me check what statuses are being used in `handle_prompt_events`:
+- AgentEnd: `"completed"`
+- InputRejected: `"input_rejected"` 
+- ctrl+c: `"interrupted"`
+- stream close: `"stream_closed_without_agent_end"`
+
+So `input_rejected`, `interrupted`, and `stream_closed_without_agent_end` are ALL considered abnormal!
+
+But wait - the task says `deepseek_model_call_abnormal_completed_count=1` and the trajectory shows `model_abnormal/model_completion_without_start=1`. Let me check `model_completion_without_start` is a lifecycle cause...
+
+Let me look at `lifecycle_cause` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_completion_without_start' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2540..2600 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me go back to understanding the problem. The lifecycle cause `model_completion_without_start` means there's a `ModelCallCompleted` event without a corresponding `ModelCallStarted`. Let me look at how that's detected in the lifecycle analysis.
+
+Let me search for the lifecycle analysis code that pairs ModelCallStarted with ModelCallCompleted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_completion_without_start' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `model_completion_without_start` is a lifecycle cause for unmatched ModelCallCompleted. Let me find where unmatched ModelCallCompleted events are detected:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched.*complet' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_call_started_runs' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2345..2395 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see! The `model_completion_without_start` comes from `unmatched_completed_run_ids` (line 2371). This is computed as: ModelCallCompleted runs that are NOT in ModelCallStarted runs.
+
+But wait — both `model_call_started_runs` and `model_call_completed_runs` use `run_id` as the key. In the event processing:
+- For ModelCallStarted (line 2288-2293): `model_call_started_runs[run_id] = data`
+- For ModelCallCompleted (line 2310): `model_call_completed_runs.add(run_id)`
+
+The `run_id` is extracted from the event or data. If a ModelCallCompleted has a `run_id` but the corresponding ModelCallStarted doesn't (e.g., because it was recorded without a `run_id` field), they won't match.
+
+But more importantly, notice that `model_call_completed_runs` is a `set[str]`, and a run can have multiple ModelCallCompleted events. Since `model_call_started_runs` is a `dict[str, dict]`, each run_id can only have ONE ModelCallStarted tracked.
+
+So if there are multiple ModelCallCompleted events for the same run (which is normal — each model API call produces both a start and a completion), the first completion adds the run_id to `model_call_completed_runs`, and the subsequent completions also add the same run_id (which is fine since it's a set). And `model_call_started_runs` also maps run_id to the most recent ModelCallStarted data.
+
+But the unmatched count is based on run_ids: `model_call_completed_runs - model_call_started_runs`. If a ModelCallCompleted has a run_id but the corresponding ModelCallStarted was recorded without a run_id (or with a different run_id), that's an unmatched completion.
+
+Wait, actually let me re-read the code. Let me look at how run_id is extracted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_run_id' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:384..414 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `run_id` is extracted from multiple places in the event. Now let me look at the state.rs `record()` function to see how events get their run_id. The `record()` function calls `recorder.append()` which presumably adds a run_id to the event. Let me look at how the `StateRecorder.append` works:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:400..500 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to understand what the actual remaining gap is. Let me look at the `ensure_run_started` function and understand the full lifecycle:
+
+The task says the problem is `model_completion_without_start` which is computed in the dashboard script by matching ModelCallStarted and ModelCallCompleted events by run_id. When a ModelCallCompleted has a run_id that doesn't appear in any ModelCallStarted, it's counted as unmatched.
+
+Now, looking at the code in `handle_prompt_events` (prompt.rs):
+1. Line 780: `set_current_model_call_id(model_call_id.clone())` is always called
+2. Line 781-785: `ModelCallStarted` is always recorded
+3. When various completion events arrive, `ModelCallCompleted` is recorded
+
+So `handle_prompt_events` always pairs them. But the unmatched completion count is computed per-run_id, not per-model_call_id. So if there are multiple model calls per run, the dashboard code should handle that correctly (since it uses a set for completed runs and a dict for started runs).
+
+Wait, let me re-read how the dashboard counts:
+- `model_call_started_runs[run_id] = data` — for each ModelCallStarted, store/overwrite with latest
+- `model_call_completed_runs.add(run_id)` — for each ModelCallCompleted, add to set
+- Then: `unmatched_completed_run_ids = model_call_completed_runs - model_call_started_runs`
+
+If a run has multiple model calls, both the start and completion from each call should reference the same run_id, so they'd all be accounted for. The unmatched would only happen if a ModelCallCompleted has a run_id that never had a ModelCallStarted with that same run_id.
+
+Hmm, but there's also `unkeyed_model_call_starts` and `unkeyed_model_call_completions` — for when run_id is None.
+
+OK, let me step back and think about this differently. The task says the gap is `deepseek_model_call_abnormal_completed_count=1` and the lifecycle cause is `model_completion_without_start=1`. 
+
+Let me check: does the dashboard track `deepseek_model_call_abnormal_completed_count` separately from lifecycle issues? Or is the abnormal count computed from the same data?
+
+Looking at lines 2294-2308:
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    deepseek_model_call_completed += 1
+    abnormal_status = abnormal_model_completion_status(data)
+    if abnormal_status:
+        deepseek_model_call_abnormal_completed += 1
+```
+
+And `deepseek_model_payload` checks if the model is a DeepSeek model. And the lifecycle analysis separately computes `unmatched_completed_count`.
+
+So there are TWO independent metrics that may or may not overlap:
+1. `deepseek_model_call_abnormal_completed_count` — status not in {completed, success, ok, stopped_after_completion_file}
+2. `model_completion_without_start` — ModelCallCompleted without matching ModelCallStarted
+
+The task says the gnome is #1 and the lifecycle cause is the second one, and they may be the same event or different events.
+
+Now, let me think about what could produce a `ModelCallCompleted` with an abnormal status that doesn't have a matching `ModelCallStarted`. 
+
+Actually, I think the issue might be something subtle. Let me look at the `ensure_run_started` function:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn ensure_run_started' in src/state.rs ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:679..739 ✓ (4ms)
+
+

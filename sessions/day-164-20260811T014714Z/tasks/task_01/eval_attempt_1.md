@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff replaces the full `read_events` call in `handle_trace` with a bounded tail-scan (`read_tail_events`) that starts at 20K lines and doubles up to 200K, with early exit on RunStarted. Build passes, the `trace_report_reconstructs_run_timeline_with_counts` test passes, and the change is contained to `src/commands_state.rs` under 50 lines of core logic — matching all task success criteria.

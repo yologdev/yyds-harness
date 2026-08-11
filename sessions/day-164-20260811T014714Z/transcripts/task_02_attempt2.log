@@ -1,0 +1,358 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and then investigating the state.rs code to understand the remaining lifecycle gap. The task says this is a patch-or-fail recovery with a previous attempt that found nothing. Let me follow the evolve skill and be systematic.
+
+First, let me understand the current state of the code and the specific gap.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md (80 lines)  ▶ read src/state.rs (100 lines) ✓ (14ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the state.rs file to understand the panic hook, record function, and the model call lifecycle management.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:100..200  ▶ search 'clear_current_model_call_id' in src/state.rs  ▶ search 'set_current_model_call_id' in src/state.rs ✓ (16ms)
+ ✓ (16ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now look at where `clear_current_model_call_id` is called from and the `record` function that checks for ModelCallCompletedWithoutStart:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 2.9s (3 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'clear_current_model_call_id' in src  ▶ search 'ModelCallCompletedWithoutStart' in src/state.rs ✓ (5ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `record()` function and the ModelCallCompleted handling:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:600..680 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the prompt.rs call sites where `clear_current_model_call_id()` is called, to understand all the code paths:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:960..1020  ▶ read src/prompt.rs:1000..1060  ▶ read src/prompt.rs:1070..1130 ✓ (15ms)
+ ✓ (30ms)
+ ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the stream-close path and also look at the initial model call setup:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 3.3s (3 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/prompt.rs:1129..1189  ▶ read src/prompt.rs:770..830 ✓ (15ms)
+ ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of the code. Let me trace the model call lifecycle in `handle_prompt_events`:
+
+1. Line 780: `set_current_model_call_id(model_call_id.clone())` sets CURRENT_MODEL_CALL_ID
+2. Line 781-785: `ModelCallStarted` is recorded
+3. Various completion paths all call `clear_current_model_call_id()` after recording `ModelCallCompleted`
+
+The completion paths are:
+- AgentEvent::MessageStop (line 974): clear after ModelCallCompleted
+- AgentEvent::InputRejected (line 1015): clear after ModelCallCompleted
+- Ctrl+C (line 1086): clear after ModelCallCompleted  
+- Stream close (line 1147): clear after ModelCallCompleted
+
+All paths in prompt.rs look correct. Each one records ModelCallCompleted before calling clear_current_model_call_id().
+
+Now, let me think about what the task is actually saying. The task says `deepseek_model_call_abnormal_completed_count=1`. Let me look at the dashboard code to understand what this metric actually means, not the lifecycle completion-without-start.
+
+The task says: "model_incomplete/model_completion_without_start=1"
+
+Wait, actually let me re-read more carefully. The evidence says:
+- "Close remaining model-call lifecycle gap producing abnormal_completed_count=1"
+- "Lifecycle causes: model_incomplete/model_completion_without_start=1"
+
+So there are TWO related but potentially different things:
+1. `deepseek_model_call_abnormal_completed_count=1` — an abnormal completion status
+2. `model_completion_without_start=1` — a ModelCallCompleted without matching ModelCallStarted
+
+The implementation notes suggest checking `yyds state tail --limit 500` for orphaned events.
+
+Let me think about what could cause:
+1. A `ModelCallCompleted` with abnormal status that DOES have a matching start — this would be `abnormal_completed_count` but NOT `completion_without_start`
+2. A `ModelCallCompleted` without matching start — this would be `completion_without_start`
+
+Now, looking at the state.rs `record()` function: when `ModelCallCompleted` is recorded and `CURRENT_MODEL_CALL_ID` is None, it emits a `ModelCallCompletedWithoutStart` diagnostic. But this diagnostic fires based on `CURRENT_MODEL_CALL_ID` thread-local state, which is totally different from the dashboard's run_id matching.
+
+The dashboard analysis (`build_evolution_dashboard.py`) computes `model_completion_without_start` by matching run_ids — it looks for ModelCallCompleted events where the run_id doesn't have a matching ModelCallStarted with the same run_id.
+
+These are different! The state.rs diagnostic is about CURRENT_MODEL_CALL_ID being None at the time of recording. The dashboard analysis is about the run_id in the event payload.
+
+Now wait, looking at the state.rs code more carefully:
+
+In `handle_prompt_events`, the model_call_id is set via `set_current_model_call_id(model_call_id.clone())` and the ModelCallStarted is recorded. Then ModelCallCompleted is recorded before clear_current_model_call_id(). So the state.rs diagnostic should never fire in normal operation.
+
+For the dashboard's `model_completion_without_start` — this matches by run_id. All ModelCallStarted and ModelCallCompleted events in prompt.rs should have the same run_id since they're all in the same run. So they should be paired correctly.
+
+But wait — what about the panic hook path? In the panic hook (lines 80-105):
+
+```rust
+let model_call_id = CURRENT_MODEL_CALL_ID.with(|c| {
+    let val = c.take();
+    let clone = val.clone();
+    c.set(val);
+    clone
+});
+if let Some(ref id) = model_call_id {
+    record(EventType::ModelCallCompleted, ...);
+    CURRENT_MODEL_CALL_ID.with(|c| {
+        c.take();
+    });
+}
+```
+
+This records a ModelCallCompleted in the panic hook. But is there a matching ModelCallStarted for this? Yes — the ModelCallStarted was recorded in prompt.rs at line 781-785. So the dashboard should pair them correctly (same run_id).
+
+Hmm. Let me think about what could produce the abnormal_completed_count. Looking at the dashboard code quoted by the task: 
+
+```python
+elif kind == "ModelCallCompleted" and deepseek_model_payload(data):
+    deepseek_model_call_completed += 1
+    abnormal_status = abnormal_model_completion_status(data)
+    if abnormal_status:
+        deepseek_model_call_abnormal_completed += 1
+```
+
+And `abnormal_model_completion_status` checks if the status is NOT in {completed, success, ok, stopped_after_completion_file}. 
+
+Looking at the model_call_terminal_payload: what status values are used?
+- "completed" — normal completion (line 962)
+- "input_rejected" — (line 1007)
+- "interrupted" — ctrl+c (line 1079)
+- "stream_closed_without_agent_end" — (line 1140)
+
+And from the panic hook: "interrupted" (line 93)
+
+The abnormal statuses would be: "input_rejected", "interrupted", "stream_closed_without_agent_end".
+
+So the `abnormal_completed_count=1` is probably just a legitimate abnormal completion — an "interrupted" or "input_rejected" event. That's not necessarily a bug.
+
+But the task ALSO says `model_completion_without_start=1`. This is separate. And the task says the gap could be in the script-level lifecycle analysis rather than state.rs.
+
+Let me re-read the task more carefully:
+
+"The remaining gap is likely a different code path where a model call's start event is never recorded but a completion event arrives"
+
+Looking at the panic hook:
+1. Line 80-85: The model_call_id is taken, cloned, and restored
+2. Line 86-99: ModelCallCompleted is recorded
+3. Line 103-105: CURRENT_MODEL_CALL_ID is cleared
+
+But wait — the panic hook records ModelCallCompleted, but what about ModelCallStarted? If the panic fires during a model call, the ModelCallStarted was already recorded in prompt.rs. So the dashboard should pair them.
+
+But what if the panic hook fires and there was NO set_current_model_call_id before? Then model_call_id would be None, and no ModelCallCompleted would be recorded. That's fine.
+
+What about the `record()` function's diagnostic: it checks `CURRENT_MODEL_CALL_ID` and if it's None when a `ModelCallCompleted` is recorded, it emits `ModelCallCompletedWithoutStart`. But this is about the thread-local cell, not about run_id matching.
+
+OK, I think I need to actually look at the state events to find the orphan. Let me try:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 23.4s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (16ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look for ModelCallStarted and ModelCallCompleted events in the state:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (55ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The state tail output doesn't have JSON - it's the table format. Let me look for the raw events:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (56ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The output doesn't show the event kind but the table format. Let me use the JSON format to get the actual event types:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ls -la .yoyo/state/ 2>/dev/nul… ✓ (10ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -c '"kind":"ModelCallStar… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! 3 ModelCallStarted events but only 1 ModelCallCompleted. This means there are 2 ModelCallStarted events without matching ModelCallCompleted. But the task is about `model_completion_without_start` which is the opposite — completions without starts. Let me check the other direction:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (8 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (9 lines) ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So we have:
+- 3 ModelCallStarted: mc-18ca9fcc3eae7043, mc-18ca9fdd1a83fa91, mc-18ca9ff8a96ed8e4
+- 1 ModelCallCompleted: mc-18ca9fdd1a83fa91 (completed)
+
+That means 2 started calls never completed: mc-18ca9fcc3eae7043 and mc-18ca9ff8a96ed8e4.
+
+But the task says `model_completion_without_start=1` — meaning completions without starts. Let me also check if run_id is null:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (9 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ALL events have `run=?` — meaning the run_id is not showing via the table format. Let me check the actual JSONL to see the run_id:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (6 lines) ✓ (24ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the events don't have `run_id` at the top level - they have it at a different key or it's derived from something else. Let me look at the event structure:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallStarted… ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the `run_id` is inside `payload._yoyo.run_id`. Let me check the ModelCallCompleted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (8 lines) ✓ (25ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see:
+
+1. run-1786415901754-23752: ModelCallStarted only (mc-18ca9fcc3eae7043) - STARTED but no COMPLETED → 1 "start_without_completion"
+2. run-1786415974161-24145: ModelCallStarted + ModelCallCompleted (mc-18ca9fdd1a83fa91) → properly paired
+3. run-1786416092523-24412: ModelCallStarted only (mc-18ca9ff8a96ed8e4) → NOT completed
+
+The current session is run-1786416092523-24412 which is the implementation session. So we have:
+- One historical run (23752) with an orphaned start
+- One current run (24412) with a start but no completion yet (because this is the implementation phase)
+
+Now, the task says `model_completion_without_start=1`. But looking at the state, we actually have the opposite — `model_start_without_completion=2`. Let me check the dashboard code more carefully to understand what metric is being computed.
+
+Actually wait, I need to look at the dashboard code to understand `model_completion_without_start`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ search 'model_completion_without_start' in scripts/build_evolution_dashboard.py  ▶ search 'unmatched_completed' in scripts/build_evolution_dashboard.py ✓ (11ms)
+ ✓ (11ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.3s (2 ✓)
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2250..2310 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2309..2339 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `event_run_id` to understand how run_id is extracted:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ search 'def event_run_id' in scripts/build_evolution_dashboard.py ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:384..414 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so `event_run_id` checks:
+1. `event["run_id"]` (top-level) 
+2. `event["payload"]["_yoyo"]["run_id"]` (raw event)
+3. `payload["run_id"]` 
+4. `payload["_yoyo"]["run_id"]`
+
+And the `payload` parameter is what was passed to the `summarize_events_for_work` function.
+
+Now the important question: the dashboard matches ModelCallStarted and ModelCallCompleted by run_id. Looking at the state, we have:
+- ModelCallStarted run-1786415901754-23752 (no completion) 
+- ModelCallStarted run-1786415974161-24145 + ModelCallCompleted run-1786415974161-24145 (paired)
+- ModelCallStarted run-1786416092523-24412 (no completion yet - current run)
+
+So there are 2 ModelCallStarted without completions, and 0 ModelCallCompleted without starts. This means `model_start_without_completion` should be 2, not `model_completion_without_start=1`.
+
+Wait, but the task says the problem is `model_completion_without_start=1`. Let me check the dashboard's lifecycle analysis more carefully.
+
+Actually, looking at the task evidence again: "Day 164 trajectory graph pressure #1: 'Close yyds state and model lifecycle gaps (deepseek_model_call_abnormal_completed_count=1): Lifecycle causes: model_incomplete/model_completion_without_start=1'"
+
+The `deepseek_model_call_abnormal_completed_count=1` could be from the dashboard analysis. But looking at the actual state, we have **no** abnormal completions — the only ModelCallCompleted has status "completed". And we have **no** completions without starts.
+
+So maybe the abnormal_completed_count=1 is from a fake event or the dashboard computes it differently. Or the "abnormal completed count" could be computed from the lifecycle gap analysis, where a start without a completion is counted as an "abnormal completed" from a different perspective.
+
+Actually, let me re-read the dashboard code. The gnome `deepseek_model_call_abnormal_completed_count` counts ModelCallCompleted events with abnormal status. We have only 1 ModelCallCompleted with status "completed" — that's normal. So this gnome should be 0 now.
+
+But wait, maybe the `abnormal_completed_count` includes `ModelCallCompletedWithoutStart` diagnostic events. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -c 'ModelCallCompletedWit… ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+5 ModelCallCompletedWithoutStart events! And we only have 3 ModelCallStarted and 1 ModelCallCompleted. This is a LOT of false positives. The Day 163 fix was supposed to prevent these. Let me check when these events were recorded:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep 'Mode… (8 lines) ✓ (25ms)
+
+
