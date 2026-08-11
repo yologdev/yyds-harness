@@ -1124,6 +1124,22 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      check `$HTTP_PROXY` and `$HTTPS_PROXY` settings."
                         .to_string(),
                 )
+            } else if msg_lower.contains("is a directory") {
+                Some(
+                    "The path is a directory, not a file. Use `ls <path>/` to list \
+                     contents, `find <path> -type f` to find files, `ls -ld <path>` \
+                     to see directory metadata, or `file <path>` to confirm the type. \
+                     If you meant to enter the directory, use `cd <path>` first."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("no space left on device") {
+                Some(
+                    "The disk is full. Check space with `df -h`. Clean up: \
+                     `rm -rf /tmp/*` for temporary files, `cargo clean` for Rust \
+                     build artifacts, or `docker system prune -f` for Docker images. \
+                     Find large files: `du -sh /* 2>/dev/null | sort -hr | head -20`."
+                        .to_string(),
+                )
             } else {
                 Some(
                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
@@ -3286,6 +3302,26 @@ mod tests {
         assert!(hint.is_some());
         let hint = hint.unwrap();
         assert!(hint.contains("ping -c 1"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_is_a_directory() {
+        let hint = targeted_recovery_hint("bash", "cat: some_dir: Is a directory");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("ls -ld"));
+        assert!(hint.contains("cd"));
+        assert!(hint.contains("file"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_no_space_left_on_device() {
+        let hint = targeted_recovery_hint("bash", "No space left on device");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("df -h"));
+        assert!(hint.contains("cargo clean"));
+        assert!(hint.contains("docker system prune"));
     }
 
     #[test]
