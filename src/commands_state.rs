@@ -565,14 +565,65 @@ fn handle_tail(limit: usize, json: bool, run_id: Option<&str>) {
 
 fn handle_trace(id: &str) {
     let path = default_events_path();
-    let Ok(events) = read_events(&path) else {
-        eprintln!("{YELLOW}  no state log found at {}{RESET}", path.display());
-        return;
-    };
-    match build_trace_report(&events, id) {
-        Ok(report) => println!("{report}"),
+    match read_trace_events(&path, id) {
+        Ok(events) => match build_trace_report(&events, id) {
+            Ok(report) => println!("{report}"),
+            Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
+        },
         Err(e) => eprintln!("{YELLOW}  {e}{RESET}"),
     }
+}
+
+/// Read events matching a trace/run id from the tail of the event store.
+///
+/// Scans backwards in expanding chunks rather than reading all events,
+/// avoiding timeouts on large (288K+) event histories. A run's events are
+/// temporally contiguous near the end of the chronologically-ordered store,
+/// so a bounded tail scan is both correct and fast.
+fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
+    const INITIAL_CHUNK: usize = 20_000;
+    const MAX_CHUNK: usize = 200_000;
+
+    let mut limit = INITIAL_CHUNK;
+
+    while limit <= MAX_CHUNK {
+        let (chunk_events, _) = read_tail_events(path, limit)?;
+        if chunk_events.is_empty() {
+            return Err(format!("no state trace found for '{id}'"));
+        }
+
+        // Walk chunk in reverse (newest first); collect only matching events.
+        let mut matched: Vec<Value> = Vec::new();
+        let mut found_start = false;
+        for event in chunk_events.iter().rev() {
+            let matches = event_string(event, "run_id").map_or(false, |r| r == id)
+                || event_string(event, "trace_id").map_or(false, |t| t == id);
+            if matches {
+                if event_string(event, "event_type").map_or(false, |t| t == "RunStarted") {
+                    found_start = true;
+                }
+                matched.push(event.clone());
+            }
+        }
+
+        if matched.is_empty() {
+            return Err(format!("no state trace found for '{id}'"));
+        }
+
+        if found_start {
+            matched.reverse(); // restore forward chronological order
+            return Ok(matched);
+        }
+
+        // Found matches but no RunStarted — expand the scan window.
+        if limit == MAX_CHUNK {
+            matched.reverse();
+            return Ok(matched);
+        }
+        limit = (limit * 2).min(MAX_CHUNK);
+    }
+
+    Err(format!("no state trace found for '{id}'"))
 }
 
 fn handle_lifecycle(args: &[String]) {
