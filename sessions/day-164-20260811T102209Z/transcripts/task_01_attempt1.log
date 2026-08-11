@@ -1,0 +1,452 @@
+warning: skipping corrupted event at line 30631 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 103
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding this task clearly:
+
+1. I need to look at `is_cancelled_completion()` in `scripts/log_feedback.py` to see what patterns it detects
+2. Compare it with `_is_run_externally_cancelled` in `scripts/append_terminal_state_events.py`
+3. Find the gap that causes `state_unmatched_non_validation=1`
+4. Fix it with a small surgical change (5-15 lines)
+
+Let me first read the evolve skill and then examine the relevant functions.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read scripts/log_feedback.py:1270..1320 ✓ (452ms)
+ ✓ (309ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I have:
+1. `is_cancelled_completion()` at lines 1279-1308 in `scripts/log_feedback.py`
+2. The task says to compare with `_is_run_externally_cancelled` in `scripts/append_terminal_state_events.py`
+
+Let me now read `_is_run_externally_cancelled` in `scripts/append_terminal_state_events.py` and also look at state evidence to find the unmatched run.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.6s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search '_is_run_externally_cancelled' in scripts/append_terminal_state_events.py  ▶ $ yyds state tail --limit 200 2>/dev/null | grep '"kind":"RunCompleted"' | head -2… ✓ (438ms)
+ ✓ (441ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me search for yyds binary and also read the `_is_run_externally_cancelled` function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.7s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:220..280  ▶ $ command -v yyds 2>/dev/null || cargo run --bin yyds -- state tail --limit 200 2>… ✓ (445ms)
+ ✓ (434ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo run` output is interleaved with state events, making it hard to parse. Let me try a different approach - look at the state events JSON directly. Let me also read more of `_is_run_externally_cancelled` to see the full function.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.3s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:279..319  ▶ $ cargo run --bin yyds -- state tail --limit 500 2>/dev/null | grep -c '"kind":"Ru… ✓ (433ms)
+ ✓ (434ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the key difference! In `_is_run_externally_cancelled`:
+
+**Signal 2** checks for TWO things:
+1. `RunCompleted` with `status == "error"` AND empty `error_detail` (`has_run_completed_error_no_detail`)
+2. AND at least one event with `error == "rust_panic"` (`has_rust_panic`)
+
+Both must be true together.
+
+In `is_cancelled_completion()` in `log_feedback.py`, Signal 2 only checks:
+1. `RunCompleted` with `status == "error"` AND empty `error_detail`
+
+It does NOT check for `rust_panic` - the function is missing that conjunct!
+
+Wait, let me re-read `is_cancelled_completion` more carefully:
+
+```python
+def is_cancelled_completion(last_event: Any) -> bool:
+    if not isinstance(last_event, dict):
+        return False
+    # Signal 1: Explicit cancelled status
+    if last_event.get("status") == "cancelled":
+        return True
+    # Signal 2: Rust panic from SIGTERM — RunCompleted with error, no detail
+    if last_event.get("kind") == "RunCompleted" and last_event.get("status") == "error":
+        detail = str(last_event.get("error_detail") or "").strip()
+        if not detail:
+            return True
+    return False
+```
+
+The difference: `_is_run_externally_cancelled` Signal 2 requires BOTH `has_rust_panic` AND `has_run_completed_error_no_detail`. But `is_cancelled_completion` only checks for RunCompleted with error and empty detail - it doesn't require a corresponding `rust_panic` event.
+
+However, `is_cancelled_completion` only receives a single `last_event`, not a list of events. So it can't check for another event with `rust_panic`. But wait - `is_cancelled_completion`'s Signal 2 is too aggressive. It treats ANY RunCompleted with error and empty detail as cancelled, even if there's no rust_panic.
+
+But the task says we need to make it return True for more runs, not fewer. The `_is_run_externally_cancelled` is MORE conservative (requiring both rust_panic AND empty error_detail), while `is_cancelled_completion` is less conservative (requiring only empty error_detail).
+
+Hmm, wait. If `_is_run_externally_cancelled` is MORE conservative and the current `is_cancelled_completion` is already less conservative, then the gap isn't that `is_cancelled_completion` is missing patterns from `_is_run_externally_cancelled` - it's that the unmatched runs aren't captured by any pattern.
+
+Let me look at the actual unmatched RunCompleted events more carefully. Let me get the actual event data.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 9.3s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cargo run --bin yyds -- state tail --limit 500 2>/dev/null | grep '"kind":"RunCo… ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cargo run` output is getting mixed with the state events from the current run. Let me use the direct state JSONL file instead. Let me find where the state events are stored.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la .yoyo/state/ 2>/dev/null || ls -la ~/.yoyo/state/ 2>/dev/null || find . -… ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep '"kind":"RunCompleted"' .yoyo/state/events.jsonl | tail -20  ▶ $ grep '"kind":"RunStarted"' .yoyo/state/events.jsonl | tail -20 ✓ (577ms)
+ ✓ (577ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me extract all the unique run IDs from RunCompleted and RunStarted to find unmatched ones. But first, let me understand the actual approach better. The task says `is_cancelled_completion` in `log_feedback.py` is missing detection patterns that `_is_run_externally_cancelled` has.
+
+Key difference I already spotted: `_is_run_externally_cancelled` Signal 2 requires BOTH:
+- `has_rust_panic` (at least one event for the run has `error == "rust_panic"`)
+- `has_run_completed_error_no_detail` (RunCompleted with status=error and empty error_detail)
+
+While `is_cancelled_completion` only checks for `RunCompleted` with status=error and empty error_detail - it doesn't ALSO check for rust_panic.
+
+But wait - `is_cancelled_completion` only receives a single event (the `last_event`), not a list of all events for a run. So it CAN'T check for rust_panic on other events. The functions have different signatures and different scopes.
+
+Let me look at how `is_cancelled_completion` is called to understand its context better.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.5s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_cancelled_completion' in scripts/log_feedback.py  ▶ $ python3 -c " (31 lines) ✓ (434ms)
+ ✓ (434ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so there are many unmatched runs in both directions - 125 RunCompleted without RunStarted, and 121 RunStarted without RunCompleted. These are across many days, not just recent. The `state_unmatched_non_validation=1` is from a different metric - probably `state_run_unmatched_non_validation_completed_count` which is computed differently (possibly only looking at recent runs).
+
+Now let me understand how `is_cancelled_completion` is actually invoked. Let me look at lines 1360-1390.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.1s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1340..1400 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the picture better. `is_cancelled_completion` receives `run_last_events.get(run_id)` — a single event (the last event for that run). Let me check how `run_last_events` is built.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_last_events' in scripts/log_feedback.py ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1320..1340 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see — `run_lifecycle_event_summary` is called to build `run_last_events`. So `is_cancelled_completion` receives the output of `run_lifecycle_event_summary`, not a raw event. Let me look at that function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'run_lifecycle_event_summary' in scripts/log_feedback.py ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1259..1279 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture:
+
+1. `run_lifecycle_event_summary` extracts `kind`, `status`, `error`, `error_detail` from the raw payload. The `run_last_events` dict is overwritten per-run, so it only has the LAST event for each run.
+
+2. `is_cancelled_completion(last_event)` receives this summary dict. It checks:
+   - Signal 1: `status == "cancelled"`  
+   - Signal 2: `kind == "RunCompleted"` AND `status == "error"` AND empty `error_detail`
+
+3. `_is_run_externally_cancelled` in `append_terminal_state_events.py` has:
+   - Signal 1: Explicit `status == "cancelled"`
+   - Signal 2: `has_rust_panic` AND `has_run_completed_error_no_detail` (requiring BOTH)
+   - Signal 3: Long-duration > 2.5 hours
+
+The key observation: `_is_run_externally_cancelled`'s Signal 2 is actually MORE conservative than `is_cancelled_completion`'s Signal 2 — it requires the additional rust_panic evidence. But `is_cancelled_completion` has a DIFFERENT constraint: it only has access to the LAST event for the run, not all events. So if the last event is a RunCompleted with empty error_detail, but a previous event had `rust_panic`, `is_cancelled_completion` can't see the `rust_panic` — it only sees the last event.
+
+The task says the problem is that `is_cancelled_completion` is MISSING detection patterns that `_is_run_externally_cancelled` catches. So the unmatched run causing `state_unmatched_non_validation=1` must have a last event that:
+- is NOT RunCompleted (maybe it's a different kind like ModelCallCompleted or another event arrived after RunCompleted)
+OR
+- IS RunCompleted but status != "error" 
+OR
+- status is "error" but detail is NOT empty
+
+Let me look at `_is_run_externally_cancelled` more carefully to find what it detects that `is_cancelled_completion` doesn't.
+
+Wait, actually, looking at Signal 3: the long-duration heuristic. `is_cancelled_completion` doesn't have this at all. If a run was killed by the next cron slot and its last event is say a ModelCallStarted (not a RunCompleted), the `is_cancelled_completion` function would return False because `kind != "RunCompleted"` and `status != "cancelled"`.
+
+But the long-duration heuristic requires knowing the run span, which `is_cancelled_completion` can't compute from just the last event.
+
+Let me now find the specific unmatched run causing `state_unmatched_non_validation=1`. Let me look at how that metric is computed more carefully - it uses `run_unmatched_completed_ids` which is `run_completed - run_started`. But the `state_unmatched_non_validation` metric is computed differently in the dashboard...
+
+Actually wait. Let me re-read: `run_unmatched_non_validation_completed_count` is computed in `state_cache_metrics` (lines 1392-1394). It IS just `len(run_unmatched_completed_ids) - run_unstarted_input_validation_error_count`.
+
+But there's 125 runs in the `completed without started` set. After filtering input-validation, there's still ~120+. So `state_unmatched_non_validation=1` can't be from `state_cache_metrics` - it must be from a different metric that only looks at a recent window.
+
+Let me look at how the dashboard/states projection actually computes `state_unmatched_non_validation`. Let me search for it.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me understand how `state_unmatched_non_validation` is computed in the dashboard to see if it uses a different window than `state_cache_metrics`:
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_non_validation' in scripts ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me see how `run_unmatched_non_validation_completed` is computed in `build_evolution_dashboard.py` line ~2415.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2400..2450 ✓ (147ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see at line 2419 there's `and not run.get("session_started", False)` — so the dashboard also filters runs that are `session_started`. But I need to find how `run_unmatched_completed_all` is structured, specifically `last_event`. Let me look further up.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/build_evolution_dashboard.py:2340..2420 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see that `run_last_events` in the dashboard is also built the same way - it's the last event per run. And `is_cancelled_completion` is NOT called in the dashboard's state lifecycle section! It's only called in `state_cache_metrics` (in log_feedback.py lines 1362-1366 and 1380-1384), which filters `cancelled_model_runs` and `cancelled_run_ids`.
+
+But wait - looking at the dashboard code around line 2404-2419, there's NO cancellation filtering! The dashboard doesn't call `is_cancelled_completion` at all for the state lifecycle runs. Let me confirm...
+
+Actually, let me look more carefully. The dashboard builds `run_unmatched_non_validation_completed` from `run_unmatched_completed_all`, filtering only input_validation and session_started. It doesn't filter cancelled runs. So `state_unmatched_non_validation=1` could be a cancelled run that the dashboard didn't filter.
+
+Wait, the task says this is about `state_unmatched_non_validation` which is from the trajectory/graph. Let me look at how the log_feedback script computes this metric for the gnomes.
+
+Let me look at `state_cache_metrics` output. That function computes `run_unmatched_non_validation_completed_count` at line 1392-1394.
+
+But let me also check: does `state_cache_metrics` filter out cancelled runs? Lines 1379-1385:
+```python
+run_incomplete_ids = run_started - run_completed
+cancelled_run_ids = {
+    run_id
+    for run_id in run_incomplete_ids
+    if is_cancelled_completion(run_last_events.get(run_id))
+}
+run_incomplete_ids -= cancelled_run_ids
+```
+
+It filters cancelled runs from INCOMPLETE (started but not completed). But `run_unmatched_non_validation_completed_count` is about COMPLETED without STARTED runs - line 1386-1394 doesn't filter cancelled:
+
+```python
+run_unmatched_completed_ids = run_completed - run_started
+run_unstarted_input_validation_error_count = sum(
+    1
+    for run_id in run_unmatched_completed_ids
+    if is_input_validation_completion(run_last_events.get(run_id))
+)
+run_unmatched_non_validation_completed_count = (
+    len(run_unmatched_completed_ids) - run_unstarted_input_validation_error_count
+)
+```
+
+There's no `is_cancelled_completion` check for the unmatched completed runs! The cancelled runs ARE filtered for "incomplete" runs (started without completed), but NOT for "completed without started" runs.
+
+Now wait, let me look at this differently. The task says `is_cancelled_completion()` should recognize ALL externally-cancelled runs so that `state_run_unmatched_non_validation_completed_count` no longer counts cancelled CI runs. But currently, `is_cancelled_completion()` isn't even called for the unmatched completed case! 
+
+So the fix isn't just about making `is_cancelled_completion` more sensitive - it's also about calling it for the unmatched completed case. Let me re-read the task...
+
+Actually, the task says "the function `is_cancelled_completion()` at line 1365 and 1383 is called for incomplete runs and run_incomplete_ids" - yes, it IS called for the incomplete path but NOT for the unmatched completed path. But the task focuses on making `is_cancelled_completion()` itself better.
+
+Actually wait, let me re-read the task more carefully. It says:
+
+"Objective: Make `is_cancelled_completion()` in `scripts/log_feedback.py` recognize ALL externally-cancelled runs, so `state_run_unmatched_non_validation_completed_count` no longer counts cancelled CI runs as real lifecycle gaps."
+
+And: "The fix should be 5-15 lines. Add one new detection pattern to the existing function."
+
+So the task assumes the function is being called for the unmatched completed case too. Let me check if it is...
+
+Looking at lines 1362-1366:
+```python
+cancelled_model_runs = {
+    run_id
+    for run_id in incomplete_model_runs
+    if is_cancelled_completion(run_last_events.get(run_id))
+}
+incomplete_model_runs -= cancelled_model_runs
+```
+
+And lines 1380-1384:
+```python
+cancelled_run_ids = {
+    run_id
+    for run_id in run_incomplete_ids
+    if is_cancelled_completion(run_last_events.get(run_id))
+}
+run_incomplete_ids -= cancelled_run_ids
+```
+
+`run_incomplete_ids` is `run_started - run_completed` (started but not completed).
+But `run_unmatched_completed_ids` (line 1386) is `run_completed - run_started` (completed but not started).
+
+The `is_cancelled_completion` function is NOT called for `run_unmatched_completed_ids`! So even if we make `is_cancelled_completion` perfectly recognize cancelled runs, it won't help the unmatched completed case because the filter isn't applied there.
+
+Hmm but wait. The task says `state_unmatched_non_validation=1` — this is one remaining unmatched run. Given there are 125 completed-without-started runs total, the `=1` must mean the metric is computed differently in the trajectory/dashboard, perhaps filtered differently.
+
+Wait, maybe the metric is only counting unmatched runs from a recent window? Let me check `state_run_unmatched_non_validation_completed_count` more carefully. Let me look at the `summarize_state_gnomes.py` or the actual gnome computation.
+
+Actually, let me step back. The task is about `is_cancelled_completion` in `log_feedback.py`. The evidence is `state_unmatched_non_validation=1`. The task says the function needs to recognize externally-cancelled runs that currently slip through.
+
+Let me look at the actual unmatched RunCompleted events to find the one that should be classified as cancelled. Let me extract the last events for those unmatched completed runs.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (35 lines) ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Wait, the exit code is 120? That seems like it's getting truncated. Let me try again with a more targeted approach.
+
+Looking at the data we have so far, I can see three categories of unmatched RunCompleted events:
+1. `status=completed, error=N/A` - normal completions (these shouldn't be unmatched...)
+2. `status=error, error=exit code 1, error_detail=empty_input` - input validation errors (correctly classified)
+3. `status=error, error=exit code 1, error_detail=N/A` - error with N/A detail (null/missing, NOT empty string)
+4. Status=N/A, error=N/A - metadata-only events
+
+Now, the key insight: for cancelled runs, the `status` might be "cancelled" (not "completed" or "error"). But `is_cancelled_completion` checks `last_event.get("status") == "cancelled"`. But the `last_event` comes from `run_lifecycle_event_summary` which extracts from `payload.get("status")`. Let me check what the actual cancelled RunCompleted events look like.
+
+Wait, the problem might be simpler. Let me look at the `status` field. `is_cancelled_completion` checks `last_event.get("status") == "cancelled"` — but what if the actual value is `"Cancelled"` (capital C)?
+
+Let me also go back and look at `_is_run_externally_cancelled` more carefully. Let me compare the two functions line by line. I already saw:
+
+`_is_run_externally_cancelled` Signal 1: checks `data.get("status") == "cancelled"` in RunCompleted events.
+`is_cancelled_completion` Signal 1: checks `last_event.get("status") == "cancelled"`.
+
+These should be equivalent. Unless the status field is lost somewhere in the chain.
+
+Actually wait. Let me focus on the actual problem. The `state_run_unmatched_non_validation_completed_count` is computed by the gnome summarizer or by `state_cache_metrics`. Let me look at how `state_cache_metrics` filters completed-but-not-started runs. From lines 1386-1394:
+
+```python
+run_unmatched_completed_ids = run_completed - run_started
+run_unstarted_input_validation_error_count = sum(
+    1
+    for run_id in run_unmatched_completed_ids
+    if is_input_validation_completion(run_last_events.get(run_id))
+)
+run_unmatched_non_validation_completed_count = (
+    len(run_unmatched_completed_ids) - run_unstarted_input_validation_error_count
+)
+```
+
+NOTICE: `is_cancelled_completion` is NOT called to filter `run_unmatched_completed_ids`. It's only called for `run_incomplete_ids` (started but not completed).
+
+So the fix is TWO things:
+1. Make `is_cancelled_completion` better at detecting cancelled runs
+2. Actually CALL `is_cancelled_completion` for the `run_unmatched_completed_ids` path
+
+But the task says the edit surface is just `scripts/log_feedback.py`, which is correct. Let me re-read the task:
+
+"Make `is_cancelled_completion()` in `scripts/log_feedback.py` recognize ALL externally-cancelled runs, so `state_run_unmatched_non_validation_completed_count` no longer counts cancelled CI runs as real lifecycle gaps."
+
+And: "Add one new detection pattern to the existing function."
+
+Hmm, but if `is_cancelled_completion` is never called for the unmatched completed path, then adding a new pattern to the function won't help. Unless the fix ALSO adds the call. Let me re-read lines 1386-1394 again...
+
+Actually wait, maybe I should look at whether there's already a call somewhere else. Let me look at the lines around 1386-1398 more carefully. Maybe there IS already a filter that I missed.
+
+Looking again at lines 1386-1394:
+```python
+run_unmatched_completed_ids = run_completed - run_started
+run_unstarted_input_validation_error_count = sum(
+    1
+    for run_id in run_unmatched_completed_ids
+    if is_input_validation_completion(run_last_events.get(run_id))
+)
+run_unmatched_non_validation_completed_count = (
+    len(run_unmatched_completed_ids) - run_unstarted_input_validation_error_count
+)
+```
+
+There's clearly no cancelled filter. So the fix must involve adding one.
+
+OK let me plan the change. The function `is_cancelled_completion` already checks:
+1. `status == "cancelled"`
+2. RunCompleted with error + empty detail
+
+But it could also check the `error` field for SIGTERM-like signals. Looking at `_is_run_externally_cancelled` Signal 2 requires BOTH `has_rust_panic` (an event with `error == "rust_panic"`) AND `has_run_completed_error_no_detail`. But `is_cancelled_completion` only has the last event, not all events.
+
+However, if the RunCompleted event itself has `error == "rust_panic"`, can that happen? Let me check... Actually, the RunCompleted's `error` field might contain the error type. Looking at the event data:
+
+The RunCompleted events have `"error":"exit code 1"` or `"error":"exit code 2"` for input validation errors. For SIGTERM-induced panics, the `error` field might be something like "rust_panic" or contain "signal" or "SIGTERM". 
+
+Let me also look at what the `status` field can be. For an externally-cancelled run, the status might literally be `"cancelled"`. But what if the `run_lifecycle_event_summary` function extracts it correctly? Let me trace through the data.
+
+Let me search for RunCompleted events with non-standard status values in the events.jsonl.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ python3 -c " (19 lines) ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No results with non-completed/error status. So there are no RunCompleted events with `status == "cancelled"` in the state.
+
+Let me now focus on the unmatched completed runs that are NOT input-validation, and see what their last events look like. Let me check the actual last event for each unmatched completed run to understand the gap better.
+
+Actually, I should focus on the approach differently. Let me look at what `state_unmatched_non_validation=1` actually comes from in the trajectory. Let me check the trajectory extractor.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ search 'unmatched_non_validation' in scripts/extract_trajectory.py ✓ (149ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1500..1530 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see: `state_unmatched_non_validation` comes from `state_run_unmatched_non_validation_completed_count` from `latest_lifecycle_counts`. This is the gnome data.
+
+Let me look at how `summarize_state_gnomes.py` computes this.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:440..510 ✓ (144ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! There's a `_is_cancelled_run` function in `summarize_state_gnomes.py` that mirrors the detection signals. Let me read more of it.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/summarize_state_gnomes.py:509..539 ✓ (144ms)
+
+

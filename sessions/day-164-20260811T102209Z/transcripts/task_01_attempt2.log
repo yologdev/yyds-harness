@@ -1,0 +1,450 @@
+warning: skipping corrupted event at line 30631 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 103
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task and following the evolve skill rules. The task is to modify `is_cancelled_completion()` in `scripts/log_feedback.py` to recognize externally-cancelled runs.
+
+Let me first:
+1. Read `skills/evolve/SKILL.md` 
+2. Run the fallback check - verify if the unmatched state is still present
+3. Read the current `is_cancelled_completion()` function
+4. Read `_is_run_externally_cancelled` in `append_terminal_state_events.py`
+5. Compare them and find the drift
+
+Let me start.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (36 lines) ✓ (438ms)
+ ✓ (532ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The fallback check shows that RunCompleted and RunStarted are already equal (both 1), and there are no unmatched runs. This means `state_unmatched_non_validation=1` might already be a retroactive artifact that has aged out of the window.
+
+Wait, but the events are from the state file, which might only have 1 of each. Let me check the gnome data more carefully. The `state_unmatched_non_validation=1` might come from a broader data source or from the log_feedback analysis, not just the raw events.jsonl.
+
+Let me check the current state of `is_cancelled_completion()` and compare with `_is_run_externally_cancelled` to understand the drift, then decide whether to write an obsolete note or make the fix.
+
+Actually, since RunCompleted and RunStarted are equal, the fallback says: "If `yyds state tail --limit 500 | grep -c '"kind":"RunCompleted"'` and `yyds state tail --limit 500 | grep -c '"kind":"RunStarted"'` are already equal, mark this task obsolete."
+
+But wait, the task says to use `yyds state tail`, and I used a direct Python script. Let me verify with the actual command. Also, the gnome might be calculated differently - the log_feedback.py might be looking at a larger window or different state. Let me first read the current `is_cancelled_completion` function and the `_is_run_externally_cancelled` function to see if there's a clear drift to fix regardless.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 8.3s (2 ✓)
+
+Let me read both functions to identify any drift, and also check the gnome data source.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'def is_cancelled_completion' in scripts/log_feedback.py  ▶ search 'def _is_run_externally_cancelled' in scripts/append_terminal_state_events.py ✓ (291ms)
+ ✓ (292ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read both functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.3s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1279..1319  ▶ read scripts/append_terminal_state_events.py:227..277 ✓ (435ms)
+ ✓ (291ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the rest of `_is_run_externally_cancelled` to see signals 2 and 3 fully.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.4s (2 ✓)
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/append_terminal_state_events.py:276..326 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the difference between `is_cancelled_completion()` and `_is_run_externally_cancelled()`:
+
+**`is_cancelled_completion()` (log_feedback.py):**
+1. Signal 1: `status == "cancelled"` 
+2. Signal 2: RunCompleted with `status == "error"` and empty `error_detail`
+3. No Signal 3 (long duration)
+
+**`_is_run_externally_cancelled()` (append_terminal_state_events.py):**
+1. Signal 1: `status == "cancelled"` in any RunCompleted event
+2. Signal 2: RunCompleted with `status == "error"` + empty `error_detail` **AND** at least one event with `error == "rust_panic"`
+3. Signal 3: Long-duration heuristic (>2.5 hours, no terminal evidence)
+
+The key difference in Signal 2 is that `_is_run_externally_cancelled` requires BOTH `has_rust_panic` AND `has_run_completed_error_no_detail`, while `is_cancelled_completion` only checks RunCompleted with error + no detail, WITHOUT requiring `rust_panic`.
+
+Wait, actually `is_cancelled_completion` is LESS conservative than `_is_run_externally_cancelled` for Signal 2 — it doesn't require `rust_panic`. So `is_cancelled_completion` should be returning True MORE often, not less.
+
+But the task says `is_cancelled_completion` is missing patterns. Let me look at the problem differently.
+
+Actually, the key difference is that `_is_run_externally_cancelled` has access to ALL events for a run_id, while `is_cancelled_completion` only receives the `last_event`. This is a structural limitation. `is_cancelled_completion` cannot check for Signal 3 (long duration) because it only has one event, not all events.
+
+But the main issue might be that `is_cancelled_completion`'s Signal 2 is actually too broad — it returns True for ANY RunCompleted with error + empty detail, even without a rust_panic. That could cause false positives.
+
+Wait, looking at this again from the other direction:
+
+The task says `is_cancelled_completion` needs to recognize MORE cancelled runs, not fewer. But `is_cancelled_completion`'s Signal 2 is already broader than `_is_run_externally_cancelled`'s Signal 2. 
+
+Hmm, let me re-read. The task says: "Look for patterns that `_is_run_externally_cancelled` catches but `is_cancelled_completion()` misses."
+
+`_is_run_externally_cancelled` has Signal 3 (long-duration heuristic). `is_cancelled_completion` doesn't have this. But `is_cancelled_completion` only gets `last_event`, not all events, so it can't compute duration.
+
+But wait - maybe the issue is different. Let me check where `is_cancelled_completion` is actually called and whether it's applied to the unmatched completed runs. The task description says the function exists but the unmatched runs aren't being classified as cancelled.
+
+Let me check how `is_cancelled_completion` is used in `log_feedback.py`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'is_cancelled_completion' in scripts/log_feedback.py ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read lines around 1365 and 1383 to see how it's used.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1350..1390 ✓ (145ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see it! The `is_cancelled_completion` function IS called at line 1383 for `run_incomplete_ids` (RunStarted without RunCompleted), but it is NOT called at line 1386-1390 for `run_unmatched_completed_ids` (RunCompleted without RunStarted). The cancelled filter is only applied to incomplete runs, NOT unmatched completed runs.
+
+Let me read lines 1386-1400 to confirm there's no cancelled filter for unmatched completed.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1386..1406 ✓ (146ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the bug clearly. The function `is_cancelled_completion()` EXISTS and works correctly for detecting cancelled runs. But it's only applied to `run_incomplete_ids` (line 1380-1385), NOT to `run_unmatched_completed_ids` (line 1386-1394).
+
+The `run_unmatched_completed_ids` only subtracts input-validation completions, but NOT cancelled completions. So a cancelled RunCompleted without a RunStarted event would still be counted as `run_unmatched_non_validation_completed_count`.
+
+However, looking at the fallback check, I found that currently there are 0 unmatched completed runs (RunCompleted=1, RunStarted=1). So the `state_unmatched_non_validation=1` might be from historical data that has aged out.
+
+But the task still has a valid fix: add cancelled completion filtering to the `run_unmatched_completed_ids` count, analogous to how it's applied to `run_incomplete_ids` at line 1380-1385.
+
+Wait, but this isn't about `is_cancelled_completion()` returning True for more cases - the function itself seems fine. The issue is that it's not CALLED for `run_unmatched_completed_ids`. 
+
+Hmm, but the task says "Make `is_cancelled_completion()` in `scripts/log_feedback.py` recognize ALL externally-cancelled runs". Maybe the intent is to both improve the detection AND ensure it's called in the right place.
+
+Actually wait - let me re-read the task more carefully:
+
+> Edit Surface: scripts/log_feedback.py
+> Objective: Make `is_cancelled_completion()` in `scripts/log_feedback.py` recognize ALL externally-cancelled runs, so `state_run_unmatched_non_validation_completed_count` no longer counts cancelled CI runs as real lifecycle gaps.
+
+The objective is specifically about `is_cancelled_completion()` recognizing cancelled runs. But the actual gap is that `run_unmatched_completed_ids` doesn't call `is_cancelled_completion()` at all.
+
+So the fix should be: add a filter for cancelled runs to the unmatched completed computation, just like it's done for incomplete runs. This means:
+1. Add a call to `is_cancelled_completion()` for `run_unmatched_completed_ids` to filter out cancelled runs.
+
+But the task says "The fix should be 5-15 lines. Add one new detection pattern to the existing function."
+
+Hmm, if the function already works but just isn't called in the right place, then the fix is to add the call. Let me think about what would satisfy both: the fix to `is_cancelled_completion()` AND the fix to the call site.
+
+Actually, maybe I should look at this from both angles:
+1. `is_cancelled_completion()` might need an additional detection pattern (like checking `error_detail` for empty string more robustly, or handling `None` vs empty string)
+2. The call site at line 1386-1394 needs to also filter cancelled runs
+
+Let me check if there's an edge case where `is_cancelled_completion()` returns False for a RunCompleted event that IS cancelled. Perhaps the RunCompleted that's unmatched has `status == "cancelled"` but `is_cancelled_completion` isn't even called for it.
+
+Given the fallback check shows 0 unmatched now, let me still make the fix. The fix should be:
+1. Add `is_cancelled_completion` filtering to `run_unmatched_completed_ids` (the call site fix)
+2. Potentially also add a new detection pattern to `is_cancelled_completion` itself
+
+But the task explicitly says "Add one new detection pattern to the existing function. Do NOT refactor, extract helpers, or restructure."
+
+However, looking at `_is_run_externally_cancelled` vs `is_cancelled_completion`:
+- `_is_run_externally_cancelled` Signal 2: requires BOTH `rust_panic` AND `RunCompleted error + no detail`
+- `is_cancelled_completion` Signal 2: only requires `RunCompleted error + no detail` (no rust_panic check)
+
+So `is_cancelled_completion` is actually MORE permissive than `_is_run_externally_cancelled` for Signal 2. It should be catching MORE cases.
+
+The real issue is the call site. `is_cancelled_completion` isn't called for `run_unmatched_completed_ids`.
+
+Let me think about what "one new detection pattern" to add. Looking at the unmatched events... they're all paired now. Let me check if there's a different pattern.
+
+Actually, maybe the issue is simpler. Let me look at whether `is_cancelled_completion` might miss runs where the `error_detail` is literally the string "None" (from `str(None)`) vs empty. Let me check:
+
+```python
+detail = str(last_event.get("error_detail") or "").strip()
+if not detail:
+    return True
+```
+
+If `error_detail` is `None`, then `str(None) or ""` → `str(None)` → `"None"` → `"None".strip()` → `"None"` → `not "None"` is `False`. So it would NOT match! 
+
+Wait, that's wrong. `None or ""` evaluates to `""` first, because `None` is falsy. So `str(None or "")` → `str("")` → `""`. Then `"".strip()` → `""`. Then `not ""` is `True`. So it does work.
+
+Hmm, but what if `error_detail` is present but is the string `"None"` instead of Python `None`? That could happen if JSON serialization writes `"None"`. Then `"None" or ""` → `"None"` → `"None".strip()` → `"None"` → `not "None"` is `False`. So it would miss this case.
+
+But this is unlikely. Let me think about what the actual unmatched RunCompleted looks like.
+
+Actually, let me take a step back. The fallback check says there are currently 0 unmatched runs. But the task says `state_unmatched_non_validation=1`. This could be from historical data or a different data source. 
+
+Given the constraints:
+1. The task says to add "one new detection pattern" to `is_cancelled_completion()`
+2. The real structural issue is that `is_cancelled_completion()` isn't called for `run_unmatched_completed_ids`
+3. The fallback check shows 0 unmatched runs currently
+
+The safest approach is:
+1. Add `is_cancelled_completion` filtering to `run_unmatched_completed_ids` (mirroring lines 1380-1385)
+2. Potentially also add a detection pattern for `error_detail == "None"` (the string) as a fallback
+
+Actually, let me re-read the task once more...
+
+The task says: "Look for patterns that `_is_run_externally_cancelled` catches but `is_cancelled_completion()` misses."
+
+Comparing:
+- `_is_run_externally_cancelled` Signal 2: requires BOTH `rust_panic` event AND `RunCompleted error + no detail`
+- `is_cancelled_completion` Signal 2: only `RunCompleted error + no detail` (broader)
+
+So `is_cancelled_completion` doesn't miss anything; it's broader. There's no drift the other way.
+
+But there IS an important difference: `_is_run_externally_cancelled` has Signal 3 (long-duration heuristic). `is_cancelled_completion` doesn't. But it can't because it only has one event.
+
+OK, I think the right thing to do is:
+1. Fix the call site: add cancelled filtering to `run_unmatched_completed_ids`
+2. The function itself doesn't need a new detection pattern if it's already broader than `_is_run_externally_cancelled`
+
+But the task explicitly says to add a detection pattern. Maybe I should look at whether there's a case where `error_detail` is `None` (Python None, not string) and it's handled incorrectly. Let me trace through:
+
+```python
+last_event.get("error_detail")  # returns None if key missing
+str(None or "")  # str("") = ""
+"".strip()  # ""
+not ""  # True
+```
+
+This works. But what if `error_detail` is literally the Python string `"None"`? Then:
+```python
+"None".strip()  # "None"
+not "None"  # False
+```
+
+This would be missed. Let me check if this actually happens in practice. Probably not, but it's a valid edge case to handle.
+
+Actually, I think the most impactful change is the call site fix. But to also satisfy "add one new detection pattern," I could add a check for `error_detail == "None"` (string literal) or `error_detail is None` (Python None).
+
+Wait, let me look at this another way. The task says `state_unmatched_non_validation=1`. Let me check which gnome value this corresponds to.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (37 lines) ✓ (857ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There are 0 unmatched runs right now. The `state_unmatched_non_validation=1` must be from a broader analysis window or from the log_feedback analysis of session data (not live state). The task's fallback says: if counts are already equal, mark the task obsolete.
+
+But wait - this check was done on `.yoyo/state/events.jsonl` which has 30958 events but only 1 RunCompleted and 1 RunStarted. That seems very low for a system with 30958 events. Let me check if RunCompleted/RunStarted events are stored elsewhere or if the counts are really this low.
+
+Actually, 30958 events and only 2 Run lifecycle events seems wrong. Let me check if the events have different field names or if RunCompleted/RunStarted go by a different name.
+
+But more importantly, the fallback says: "If `yyds state tail --limit 500 | grep -c '"kind":"RunCompleted"'` and `yyds state tail --limit 500 | grep -c '"kind":"RunStarted"'` are already equal, mark this task obsolete."
+
+The counts are equal (both 1). According to the fallback, I should mark the task obsolete.
+
+However, before doing that, let me make sure the task's core fix is still valid. The structural issue is real: `is_cancelled_completion()` is not called for `run_unmatched_completed_ids` at line 1386-1394. Even if there are 0 unmatched runs right now, the fix would prevent future false positives.
+
+But the fallback explicitly says to mark it obsolete if counts are equal. Let me follow the fallback and write the obsolete note.
+
+Wait, let me re-read the fallback more carefully:
+
+> Fallback:
+> - If `yyds state tail --limit 500 | grep -c '"kind":"RunCompleted"'` and `yyds state tail --limit 500 | grep -c '"kind":"RunStarted"'` are already equal (all recent runs are properly paired), mark this task obsolete — the `state_unmatched_non_validation=1` is a retroactive artifact that will age out of the window.
+
+This is exactly what we're seeing. The counts are equal. Let me write the obsolete note.
+
+But actually, maybe I should check broader analysis. The `state_unmatched_non_validation` gnome might come from log_feedback.py's analysis of session directories, not from the live events.jsonl. Let me check how log_feedback calculates it and whether it might be looking at session-specific events rather than the global events.jsonl.
+
+But the fallback is clear. Let me just verify with the exact command form specified in the fallback.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && yyds state tail --limit 500 2>… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `yyds state tail` command failed. Let me try with the full path or check if `yyds` binary exists.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && which yyds 2>/dev/null || comm… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, the binary is at `target/debug/yyds`. Let me try again with the correct path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now we see: RunCompleted = 11, RunStarted = 2. That's 9 unmatched completed runs! The previous check on `.yoyo/state/events.jsonl` showed both equal to 1, but that was for the entire file (30958 events). The `yyds state tail --limit 500` shows the last 500 events have 11 RunCompleted and only 2 RunStarted.
+
+So there ARE unmatched completed runs in the recent window (last 500 events). The `state_unmatched_non_validation=1` is counting at least one of these.
+
+Now I need to:
+1. Find those unmatched RunCompleted events and see what they look like
+2. Check if `is_cancelled_completion()` would recognize them
+3. Fix either the function or the call site
+
+Let me inspect the unmatched RunCompleted events first.
+────────────────────────────────────────────────────────────────────────────────
+
+Good - RunCompleted=11, RunStarted=2. 9 unmatched. Let me inspect them.
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (38 lines) ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Python script got 0 RunCompleted and 0 RunStarted, while grep showed 11 and 2. This means the `yyds state tail` output might not be valid JSON or the events have different field names. Let me look at the raw output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Those are not JSON events. The `yyds state tail` output appears to be a different format - it's logging tool calls and commands, not the state events. Let me try `yyds state tail --json` or check the help for the right format.
+
+Actually, looking at the output, it seems like `yyds state tail` is outputting event log lines, not JSON events. The kind field is in a different format. Let me try `yyds state events` or `yyds state list` to see what commands are available.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state --he… ✓ (288ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try `yyds state tail --limit 500 --json` or check the raw events format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK, so the `yyds state tail` output format is a custom event log format, not JSON. The grep found "kind":"RunCompleted" in command text (tool calls that grep for RunCompleted), not actual RunCompleted events. The events have a different format.
+
+Let me look at what "RunCompleted" looks like in this format.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (293ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the actual RunCompleted events. They have `status=completed` or `status=error`. Let me count RunCompleted and RunStarted events properly, and find the unmatched ones.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+58 RunCompleted vs 25 RunStarted. That's a lot of unmatched! Let me find the unmatched ones and inspect them.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (43 lines) ✓ (289ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The Python script got 0 results, which means the parsing didn't work correctly. The `yyds state tail` output isn't tab-separated - it uses a different format. Let me look at the actual raw lines.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+It's space-separated, not tab-separated. And it looks like there are two spaces between fields. Let me also check if the `error` field is present.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+None of these have `error=` or `error_detail=` fields explicitly shown. The format might only show certain fields. Let me try the lifecycle subcommand which has `--json` flag to get proper JSON output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/d… (21 lines) ✓ (4.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The lifecycle output is a string, not JSON. Let me look at the raw output.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state life… ✓ (4.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the `--json` flag on `lifecycle` gives a summary, not the individual event details. Let me try the `state tail` with JSON format approach or use the SQLite projection.
+
+Actually, let me step back and think about what I actually need to do. The core issue is:
+
+1. `is_cancelled_completion()` in `log_feedback.py` detects cancelled runs
+2. But it's NOT called for `run_unmatched_completed_ids` (line 1386-1394)
+3. The function itself might be missing a detection pattern
+
+The task says to fix `is_cancelled_completion()`. But the real structural issue is that it's not called in the right place.
+
+However, looking at the task description again: "Add one new detection pattern to the existing function." This implies the function itself needs a new pattern.
+
+Let me focus on what I can verify: 
+1. Compare `is_cancelled_completion()` with `_is_run_externally_cancelled()` 
+2. Find a pattern that `_is_run_externally_cancelled` catches but `is_cancelled_completion()` misses
+3. Also fix the call site
+
+The key difference I already identified:
+- `_is_run_externally_cancelled` Signal 2: requires BOTH `rust_panic` event AND `RunCompleted error + no detail`
+- `is_cancelled_completion` Signal 2: only `RunCompleted error + no detail`
+
+So `is_cancelled_completion` is actually broader (returns True more often). This means it's NOT missing patterns from `_is_run_externally_cancelled`.
+
+But maybe there's a DIFFERENT pattern that both miss. Let me think about what the unmatched RunCompleted events actually look like. Since I can't easily get JSON from `yyds state tail`, let me try another approach: read the events.jsonl directly with a larger window, or use the SQLite projection.
+
+Let me try using Python to directly parse the events.jsonl and find unmatched RunCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (49 lines) ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+In the last 2000 events, there are 0 unmatched completed runs. But the `yyds state tail` showed 58 RunCompleted vs 25 RunStarted. This discrepancy suggests that the event format in `yyds state tail` is different from what's in `events.jsonl`, or the `yyds state tail` counts things differently.
+
+Let me check what the total RunCompleted/RunStarted count is in the entire events.jsonl.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && python3 -c… (28 lines) ✓ (290ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+9778 events in total, RunCompleted=1, RunStarted=1, no unmatched. This is different from what `yyds state tail` showed (58 RunCompleted, 25 RunStarted). These are likely different data sources or the `yyds state tail` counts different kinds of events.
+
+The `yyds state tail` format shows events like:
+```
+1781756326151  RunCompleted           event_d416c4a33e824351ab5f67ae36edf1dd  run=run-1781756112397-15115  status=completed
+```
+
+These are runtime events from the harness (tool calls, commands, etc.), not the state events stored in `.yoyo/state/events.jsonl`. The `yyds state tail` is showing the operational event log, which has a different schema.
+
+Since the state events.jsonl shows 0 unmatched runs, the `state_unmatched_non_validation=1` gnome must come from the operational event log (what `yyds state tail` shows), not from the state event storage.
+
+But wait - `log_feedback.py` processes session directories and reads `events.jsonl` files. Let me check what data source it uses.
+
+Actually, let me re-focus. The task says to fix `is_cancelled_completion()` in `scripts/log_feedback.py`. Let me look at how `log_feedback.py` reads events and computes the unmatched count. The key question is: does it use the operational event log or the state events.jsonl?
+
+Let me look at the function that computes `run_unmatched_completed_ids`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 25 ────────────────────────────────────────────────────────────╮
+  ▶ read scripts/log_feedback.py:1300..1340 ✓ (145ms)
+
+
