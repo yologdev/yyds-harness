@@ -596,10 +596,10 @@ fn read_trace_events(path: &Path, id: &str) -> Result<Vec<Value>, String> {
         let mut matched: Vec<Value> = Vec::new();
         let mut found_start = false;
         for event in chunk_events.iter().rev() {
-            let matches = event_string(event, "run_id").map_or(false, |r| r == id)
-                || event_string(event, "trace_id").map_or(false, |t| t == id);
+            let matches = event_string(event, "run_id") == Some(id)
+                || event_string(event, "trace_id") == Some(id);
             if matches {
-                if event_string(event, "event_type").map_or(false, |t| t == "RunStarted") {
+                if event_string(event, "event_type") == Some("RunStarted") {
                     found_start = true;
                 }
                 matched.push(event.clone());
