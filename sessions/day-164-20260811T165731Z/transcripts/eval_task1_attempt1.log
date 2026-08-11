@@ -1,0 +1,220 @@
+warning: skipping corrupted event at line 2 of '.yoyo/state/events.jsonl': expected value at line 1 column 1
+warning: skipping corrupted event at line 5812 of '.yoyo/state/events.jsonl': expected `:` at line 1 column 4982
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me evaluate this task. The task is to fix `yyds deepseek cache-report` to read cache metrics from ModelCallCompleted events in addition to CacheMetricsRecorded events.
+
+The git diff is empty - meaning no changes have been made yet. Let me verify this by checking the current state of the code and the build/test status.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --stat HEAD 2>/dev/nu… ✓ (135ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There is a diff! The git diff shown in the task description was empty, but there are actual changes. Let me see the diff and verify the implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_deepseek… ✓ (65ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is quite large (183 insertions, 30 deletions). Let me see the full diff to understand all the changes properly.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff src/commands_deepseek… ✓ (241ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The diff is truncated. Let me read the actual modified file to see the full implementation.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_deepseek.rs:2025..2145 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I can see the `build_cache_report` function. Now let me check the new tests and the `read_events_from_sqlite` function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_deepseek.rs:2349..2479  ▶ search 'read_events_from_sqlite' in /home/runner/work/yyds-harness/yyds-harness/src/commands_deepseek.rs ✓ (62ms)
+ ✓ (61ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the `read_events_from_sqlite` function to see if it also includes ModelCallCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.5s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_deepseek.rs:1996..2036 ✓ (30ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see a problem. The `read_events_from_sqlite` function still only queries `WHERE event_type = 'CacheMetricsRecorded'` and its error message only mentions `CacheMetricsRecorded`. The task description says:
+
+> In `read_events_from_sqlite()`: change the SQL to `WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted')` or add a second query and merge results.
+
+This hasn't been done. The SQLite path still only reads `CacheMetricsRecorded` events.
+
+Let me also check if `build_cache_report` is properly handling the case where events come from SQLite — since SQLite events have `event_type` hardcoded to `"CacheMetricsRecorded"`, ModelCallCompleted events won't be found.
+
+Let me verify: the SQLite query only selects `CacheMetricsRecorded` events. The `build_cache_report` function now handles both types. But the SQLite path still misses ModelCallCompleted events. This is a gap.
+
+However, the task description also says the fallback is: "If all ModelCallCompleted events in the tail window have cache_read_tokens=0 and cache_write_tokens=0, the report will still show zeros for agent completions but the code is still correct (it now sees all available data sources)."
+
+But the SQLite path doesn't even query for them. That's a concrete gap. Let me check the overall invocation path to see if this matters.
+
+Let me also look at the `read_events_from_tail` function which is the primary path.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/commands_deepseek.rs:1890..2000 ✓ (35ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see the issue clearly now. The `read_events_from_sqlite` function still only queries `CacheMetricsRecorded` events. The task description explicitly says to update it to also include `ModelCallCompleted` events. This is a missing piece of the implementation.
+
+Let me also check if there's a `ModelCallCompleted` column/event type in the SQLite projection. Let me check what `state_events` table contains.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'event_type.*ModelCallCompleted' in /home/runner/work/yyds-harness/yyds-harness/src  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test deepseek -- --test-… ✓ (118ms)
+ ✓ (15.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Tests pass. 133 passed, 0 failed. Let me now check if the SQLite path needs to be updated. The task description says:
+
+> In `read_events_from_sqlite()`: change the SQL to `WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted')` or add a second query and merge results.
+
+But wait - the SQLite projection is built from `state_events` table, and it might not have `ModelCallCompleted` as an event type. Let me check the SQLite projection schema.
+
+Actually, let me look at the `rebuild_sqlite_projection` function to understand what events get stored.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 19.9s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'CREATE TABLE.*state_events' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check if the SQLite projection stores ModelCallCompleted events. I'll look at the migration to see what event types are stored.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'state_events' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (37ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me check the rebuild_sqlite_projection to see the table schema.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:1030..1090 ✓ (31ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the ensure_projection_schema function to see if ModelCallCompleted is stored.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'ensure_projection_schema' in /home/runner/work/yyds-harness/yyds-harness/src/state.rs ✓ (36ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read /home/runner/work/yyds-harness/yyds-harness/src/state.rs:1098..1148 ✓ (32ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The SQLite projection does store all events including `ModelCallCompleted`. It reads the `event_type` (or `kind`) field from the JSON line. So `ModelCallCompleted` events should be in the SQLite projection.
+
+Now the question is: does the `read_events_from_sqlite` function need to also query `ModelCallCompleted` events?
+
+Looking at the current code:
+1. The primary path (`read_tail_cache_events`) reads raw JSONL and passes all events to `build_cache_report`
+2. The `build_cache_report` function now handles both `CacheMetricsRecorded` and `ModelCallCompleted` events
+3. The SQLite fallback path (`read_events_from_sqlite`) only queries `CacheMetricsRecorded` events
+
+The task description explicitly says: "In `read_events_from_sqlite()`: change the SQL to `WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted')` or add a second query and merge results."
+
+This hasn't been done. The SQLite path still only queries `CacheMetricsRecorded`. This is a gap.
+
+But wait - let me think about the severity. The `read_events_from_sqlite` is a fallback path that only runs when the JSONL file can't be read. In practice, the JSONL file is almost always available. The task says "The SQLite fallback path also includes ModelCallCompleted events." as a success criterion.
+
+However, the main `build_cache_report` function change is the critical fix - it handles ModelCallCompleted events from the JSONL tail-window read. The SQLite fallback is a secondary issue.
+
+Let me check if there's a `ModelCallCompleted` event type in the `read_events_from_sqlite` function also needing update. Given the task criteria, this is a missing piece but the core functionality (reading from JSONL) works.
+
+Actually, let me re-read the task description more carefully:
+
+> - `yyds deepseek cache-report` shows non-zero `hit_tokens` when ModelCallCompleted events with `cache_read_tokens > 0` exist in the event tail.
+
+The JSONL tail-window path reads ALL events unfiltered and passes them to `build_cache_report`, which now handles ModelCallCompleted. So this should work.
+
+> - The SQLite fallback path also includes ModelCallCompleted events.
+
+This is NOT done. The SQLite query still only reads `CacheMetricsRecorded`.
+
+Let me verify by running the command.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds deepseek c… ✓ (348ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The command works and shows non-zero hit tokens. Let me also check the JSON output.
+
+Now let me assess whether to FAIL or PASS.
+
+The task was implemented with one gap: the SQLite fallback path (`read_events_from_sqlite`) doesn't include ModelCallCompleted events. But the primary JSONL path works correctly, the build_cache_report function handles both event types, tests pass, and the command outputs non-zero results.
+
+However, the task description explicitly says this as a success criterion:
+> "The SQLite fallback path also includes ModelCallCompleted events."
+
+And in Implementation Notes:
+> "In `read_events_from_sqlite()`: change the SQL to `WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted')` or add a second query and merge results."
+
+This hasn't been done. It's a gap. But it's a secondary path that only activates when the JSONL file is unreadable. Is this enough to FAIL?
+
+The task also says:
+> "Keep the change under 80 lines. Do not refactor or extract new functions unless strictly necessary for correctness."
+
+Given the 80 line budget, the SQLite path might have been intentionally deferred. Let me count the actual changes.
+
+Let me also check: does the read_events_from_sqlite error message still say "no CacheMetricsRecorded events in SQLite projection"? Let me look:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds deepseek c… ✓ (368ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+JSON output is well-formed. The command works correctly.
+
+Now let me make the verdict. The task has:
+
+✅ `cargo test` passes (133 passed, 0 failed)
+✅ `yyds deepseek cache-report` shows non-zero hit_tokens
+✅ `yyds deepseek cache-report --json` shows well-formed JSON
+✅ `build_cache_report()` handles both CacheMetricsRecorded and ModelCallCompleted events
+✅ New unit tests added for ModelCallCompleted events (3 tests: `cache_report_reads_model_call_completed_events`, `cache_report_interleaves_both_event_types`, `cache_report_reads_model_call_completed_via_raw_kind_field`)
+✅ Existing tests updated (error message test now checks for "ModelCallCompleted")
+✅ No regression - CacheMetricsRecorded path still works
+✅ Event type detection handles both "event_type" and "kind" fields (raw JSONL compatibility)
+
+❌ SQLite fallback path (`read_events_from_sqlite`) not updated to include ModelCallCompleted events
+
+The SQLite fallback path gap is real but minor. The task success criteria says it should be done, but the SQLite path is only a fallback for when the JSONL file can't be read. In practice, the JSONL file is almost always available. The core functionality - reading from JSONL - works perfectly.
+
+The task is largely complete. The SQLite gap is a minor omission. I'd lean toward PASS with a note about the SQLite path, but let me be strict about the

@@ -1,0 +1,568 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task:
+
+1. Fix `yyds deepseek cache-report` to read cache metrics from both `CacheMetricsRecorded` AND `ModelCallCompleted` events
+2. The file to edit is `src/commands_deepseek.rs`
+3. I need to follow the evolve skill rules
+
+Let me first read the evolve skill, then examine the relevant source code.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_deepseek.rs (100 lines) ✓ (2.6s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the `build_cache_report()` function and the cache-report handling code.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'build_cache_report' in src/commands_deepseek.rs  ▶ search 'handle_cache_report' in src/commands_deepseek.rs ✓ (1.7s)
+ ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the handle_cache_report and build_cache_report functions.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1882..2082 ✓ (871ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of build_cache_report and the CacheReport struct, plus the tests:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2080..2280 ✓ (871ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading the tests to see all of them:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2279..2479 ✓ (871ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at the CacheReport and CacheModelReport structs. Let me search for them:
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me find the CacheReport struct definition and also look at how ModelCallCompleted events look in the JSONL:
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'struct CacheReport' in src/commands_deepseek.rs  ▶ search 'struct CacheModelReport' in src/commands_deepseek.rs  ▶ $ grep -F '"kind":"ModelCallCompleted"' .yoyo/state/events.jsonl | head -3 | pytho… ✓ (3.5s)
+ ✓ (3.5s)
+ ✓ (3.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The bash grep didn't work as expected since the JSONL has `kind` not a flat `kind` field. Let me try a different approach.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 6.1s (3 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1865..1885  ▶ $ grep -F 'ModelCallCompleted' .yoyo/state/events.jsonl | head… (15 lines) ✓ (2.9s)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the event format. The events use `"kind": "ModelCallCompleted"` not `"event_type": "ModelCallCompleted"`. Let me look at how `build_cache_report` reads events - it checks `event.get("event_type")`. But the state events in JSONL use `kind`, not `event_type`. Let me verify this by looking at the state event format and the `read_compatibility_events` function.
+
+Wait, the `read_events` (the test helper) uses `crate::state::read_compatibility_events` which converts `kind` fields to `event_type`. So when reading through that path, `event_type` is available. But `read_tail_cache_events` reads raw JSONL lines. Let me check what field the cache events from `CacheMetricsRecorded` use.
+
+Actually, let me look more carefully. The events in JSONL have both `kind` and potentially `event_type` fields. The `read_compatibility_events` function normalizes things. But `read_tail_cache_events` just reads raw JSONL lines.
+
+Let me check how CacheMetricsRecorded events are stored in JSONL.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 4.6s (2 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -F 'CacheMetricsRecorded' .yoyo/state/events.jsonl | he… (12 lines) ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I see. The JSONL events use `"kind"` not `"event_type"`. But `read_tail_cache_events` reads raw lines and `build_cache_report` checks `event.get("event_type")`. Yet the tests show that for CacheMetricsRecorded events read through `read_events` (which uses `read_compatibility_events`), it works because `read_compatibility_events` normalizes `kind` to `event_type`.
+
+Let me check: does `read_tail_cache_events` also check for `kind` vs `event_type`? Looking at the code again:
+
+```rust
+fn read_tail_cache_events(path: &Path, cap: usize) -> Result<(Vec<Value>, usize, usize), String> {
+    // reads raw JSONL lines, each parsed as Value
+    let events: Vec<Value> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    Ok((events, total, scanned))
+}
+```
+
+And then in `build_cache_report`:
+```rust
+let event_type = event
+    .get("event_type")
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+if event_type != "CacheMetricsRecorded" {
+    continue;
+}
+```
+
+But the raw JSONL uses `"kind"`, not `"event_type"`. So how do CacheMetricsRecorded events work at all? Let me re-read the JSONL output more carefully...
+
+Actually wait, looking at the CacheMetricsRecorded event from JSONL:
+```json
+{
+  "kind": "CacheMetricsRecorded",
+  ...
+  "payload": {
+    "_yoyo": {
+      "event_type": "CacheMetricsRecorded",
+      ...
+    },
+    "prompt_cache_hit_tokens": 96256,
+    ...
+  }
+}
+```
+
+So the raw event has `"kind": "CacheMetricsRecorded"` at the top level. But `build_cache_report` checks `event.get("event_type")`. So `event_type` would be null/absent from the raw JSONL. But wait, the `_yoyo.event_type` is inside the payload nested object, not at the top level.
+
+Hmm, but the `read_compatibility_events` function normalizes `kind` -> `event_type`. But `read_tail_cache_events` doesn't use `read_compatibility_events` - it just reads raw lines.
+
+So how does `build_cache_report` work at all with `read_tail_cache_events`? It seems like currently the cache-report would also fail to find any CacheMetricsRecorded events from the raw JSONL path...
+
+Unless there's something I'm missing. Let me check if `read_tail_cache_events` does any normalization...
+
+Looking at the code again:
+```rust
+fn read_tail_cache_events(path: &Path, cap: usize) -> Result<(Vec<Value>, usize, usize), String> {
+    let raw = std::fs::read_to_string(path)... 
+    ...
+    let events: Vec<Value> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    Ok((events, total, scanned))
+}
+```
+
+No normalization. So `event.get("event_type")` would return None and fall back to empty string, which doesn't match "CacheMetricsRecorded".
+
+But wait - the task says the cache-report returns "no DeepSeek cache metrics recorded" because it only processes `CacheMetricsRecorded` events. This implies the function DOES find CacheMetricsRecorded events somehow. Let me look at the JSONL events more carefully.
+
+Actually, maybe there's a newer format that includes `event_type` at the top level. Let me check:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -F 'CacheMetricsRecorded' .yoyo/state/events.jsonl | he… (8 lines)  ▶ $ grep -F 'ModelCallCompleted' .yoyo/state/events.jsonl | head… (10 lines) ✓ (1.7s)
+ ✓ (5.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So both events use `kind` not `event_type` at the top level. The `build_cache_report` function checks `event.get("event_type")` which would be None for both. But the test `cache_report_aggregates_state_events` creates events with `event_type` at the top level, and that works. So the production code wouldn't find any events via `read_tail_cache_events`.
+
+But `read_events_from_sqlite` creates events with `event_type` at the top level:
+```rust
+events.push(json!({
+    "event_type": "CacheMetricsRecorded",
+    "payload": payload,
+}));
+```
+
+So the SQLite fallback CAN work. But the JSONL path via `read_tail_cache_events` cannot work because the raw events use `kind` not `event_type`.
+
+Wait, but the task says the current cache-report returns "no metrics" because it only processes `CacheMetricsRecorded`. So maybe the function IS finding zero CacheMetricsRecorded events and that's the problem - the ModelCallCompleted events are there with real cache data but ignored.
+
+Actually, re-reading the task more carefully: the current code filters to `CacheMetricsRecorded` only. For the JSONL path, even `CacheMetricsRecorded` events wouldn't match because of the `kind` vs `event_type` discrepancy. But `read_compatibility_events` handles that. So the SQLite fallback path might be the one that works for CacheMetricsRecorded.
+
+Let me just focus on implementing the fix: make `build_cache_report()` also process `ModelCallCompleted` events (matching by `kind`). The key insight is that the raw JSONL uses `kind`, not `event_type`. But the test helper `read_events` uses `read_compatibility_events` which normalizes both `kind` and `event_type`.
+
+Let me check what `read_compatibility_events` does:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ search 'read_compatibility_events' in src/state.rs ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `read_compatibility_events` function to understand how it normalizes `kind` -> `event_type`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3453..3553 ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So `read_compatibility_events` calls `compatibility_event_json_line` to normalize each line. Let me check what that normalization does - likely converting `kind` to `event_type`:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ search 'fn compatibility_event_json_line' in src/state.rs ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3438..3458 ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me look at `compatibility_event_value` to see how it normalizes the fields:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:3550..3610 ✓ (883ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture:
+
+1. `read_compatibility_events` normalizes events so `event_type` is at the top level with a label like "CacheMetricsRecorded"
+2. `read_tail_cache_events` reads raw JSONL lines - which have `kind` not `event_type`
+3. `read_events_from_sqlite` creates events with `event_type` at the top level
+
+For `read_tail_cache_events`, the raw JSONL has:
+- `"kind": "CacheMetricsRecorded"` - and `build_cache_report` checks `event.get("event_type")`, which would be empty because the raw JSONL uses `kind`, not `event_type`
+- `"kind": "ModelCallCompleted"` - same issue
+
+Wait, but the error message says "no DeepSeek cache metrics recorded" implying CacheMetricsRecorded events aren't found. But wait, maybe `read_tail_cache_events` does work because there's a later code path... let me re-check.
+
+Actually, I think the issue is different. The `read_tail_cache_events` might still work because there are zero CacheMetricsRecorded events in the raw JSONL. Let's check: `CacheMetricsRecorded` events are only produced by diagnostic paths (stream-check, fim-complete) via `record_cache_metrics_direct()`. In normal agent operation, the events are `ModelCallCompleted` which have cache data in the payload but aren't CacheMetricsRecorded.
+
+So the issue is:
+- The JSONL has `kind` not `event_type`, but `read_tail_cache_events` doesn't normalize. So it can't find ANY events by `event_type`.
+- BUT the task hints that CacheMetricsRecorded events DO work in the report. So maybe there IS normalization somewhere I'm missing.
+
+Wait, let me re-read `read_tail_cache_events`:
+```rust
+fn read_tail_cache_events(path: &Path, cap: usize) -> Result<(Vec<Value>, usize, usize), String> {
+    let raw = std::fs::read_to_string(path)... 
+    ...
+    let events: Vec<Value> = lines
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    Ok((events, total, scanned))
+}
+```
+
+No normalization. So the raw JSONL events would have:
+```json
+{
+  "kind": "CacheMetricsRecorded",
+  "payload": {...},
+  ...
+}
+```
+
+And `build_cache_report` checks:
+```rust
+let event_type = event.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+if event_type != "CacheMetricsRecorded" {
+    continue;
+}
+```
+
+Since the raw JSONL has `kind` not `event_type`, `event.get("event_type")` returns None, so `event_type` becomes `""`, which doesn't match `"CacheMetricsRecorded"`. So `read_tail_cache_events` would NEVER find any events.
+
+BUT - the SQLite path `read_events_from_sqlite` DOES set `event_type`:
+```rust
+events.push(json!({
+    "event_type": "CacheMetricsRecorded",
+    "payload": payload,
+}));
+```
+
+So the SQLite path works. But the JSONL path doesn't.
+
+However, the task says to add ModelCallCompleted support. Let me focus on that. The approach should be:
+
+1. In `build_cache_report()`, handle both `kind` matching AND `event_type` matching for both event types
+2. For `read_tail_cache_events`, we should also match on `kind`
+3. Update `read_events_from_sqlite` to also query ModelCallCompleted events
+
+Actually, looking at this more carefully, the most robust approach is to normalize the event type extraction. In `build_cache_report`, instead of just checking `event_type`, also check `kind`. And for each event, check if it's either CacheMetricsRecorded or ModelCallCompleted.
+
+Let me now plan the implementation:
+
+1. **`read_tail_cache_events`**: No change needed - it just reads raw events. The filtering happens in `build_cache_report`.
+
+2. **`build_cache_report`**: 
+   - Extract event type from both `event_type` and `kind` fields
+   - Handle both `CacheMetricsRecorded` and `ModelCallCompleted`
+   - For CacheMetricsRecorded: use `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` from payload
+   - For ModelCallCompleted: use `cache_read_tokens` as hit tokens, and `input_tokens - cache_read_tokens` (saturating_sub) as miss tokens
+   - Update the error message to mention both event types
+
+3. **`read_events_from_sqlite`**: Add ModelCallCompleted to the SQL query
+
+4. **Tests**: Add unit tests for ModelCallCompleted events
+
+5. **Error message**: Update to say "no cache metrics in CacheMetricsRecorded or ModelCallCompleted events"
+
+Let me also check the model field extraction. For CacheMetricsRecorded, the model is at `payload.model`. For ModelCallCompleted, the model is also at `payload.model`.
+
+Now let me also make sure to handle the `kind` vs `event_type` issue properly. The safest approach is to extract the event type like:
+```rust
+let event_type = event
+    .get("event_type")
+    .or_else(|| event.get("kind"))
+    .and_then(|v| v.as_str())
+    .unwrap_or("");
+```
+
+Let me now look at the current code in `build_cache_report` more carefully and trace through the change.
+
+Actually, I realize I need to also check: does `read_tail_cache_events` path currently work at all for CacheMetricsRecorded? If it doesn't (because of `kind` vs `event_type`), then the `build_cache_report` only gets CacheMetricsRecorded events from the SQLite fallback. That means the production path (JSONL) is completely broken for cache-report. But the task focuses on adding ModelCallCompleted support, which would also need to handle the `kind` vs `event_type` issue.
+
+Let me just implement the fix: normalize event type extraction in `build_cache_report` to handle both `kind` and `event_type`, and add ModelCallCompleted support.
+
+Let me now write the code.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a clear picture. Let me plan and implement the change:
+
+1. `read_tail_cache_events` reads raw JSONL where events use `"kind"` not `"event_type"` — so `build_cache_report` needs to check both
+2. Need to add `ModelCallCompleted` event handling alongside `CacheMetricsRecorded`
+3. Need to update SQLite fallback query
+4. Need to add a test
+
+Let me implement this:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (877ms)
+  ▶ todo ✓ (876ms)
+  ▶ todo ✓ (878ms)
+  ▶ todo ✓ (873ms)
+  ▶ todo ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by writing the test first. I need to find a good place to insert it. Let me look at the end of the tests section.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 8.0s (5 ✓)
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find a good place to insert the test. I need to look at a test that's near the end of the cache report test group.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2280..2340 ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I'll add the test after the `cache_report_reads_canonical_yoagent_state_events` test (after line 2315) and before `cache_report_payload_is_machine_readable`. Let me insert it there.
+
+Now let me write the test. The test should:
+1. Create a ModelCallCompleted-like event with cache_read_tokens > 0 and input_tokens
+2. Verify it produces non-zero hit_tokens in the report
+3. The miss_tokens should be input_tokens - cache_read_tokens (saturating_sub)
+
+I also need to make the test verify interleaved CacheMetricsRecorded + ModelCallCompleted events.
+
+Let me write the test and the code changes.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I'll add the test. I'll insert it after line 2315 (after `cache_report_reads_canonical_yoagent_state_events`):
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_reads_model_call_completed_events() {
+  +         // ModelCallCompleted events carry cache_read_tokens and input_tokens.
+  +         // cache_read_tokens are hit tokens; miss tokens = input_tokens - cache_read_tokens.
+  +         let events = vec![
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 750,
+  +                     "cache_write_tokens": 0,
+  +                     "input_tokens": 1000,
+  +                     "output_tokens": 200
+  +                 }
+  +             }),
+  +             json!({
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (3 → 121 lines)
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (3 → 121 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_reads_model_call_completed_events() {
+  +         // ModelCallCompleted events carry cache_read_tokens and input_tokens.
+  +         // cache_read_tokens are hit tokens; miss tokens = input_tokens - cache_read_tokens.
+  +         let events = vec![
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 750,
+  +                     "cache_write_tokens": 0,
+  +                     "input_tokens": 1000,
+  +                     "output_tokens": 200
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  ... (101 more lines)
+ ✗ (1.8s)
+    │ old_text matches 35 locations in src/commands_deepseek.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `    }\n\n    #[test]` pattern matches many locations. Let me use more context to make it unique.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(rendered.contains("deepseek-v4-pro events=1 hit=90 miss=10 ratio=90.00%"));
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_reads_model_call_completed_events() {
+  +         // ModelCallCompleted events carry cache_read_tokens and input_tokens.
+  +         // cache_read_tokens are hit tokens; miss tokens = input_tokens - cache_read_tokens.
+  +         let events = vec![
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 750,
+  +                     "cache_write_tokens": 0,
+  +                     "input_tokens": 1000,
+  +                     "output_tokens": 200
+  +                 }
+  +             }),
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (5 → 123 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (5 → 123 lines)
+            assert!(rendered.contains("deepseek-v4-pro events=1 hit=90 miss=10 ratio=90.00%"));
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_reads_model_call_completed_events() {
+  +         // ModelCallCompleted events carry cache_read_tokens and input_tokens.
+  +         // cache_read_tokens are hit tokens; miss tokens = input_tokens - cache_read_tokens.
+  +         let events = vec![
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 750,
+  +                     "cache_write_tokens": 0,
+  +                     "input_tokens": 1000,
+  +                     "output_tokens": 200
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  ... (102 more lines)
+ ✓ (870ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to also update the `cache_report_handles_missing_metrics` test to expect the new error message. But first, let me implement the actual code change in `build_cache_report` and `read_events_from_sqlite`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (875ms)
+  ▶ todo ✓ (869ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update `build_cache_report` to handle both event types and the `kind`/`event_type` dual field:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+Now update `build_cache_report` to handle both event types and normalize `kind` vs `event_type`:
+        let mut by_model: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    
+        for event in events {
+  +         // Raw JSONL events use "kind"; compatibility-normalized events use "event_type".
+            let event_type = event
+                .get("event_type")
+  +             .or_else(|| event.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  -             continue;
+  -         }
+  -         event_count += 1;
+  + 
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (52 → 87 lines)
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (52 → 87 lines)
+        let mut by_model: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+    
+        for event in events {
+  +         // Raw JSONL events use "kind"; compatibility-normalized events use "event_type".
+            let event_type = event
+                .get("event_type")
+  +             .or_else(|| event.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  -             continue;
+  -         }
+  -         event_count += 1;
+  + 
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  -             .unwrap_or(0);
+  -         let event_miss_tokens = payload
+  ... (88 more lines)
+ ✓ (869ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the error message test for the new error text.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the `cache_report_handles_missing_metrics` test to match the new error:
+                "error should explain the limitation, got: {err}"
+            );
+            assert!(
+  -             err.contains("yoagent"),
+  -             "error should name yoagent as the upstream limitation, got: {err}"
+  +             err.contains("ModelCallCompleted"),
+  +             "error should mention ModelCallCompleted events, got: {err}"
+            );
+            assert!(
+                err.contains("stream-check"),
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (24 → 24 lines)
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (24 → 24 lines)
+                "error should explain the limitation, got: {err}"
+            );
+            assert!(
+  -             err.contains("yoagent"),
+  -             "error should name yoagent as the upstream limitation, got: {err}"
+  +             err.contains("ModelCallCompleted"),
+  +             "error should mention ModelCallCompleted events, got: {err}"
+            );
+            assert!(
+                err.contains("stream-check"),
+ ✓ (978ms)
+
+
