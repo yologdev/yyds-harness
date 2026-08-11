@@ -1,0 +1,526 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task clearly:
+
+1. Fix `deepseek cache-report` to read cache metrics from `ModelCallCompleted` events in addition to `CacheMetricsRecorded` events
+2. The code is in `src/commands_deepseek.rs`
+3. Need to modify `build_cache_report()` and `read_events_from_sqlite()`
+
+Let me first read the relevant code to understand the current state, then implement the fix.
+
+The key insight from the task: `build_cache_report()` only processes `CacheMetricsRecorded` events, but agent chat completions emit `ModelCallCompleted` events that also contain cache data (`cache_read_tokens`, `cache_write_tokens`). The fix is to also read from `ModelCallCompleted` events.
+
+Let me start by reading the relevant sections of `src/commands_deepseek.rs`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read src/commands_deepseek.rs:1950..2130  ▶ read src/commands_deepseek.rs:1..51 ✓ (2.6s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the tests section to understand the existing test structure:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.5s (2 ✓)
+
+Now let me find the tests for `build_cache_report` and understand the test structure:
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'mod tests' in src/commands_deepseek.rs ✓ (875ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the tests to understand the existing test patterns.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2217..2417 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a clear picture of both the code and the tests. Let me also check `read_tail_cache_events` to understand how it's called - specifically, the events it returns have raw JSONL format (with `"kind"` field), not compatibility format (with `"event_type"` field).
+
+Let me also check how `parse_state_event_line` handles both formats.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check how `read_tail_cache_events` is called and whether the events use `"kind"` or `"event_type"`:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'read_tail_cache_events' in src/commands_deepseek.rs  ▶ search 'parse_state_event_line' in src/state.rs ✓ (1.8s)
+ ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the call site at line 1889 to understand how `read_tail_cache_events` is called and how results are used.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1880..1950 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I understand the full picture. Let me also check `parse_state_event_line` to understand the kind/event_type handling:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/state.rs:1082..1132 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I have a clear picture:
+
+1. `read_tail_cache_events` reads raw JSONL and returns `Vec<Value>` — these have the raw `"kind"` field (not `"event_type"`).
+2. `read_events_from_sqlite` returns compatibility format with `"event_type"` field.
+3. `build_cache_report` only checks `"event_type"` and only matches `"CacheMetricsRecorded"`.
+
+The fix needs:
+1. In `build_cache_report`: check both `"event_type"` AND `"kind"` fields, and handle both `"CacheMetricsRecorded"` and `"ModelCallCompleted"` event types.
+2. In `read_events_from_sqlite`: add `ModelCallCompleted` to the query.
+3. For `ModelCallCompleted` events, read `cache_read_tokens` as hit_tokens and `cache_write_tokens` as miss_tokens.
+4. Update the "no metrics" error message.
+5. Add tests for ModelCallCompleted events.
+
+Now let me implement this. Based on the early action requirement (5th turn), I need to start editing. Let me plan the changes:
+
+### build_cache_report changes:
+
+```rust
+fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
+    let mut event_count = 0u64;
+    let mut hit_tokens = 0u64;
+    let mut miss_tokens = 0u64;
+    let mut by_model: BTreeMap<String, (u64, u64, u64)> = BTreeMap::new();
+
+    for event in events {
+        // Check both "event_type" (compatibility format from read_events/sqlite) 
+        // and "kind" (raw JSONL from read_tail_cache_events)
+        let event_type = event
+            .get("event_type")
+            .or_else(|| event.get("kind"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_type != "CacheMetricsRecorded" && event_type != "ModelCallCompleted" {
+            continue;
+        }
+        event_count += 1;
+        let payload = event.get("payload").unwrap_or(&Value::Null);
+        
+        // CacheMetricsRecorded uses prompt_cache_hit_tokens / prompt_cache_miss_tokens
+        // ModelCallCompleted uses cache_read_tokens / cache_write_tokens
+        let (event_hit_tokens, event_miss_tokens) = if event_type == "ModelCallCompleted" {
+            (
+                payload.get("cache_read_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                payload.get("cache_write_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            )
+        } else {
+            (
+                payload.get("prompt_cache_hit_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                payload.get("prompt_cache_miss_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+            )
+        };
+        hit_tokens += event_hit_tokens;
+        miss_tokens += event_miss_tokens;
+        let model = payload
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|model| !model.trim().is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let entry = by_model.entry(model).or_insert((0, 0, 0));
+        entry.0 += 1;
+        entry.1 += event_hit_tokens;
+        entry.2 += event_miss_tokens;
+    }
+    // ... rest stays the same
+```
+
+### read_events_from_sqlite changes:
+Change the query to include both event types.
+
+### Error message update:
+The error message should now mention that we check both event types.
+
+### Tests:
+Add test for ModelCallCompleted events with cache data.
+
+Let me now make the edits. First, let me make the `build_cache_report` change.
+
+Actually, wait. Let me also look at the error message. The current one says "no DeepSeek cache metrics recorded from agent chat completions" — but with this fix, the error should be about NO events having cache data from any source. Let me update it properly.
+
+Let me now implement.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have a complete understanding. Let me implement the fix. The key issues:
+
+1. `build_cache_report` only checks `"event_type"` (not `"kind"` from raw JSONL) and only matches `"CacheMetricsRecorded"`
+2. `read_events_from_sqlite` only queries `CacheMetricsRecorded`
+
+Let me make the edits:
+        for event in events {
+  +         // Accept both "event_type" (compatibility / SQLite) and "kind" (raw JSONL).
+            let event_type = event
+                .get("event_type")
+  +             .or_else(|| event.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  +         if event_type != "CacheMetricsRecorded" && event_type != "ModelCallCompleted" {
+                continue;
+            }
+            event_count += 1;
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  -             .unwrap_or(0);
+  -         let event_miss_tokens = payload
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (31 → 48 lines)
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (31 → 48 lines)
+        for event in events {
+  +         // Accept both "event_type" (compatibility / SQLite) and "kind" (raw JSONL).
+            let event_type = event
+                .get("event_type")
+  +             .or_else(|| event.get("kind"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  +         if event_type != "CacheMetricsRecorded" && event_type != "ModelCallCompleted" {
+                continue;
+            }
+            event_count += 1;
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  -             .unwrap_or(0);
+  -         let event_miss_tokens = payload
+  -             .get("prompt_cache_miss_tokens")
+  -             .and_then(|v| v.as_u64())
+  ... (27 more lines)
+ ✓ (891ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the error message when no cache metrics are found. The current message talks about yoagent dropping cache fields — but now that we're also reading ModelCallCompleted events which carry cache data, the message should be updated.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the error message when no metrics are found:
+        if event_count == 0 {
+            return Err(
+  -             "no DeepSeek cache metrics recorded from agent chat completions\n  \
+  -              Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
+  -              (cache_read_input_tokens, cache_creation_input_tokens).\n  \
+  +             "no DeepSeek cache metrics recorded\n  \
+  +              Reason: no CacheMetricsRecorded or ModelCallCompleted events found\n  \
+  +              in the state event tail (last 20K events).\n  \
+                 Cache metrics ARE recorded for these diagnostic paths:\n  \
+                   - yyds deepseek stream-check  (chat completion SSE parsing)\n  \
+                   - yyds deepseek fim-complete   (FIM completion parsing)\n  \
+  -              Next step: Run `yyds deepseek stream-check` to populate cache metrics,\n  \
+  -              then re-run `yyds deepseek cache-report`.\n  \
+  +              Agent chat completions emit ModelCallCompleted events with\n  \
+  +              cache_read_tokens / cache_write_tokens. Run an agent session\n  \
+  +              or stream-check to populate cache data.\n  \
+                 Track this: https://github.com/yologdev/yyds-harness/issues/90"
+                    .to_string(),
+            );
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (14 → 15 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (14 → 15 lines)
+        if event_count == 0 {
+            return Err(
+  -             "no DeepSeek cache metrics recorded from agent chat completions\n  \
+  -              Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
+  -              (cache_read_input_tokens, cache_creation_input_tokens).\n  \
+  +             "no DeepSeek cache metrics recorded\n  \
+  +              Reason: no CacheMetricsRecorded or ModelCallCompleted events found\n  \
+  +              in the state event tail (last 20K events).\n  \
+                 Cache metrics ARE recorded for these diagnostic paths:\n  \
+                   - yyds deepseek stream-check  (chat completion SSE parsing)\n  \
+                   - yyds deepseek fim-complete   (FIM completion parsing)\n  \
+  -              Next step: Run `yyds deepseek stream-check` to populate cache metrics,\n  \
+  -              then re-run `yyds deepseek cache-report`.\n  \
+  +              Agent chat completions emit ModelCallCompleted events with\n  \
+  +              cache_read_tokens / cache_write_tokens. Run an agent session\n  \
+  +              or stream-check to populate cache data.\n  \
+                 Track this: https://github.com/yologdev/yyds-harness/issues/90"
+                    .to_string(),
+            );
+ ✓ (876ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the `read_events_from_sqlite` to also query `ModelCallCompleted` events:
+────────────────────────────────────────────────────────────────────────────────
+
+Now update `read_events_from_sqlite` to include `ModelCallCompleted` events:
+    /// Fall back to the SQLite projection when the raw events.jsonl is unavailable.
+    ///
+  - /// Reads `CacheMetricsRecorded` events from the `state_events` table and
+  - /// returns them in the same `Vec<Value>` shape that `read_events` produces,
+  + /// Reads `CacheMetricsRecorded` and `ModelCallCompleted` events from the `state_events`
+  + /// table and returns them in the same `Vec<Value>` shape that `read_events` produces,
+    /// so `build_cache_report` can consume them unchanged.
+    fn read_events_from_sqlite(events_path: &Path) -> Result<Vec<Value>, String> {
+        let sqlite_path = crate::state::sqlite_projection_path(events_path);
+  ···
+        }
+        let conn = rusqlite::Connection::open(&sqlite_path)
+            .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+  -     let mut stmt = conn
+  -         .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+  -         .map_err(|e| format!("prepare cache events query: {e}"))?;
+  -     let rows = stmt
+  -         .query_map([], |row| row.get::<_, String>(0))
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (36 → 53 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (36 → 53 lines)
+    /// Fall back to the SQLite projection when the raw events.jsonl is unavailable.
+    ///
+  - /// Reads `CacheMetricsRecorded` events from the `state_events` table and
+  - /// returns them in the same `Vec<Value>` shape that `read_events` produces,
+  + /// Reads `CacheMetricsRecorded` and `ModelCallCompleted` events from the `state_events`
+  + /// table and returns them in the same `Vec<Value>` shape that `read_events` produces,
+    /// so `build_cache_report` can consume them unchanged.
+    fn read_events_from_sqlite(events_path: &Path) -> Result<Vec<Value>, String> {
+        let sqlite_path = crate::state::sqlite_projection_path(events_path);
+  ···
+        }
+        let conn = rusqlite::Connection::open(&sqlite_path)
+            .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
+  -     let mut stmt = conn
+  -         .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+  -         .map_err(|e| format!("prepare cache events query: {e}"))?;
+  -     let rows = stmt
+  -         .query_map([], |row| row.get::<_, String>(0))
+  -         .map_err(|e| format!("query cache events: {e}"))?;
+  -     let mut events = Vec::new();
+  ... (47 more lines)
+ ✓ (875ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I need to add tests for ModelCallCompleted events. Let me add a test that:
+1. Uses ModelCallCompleted events with cache_read_tokens and cache_write_tokens
+2. Uses "kind" field (raw JSONL format)
+3. Tests mixed events (both CacheMetricsRecorded and ModelCallCompleted)
+
+Let me also update the `cache_report_handles_missing_metrics` test since the error message changed.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add tests for ModelCallCompleted events. Let me read the current test area to find the right insertion point:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2276..2296 ✓ (876ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the `cache_report_handles_missing_metrics` test to see if the assertions need updating:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2294..2324 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `cache_report_handles_missing_metrics` test has assertions that check for "yoagent" and "Next step: Run" which are no longer in the error message. Let me update those assertions to match the new error message. The new error message contains:
+- "no DeepSeek cache metrics recorded" ✓
+- "CacheMetricsRecorded or ModelCallCompleted" → replaces old check for "yoagent"
+- "stream-check" ✓
+- "Agent chat completions emit ModelCallCompleted" → replaces old "Next step: Run"
+- "issues/90" ✓
+
+Let me update the assertions and also add tests for ModelCallCompleted events.
+
+Let me edit the test assertions:
+────────────────────────────────────────────────────────────────────────────────
+
+Update the missing-metrics test assertions to match the new error message:
+                "error should explain the limitation, got: {err}"
+            );
+            assert!(
+  -             err.contains("yoagent"),
+  -             "error should name yoagent as the upstream limitation, got: {err}"
+  +             err.contains("CacheMetricsRecorded or ModelCallCompleted"),
+  +             "error should name the new dual-source approach, got: {err}"
+            );
+            assert!(
+                err.contains("stream-check"),
+                "error should point to stream-check as a diagnostic path, got: {err}"
+            );
+            assert!(
+  -             err.contains("Next step: Run"),
+  -             "error should include a concrete next step, got: {err}"
+  +             err.contains("Agent chat completions emit ModelCallCompleted"),
+  +             "error should mention ModelCallCompleted source, got: {err}"
+            );
+            assert!(
+                err.contains("issues/90"),
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (24 → 24 lines)
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (24 → 24 lines)
+                "error should explain the limitation, got: {err}"
+            );
+            assert!(
+  -             err.contains("yoagent"),
+  -             "error should name yoagent as the upstream limitation, got: {err}"
+  +             err.contains("CacheMetricsRecorded or ModelCallCompleted"),
+  +             "error should name the new dual-source approach, got: {err}"
+            );
+            assert!(
+                err.contains("stream-check"),
+                "error should point to stream-check as a diagnostic path, got: {err}"
+            );
+            assert!(
+  -             err.contains("Next step: Run"),
+  -             "error should include a concrete next step, got: {err}"
+  +             err.contains("Agent chat completions emit ModelCallCompleted"),
+  +             "error should mention ModelCallCompleted source, got: {err}"
+            );
+            assert!(
+                err.contains("issues/90"),
+ ✓ (876ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now add a new test for ModelCallCompleted events. Let me add it after the existing `cache_report_reads_canonical_yoagent_state_events` test.
+────────────────────────────────────────────────────────────────────────────────
+
+Now add the new test for ModelCallCompleted events. Let me find the right spot:
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2348..2368 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I'll add the new test between `cache_report_reads_canonical_yoagent_state_events` and `cache_report_payload_is_machine_readable`.
+────────────────────────────────────────────────────────────────────────────────
+
+
+            assert!(rendered.contains("deepseek-v4-pro events=1 hit=90 miss=10 ratio=90.00%"));
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         // ModelCallCompleted events use "kind" (raw JSONL format) and
+  +         // carry cache_read_tokens / cache_write_tokens fields.
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 441_600,
+  +                     "cache_write_tokens": 58_400
+  +                 }
+  +             }),
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (5 → 69 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (5 → 69 lines)
+            assert!(rendered.contains("deepseek-v4-pro events=1 hit=90 miss=10 ratio=90.00%"));
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         // ModelCallCompleted events use "kind" (raw JSONL format) and
+  +         // carry cache_read_tokens / cache_write_tokens fields.
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 441_600,
+  +                     "cache_write_tokens": 58_400
+  +                 }
+  +             }),
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::FAST_MODEL,
+  ... (48 more lines)
+ ✓ (875ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me run `cargo fmt -- --check` and then `cargo test --bin yyds -- deepseek -- --test-threads=1` to verify.
+
+Actually, first let me verify the code compiles.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify the changes by running the tests:
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | he… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Two formatting issues:
+1. The `query_sqlite` function declaration formatting
+2. The error message formatting
+
+Let me run `cargo fmt` to auto-fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, `cargo fmt` passed. Now let me run `cargo build` and the tests.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -20 ✓ (13.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the deepseek tests.
+────────────────────────────────────────────────────────────────────────────────
+
+Build passes. Now run the tests:
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- deeps… ✓ (1.8s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No tests matched "deepseek". Let me search for the test function names to find the right filter.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- cache… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test binary filter may need the full module path. Let me check how tests are structured. These tests are in `src/commands_deepseek.rs` in a `tests` module. Let me check the binary entry point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- comma… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The test names don't match the filter. Let me list the test names available:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --lis… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me try a different approach — just run all tests for the binary and filter for failures.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Only 1 test ran, which is odd. Let me check how the main binary file includes the modules.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --bin yyds -- --tes… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+There's only 1 test in the binary. The tests in `commands_deepseek.rs` must be in a library crate or integration test. Let me check how the project is structured.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 24 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test --lib -- cache_repo… ✓ (23.9s)
+
+

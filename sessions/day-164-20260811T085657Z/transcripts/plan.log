@@ -1,0 +1,1020 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the trajectory and assessment to plan tasks for Day 164.
+
+Key observations:
+1. **Build passes, tree is clean** — no CI failures to fix.
+2. **Trajectory shows task_success_rate=0.5, task_verification_rate=0.5** — the main fitness gap.
+3. **Day 164 earlier session (03:26)** already had 1/2 strict verified with 1 reverted_no_edit.
+4. **State evidence is clean** — no fresh tool failures, no fresh lifecycle gaps.
+5. **Graph pressure #1**: Force analysis-only attempts into action (but this is for implementation, not planning).
+6. **Graph pressure #2**: Raise task_success_rate — the task quality issue.
+7. **Graph pressure #5**: Close yyds state and model lifecycle gaps — but the assessment says the remaining gap may be residual from pre-fix state.
+8. **Issue #90** — yoagent cache fields, blocked on upstream, not actionable here.
+9. **Issue #131** — evaluator timeouts, in do-not-modify evolve.sh, not actionable.
+10. **Issue #173** — state-only tool failure classification, was reverted (analysis-only), the issue shows extensive investigation was done but no code landed.
+11. **Issue #172, #170** — lifecycle gaps, both reverted. The Day 163 fix addressed the panic hook path. Assessment says remaining gap may be residual from pre-fix state.
+12. **Issue #165** — retroactive FailureObserved for no-op sessions, reverted (evaluator timeout).
+13. **Issue #163** — planning failure classification, reverted.
+
+Let me think about what's actually actionable:
+
+**Cache observability (#90)**: Blocked on yoagent upstream. The assessment mentions Option B (yyds-side workaround: parse raw JSON before yoagent drops it). This is a genuine DeepSeek harness improvement — measuring cache savings is core to the prompt layout determinism work. But the task was already filed as #105 (Record DeepSeek prompt cache metrics during prompt runs) and reverted. The implementation would need to intercept the raw response in the agent pipeline.
+
+Actually wait — #105 is "Record DeepSeek prompt cache metrics during prompt runs" which is about recording metrics from prompt runs. The workaround mentioned in #90 is about parsing raw JSON before yoagent drops cache fields. Let me check if this is feasible without modifying yoagent.
+
+The assessment says: "A yyds-side workaround (Option B in the issue) would be to parse raw response JSON before yoagent drops the fields — similar to how `stream-check` already works."
+
+But `stream-check` works because it parses raw SSE streams directly — it doesn't go through yoagent's agent pipeline. The agent chat completions go through yoagent's `Agent`, and yoagent's `Usage` struct is what drops the fields. We can't intercept between the API response and yoagent's deserialization without either:
+1. Modifying yoagent (upstream PR)
+2. Forking yoagent (not allowed per policy)
+3. Adding a proxy layer that intercepts raw responses (complex, fragile)
+
+None of these are ideal for a 20-minute task. The upstream PR is the right fix but we don't have yoagent repo access.
+
+Let me look at what's actually actionable in this session:
+
+1. **Issue #173 — state-only tool failure classification**: This was a reverted task (analysis-only, no code landed). The issue shows extensive investigation was done. The task is about adding source classification to `state_only_failed_tool_count` in `scripts/build_evolution_dashboard.py`. This is a Python script change, well-scoped, and the previous attempt gathered all the evidence needed. The fallback says "If state_only_failed_tool_count is 0, mark obsolete" — but the trajectory says it's 30 (from graph pressure). Actually wait, let me re-read... the trajectory graph pressure says `failed_tool_summary.bash_tool_error=7`, not `state_only_failed_tool_count=30`. Let me check the actual trajectory...
+
+From YOUR TRAJECTORY:
+- Graph-derived next-task pressure mentions `failed_tool_summary.bash_tool_error=7` — "prefer bounded commands with explicit paths and inspect exit output before retrying broader checks"
+- The assessment mentions `state_only_failed_tool_count=30` in the Structured State Snapshot, but this was from the assessment's own graph analysis
+
+Actually wait, let me re-read the assessment more carefully. The assessment says:
+> **Recent tool failures** (from graph pressure, current session): None detected — state tail shows all ToolCallCompleted events with `status=ok`.
+> **Historical unrecovered tool-failure categories**: `bash_tool_error=7` — cumulative count, not necessarily current. No fresh reproduction evidence.
+
+So the bash_tool_error=7 is historical, not current. And state_only_failed_tool_count=30 is from the assessment's own graph analysis, not the current trajectory's pressure list.
+
+The current trajectory's graph pressure items are:
+1. Force analysis-only attempts into action (task_analysis_only_attempt_count=2)
+2. Raise verified task success rate (task_success_rate=0.5)
+3. Require strict verifier evidence for tasks (task_verification_rate=0.5)
+4. Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=7)
+5. Close yyds state and model lifecycle gaps (deepseek_model_call_incomplete_count=1)
+
+Items 1-3 are about task/implementation quality — these are harness-level issues, not code-level fixes we can make in 20 minutes.
+
+Item 4 (bash_tool_error=7) — the assessment says this is historical, not current.
+
+Item 5 (lifecycle gaps) — the assessment says "The remaining lifecycle gaps may be residual from before the fix, not current regressions." And issues #172, #170, and #165 were all reverted as analysis-only or evaluator-timeout. The Day 163 fix already addressed the main path.
+
+So what's left that's ACTUALLY actionable?
+
+Let me re-read the assessment's own findings:
+1. **MEDIUM — `deepseek cache-report` reports zero chat-completion cache data** (issue #90). The assessment suggests Option B workaround.
+2. **LOW — Cancelled runs leave no failure evidence** — GH Actions issue, not yyds.
+3. **LOW — Historical tool-failure categories are cumulative** — could improve trajectory display.
+
+The assessment also says "No fresh learnings: memory/active_learnings.md last updated Day 118 (46 days ago). The synthesis pipeline may have stalled." — this could be actionable: check why the memory synthesis pipeline isn't running.
+
+And "Task throughput: 0.5 task success rate. The dominant failure mode is `task_analysis_only_attempt_count` — tasks that never produce code."
+
+Let me think about what single task would be most impactful:
+
+**Option A: Fix `deepseek cache-report` with yyds-side workaround** (issue #90)
+- Files: `src/commands_deepseek.rs`, maybe `src/deepseek.rs`
+- This would parse raw response JSON to extract cache fields that yoagent drops
+- This is genuinely a DeepSeek harness improvement — cache observability is core to the prompt layout determinism work
+- But it's complex — need to intercept raw responses in the agent pipeline
+- Risk: high, might need yoagent changes
+
+**Option B: Check why memory synthesis pipeline stalled** (no learnings in 46 days)
+- The synthesis pipeline is `.github/workflows/synthesize.yml` — but that's in do-not-modify territory
+- Could check if it's still running, but can't fix it
+
+**Option C: Something small and verifiable from the codebase**
+- The assessment says everything is clean, nothing broken
+
+Let me look at the preseeding. The assessment mentions `session_plan/task_01.md` may already exist from preseeding. Let me check.
+
+Actually, let me first check if there's an existing task_01.md, and look at what the preseed might have produced.
+
+Let me focus on what I can actually do. Given the assessment's finding that the codebase is clean and the only actionable gap is cache observability (#90), and the trajectory pressure is about task quality (not code quality), I should:
+
+1. Check if task_01.md already exists
+2. Plan tasks based on what's actually actionable
+
+Let me check the seed task first, then decide.
+
+Actually, thinking about this more carefully: the issue #173 (state-only tool failure classification) is genuinely actionable. The previous attempt was analysis-only (no code landed), but the investigation gathered evidence. The task is small — adding classification to `build_evolution_dashboard.py`. It directly addresses the `state_only_failed_tool_count=30` signal that appears in the assessment.
+
+But wait — can I verify that `state_only_failed_tool_count` is still > 0? The assessment mentions it but the current trajectory doesn't show it as graph pressure. Let me check if the assessment section says it's current.
+
+From the assessment: "Key observation: The trajectory reports `deepseek_model_call_incomplete_count=1` but also says `model_completion_without_start=7`."
+
+The `state_only_failed_tool_count=30` is from the assessment's structured state snapshot section, not from the trajectory. It could be stale.
+
+Let me approach this differently. Let me:
+1. Check if task_01.md already exists from preseeding
+2. If yes, evaluate it against assessment evidence
+3. If no, plan from the most actionable evidence
+
+Let me also look at what the "Capability Gaps" section says:
+> 1. DeepSeek cache observability (issue #90)
+> 2. Task throughput: 0.5 task success rate
+> 3. Cron overlap cancellation
+> 4. No fresh learnings
+
+And "Bugs / Friction Found":
+> 1. MEDIUM — cache-report gap
+> 2. LOW — Cancelled runs leave no failure evidence
+> 3. LOW — Historical tool-failure categories are cumulative
+
+I think the most impactful AND actionable task would be something around cache observability. But Option B (yyds-side workaround) is risky and might take more than 20 minutes.
+
+Let me just check if there's a seed task first, and also verify the current state of some key metrics.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me start by checking if a seed task already exists from preseeding, and verify current state.
+  ▶ $ ls -la session_plan/ 2>/dev/null || echo "No session_plan directory"  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state tail… ✓ (3.5s)
+ ✓ (3.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. There's already a `task_01.md` from preseeding. Let me read it to see what the harness produced.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+Seed task exists. Let me read it and also check key state evidence.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && ./target/debug/yyds state why … ✓ (2.9s)
+ ✓ (2.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK so the seed task is a generic "add a small verifiable improvement to src/state.rs" — a harness-seeded fallback for when no durable task files exist. The assessment explicitly says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task..."
+
+The seed task is generic and says "The assessment found no actionable bugs in src/." But the assessment actually found:
+1. MEDIUM — cache-report gap (issue #90)
+2. The assessment also notes `state_only_failed_tool_count=30` and issue #173 has an actionable task
+3. The trajectory has graph pressure items
+
+The seed task is a fallback — it even says "refine it if the planner has stronger evidence." I should refine it or replace it with something more evidence-backed.
+
+Let me think about what's genuinely actionable:
+
+1. **Issue #90 — cache observability**: This is a real DeepSeek harness gap. The assessment says cache metrics work for diagnostic paths but not for agent chat completions. Option B (yyds-side workaround) would parse raw JSON before yoagent drops it. But this is complex — we'd need to intercept in the agent pipeline. The `src/deepseek.rs` module handles DeepSeek protocol, and `src/commands_deepseek.rs` has the cache-report command. The key question: can we intercept raw responses in the agent chat completion path?
+
+Actually wait — the assessment mentions that `stream-check` and `fim-complete` work because they parse raw SSE/JSON directly. The agent path goes through yoagent's `Agent::prompt()` which returns events. Is there a way to hook into yoagent's response parsing?
+
+Looking at the yoagent architecture: `Agent::prompt()` returns an event stream. The `Usage` struct is populated internally by yoagent during response parsing. We can't intercept between the API and yoagent's deserialization without either modifying yoagent or adding a proxy.
+
+But actually — could we use yoagent's callbacks? Let me think... yoagent has `on_before_turn`, `on_after_turn`, `on_error` callbacks. The `on_after_turn` callback might have access to the raw response or at least the model's response text. But the `Usage` struct is already populated by then.
+
+Hmm. Actually, looking at this from another angle: `yyds deepseek stream-check` already parses raw SSE streams. The `src/deepseek.rs` module has SSE parsing infrastructure. But the agent path doesn't go through that — it goes through yoagent's internal HTTP client.
+
+I think the cleanest yyds-side approach would be to add a transport middleware or response interceptor. But that's a significant change.
+
+Actually, wait. Let me re-read the assessment more carefully:
+
+> "A yyds-side workaround (Option B in the issue) would be to parse raw response JSON before yoagent drops the fields — similar to how `stream-check` already works."
+
+But `stream-check` doesn't go through yoagent at all — it makes its own HTTP requests. The agent path goes through yoagent. We can't intercept without modifying yoagent's internals.
+
+I think issue #90 is NOT actionable as a 20-minute task without yoagent changes. The upstream PR is the right fix.
+
+2. **Issue #173 — state-only tool failure classification**: This is in `scripts/build_evolution_dashboard.py`. It's a Python script change, well-scoped. But the issue shows the previous attempt was analysis-only (no code landed). The assessment says `state_only_failed_tool_count=30` but also says "Historical unrecovered tool-failure categories... No fresh reproduction evidence."
+
+The problem: if `state_only_failed_tool_count` is 0 for recent sessions, the task would be obsolete. But the assessment's structured state snapshot mentions it as a current signal.
+
+Actually, looking at the trajectory's graph pressure items, I don't see `state_only_failed_tool_count` there. The trajectory mentions `failed_tool_summary.bash_tool_error=7` but that's a different metric. Let me check...
+
+From YOUR TRAJECTORY:
+- Item 4: "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=7)"
+- Item 5: "Close yyds state and model lifecycle gaps (deepseek_model_call_incomplete_count=1)"
+
+There's no `state_only_failed_tool_count=30` in the current trajectory's graph pressure. The assessment mentions it but it might be from its own graph analysis, not the trajectory's graph pressure.
+
+Let me take a different approach. What's the single most impactful, verifiable change I can plan?
+
+Looking at the assessment's own bugs:
+1. MEDIUM — cache-report gap (#90) — not actionable without upstream
+2. LOW — cancelled runs leave no evidence — GH Actions issue
+3. LOW — historical tool-failure categories are cumulative — could improve trajectory display
+
+And the capability gaps:
+4. No fresh learnings (46 days) — synthesis pipeline stalled
+
+Option: Could I plan a task to diagnose and potentially fix the memory synthesis pipeline? The synthesis is done by `.github/workflows/synthesize.yml` — but workflows are do-not-modify. However, the script that generates learnings might be in `scripts/` or could be checked for whether it's still running.
+
+Actually, let me look at this from a different angle. What about the `failed_tool_summary.bash_tool_error=7` signal? Even though the assessment says it's historical/cumulative, the trajectory is flagging it. Could I improve the trajectory to distinguish fresh from historical tool failures? That would make the signal more actionable.
+
+Actually, the assessment already says this: "LOW — Historical tool-failure categories are cumulative. `failed_tool_summary.bash_tool_error=7` appears in trajectory but there's no way to distinguish recent failures from months-old ones."
+
+This is a small, well-scoped improvement to `scripts/extract_trajectory.py` or `scripts/build_evolution_dashboard.py`: add time-window filtering to tool failure categories so historical failures don't pollute current signals.
+
+But wait — the trajectory and dashboard already have time windows. The dashboard's `failed_tool_category_lesson` function might already handle this. Let me think...
+
+Actually, let me step back. The trajectory says the main pressure is:
+1. task_analysis_only_attempt_count=2 — tasks that don't produce code
+2. task_success_rate=0.5
+3. task_verification_rate=0.5
+4. bash_tool_error=7
+5. model_call_incomplete_count=1
+
+Items 1-3 are about task planning/implementation quality — harness-level issues. Items 4-5 have weak evidence (historical for #4, residual from pre-fix for #5).
+
+The assessment says the codebase is clean and all self-tests passed. The seed task was a fallback because no durable tasks existed.
+
+I think the honest plan is:
+1. Keep task_01.md but refine it to be more specific and evidence-backed, OR replace it with something concrete
+2. If I can find one more actionable thing, add task_02.md
+
+Let me look for something concrete I can verify is still a live issue. Let me check actual state metrics.
+
+Actually, let me look at what `deepseek_model_call_incomplete_count` currently is, and whether the `state_only_failed_tool_count` is actually > 0.
+
+Let me also check if the cache-report issue is truly blocked or if there's a creative workaround.
+
+Wait — I just realized something. The assessment says `deepseek cache-report` works for `stream-check` and `fim-complete` but not for agent chat completions. The `stream-check` and `fim-complete` paths parse raw responses. But what about the `ModelCallCompleted` events? Looking at the state tail output, I see:
+
+```
+ModelCallCompleted evt-harness-0eefcef3734abaf0 ... tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+All zeros! Even for the model call that completed. This suggests the cache metrics aren't being captured at all. But the assessment said `stream-check` shows 66.67% cache hit ratio.
+
+The issue is that `record_cache_metrics` in `src/state.rs` can't get the cache fields because yoagent's `Usage` struct drops them. The `ModelCallCompleted` events show all zeros for cache fields.
+
+OK so here's a concrete, verifiable task idea: **Can we capture cache metrics from the raw SSE stream before yoagent drops them?**
+
+Looking at yoagent's architecture: `Agent::prompt()` returns `AgentEvent` variants. One of these might include raw usage data. Let me think about what events yoagent emits...
+
+Actually, yoagent emits `AgentEvent::ToolCallCompleted`, `AgentEvent::MessageStart`, `AgentEvent::MessageEnd`, etc. The `MessageEnd` event might include usage info. But does it include the raw DeepSeek cache fields?
+
+I don't know, and I can't read yoagent's source during planning (the rules say don't read source files when assessment is available, and yoagent isn't our source anyway).
+
+Let me try a different approach. Let me check what the dashboard actually shows for `state_only_failed_tool_count`:
+
+Actually, I should just focus on producing a plan. Let me:
+
+1. **Refine task_01.md** from the generic "add something to state.rs" to a more evidence-backed improvement. The assessment identifies `state_only_failed_tool_count=30` and the trajectory has `bash_tool_error=7`. I could refine task_01 to address the historical-vs-current tool failure distinction in the trajectory extractor.
+
+2. Check if there's a second task worth adding.
+
+Actually wait. The policy says: "If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task, or write session_plan/task_01_obsolete.md explaining the exact contradiction and proof."
+
+The seed task says "The assessment found no actionable bugs in src/" — but the assessment DID find actionable things:
+- MEDIUM — cache-report gap
+- state_only_failed_tool_count=30
+
+And the assessment says the codebase is clean but that's different from "no actionable bugs."
+
+However, the seed task is a fallback and it explicitly says "refine it if the planner has stronger evidence." I think I should refine it.
+
+Let me plan two tasks:
+1. **Task 1**: Improve the `deepseek cache-report` to capture cache metrics from raw SSE on agent chat completions (the yyds-side workaround for #90). OR if that's too complex, find another actionable item.
+2. **Task 2**: Add time-window awareness to tool failure tracking so historical cumulative failures don't pollute current trajectory signals.
+
+Actually, let me be more pragmatic. Let me check what's actually actionable RIGHT NOW by looking at the cache-report code path and seeing if there's a feasible workaround.
+
+Actually no — the planning rules say: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." and "If task_01.md is not written by your third tool turn, stop exploration and write it immediately."
+
+Task_01.md already exists. I can use turns to refine it. But I should be efficient.
+
+Let me refine task_01.md to be more specific and evidence-backed, and also plan a task_02.md if I can find something concrete.
+
+For task_01 refinement, the most promising paths are:
+1. The `deepseek cache-report` workaround — but I need to check feasibility
+2. Time-window filtering for tool failure categories — more feasible
+
+Let me check the cache-report path quickly, then decide.
+
+Actually, I just realized I should look at this from a completely different angle. The assessment mentions "No fresh learnings: memory/active_learnings.md last updated Day 118 (46 days ago). The synthesis pipeline may have stalled." This is a concrete, verifiable issue. Let me check if the synthesis workflow exists and is still running.
+
+But workflows are do-not-modify...
+
+OK let me just focus. Here's my plan:
+
+**Task 1 (refined from seed)**: Improve `deepseek cache-report` to capture cache metrics from the raw SSE stream during agent chat completions. This is the most important DeepSeek harness gap — we can't measure the benefit of our prompt layout determinism work. The diagnostic paths prove the data exists; we need to capture it before yoagent drops it.
+
+Wait, but I need to verify this is feasible first. Let me think about the mechanism...
+
+yoagent uses an HTTP client internally. The response comes back as SSE. yoagent parses each chunk, extracts the `Usage` struct, and emits events. The `Usage` struct has standard fields (prompt_tokens, completion_tokens, total_tokens) but not DeepSeek-specific cache fields.
+
+Can we intercept? Options:
+a. yoagent `on_after_turn` callback — but the Usage is already parsed
+b. Custom HTTP middleware — but yoagent owns the HTTP stack
+c. Parse yoagent's internal message history — but the raw response isn't stored
+
+None of these work without yoagent changes. The only real option is the upstream PR (Option A).
+
+So **cache-report workaround is NOT feasible** as a yyds-only change. The upstream PR is the only path.
+
+OK so what IS feasible?
+
+Let me think about what task would genuinely improve the DeepSeek harness:
+
+1. **Tool failure time-window filtering**: Make `failed_tool_summary` in the trajectory/dashboard only count recent failures (last N sessions), not all-time cumulative. This makes the signal actionable. Currently `bash_tool_error=7` appears in every trajectory but nobody knows if it's still happening.
+
+2. **Empty-session reason visibility**: The trajectory shows 3 empty sessions in the recent window (day-163, day-162×2). The empty-session classifier already exists (from Day 118 lesson). But the trajectory doesn't surface the reasons clearly.
+
+3. **Something in src/ that increases test coverage or fixes a clippy warning**: The seed task's intention. The assessment says the codebase is clean, but there might be uncovered edge cases.
+
+Let me go with the time-window filtering for tool failures. This is:
+- Small and verifiable
+- Directly addresses trajectory graph pressure #4
+- Improves signal quality for future sessions
+- Lives in `scripts/build_evolution_dashboard.py` or `scripts/extract_trajectory.py`
+
+But wait — I need to verify this is still a live issue. The assessment says "Historical unrecovered tool-failure categories: `bash_tool_error=7` — cumulative count, not necessarily current." If the dashboard already has time-window filtering, this task is obsolete.
+
+Let me check one thing quickly.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 43.4s (2 ✓)
+
+Let me verify a few key metrics to determine what's truly actionable, then refine the plan.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -c '"kind":"ToolCallCompl…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ToolCallComplete…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet… ✓ (1.8s)
+ ✓ (7.0s)
+ ✓ (7.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Interesting! The `ModelCallCompleted` events DO have `cache_read_tokens` and `cache_write_tokens` fields! The last event shows `cache_read_tokens: 983040` — that's almost 1M tokens of cache hits! 
+
+But the state tail output showed `tokens=in:0 out:0 cache_read:0 cache_write:0`. That's the `yyds state tail` display — it's showing zeros either because:
+1. The display code is wrong
+2. The events in the tail (most recent) don't have cache fields
+3. The display code doesn't know how to extract these fields
+
+Wait, let me re-read the state tail output:
+```
+ModelCallCompleted evt-harness-0eefcef3734abaf0 ... tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+But the raw JSONL shows real cache values. So the issue is either:
+- The state tail display code isn't extracting cache fields
+- These events with cache data are older, and recent events are indeed zero
+
+Let me check which events are recent vs old. The state tail showed events from the current planning session. Let me look at the most recent ModelCallCompleted...
+
+Actually, looking more carefully at the state tail output, the event IDs there are like `evt-harness-0eefcef3734abaf0` and `evt-harness-5efca8acc86b72df`. These have the `evt-harness-` prefix, while the JSONL events I grep'd have `event_` prefix. Different event formats? Let me check if these are different event types.
+
+Actually, looking at the state tail output format vs the raw JSONL:
+- State tail: `ModelCallCompleted evt-harness-0eefcef3734abaf0 run=... tokens=in:0 out:0 cache_read:0 cache_write:0`
+- JSONL: `{"kind":"ModelCallCompleted","payload":{"cache_read_tokens":250624,...}}`
+
+The `state tail` command is showing zeros. But the JSONL has real values. This is a display bug!
+
+Wait, but the `state tail` command shows `cache_read:0 cache_write:0`. And the `deepseek cache-report` command also says "no DeepSeek cache metrics recorded." These are different things:
+- `state tail` is a display of recent events
+- `cache-report` reads from the `record_cache_metrics` path which stores metrics separately
+
+Let me think about this more carefully. The `ModelCallCompleted` events in the JSONL have cache fields. But `cache-report` might be reading from a different source — it might be using `record_cache_metrics` which stores in a separate key-value store, not in the event stream.
+
+Actually, looking at the assessment again: "`deepseek cache-report` returns 'no DeepSeek cache metrics recorded from agent chat completions'" and "Cache metrics work for diagnostic paths (`stream-check`, `fim-complete`) that bypass yoagent's struct."
+
+The `ModelCallCompleted` events with cache data I see in the JSONL — these might be from the diagnostic paths, not agent chat completions! Let me check if these are from `stream-check` or from actual agent sessions.
+
+Looking at the payload:
+- `model_call_id: "mc-18c138a4bcd2e251"` — this has an `mc-` prefix
+- The state tail showed `ModelCallCompleted evt-harness-0eefcef3734abaf0` with `model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0`
+
+The `evt-harness-` prefix events are harness-generated events (from `record_cache_metrics_direct` or similar), while the `event_` prefix events with cache data are from actual model calls.
+
+So the question is: do the `event_` prefix ModelCallCompleted events with cache data come from agent chat completions or from diagnostic paths?
+
+The `model_call_id: "mc-18c138a4bcd2e251"` format suggests these are from agent chat completions — the `mc-` prefix is a model call ID. And they have real cache data (`cache_read_tokens: 983040`).
+
+This is contradictory to what the assessment says! If agent chat completions are recording cache metrics, then the `deepseek cache-report` should work.
+
+Unless... the `cache-report` command reads from a DIFFERENT data source than the event stream. Let me check.
+
+Actually, I think the issue might be more nuanced. The `ModelCallCompleted` events DO have cache fields in the JSONL. But the `state tail` display doesn't show them (shows zeros). And `deepseek cache-report` says "no cache metrics recorded."
+
+The discrepancy could be:
+1. `state tail` display bug — not extracting cache fields from the event payload
+2. `cache-report` reads from a separate store that isn't populated
+3. Or the events with cache data are old and recent events truly have zeros
+
+Let me check the most RECENT ModelCallCompleted events specifically.
+
+From the state tail output (last 20 events from current session), I see:
+```
+ModelCallCompleted evt-harness-0eefcef3734abaf0 ... tokens=in:0 out:0 cache_read:0 cache_write:0
+ModelCallCompleted evt-harness-5efca8acc86b72df ... tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+These are `evt-harness-` prefixed events with all zeros. But the JSONL grep showed `event_` prefixed events with real cache data. These might be different event types.
+
+Wait — `evt-harness-` events might be `record_cache_metrics_direct` events (the harness's own cache recording), while `event_` prefixed events are the actual model call completion events from the agent.
+
+So the flow might be:
+1. Agent completes a model call → `ModelCallCompleted` event with cache data (if yoagent passes it through)
+2. Harness separately calls `record_cache_metrics_direct` → another event
+
+If yoagent IS passing cache data through (as the JSONL shows), then the `deepseek cache-report` should be able to read it. But the assessment says it can't.
+
+OK I'm going down a rabbit hole. Let me focus on producing a plan.
+
+The key findings so far:
+1. `ModelCallCompleted` events in the JSONL DO have cache data (cache_read_tokens, cache_write_tokens)
+2. But `deepseek cache-report` says "no cache metrics recorded"
+3. The `state tail` display shows zeros for cache fields
+
+This suggests a display/extraction bug, not a data capture bug. If the data is actually IN the event stream (which the JSONL proves), then the fix might be in:
+- `src/commands_state.rs` — the state tail display
+- `src/commands_deepseek.rs` — the cache-report command
+- Or the reporting pipeline that reads these events
+
+This is actually MORE actionable than I thought. I could plan a task to:
+1. Fix the `state tail` display to show cache fields from ModelCallCompleted events
+2. Fix `cache-report` to read from the event stream instead of a separate store
+
+But I need to verify this isn't a mirage. Let me check if the events with cache data are actually from agent chat completions or from diagnostic paths.
+
+Actually, let me just pick a task and move forward. The planning phase is time-limited.
+
+Let me refine task_01.md to be a concrete improvement: fix the `deepseek cache-report` command to correctly read cache metrics from ModelCallCompleted events in the state event stream. The JSONL proves cache data exists. The command just can't read it.
+
+And for task_02.md, I could add the tool-failure time-window filtering in the trajectory extractor.
+
+Wait, but I need to verify the cache-report fix is feasible. Let me check the cache-report code path quickly.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 23.1s (3 ✓)
+
+The JSONL shows `ModelCallCompleted` events HAVE real cache data (e.g., `cache_read_tokens: 983040`). But `state tail` and `cache-report` show zeros. This is a display/extraction bug — the data exists, the reporting can't read it. Let me verify the cache-report code path and check what's actually broken.
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'cache' src/commands_d…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'cache_read\|cache_wri… ✓ (3.5s)
+ ✓ (3.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+OK now I see the full picture. Let me trace through the code:
+
+1. **State tail display** (`src/commands_state.rs` line 1964-1967): When displaying a `ModelCallCompleted` event, it reads `cache_read_tokens` and `cache_write_tokens` from the payload. BUT looking at the state tail output, it shows `tokens=in:0 out:0 cache_read:0 cache_write:0`. So either the payload doesn't have these fields (for the harness events) or the display code isn't matching.
+
+Wait — look at line 1964-1967 more carefully. This is in `commands_state.rs`. Let me check what function this is in. It might be the `state tail` display for `ModelCallCompleted` events.
+
+Also, there's a separate `CacheMetricsRecorded` event type (line 2055) that's a different event from `ModelCallCompleted`.
+
+2. **Cache report** (`src/commands_deepseek.rs` line 1882+): `handle_cache_report` reads `CacheMetricsRecorded` events (not `ModelCallCompleted` events). It queries for `CacheMetricsRecorded` events (lines 1995-2016). The report at line 1931-1934 shows the diagnostic message: "no_cache_metrics_for_agent_chat — reason: yoagent Usage struct drops DeepSeek cache token fields."
+
+So the data flow is:
+- Agent completes model call → yoagent returns Usage struct (DROPS cache fields) → yyds records `ModelCallCompleted` with whatever yoagent provides → yoagent provides standard fields only, so cache fields are 0
+- Separately, `CacheMetricsRecorded` events are recorded from `record_cache_metrics_direct()` — but this path is only used by diagnostic commands (`stream-check`, `fim-complete`), not by agent chat completions
+
+The JSONL events I found with real cache data (`cache_read_tokens: 983040`) — let me check which event kind they are. They were `ModelCallCompleted` events with `event_` prefix. But the `state tail` output shows `evt-harness-` prefix events with zeros.
+
+AH WAIT. The `evt-harness-` events are harness diagnostics — they're `CacheMetricsRecorded` events recorded by `record_cache_metrics_direct`. The `event_` prefix events are the actual `ModelCallCompleted` events from the agent.
+
+Let me re-read the JSONL output:
+```
+{"kind":"ModelCallCompleted","payload":{"cache_read_tokens":250624,"cache_write_tokens":0,...}}
+```
+
+This IS a `ModelCallCompleted` event with real cache data. But if yoagent drops these fields, how did they get here?
+
+Unless... they're from diagnostic paths (`stream-check`, `fim-complete`) that record their own `ModelCallCompleted` events with the full payload. Or yoagent HAS been updated and now passes these fields through.
+
+Actually, let me check the yoagent version. But that would require reading Cargo.toml. Actually, the assessment says the `deepseek cache-report` still shows "no cache metrics recorded." If yoagent had been updated to pass cache fields, the cache-report would show data.
+
+Unless the cache-report is looking at `CacheMetricsRecorded` events, not `ModelCallCompleted` events. And `CacheMetricsRecorded` events are only recorded by the harness's `record_cache_metrics_direct()` path, which is only called from diagnostic commands.
+
+So the fix could be: modify `cache-report` to ALSO read `ModelCallCompleted` events' cache fields, not just `CacheMetricsRecorded` events.
+
+But wait — if yoagent truly drops the cache fields, then `ModelCallCompleted` events from agent chat completions wouldn't have them. The JSONL events I see with cache data might be from diagnostic paths that record `ModelCallCompleted` directly with full payload.
+
+I'm going in circles. Let me just check one thing: do the `ModelCallCompleted` events with cache data come from the current planning session (which is an agent chat completion)?
+
+Actually, the planning phase runs as an agent chat completion, which goes through yoagent. The assessment phase also runs as an agent chat completion. These sessions DO produce `ModelCallCompleted` events. If yoagent drops cache fields, these events would have 0 cache. But the JSONL shows real cache data — so either:
+1. yoagent HAS been updated (but cache-report says otherwise)
+2. The events with cache data are from diagnostic paths, not agent chat completions
+3. Something else is going on
+
+Let me check if the events with cache data are recent (from the current planning session):
+
+The most recent event in the JSONL that I saw was from `ts_ms: 1783793281556` which is... let me calculate. 1783793281556 ms = 1783793281.556 seconds. Unix epoch... that's approximately 2026-07-08 or so. That's about a month ago. The current session is Day 164 (2026-08-11).
+
+But these were from `grep ... | tail -5`, so they're the LAST 5 matches in the file. The most recent events would be at the END of the file (JSONL is append-only). So these should be recent events.
+
+Actually wait, `tail -5` shows the last 5 lines of the grep output, not the last 5 lines of the file. Let me use a different approach.
+
+OK, I'm spending too much time investigating. Let me pivot to a concrete, verifiable plan.
+
+The two most actionable tasks I can see:
+
+1. **Fix `deepseek cache-report` to read cache fields from `ModelCallCompleted` events**: The JSONL shows cache data exists on `ModelCallCompleted` events. The `cache-report` only reads `CacheMetricsRecorded` events. If we also read `ModelCallCompleted` events, we might get cache data for agent chat completions. This is a small change in `src/commands_deepseek.rs`.
+
+2. **Add time-window filtering to tool-failure tracking**: The trajectory shows `bash_tool_error=7` but the assessment says it's historical/cumulative. Making it time-window-aware would improve signal quality.
+
+Actually, wait. Let me reconsider. The `evt-harness-` prefix events in the state tail had `cache_read:0 cache_write:0`. The `event_` prefix events in the JSONL had real cache data. These might be DIFFERENT event types:
+- `evt-harness-` → `CacheMetricsRecorded` events (from harness diagnostic paths, but with zero values because agent chat completions can't record through this path)
+- `event_` → `ModelCallCompleted` events (from actual model calls, with real cache data if available)
+
+If `ModelCallCompleted` events from agent chat completions DO have cache data (as the JSONL suggests), then the fix is simple: make `cache-report` also aggregate from `ModelCallCompleted` events.
+
+But wait, the assessment explicitly says: "Cache metrics work for diagnostic paths (stream-check, fim-complete) that bypass yoagent's struct." This means agent chat completions do NOT have cache data. The `ModelCallCompleted` events with cache data MUST be from diagnostic paths.
+
+Unless the assessment is wrong and yoagent has been updated. But the assessment was written by a Phase A1 agent that ran `deepseek cache-report` and got "no cache metrics." So the assessment is current.
+
+I think the JSONL events with cache data are from diagnostic paths (stream-check, fim-complete). These paths create their own `ModelCallCompleted` events with full payload, bypassing yoagent.
+
+OK so cache-report fix is not feasible without yoagent changes. Let me move on.
+
+Let me focus on what IS feasible:
+
+**Task 1: Time-window filtering for tool-failure tracking in trajectory extractor**
+- File: `scripts/extract_trajectory.py`
+- This makes `failed_tool_summary` only count recent failures
+- Directly addresses trajectory graph pressure #4
+- Small, verifiable change
+
+**Task 2: Fix `state tail` to display cache fields from `ModelCallCompleted` events**  
+- File: `src/commands_state.rs`
+- The `state tail` display shows zeros for cache fields even when they exist
+- But only if the events actually have cache data...
+
+Hmm, I'm going in circles. Let me just focus on producing concrete task files.
+
+Actually, let me re-read the seed task one more time. It says "Add one focused unit test, doc comment, or micro-improvement to src/state.rs." This is a fallback for when nothing else is actionable. It's not great, but it's better than an empty session.
+
+But I think I can do better. Let me check: are there any clippy warnings?
+
+Actually, let me just pick a concrete, verifiable improvement and write the plan. I'll go with:
+
+**Task 1 (refined from seed)**: Make `deepseek cache-report` also read `cache_read_tokens` and `cache_write_tokens` from `ModelCallCompleted` events in the event stream, not just from `CacheMetricsRecorded` events. The JSONL shows that `ModelCallCompleted` events from diagnostic paths carry cache data. Currently `cache-report` only queries `CacheMetricsRecorded` events, missing diagnostic-path cache data that's already in the stream.
+
+Wait no, the assessment says cache-report already works for diagnostic paths. The gap is agent chat completions. And the JSONL events with cache data could be from diagnostic paths.
+
+OK let me try a completely different approach. Let me look at what concrete gnome/KPI improvements I can make:
+
+The trajectory shows:
+- `task_success_rate=0.5` — this is about task planning quality, not code
+- `task_verification_rate=0.5` — same
+- `bash_tool_error=7` — historical
+- `model_call_incomplete_count=1` — residual from pre-fix
+
+None of these are directly fixable with a code change in this session. The codebase is clean.
+
+So I should either:
+1. Write a refined task that's genuinely useful (add test coverage, improve documentation, fix a clippy warning)
+2. Write `planning_failure.md` explaining that no actionable code-level tasks exist
+
+But the policy says: "If you cannot select implementation work, write session_plan/planning_failure.md explaining the blocker and STOP." And "A draft task file is allowed."
+
+I think the honest thing to do is:
+- Keep task_01.md but refine it to be more specific
+- The refinement should focus on something concrete: improve test coverage for a function identified as having gaps
+
+Actually, let me think about this from the gnome perspective. The fitness score is 0.5. The goal is to improve DeepSeek coding capability. What could I add that would improve fitness?
+
+One concrete thing: the assessment mentions `state_only_failed_tool_count=30` in the structured state snapshot. This was computed by the assessment agent from its own graph analysis. If this is a live signal, classifying it would improve the dashboard's legibility.
+
+But I already showed that #173 (the classification task) was reverted as analysis-only.
+
+OK, let me just be pragmatic. I'll refine task_01.md to target a specific improvement, and add a task_02.md if I find another one. Let me check for clippy warnings first.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 34.0s (2 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo clippy --all-targets -- … ✓ (20.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Clippy is clean — no warnings. So there are no obvious small fixes to make.
+
+Let me check if there are test gaps or uncovered areas I could add tests to.
+
+Actually, let me take a completely different approach. Let me look at what the assessment identified as "LOW — Historical tool-failure categories are cumulative" and see if I can actually fix this. This is a concrete, small improvement to `scripts/extract_trajectory.py` that would make the trajectory's `failed_tool_summary` signal more actionable.
+
+Let me verify by checking the current trajectory's tool failure data.
+────────────────────────────────────────────────────────────────────────────────
+
+Clippy clean. Let me verify the tool-failure signal freshness issue and check if there's an actionable gap in the trajectory extractor.
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'failed_tool_summary\|…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'failed_tool' scripts/… ✓ (1.7s)
+ ✓ (5.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me look at the trajectory extractor's tool-failure handling more closely. Lines 1800-1866 show the failed_tool_summary section.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.2s (2 ✓)
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ read scripts/extract_trajectory.py:1790..1890 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full picture. The `action_evidence_graph_suggestions` function reads `top_unrecovered_categories` from the dashboard summary. This comes from `build_evolution_dashboard.py`'s `failed_tool_category_lesson` function which computes unrecovered failures.
+
+The key question: is `top_unrecovered_categories` time-windowed or cumulative? Let me check the dashboard code for `top_unrecovered_categories`.
+
+Looking at the trajectory extractor code (line 1847-1851), it reads `top_unrecovered_categories` from the dashboard summary. The `unrecovered` in the name suggests these are failures that haven't been recovered/succeeded — but it doesn't say anything about time windows.
+
+The assessment says "Historical unrecovered tool-failure categories: `bash_tool_error=7` — cumulative count, not necessarily current." So this IS cumulative, not time-windowed.
+
+The fix would be in `scripts/build_evolution_dashboard.py` — specifically in the function that computes `top_unrecovered_categories`. But changing how the dashboard computes this metric is a large change that could have cascading effects.
+
+Alternatively, I could modify the trajectory extractor to annotate the suggestion with recency information, or to only surface categories that have recent failures.
+
+Actually, looking more carefully at the trajectory extractor's code, the function is `action_evidence_graph_suggestions` which returns suggestions for graph pressure. The `top_unrecovered_categories` comes from `recent_tool_failure_summary` (line 1841-1842), which IS supposed to be recent. The `tool_failure_summary` fallback is the non-recent version.
+
+So the trajectory already TRIES to use recent data (`recent_tool_failure_summary`), but falls back to all-time data (`tool_failure_summary`) if recent data isn't available. If recent data IS available (which it should be for the current trajectory), then `top_unrecovered_categories` would be from the recent window.
+
+This means the trajectory already has time-window awareness! The assessment's claim that "historical tool-failure categories are cumulative" might be wrong, or the `recent_tool_failure_summary` might not be filtering correctly.
+
+OK, I think I've spent enough time investigating. The codebase is clean, clippy is clean, tests pass. The assessment confirms nothing is broken. Let me write a refined plan.
+
+Given the evidence:
+1. Codebase is clean, no bugs, no clippy warnings
+2. The only actionable gap (cache-report) is blocked on upstream yoagent
+3. All reverted tasks were analysis-only (agents couldn't produce code)
+4. The seed task is a fallback "add something small to src/state.rs"
+
+I think the most honest plan is:
+1. **Refine task_01.md** to be a concrete improvement to `src/commands_deepseek.rs`: make `cache-report` also aggregate cache metrics from `ModelCallCompleted` events in the state event stream. The JSONL evidence shows these events carry `cache_read_tokens` and `cache_write_tokens` fields. The cache-report currently only reads `CacheMetricsRecorded` events. This is a small, verifiable improvement that moves the needle on DeepSeek cache observability.
+
+Wait, but I showed earlier that this might not work because agent chat completions might have zero cache fields... But the JSONL shows otherwise. Let me just check one more thing: are the `ModelCallCompleted` events with cache data from agent chat completions or from diagnostic paths?
+
+Actually, you know what, let me just check the model_call_id format. The assessment earlier ran `yyds deepseek stream-check` which creates its own model calls. The agent chat completions from the planning/assessment phases also create model calls. Let me check if there are `ModelCallCompleted` events from the current session.
+
+From the state tail (current session): I saw `ModelCallCompleted evt-harness-0eefcef3734abaf0` with all zeros. These are `evt-harness-` prefixed events — harness diagnostics. NOT agent model calls.
+
+The agent model calls would have `event_` prefixed IDs. Let me check if there are `ModelCallCompleted` events with `event_` prefix from the current session.
+
+Actually, the planning session IS an agent chat completion. So it should produce `ModelCallCompleted` events. But the state tail only showed `evt-harness-` events, not `event_` events. Maybe the planning session's model calls haven't completed yet, or maybe the state tail didn't show them.
+
+OK I really need to stop investigating and just write the plan. Let me go with the refined task approach.
+
+Final plan:
+1. **Task 1**: Keep and refine the seed task to be more concrete — add test coverage for a specific under-tested function in `src/state.rs`, or fix the `state tail` display to show cache fields from `ModelCallCompleted` events when they exist.
+2. **Task 2**: If I can find a second concrete improvement, add it.
+
+Let me write the plan files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have a clear picture. Let me produce the refined plan. The codebase is clean (clippy, build, tests all green). The seed task is a fallback. I'll refine it to target a real, verifiable gap: `cache-report` only queries `CacheMetricsRecorded` events but `ModelCallCompleted` events in the JSONL carry cache data. Let me verify this data source is from actual agent completions.
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet… ✓ (3.5s)
+ ✓ (3.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The `ModelCallCompleted` events DO have real cache data (cache_read_tokens: 89728, 441600, 184192). The `mc-` prefix on model_call_id confirms these are from agent model calls. And there are no (or very few) zero-cache events.
+
+This is significant! The cache data IS in the event stream. The `cache-report` command just can't see it because it only queries `CacheMetricsRecorded` events.
+
+Now, the question is: are these events from the CURRENT yoagent version, or from a previous version that was later updated to drop the cache fields?
+
+To verify, let me check if these events are from recent sessions (within the last few days). The model_call_id format `mc-18bf27db239cc130` — the `18bf27db` prefix might be a hex timestamp. Let me check the timestamps of these events.
+
+Actually, let me just check the event timestamps and compare with the current session.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.7s (2 ✓)
+
+
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet… ✓ (3.5s)
+ ✓ (3.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+The most recent `ModelCallCompleted` event with non-zero cache data is at `ts=1784630879918`. The most recent `ModelCallCompleted` event overall (including zero-cache) is at `ts=1784313686503`. 
+
+Wait, `1784313686503 > 1784630879918`? No — 1784630879918 > 1784313686503. So the event with cache data (ts=1784630879918) is MORE recent than the last overall event (ts=1784313686503).
+
+Let me convert these timestamps to dates:
+- 1784630879918 ms = ~2026-07-18 (approximately)
+- 1784313686503 ms = ~2026-07-15 (approximately)
+
+The current session is Day 164 (2026-08-11). These events are from about 3-4 weeks ago. Not super recent, but not ancient either.
+
+Now, the key question: has yoagent changed between then and now to drop cache fields? Let me check if there are any `ModelCallCompleted` events from the current planning session (today). The state tail output earlier showed `evt-harness-` events with zero cache, but those are `CacheMetricsRecorded` events, not `ModelCallCompleted`.
+
+Wait, the state tail showed:
+```
+ModelCallCompleted evt-harness-0eefcef3734abaf0 ... tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+This IS a `ModelCallCompleted` event! With `evt-harness-` prefix. So the harness IS producing `ModelCallCompleted` events with zero cache. But the `event_` prefix events have real cache data.
+
+The difference might be: `evt-harness-` events are from `record_cache_metrics_direct()` which records zeros (because yoagent drops fields), while `event_` prefix events are from the actual agent model calls where yoagent might be passing through the cache fields.
+
+Actually wait — `evt-harness-` is just an ID prefix. The event kind is `ModelCallCompleted` regardless. Let me check: are `evt-harness-` events also `ModelCallCompleted` kind?
+
+Looking at the state tail output:
+```
+ModelCallCompleted evt-harness-0eefcef3734abaf0 run=run-1786438991001-15087 model=deepseek-v4-pro tokens=in:0 out:0 cache_read:0 cache_write:0
+```
+
+Yes, it's `ModelCallCompleted` kind with `evt-harness-` ID prefix. But the raw JSONL search with `grep -v 'evt-harness'` excluded these. Let me check if there are `evt-harness-` events with non-zero cache.
+
+Actually, the `evt-harness-` events are created by the harness's `record_cache_metrics_direct()` function, which records what yoagent passes. If yoagent drops cache fields, these events have zeros. The `event_` prefix events (which I found with real cache data) are actual model call completions from the agent.
+
+BUT WAIT — both are `ModelCallCompleted` events. The difference is just the ID prefix. The `record_cache_metrics_direct` function might be creating DUPLICATE events with zero cache, while the actual model call completion events have real cache data!
+
+Let me verify this by checking if `record_cache_metrics_direct` creates `ModelCallCompleted` events, and if the agent creates separate `ModelCallCompleted` events.
+
+Actually, I'm over-investigating. Let me just check: are there any `ModelCallCompleted` events from today (Day 164, ts > 1786430000000)?
+
+The current session started at 1786438991001 (from the state tail). Let me check events from today.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 12.3s (2 ✓)
+
+
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kin… (9 lines) ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+No `ModelCallCompleted` events from Day 164. The planning session's model calls might not have completed yet, or the events haven't been flushed.
+
+OK, let me think about this differently. The events with cache data are from ~3 weeks ago. Events from today show zeros. What changed?
+
+Actually, the events with zeros that I saw in state tail were `evt-harness-` events — these are harness diagnostic events, not agent model call completions. The agent model call completions (with `event_` prefix) might not have been recorded yet for the current session, or they might have real cache data.
+
+The assessment says `deepseek cache-report` shows "no cache metrics recorded." The cache-report queries `CacheMetricsRecorded` events, not `ModelCallCompleted` events. So even if `ModelCallCompleted` events have cache data, cache-report won't see them.
+
+THIS IS THE BUG! `cache-report` only looks at `CacheMetricsRecorded` events, but the actual cache data is on `ModelCallCompleted` events. The fix is to make `cache-report` also read from `ModelCallCompleted` events.
+
+Let me verify this theory. The `CacheMetricsRecorded` events are recorded by `record_cache_metrics_direct()`, which is called from diagnostic paths only (stream-check, fim-complete). The agent chat completions produce `ModelCallCompleted` events (not `CacheMetricsRecorded`), and these EVENTS DO have cache data in the JSONL.
+
+So the fix is:
+1. In `src/commands_deepseek.rs`, modify `build_cache_report` (or the query) to also read `ModelCallCompleted` events and extract `cache_read_tokens` and `cache_write_tokens` from their payloads.
+2. This would make `cache-report` work for agent chat completions too.
+
+This is a concrete, verifiable fix! And it directly addresses the DeepSeek cache observability gap.
+
+But wait — the assessment says "Cache metrics DO work for diagnostic paths (stream-check, fim-complete) because those parse raw SSE/JSON directly without going through yoagent's Usage struct." This implies that agent chat completions DON'T have cache data because yoagent drops it.
+
+But the JSONL shows ModelCallCompleted events with real cache data. Unless those events are from diagnostic paths too...
+
+Let me check: do diagnostic paths (stream-check, fim-complete) also produce `ModelCallCompleted` events? Looking at `src/commands_deepseek.rs`, the `stream-check` function might record events.
+
+Actually, the `record_cache_metrics_direct` function records `CacheMetricsRecorded` events, not `ModelCallCompleted` events. And diagnostic paths use `record_cache_metrics_direct`. So the `ModelCallCompleted` events with cache data MUST be from agent chat completions.
+
+Unless... there's also code that records `ModelCallCompleted` events from diagnostic paths. Let me check.
+
+OK, I've been investigating long enough. The evidence is:
+1. `ModelCallCompleted` events in the JSONL have cache data (cache_read_tokens up to 983K)
+2. `cache-report` only queries `CacheMetricsRecorded` events
+3. `CacheMetricsRecorded` events come from `record_cache_metrics_direct()` which is only called from diagnostic paths
+
+The fix: make `cache-report` also aggregate from `ModelCallCompleted` events. This is a small change in `src/commands_deepseek.rs`.
+
+Even if the `ModelCallCompleted` events with cache data are from diagnostic paths (not agent completions), this is still an improvement — it would make `cache-report` show data from ALL sources, not just `CacheMetricsRecorded` events.
+
+But if the events with cache data ARE from agent completions (as the `mc-` model_call_id prefix suggests), this would unblock the entire cache observability gap.
+
+Let me write the plan now. Task 1 will be this cache-report fix. It's:
+- Small (likely <50 lines in src/commands_deepseek.rs)
+- Verifiable (run `deepseek cache-report` and see non-zero cache metrics)
+- Directly addresses the #1 capability gap (cache observability)
+- Improves a DeepSeek harness KPI
+
+Let me also consider: do I need a second task? The assessment says the codebase is clean. The seed task was a fallback. I think one well-scoped task is better than two vague ones. And the policy says "at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence" but also "Don't try to do everything. Pick the highest-impact work."
+
+I'll plan one strong task and skip a second if nothing else is clearly actionable.
+
+Actually wait, the policy says "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." — "SHOULD" not "MUST". If only one is actionable, one is fine.
+
+Let me finalize and write the plan files.
+────────────────────────────────────────────────────────────────────────────────
+
+Excellent discovery! The `ModelCallCompleted` events in the JSONL carry real cache data (e.g., `cache_read_tokens: 441600`), but `cache-report` only queries `CacheMetricsRecorded` events (harness-only, zero for agent completions). This is a concrete, verifiable bug. Let me verify the query path and then write the plan.
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n 'CacheMetricsRecorded\…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sed -n '1880,1950p' src/comman… ✓ (1.7s)
+ ✓ (5.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full code path:
+
+1. `read_tail_cache_events` reads `CacheMetricsRecorded` events from the JSONL (line 1964+)
+2. When JSONL is unavailable, it falls back to SQLite: `SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded'` (line 2007)
+3. `build_cache_report` filters for `CacheMetricsRecorded` events (line 2039)
+4. If no events found, it returns the diagnostic error message about yoagent dropping fields
+
+The fix needs to also read `ModelCallCompleted` events. The `ModelCallCompleted` events have `cache_read_tokens` and `cache_write_tokens` in their payload.
+
+Now, the question is: does the JSONL reader (`read_tail_cache_events`) filter by event type, or does it read all events? Let me check.
+
+Looking at line 1964-2026, `read_tail_cache_events` reads events from JSONL and the fallback SQLite query filters by `event_type = 'CacheMetricsRecorded'`. The JSONL path might or might not filter.
+
+Let me check the JSONL path.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 5.3s (2 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1964..2034 ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I see the full flow:
+
+1. `read_tail_cache_events` reads ALL events from the last `cap` lines of the JSONL — it does NOT filter by event type. It returns all events.
+2. `read_events_from_sqlite` (fallback) filters for `CacheMetricsRecorded` only — this is the bottleneck for the SQLite path.
+3. `build_cache_report` filters for `CacheMetricsRecorded` events (line 2039) — and returns the "no metrics" error if none found.
+
+So the JSONL path reads ALL events (including `ModelCallCompleted`), but `build_cache_report` only processes `CacheMetricsRecorded` events. The fix is to also process `ModelCallCompleted` events in `build_cache_report`.
+
+Let me see how `build_cache_report` processes events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2028..2108 ✓ (875ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the complete picture. The fix is clear:
+
+In `build_cache_report` (line 2034-2064):
+- Currently only processes `CacheMetricsRecorded` events, reading `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` from payload
+- Should ALSO process `ModelCallCompleted` events, reading `cache_read_tokens` and `cache_write_tokens` from payload
+
+The `CacheMetricsRecorded` events use field names: `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`
+The `ModelCallCompleted` events use field names: `cache_read_tokens`, `cache_write_tokens`
+
+Also, the `read_tail_cache_events` function (JSONL path) reads ALL events (no filter), so `ModelCallCompleted` events are already in the vector. The SQLite fallback path only reads `CacheMetricsRecorded` — I need to also query `ModelCallCompleted` events there.
+
+But wait — the `read_events_from_sqlite` function constructs fake event objects with `event_type: "CacheMetricsRecorded"`. If I add `ModelCallCompleted` events, they'd have `event_type: "ModelCallCompleted"`. The `build_cache_report` function needs to handle both.
+
+Let me plan the fix:
+
+1. In `build_cache_report`: also process events with `event_type == "ModelCallCompleted"`, reading `cache_read_tokens` as hit tokens and `cache_write_tokens` as miss tokens (or should cache_write be tracked separately?).
+
+Actually, `cache_read_tokens` are hits (tokens served from cache), and `cache_write_tokens` are new cache entries written. In the `CacheMetricsRecorded` path, `prompt_cache_hit_tokens` are hits and `prompt_cache_miss_tokens` are misses. These are different concepts:
+- cache_read = tokens read from cache (hits)
+- cache_write = new tokens written to cache
+- cache_hit = tokens that were cache hits
+- cache_miss = tokens that missed the cache
+
+For the cache report, the key metric is hit ratio: hits / (hits + misses). `cache_read_tokens` = hits, and `input_tokens - cache_read_tokens` = misses (but `input_tokens` is also available).
+
+Actually, looking at the ModelCallCompleted payload:
+```
+"cache_read_tokens": 441600, "cache_write_tokens": 0, "input_tokens": 26319
+```
+
+Wait, `cache_read_tokens` (441600) > `input_tokens` (26319)? That seems impossible — you can't read more from cache than the total input. Unless `input_tokens` is the non-cached portion and `cache_read_tokens` includes the cached portion that was read.
+
+In DeepSeek's API:
+- `prompt_tokens` = total input tokens
+- `prompt_cache_hit_tokens` = tokens served from cache
+- `prompt_cache_miss_tokens` = tokens not in cache (needed to be computed)
+- `cache_read_input_tokens` = ? (DeepSeek-specific)
+- `cache_creation_input_tokens` = ? (DeepSeek-specific)
+
+The `cache_read_tokens` in the ModelCallCompleted might be `prompt_cache_hit_tokens` in DeepSeek's terminology.
+
+Let me check what `stream-check` records. It uses `cache_hit_tokens` and `cache_miss_tokens` fields.
+
+For the fix, I should:
+1. Process `ModelCallCompleted` events by reading `cache_read_tokens` as hits and computing misses as `input_tokens` if available, or just tracking hits
+2. Or just add `cache_read_tokens` to `hit_tokens` and skip miss tracking for `ModelCallCompleted` events
+
+Actually, the simplest approach: treat `cache_read_tokens` as cache hits and `cache_write_tokens` as cache writes (separate counter). The hit ratio can use `cache_read_tokens / (cache_read_tokens + cache_write_tokens)` — but `cache_write_tokens` is usually 0 (new entries written), while misses are implicit.
+
+Let me keep it simple. The current report tracks `hit_tokens` and `miss_tokens`. For `ModelCallCompleted`:
+- `cache_read_tokens` → hit_tokens
+- For miss_tokens, I could use `input_tokens` (total input) as a proxy, but that's not accurate
+- Better: just add `cache_read_tokens` to hits and leave misses at 0 for these events (the ratio might look like 100% but it's better than 0%)
+
+Wait, actually there's a simpler interpretation. Looking at the `CacheMetricsRecorded` payload from stream-check:
+```
+"prompt_cache_hit_tokens": 8, "prompt_cache_miss_tokens": 4
+```
+
+And `ModelCallCompleted` payload:
+```
+"cache_read_tokens": 441600, "cache_write_tokens": 0, "input_tokens": 26319
+```
+
+These are different field name conventions but the same concepts:
+- `prompt_cache_hit_tokens` ≈ `cache_read_tokens` (tokens read from cache)
+- `prompt_cache_miss_tokens` ≈ (input_tokens - cache_read_tokens) for the non-cached portion
+
+For the `ModelCallCompleted` path, `input_tokens` is available. So `miss_tokens = input_tokens - cache_read_tokens` (minimum 0).
+
+Actually wait, `input_tokens` might be the total input INCLUDING cache hits, or it might be the non-cached portion. In DeepSeek's API:
+- `prompt_tokens` = total input tokens (including cached)
+- `prompt_cache_hit_tokens` = tokens from cache
+- `prompt_cache_miss_tokens` = tokens NOT from cache (computed fresh)
+
+So `miss_tokens = input_tokens - cache_read_tokens` should work.
+
+But let me keep it simple for the task. Just add `cache_read_tokens` as hit_tokens. The cache report already handles `miss_tokens == 0` (ratio is 0.0). If only hits are tracked, ratio = 1.0 — which might be misleading. But it's better than "no metrics at all."
+
+Actually, let me just read `input_tokens` and use `input_tokens.saturating_sub(cache_read_tokens)` as miss_tokens. This gives a reasonable approximation.
+
+Or even simpler: use `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` as the canonical field names in the report, mapping:
+- `CacheMetricsRecorded`: `prompt_cache_hit_tokens` → hit, `prompt_cache_miss_tokens` → miss
+- `ModelCallCompleted`: `cache_read_tokens` → hit, `input_tokens - cache_read_tokens` → miss
+
+OK let me write the plan now. I have enough evidence. Let me refine task_01.md to target this specific fix.
+
+For issue_responses.md:
+- #90: I'm implementing a yyds-side fix to read cache metrics from ModelCallCompleted events (the data IS in the event stream, just not being read by cache-report). This partially addresses the gap — if ModelCallCompleted events from agent completions carry cache data (and JSONL evidence suggests they do), this unblocks cache observability.
+- #131: Still blocked on evolve.sh (do-not-modify). No change since last session.
+- #173: Deferred — the task was analysis-only last time. Not actionable without fresh evidence.
+- #172, #170, #165, #163: Deferred — all reverted. No fresh evidence.
+
+Now let me write the files.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture. The bug is clear: `build_cache_report` only processes `CacheMetricsRecorded` events (harness-only, always zero for agent completions), but `ModelCallCompleted` events in the JSONL carry real `cache_read_tokens`/`cache_write_tokens` data. The `read_tail_cache_events` already reads ALL events — the filter is just in `build_cache_report`. Fix is to also process `ModelCallCompleted` events.
+
+Let me write the plan files.
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ $ mkdir -p /home/runner/work/yyds-harness/yyds-harness/session_plan ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the refined task_01.md and issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  - Title: Add a small verifiable improvement to src/
+  - Files: src/state.rs
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Fix `deepseek cache-report` to read cache metrics from ModelCallCompleted events (unblocks cache observability)
+  + Files: src/commands_deepseek.rs
+  + Issue: #90
+  + Origin: planner (refined from harness seed with fresh JSONL evidence)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found no actionable bugs in src/. Instead of producing a journal-only observation that wastes an evolution cycle, this task produces a small, verifiable code improvement that passes cargo build && cargo test.
+  + - `grep '"kind":"ModelCallCompleted"' .yoyo/state/events.jsonl | grep -v 'evt-harness'` shows agent ModelCallCompleted events with real cache data: `cache_read_tokens: 441600`, `cache_read_tokens: 184192`, `cache_read_tokens: 89728` — model_call_id format `mc-18bf...` confirms these are agent chat completions, not diagnostic paths.
+  + - `deepseek cache-report` returns "no DeepSeek cache metrics recorded" because `build_cache_report()` (line 2039) only processes events with `event_type == "CacheMetricsRecorded"` — but agent chat completions emit `ModelCallCompleted` events, NOT `CacheMetricsRecorded` events.
+  + - `CacheMetricsRecorded` events come only from `record_cache_metrics_direct()` which is called by diagnostic paths (stream-check, fim-complete) — agent chat completions never produce them because yoagent's Usage struct drops cache fields at the API boundary, so `record_cache_metrics()` in state.rs receives zeros.
+  + - HOWEVER, the `ModelCallCompleted` events in the raw JSONL DO carry `cache_read_tokens` and `cache_write_tokens` — these are recorded by a different code path that preserves the full payload. The cache-report just can't see them because it filters to `CacheMetricsRecorded` only.
+  + - `read_tail_cache_events()` (line 1964) reads ALL events without filtering — it's `build_cache_report()` that narrows to `CacheMetricsRecorded` (line 2039).
+  + - The SQLite fallback path (`read_events_from_sqlite`, line 2007) queries only `CacheMetricsRecorded` — this ALSO needs to include `ModelCallCompleted`.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (58 lines)
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (58 lines) ✓ (874ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me write the issue_responses.md file. I should address each issue mentioned in the assessment and the planning policy.
+
+Issues to address:
+- #173: Task reverted - state-only tool failure classification
+- #172: Task reverted - remaining model-call lifecycle gap
+- #170: Task reverted - ModelCallCompletedWithoutStart lifecycle gap
+- #165: Task reverted - retroactive FailureObserved for no-op sessions
+- #163: Task reverted - planning failure classification
+- #131: Help wanted - evaluator timeouts
+- #90: Help wanted - yoagent Usage struct drops cache fields
+
+For #90: I'm implementing a task partially addressing this (cache-report fix). The underlying yoagent issue is still blocked, but the cache-report fix reads from ModelCallCompleted events which may carry cache data. I should note this.
+
+For #131: Still blocked on evolve.sh (do-not-modify). No change.
+
+For #173, #172, #170, #165, #163: All reverted, all analysis-only or evaluator-timeout. Nothing new to add. Deferred.
+
+The task_01.md I wrote refines the seed task to target the cache-report fix. This is a concrete, evidence-backed improvement. I'm not adding a task_02.md since the codebase is clean and the cache-report fix is the highest-impact actionable item.
+
+Wait, the policy says "State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists." But I only have one task. Let me think about whether there's a second task I can add.
+
+Looking at the trajectory graph pressure items again:
+1. Force analysis-only attempts into action — harness-level, not code
+2. Raise verified task success rate — harness-level
+3. Require strict verifier evidence — harness-level
+4. Bound failing shell commands — historical, no fresh evidence
+5. Close lifecycle gaps — residual from pre-fix
+
+None of these are directly code-fixable. And the codebase is clean (clippy, tests, build all green).
+
+The assessment also mentions: "No fresh learnings: memory/active_learnings.md last updated Day 118 (46 days ago)." This could be a second task — check if the synthesis workflow is still running and diagnose why learnings aren't being updated. But the synthesis is in `.github/workflows/synthesize.yml` which is do-not-modify.
+
+Actually, let me check if there are journal entries that haven't been synthesized into learnings. That could be a task: backfill recent learnings into memory/.
+
+But that's a journal-writing task, not a code task. The implementation agent would need to read journal entries and write learnings — this is a communication task, which might be better handled in a different phase.
+
+Let me just go with one task. The policy says "SHOULD" not "MUST" for the 2-slot minimum, and the evidence doesn't support a second code task.
+
+Actually wait, let me re-read the planning policy: "You have 3 task slots per session. Task allocation: State-driven DeepSeek harness work: at least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence when such evidence exists."
+
+"SHOULD" means it's a strong recommendation but not an absolute requirement. If the evidence only supports one task, one task is fine.
+
+Let me finalize and write issue_responses.md.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me write the issue responses.
+  + # Issue Responses — Day 164 (2026-08-11 08:56)
+  + 
+  + ## #90 — Help wanted: yoagent Usage struct drops DeepSeek cache fields
+  + **Action**: Implement as Task 1 (cache-report fix).
+  + 
+  + The upstream yoagent fix (adding `cache_read_input_tokens` and `cache_creation_input_tokens` to the `Usage` struct) is still blocked — I don't have yoagent repo access. BUT I found that `ModelCallCompleted` events in the state JSONL already carry `cache_read_tokens` and `cache_write_tokens` with real values (e.g., 441,600 cache read tokens). The `deepseek cache-report` command just can't see them because it only queries `CacheMetricsRecorded` events — a different event type that's only populated by diagnostic paths.
+  + 
+  + Task 1 makes `cache-report` also aggregate from `ModelCallCompleted` events. If agent chat completions' `ModelCallCompleted` events carry cache data (and the JSONL evidence strongly suggests they do), this unblocks cache observability with zero upstream changes. If they don't, the report still gains correctness by seeing ALL available data sources.
+  + 
+  + The underlying yoagent gap remains — the `Usage` struct still drops fields — but this fix reads the data through a side door that already exists.
+  + 
+  + ## #131 — Help wanted: Evaluator timeouts in evolve.sh
+  + **Action**: Defer. Still blocked on `scripts/evolve.sh` (do-not-modify territory).
+  + 
+  + Three tasks in the last two weeks killed by evaluator timeouts on code that passed `cargo build && cargo test`. The fix stays the same: either bump the evaluator timeout or collect early verdicts when the verifier finishes before the timeout fires. Both are in `scripts/evolve.sh`.
+  + 
+  + No change since Day 159. Still waiting for human eyes.
+  + 
+  + ## #173 — Task reverted: Classify state-only tool failures by source
+  + **Action**: Defer. The previous attempt was analysis-only (agent couldn't produce code). The assessment says `state_only_failed_tool_count=30` appears in the structured state snapshot, but the trajectory's graph pressure doesn't surface it directly (it shows `bash_tool_error=7` instead). Without fresh reproduction evidence showing the classification is still needed, this risks another analysis-only attempt. Revisit when `state_only_failed_tool_count` appears in the trajectory's top graph pressure items with recent-event backing.
+  ... (12 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (32 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (32 lines) ✓ (875ms)
+
+
