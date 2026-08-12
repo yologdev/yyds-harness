@@ -1,0 +1,287 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+warning: skipping corrupted event at line 247349 of '.yoyo/state/events.jsonl': expected `,` or `}` at line 1 column 9051
+note: skipped 2 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by understanding the task. I need to:
+
+1. Find the recovery-hint function in `src/tool_wrappers.rs`
+2. Read existing hints to avoid duplicates
+3. Add 2-3 new recovery hints for uncovered bash error patterns
+4. Verify with `cargo build && cargo test`
+
+Let me start by reading the evolve skill and then finding the recovery-hint function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ search 'recovery_hint' (*.rs) ✓ (1.5s)
+ ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, I found it. The function is `targeted_recovery_hint` in `src/tool_wrappers.rs` at line 1018. Let me read the function to see the existing hints.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1018..1138 ✓ (743ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me continue reading to see the rest of the function.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/tool_wrappers.rs:1135..1215 ✓ (745ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture of the `targeted_recovery_hint` function. Let me catalog the existing hints:
+
+**bash tool:**
+1. Exit code / exit status / command failed → generic hints with specific exit code advice (1, 2, 124, 126, 127, 130, 137, 139, 141, 143, 42, _)
+2. "timed out" → scope reduction
+3. "failed to spawn" → check binary installation
+4. "no such file or directory" → file path verification
+5. "permission denied" → check permissions
+6. "command not found" → PATH/installation
+7. "argument list too long" → E2BIG handling
+8. "broken pipe" → EPIPE handling
+9. "fatal:" → git error
+10. "could not resolve host" / "connection refused" / "connection reset" / "name or service not known" / "network is unreachable" → network errors
+11. "is a directory" → directory confusion
+12. "no space left on device" → disk full
+13. else → generic bounded command advice
+
+**search tool:**
+1. regex parse / regex syntax / invalid regex / unmatched → regex advice
+
+**read_file/write_file/edit_file/list_files:**
+1. "no such file or directory" → path verification
+2. "permission denied" → permission check
+
+So what's NOT covered yet? Looking at the task description, it suggests:
+- "Permission denied" → **already covered** (lines 1075-1081)
+- "command not found" → **already covered** (lines 1082-1088)
+- "Connection refused" → **already covered** (lines 1115 in network block)
+- "No such file or directory" → **already covered** (lines 1068-1074)
+- "cannot create directory" → **NOT covered**
+- "syntax error near unexpected token" → **NOT covered**
+- "cannot create directory" / "mkdir: cannot create directory" → **NOT covered**
+
+Let me also think about what might appear in recent sessions. The trajectory graph mentions `bash_tool_error=12` which suggests recurring bash errors.
+
+Other common bash error patterns that might not be covered:
+- "is a directory" → already covered
+- "not a directory" → NOT covered
+- "read-only file system" → NOT covered
+- "too many open files" → NOT covered
+- "cannot overwrite existing file" or "file exists" → NOT covered
+- "no such process" → NOT covered
+- "operation not permitted" → similar but different from "permission denied"
+- "invalid option" → NOT covered
+- "unexpected" → could overlap with "syntax error near unexpected token"
+
+Let me think about which 2-3 are most likely to appear in agent sessions:
+
+1. **"syntax error near unexpected token"** — This is a common bash error when there are unclosed quotes, mismatched brackets, or unescaped special characters. Very likely in agent-generated commands.
+
+2. **"cannot create directory"** — This is a common file system error. Good candidate.
+
+3. **"not a directory"** — This is the complement of "is a directory", e.g., when you try `ls /path/to/file/something` but file is not a dir.
+
+4. **"invalid option"** — Common when the agent passes wrong flags.
+
+I'll go with these 3:
+1. "syntax error near unexpected token" → bash syntax advice
+2. "cannot create directory" → mkdir/parent permissions
+3. "not a directory" → path component is a file, not a directory
+
+These are genuinely useful, not already covered, and aligned with the task objective.
+
+Let me figure out where to insert these in the match statement. They need to go into the `"bash"` arm, in the `else if` chain. The order in the chain matters for matching, but that's fine — each pattern is distinct.
+
+I'll add them before the final `else` block (the generic fallback at lines 1143-1152). Let me plan the edits.
+
+Looking at the structure:
+```
+if exit_code... { ... }
+else if "timed out" { ... }
+else if "failed to spawn" { ... }
+else if "no such file or directory" { ... }
+else if "permission denied" { ... }
+else if "command not found" { ... }
+else if "argument list too long" { ... }
+else if "broken pipe" { ... }
+else if "fatal:" { ... }
+else if network errors { ... }
+else if "is a directory" { ... }
+else if "no space left on device" { ... }
+else { generic }
+```
+
+I'll add three new blocks before the `else`:
+
+1. After "no space left on device", add "cannot create directory"
+2. After that, add "syntax error near unexpected token"
+3. After that, add "not a directory"
+
+Actually, let me re-read the task: "Do not refactor the match statement, extract helpers, or change the function signature." So I just need to add match arms.
+
+Let me make 3 surgical edits:
+
+1. After the "no space left on device" block, add "cannot create directory"
+2. After that, add "syntax error near unexpected token" 
+3. After that, add "not a directory"
+
+I can do this as a single edit_file call — replace the `} else {` at line 1143 with the three new blocks plus `} else {`.
+
+Let me write the edit carefully.
+
+The current text at the transition point (lines 1141-1143):
+```
+                        .to_string(),
+                )
+            } else {
+```
+
+I'll replace `} else {` with three new blocks followed by `} else {`.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have the full picture of the existing recovery hints. Let me catalog what's already covered and identify gaps:
+
+**Already covered in the bash arm:**
+• Exit codes (1, 2, 124, 126, 127, 130, 137, 139, 141, 143, 42)
+• "timed out", "failed to spawn"
+• "no such file or directory", "permission denied", "command not found"
+• "argument list too long", "broken pipe"
+• "fatal:" (git errors)
+• Network errors (connection refused, connection reset, etc.)
+• "is a directory", "no space left on device"
+
+**Good candidates NOT yet covered:**
+1. **"cannot create directory"** — mkdir failure, parent permissions
+2. **"syntax error near unexpected token"** — bash quoting/escaping issues
+3. **"not a directory"** — path component is a file, not a directory
+
+Let me add these three. I'll insert them before the final `else` fallback.
+  +             } else if msg_lower.contains("cannot create directory") {
+  +                 Some(
+  +                     "Cannot create directory. Check parent directory exists with `ls -ld <parent>`. \
+  +                      Verify write permissions on the parent with `ls -la <parent>`. \
+  +                      Use `mkdir -p` to create intermediate directories. \
+  +                      Check disk space with `df -h` if the volume might be full."
+  +                         .to_string(),
+  +                 )
+  +             } else if msg_lower.contains("syntax error near unexpected token") {
+  +                 Some(
+  +                     "Bash syntax error — likely an unclosed quote, unmatched bracket, or \
+  +                      unescaped special character. Check for single quotes inside single-quoted \
+  +                      strings (use double quotes or escape), missing closing `)`, `}`, `]`, `'`, \
+  +                      or `\"`, or special characters like `(` and `)` that need escaping. \
+  +                      Test the command piece by piece: isolate each segment to find the syntax error."
+  +                         .to_string(),
+  +                 )
+  +             } else if msg_lower.contains("not a directory") {
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/tool_wrappers.rs (10 → 35 lines)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/tool_wrappers.rs (10 → 35 lines)
+  +             } else if msg_lower.contains("cannot create directory") {
+  +                 Some(
+  +                     "Cannot create directory. Check parent directory exists with `ls -ld <parent>`. \
+  +                      Verify write permissions on the parent with `ls -la <parent>`. \
+  +                      Use `mkdir -p` to create intermediate directories. \
+  +                      Check disk space with `df -h` if the volume might be full."
+  +                         .to_string(),
+  +                 )
+  +             } else if msg_lower.contains("syntax error near unexpected token") {
+  +                 Some(
+  +                     "Bash syntax error — likely an unclosed quote, unmatched bracket, or \
+  +                      unescaped special character. Check for single quotes inside single-quoted \
+  +                      strings (use double quotes or escape), missing closing `)`, `}`, `]`, `'`, \
+  +                      or `\"`, or special characters like `(` and `)` that need escaping. \
+  +                      Test the command piece by piece: isolate each segment to find the syntax error."
+  +                         .to_string(),
+  +                 )
+  +             } else if msg_lower.contains("not a directory") {
+  +                 Some(
+  +                     "A path component is a file, not a directory. Example: `ls /path/to/file/...` \
+  ... (8 more lines)
+ ✓ (746ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, the edit was applied. Now let me verify by running cargo fmt and cargo build.
+────────────────────────────────────────────────────────────────────────────────
+
+Now let me verify: format, build, and run the focused test.
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 | ta… ✓ (1.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+fmt check passed (no output = clean). Now let me build.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo build 2>&1 | tail -10 ✓ (13.9s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Build passes. Now run the focused test for tool_wrappers.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo test tool_wrappers -- --… ✓ (24.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All 126 tests passed. Now let me verify the new hints are present in the code.
+────────────────────────────────────────────────────────────────────────────────
+
+All 126 tests pass. Let me verify the new hints are in the code:
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep -n "cannot create directo… ✓ (1.5s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All three new recovery hints are present. Let me also verify the existing test for the recovery hints still passes. Let me look at the existing test around line 3076:
+────────────────────────────────────────────────────────────────────────────────
+
+Let me also verify the existing test that tests `targeted_recovery_hint` still passes by checking git diff:
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git diff --name-only ✓ (2.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Only `src/tool_wrappers.rs` is changed, which matches the task's Edit Surface. Let me now commit.
+────────────────────────────────────────────────────────────────────────────────
+
+Only `src/tool_wrappers.rs` changed — matches the task's Edit Surface. Now commit:
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && git add -A && git commit -m "D… ✓ (1.7s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Task completed. Let me summarize what was done.
+────────────────────────────────────────────────────────────────────────────────
+
+Done. Here's a summary:
+
+## What changed
+
+Added 3 new recovery hints to the `targeted_recovery_hint` function in `src/tool_wrappers.rs` (lines 1143–1168), inserted before the generic fallback in the `"bash"` arm:
+
+1. **"cannot create directory"** (line 1143) — suggests checking parent directory existence and permissions (`ls -ld`/`ls -la`), using `mkdir -p`, and checking disk space with `df -h`.
+
+2. **"syntax error near unexpected token"** (line 1151) — diagnoses common bash quoting/escaping errors: unclosed quotes, unmatched brackets, unescaped special characters; suggests isolating each segment to find the error.
+
+3. **"not a directory"** (line 1160) — explains that a path component is a file not a directory; suggests `file <path>`, `ls -ld`, `dirname`, and checking for typos.
+
+## Verification
+
+• `cargo fmt -- --check` — clean
+• `cargo build` — passed
+• `cargo test tool_wrappers -- --test-threads=1` — 126 passed, 0 failed
+• All three new substrings confirmed present via grep
+
+TASK_TERMINAL_EVIDENCE: changed
+
+
