@@ -1140,6 +1140,31 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      Find large files: `du -sh /* 2>/dev/null | sort -hr | head -20`."
                         .to_string(),
                 )
+            } else if msg_lower.contains("cannot create directory") {
+                Some(
+                    "Cannot create directory. Check parent directory exists with `ls -ld <parent>`. \
+                     Verify write permissions on the parent with `ls -la <parent>`. \
+                     Use `mkdir -p` to create intermediate directories. \
+                     Check disk space with `df -h` if the volume might be full."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("syntax error near unexpected token") {
+                Some(
+                    "Bash syntax error — likely an unclosed quote, unmatched bracket, or \
+                     unescaped special character. Check for single quotes inside single-quoted \
+                     strings (use double quotes or escape), missing closing `)`, `}`, `]`, `'`, \
+                     or `\"`, or special characters like `(` and `)` that need escaping. \
+                     Test the command piece by piece: isolate each segment to find the syntax error."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("not a directory") {
+                Some(
+                    "A path component is a file, not a directory. Example: `ls /path/to/file/...` \
+                     fails because `file` is not a directory. Use `file <path>` to check the type, \
+                     `ls -ld <path>` to confirm, or `dirname <path>` to get the parent. \
+                     Check for typos in the path — you may have meant a different directory."
+                        .to_string(),
+                )
             } else {
                 Some(
                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
