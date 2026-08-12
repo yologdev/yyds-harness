@@ -1990,7 +1990,7 @@ fn read_tail_cache_events(path: &Path, cap: usize) -> Result<(Vec<Value>, usize,
 
 /// Fall back to the SQLite projection when the raw events.jsonl is unavailable.
 ///
-/// Reads `CacheMetricsRecorded` events from the `state_events` table and
+/// Reads `CacheMetricsRecorded` and `ModelCallCompleted` events from the `state_events` table and
 /// returns them in the same `Vec<Value>` shape that `read_events` produces,
 /// so `build_cache_report` can consume them unchanged.
 fn read_events_from_sqlite(events_path: &Path) -> Result<Vec<Value>, String> {
@@ -2004,23 +2004,29 @@ fn read_events_from_sqlite(events_path: &Path) -> Result<Vec<Value>, String> {
     let conn = rusqlite::Connection::open(&sqlite_path)
         .map_err(|e| format!("open sqlite projection '{}': {e}", sqlite_path.display()))?;
     let mut stmt = conn
-        .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+        .prepare("SELECT event_type, payload_json FROM state_events WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted') ORDER BY timestamp_ms")
         .map_err(|e| format!("prepare cache events query: {e}"))?;
     let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([], |row| {
+            let event_type: String = row.get(0)?;
+            let payload_json: String = row.get(1)?;
+            Ok((event_type, payload_json))
+        })
         .map_err(|e| format!("query cache events: {e}"))?;
     let mut events = Vec::new();
     for row in rows {
-        let payload_json = row.map_err(|e| format!("read cache event row: {e}"))?;
+        let (event_type, payload_json) = row.map_err(|e| format!("read cache event row: {e}"))?;
         let payload: Value = serde_json::from_str(&payload_json)
             .map_err(|e| format!("parse cache event payload: {e}"))?;
         events.push(json!({
-            "event_type": "CacheMetricsRecorded",
+            "event_type": event_type,
             "payload": payload,
         }));
     }
     if events.is_empty() {
-        return Err("no CacheMetricsRecorded events in SQLite projection".to_string());
+        return Err(
+            "no CacheMetricsRecorded or ModelCallCompleted events in SQLite projection".to_string(),
+        );
     }
     Ok(events)
 }
@@ -2036,19 +2042,42 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
             .get("event_type")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if event_type != "CacheMetricsRecorded" {
+        let kind = event.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let is_cache_metrics = event_type == "CacheMetricsRecorded";
+        let is_model_call = event_type == "ModelCallCompleted" || kind == "ModelCallCompleted";
+        if !is_cache_metrics && !is_model_call {
+            continue;
+        }
+        let payload = event.get("payload").unwrap_or(&Value::Null);
+        let (event_hit_tokens, event_miss_tokens): (u64, u64) = if is_cache_metrics {
+            (
+                payload
+                    .get("prompt_cache_hit_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                payload
+                    .get("prompt_cache_miss_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            )
+        } else {
+            // ModelCallCompleted: agent events use cache_read_tokens / cache_write_tokens
+            (
+                payload
+                    .get("cache_read_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                payload
+                    .get("cache_write_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            )
+        };
+        // Skip ModelCallCompleted events with no cache data (harness wrapper events)
+        if !is_cache_metrics && event_hit_tokens == 0 && event_miss_tokens == 0 {
             continue;
         }
         event_count += 1;
-        let payload = event.get("payload").unwrap_or(&Value::Null);
-        let event_hit_tokens = payload
-            .get("prompt_cache_hit_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let event_miss_tokens = payload
-            .get("prompt_cache_miss_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
         hit_tokens += event_hit_tokens;
         miss_tokens += event_miss_tokens;
         let model = payload
@@ -2065,7 +2094,7 @@ fn build_cache_report(events: &[Value]) -> Result<CacheReport, String> {
 
     if event_count == 0 {
         return Err(
-            "no DeepSeek cache metrics recorded from agent chat completions\n  \
+            "no DeepSeek cache metrics recorded (checked CacheMetricsRecorded and ModelCallCompleted events)\n  \
              Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
              (cache_read_input_tokens, cache_creation_input_tokens).\n  \
              Cache metrics ARE recorded for these diagnostic paths:\n  \
@@ -2279,6 +2308,48 @@ mod tests {
             err.contains("issues/90"),
             "error should reference tracking issue #90, got: {err}"
         );
+    }
+
+    #[test]
+    fn cache_report_aggregates_model_call_completed_events() {
+        let events = vec![
+            json!({
+                "kind": "ModelCallCompleted",
+                "payload": {
+                    "model": crate::deepseek::DEFAULT_MODEL,
+                    "cache_read_tokens": 1000,
+                    "cache_write_tokens": 500
+                }
+            }),
+            json!({
+                "event_type": "ModelCallCompleted",
+                "payload": {
+                    "model": crate::deepseek::FAST_MODEL,
+                    "cache_read_tokens": 200,
+                    "cache_write_tokens": 300
+                }
+            }),
+            // Harness wrapper ModelCallCompleted with no cache data — should be skipped
+            json!({
+                "event_type": "ModelCallCompleted",
+                "payload": {
+                    "model": "deepseek-v4-pro",
+                    "status": "stopped_after_completion_file",
+                    "stage": "eval_task1_attempt1"
+                }
+            }),
+        ];
+        let report = build_cache_report(&events).unwrap();
+        assert_eq!(report.event_count, 2);
+        assert_eq!(report.hit_tokens, 1200);
+        assert_eq!(report.miss_tokens, 800);
+        assert!((report.hit_ratio - 0.6).abs() < 0.001);
+        assert_eq!(report.models.len(), 2);
+        let rendered = render_cache_report(&report, None);
+        assert!(rendered.contains("events:      2"));
+        assert!(rendered.contains("hit tokens:  1200"));
+        assert!(rendered.contains("miss tokens: 800"));
+        assert!(rendered.contains("60.00%"));
     }
 
     #[test]
