@@ -748,10 +748,21 @@ def append_terminal_events(
                 f"retroactive: run completed with error status "
                 f"'{status}' but no FailureObserved was recorded"
             )
+        _status_source_map = {
+            "reverted": ("task_revert", "verification"),
+            "timeout": ("timeout", "infrastructure"),
+            "build_failure": ("build", "code"),
+            "test_failure": ("test", "code"),
+        }
+        _source_class = _status_source_map.get(status.lower(), (None, None))
         payload_fo: dict[str, Any] = {
             "reason": reason_text,
             "retroactive": True,
         }
+        if _source_class[0]:
+            payload_fo["source"] = _source_class[0]
+        if _source_class[1]:
+            payload_fo["class"] = _source_class[1]
         ts = entry.get("timestamp_ms")
         if ts:
             payload_fo["original_run_completed_timestamp_ms"] = ts
