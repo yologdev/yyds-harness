@@ -1165,6 +1165,50 @@ fn targeted_recovery_hint(tool_name: &str, error_msg: &str) -> Option<String> {
                      Check for typos in the path — you may have meant a different directory."
                         .to_string(),
                 )
+            } else if msg_lower.contains("operation not permitted") {
+                Some(
+                    "Operation not permitted (EPERM) — the kernel blocked this action, \
+                     not just file permissions. Check ownership with `stat <path>` and \
+                     `id` to confirm you own the resource. Use `sudo` if you have the \
+                     necessary privileges. Check for immutable flags with `lsattr <path>` \
+                     and remove them with `chattr -i <path>` if set."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("read-only file system") {
+                Some(
+                    "The filesystem is mounted read-only (EROFS). Check the mount state \
+                     with `mount | grep <path>` or `findmnt <path>`. Remount as read-write \
+                     with `sudo mount -o remount,rw <mountpoint>`. If remounting is not \
+                     possible, write output to a writable location like `/tmp` or `/dev/shm`."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("invalid option") {
+                Some(
+                    "Invalid option — the command rejected a flag or argument. Check the \
+                     command's `--help` or `man` page for correct flag syntax. Verify flag \
+                     order and format: some tools require `--flag=value` (with `=`) while \
+                     others use `--flag value` (space-separated). Test the flag in isolation \
+                     with a minimal command to confirm it's valid."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("bad substitution") {
+                Some(
+                    "Bad substitution — bash variable expansion error (e.g., malformed `${}`, \
+                     unescaped `$`, or invalid parameter expansion). Check for unescaped `$` \
+                     in strings — use single quotes or `\\$` to escape. Verify variable names \
+                     are valid identifiers. Test expansions in isolation with `echo` to find \
+                     the broken expression."
+                        .to_string(),
+                )
+            } else if msg_lower.contains("cannot stat") {
+                Some(
+                    "Cannot stat — the `stat()` syscall failed. Check if the path exists \
+                     with `ls -la <path>`. Verify parent directory permissions — even if \
+                     the file exists, stat() may fail if you cannot access a parent directory. \
+                     Check for broken symlinks with `readlink -f <path>` or `ls -l <path>` \
+                     (broken symlinks will show with `->` pointing to a missing target)."
+                        .to_string(),
+                )
             } else {
                 Some(
                     "Start with a bounded version: add `| head -n 20` or `--max-results 5` \
@@ -3401,6 +3445,63 @@ mod tests {
         assert!(targeted_recovery_hint("bash", "some generic error").is_some());
         // Search with a non-regex error still gets None
         assert!(targeted_recovery_hint("search", "no results found").is_none());
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_operation_not_permitted() {
+        let hint = targeted_recovery_hint("bash", "Operation not permitted (os error 1)");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("EPERM"));
+        assert!(hint.contains("sudo"));
+        assert!(hint.contains("lsattr"));
+        assert!(hint.contains("chattr"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_read_only_file_system() {
+        let hint = targeted_recovery_hint(
+            "bash",
+            "mkdir: cannot create directory 'foo': Read-only file system",
+        );
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("EROFS"));
+        assert!(hint.contains("remount"));
+        assert!(hint.contains("/tmp"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_invalid_option() {
+        let hint = targeted_recovery_hint("bash", "ls: invalid option -- 'z'");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("--help"));
+        assert!(hint.contains("flag syntax"));
+        assert!(hint.contains("in isolation"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_bad_substitution() {
+        let hint = targeted_recovery_hint("bash", "bash: ${!prefix@}: bad substitution");
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("unescaped"));
+        assert!(hint.contains("echo"));
+        assert!(hint.contains("variable"));
+    }
+
+    #[test]
+    fn test_targeted_recovery_hint_bash_cannot_stat() {
+        let hint = targeted_recovery_hint(
+            "bash",
+            "stat: cannot stat 'nonexistent': No such file or directory",
+        );
+        assert!(hint.is_some());
+        let hint = hint.unwrap();
+        assert!(hint.contains("readlink"));
+        assert!(hint.contains("broken symlink"));
+        assert!(hint.contains("parent directory"));
     }
 
     #[tokio::test]
