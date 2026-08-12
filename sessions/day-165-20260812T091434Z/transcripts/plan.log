@@ -1,0 +1,402 @@
+warning: skipping corrupted event at line 118205 of '.yoyo/state/events.jsonl': unknown variant `TestEvent`, expected one of `RunStarted`, `RunCompleted`, `SessionStarted`, `ModelCallStarted`, `ModelCallCompleted`, `ToolCallStarted`, `ToolCallCompleted`, `FileRead`, `FileEdited`, `CommandStarted`, `CommandCompleted`, `TestStarted`, `TestCompleted`, `FailureObserved`, `HypothesisCreated`, `PatchProposed`, `PatchApplied`, `PatchEvaluated`, `PatchPromoted`, `PatchRejected`, `MemoryProposed`, `MemoryPromoted`, `MemoryRejected`, `DecisionRecorded`, `TaskLineageLinked`, `HumanApprovalRequested`, `HumanApprovalReceived`, `CommitCreated`, `RevertPerformed`, `ContextBuilt`, `CacheMetricsRecorded`, `JsonOutputFailure`, `ToolSchemaFailure`, `AgentExitReason`, `ModelCallCompletedWithoutStart`
+note: skipped 1 unparseable line(s) in '.yoyo/state/events.jsonl'
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me analyze the situation:
+
+1. No assessment available - I need to plan from trajectory and evidence
+2. The trajectory shows:
+   - recent sessions have mixed results (some tasks succeed, some revert)
+   - task_success_rate=0.5, task_verification_rate=0.5
+   - Graph pressure items exist
+   - Several self-filed issues show reverted tasks
+
+3. There are trusted owner issues (ISSUES_TODAY.md) to check
+4. The fallback planning rule says: create task_01.md first from trajectory evidence
+
+Let me check if session_plan/task_01.md already exists, and read ISSUES_TODAY.md.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ $ ls -la session_plan/ 2>&1 || echo "directory does not exist"  ▶ $ cat ISSUES_TODAY.md 2>&1 | head -100 ✓ (2.2s)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good - task_01.md already exists. Let me read it to see what the harness seeded, and also check the assessment_missing.md.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.2s (2 ✓)
+
+
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read session_plan/task_01.md  ▶ read session_plan/assessment_missing.md ✓ (1.9s)
+ ✓ (1.1s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+So the assessment timed out (exit code 124 = timeout signal). The harness seeded task_01.md as a fallback "minimum viable task". 
+
+Now I need to plan tasks. Let me look at the trajectory evidence:
+
+1. **Graph pressure**: 
+   - "Force analysis-only attempts into action (task_analysis_only_attempt_count=1)"
+   - "Raise verified task success rate (task_success_rate=0.5)"
+   - "Require strict verifier evidence for tasks (task_verification_rate=0.5)"
+   - "Bound failing shell commands before retrying (failed_tool_summary.bash_tool_error=11)"
+   - "Close yyds state and model lifecycle gaps (deepseek_model_call_abnormal_completed_count=1)"
+
+2. **Self-filed issues (reverted tasks)**:
+   - #179: retroactive FailureObserved source classification - blocked, edit surface was wrong
+   - #176: classify SIGTERM-cancelled runs in log_feedback.py
+   - #174: Fix cache-report to read from ModelCallCompleted events
+   - #173: Classify state-only tool failures by source
+   - #172: Close remaining model-call lifecycle gap
+
+3. **Recent sessions**: mixed results - some tasks land, some revert
+
+The existing task_01.md is a weak fallback - "add one focused unit test or doc comment." That's not addressing any trajectory pressure or real issue. It's a make-work task that doesn't improve any gnome. I should replace it with something evidence-backed.
+
+Looking at the trajectory and self-filed issues, the highest-value tasks would be:
+- Something that improves task_success_rate/verification_rate (the core fitness gnomes)
+- Something that addresses an actual gap, not a make-work
+
+Let me think about what's realistically achievable:
+
+The reverted tasks all share a pattern: implementation agents got lost in analysis and didn't land code. The issues have good diagnostic work already done (blocked-task evidence with corrected edit surfaces). 
+
+Looking at the corrected edit surfaces:
+- #179: `scripts/append_terminal_state_events.py` + optionally `src/commands_state.rs` — the fix is adding `source`/`class` fields to the retroactive FailureObserved payload. This is a well-scoped Python change.
+- #176: `scripts/log_feedback.py` — add one detection pattern to `is_cancelled_completion()`. Well-scoped.
+- #174: `src/commands_deepseek.rs` — read cache metrics from ModelCallCompleted events. Rust change, well-scoped.
+- #173: `scripts/build_evolution_dashboard.py` — classify state-only tool failures. This is diagnostic classification.
+- #172: `src/state.rs` — close model-call lifecycle gap. Rust change but agent got lost.
+
+For this session, I should pick tasks that:
+1. Have well-defined, small scope (under 3 files)
+2. Have corrected edit surfaces from previous failures
+3. Can be verified quickly
+4. Improve a fitness gnome
+
+The trajectory says `task_verification_rate=0.5` and `task_success_rate=0.5`. The evaluator timeout issue (#131) is also relevant - evaluator keeps timing out.
+
+Let me refine task_01.md to address an actual gap, and create task_02.md as well.
+
+Best candidates:
+1. **#179** - Retroactive FailureObserved source classification. The blocked-task evidence has corrected edit surface (`scripts/append_terminal_state_events.py` + optionally `src/commands_state.rs`). This is a 20-line Python change with a clear mapping. It directly addresses the state_unmatched lifecycle gap pressure.
+
+2. **#174** - Fix cache-report to read from ModelCallCompleted events. The previous attempt was reverted because evaluator timed out. The task evidence has clear implementation notes. However, #90 (upstream yoagent blocker) means the cache fields are actually zeros for agent completions, so this might not produce non-zero output yet... Actually re-reading #174's fallback section: "If all ModelCallCompleted events in the tail window have cache_read_tokens=0 (truly no cache data from agent completions), the report will still show zeros." But the evidence says `grep` shows non-zero cache data. Let me verify.
+
+Actually wait - let me think about this differently. The #174 blocked-task evidence says the previous attempt was reverted because "Evaluator timed out without a verifier verdict." And looking at the help-wanted #131, this is a recurring pattern. So #174's code may have been correct but the evaluator killed it.
+
+For this planning session, I should replace the weak task_01.md with a real task and add task_02.md. Let me pick:
+
+1. Task 01: Replace the weak fallback with something real. The retroactive FailureObserved classification (#179) is well-scoped - Python change, clear mapping, addresses graph pressure.
+
+2. Task 02: The cache-report fix (#174) - try again with narrower scope, specifically addressing what the previous attempt learned.
+
+Actually, let me think about what's most likely to succeed. The reverted tasks share a common failure mode: implementation agents get lost in analysis and don't produce code. I need tasks that are:
+- Impossible to get lost in (single function, clear before/after)
+- Have pre-verified edit surfaces
+- Have simple verifiers
+
+Let me write task_01.md first, replacing the weak fallback. I'll go with the FailureObserved source classification since it has the most concrete corrected edit surface from the blocked-task evidence.
+
+Then for task_02.md, I'll pick the cache-report fix.
+
+Actually wait - the policy says:
+"If fresh assessment evidence contradicts the seed task's stated problem, do not send that stale task to implementation. Replace it with an evidence-backed task."
+
+The seed task_01.md says "add one focused unit test or doc comment" because "the assessment found no actionable bugs." But the assessment didn't find anything - it timed out. And there ARE actionable things in the trajectory and self-filed issues. So I should replace task_01.md with a real evidence-backed task.
+
+Let me also consider: do I need to run any ownership checks? The self-filed issues already have corrected edit surfaces. But let me be thorough.
+
+For task selection:
+- Task 01: #179 - Retroactive FailureObserved source classification in `scripts/append_terminal_state_events.py` - this is a Python script change, well-scoped
+- Task 02: Either #176 (log_feedback.py cancelled-run classification) or a different task
+
+Actually, the evolution policy says: "At least 2 slots SHOULD come from yoagent-state / trajectory / eval evidence." And: "Prefer tasks that address the highest ranked pressure rows."
+
+The top graph pressure rows:
+1. "Force analysis-only attempts into action" - this is about the planning/implementation pipeline, not a src/ change
+2. "Raise verified task success rate" - this is a meta-goal
+3. "Require strict verifier evidence" - meta
+4. "Bound failing shell commands before retrying" - tool behavior
+5. "Close lifecycle gaps" - state.rs or Python scripts
+
+The self-filed issues #179 and #176 both address lifecycle gaps which is graph pressure #5. But #174 (cache-report) addresses observability which is a fitness gate.
+
+Let me go with:
+- Task 01: #179 - Retroactive FailureObserved source classification (addresses lifecycle gap pressure)
+- Task 02: #174 - Fix cache-report to read from ModelCallCompleted events (improves observability/fitness)
+
+Both have corrected edit surfaces from their blocked-task evidence. Both are small scope.
+
+Wait, but I should also check whether #174 will actually produce results given #90 (yoagent upstream blocker). The blocked-task evidence for #174 says `grep` shows ModelCallCompleted events with `cache_read_tokens: 441600` etc. But these might be from diagnostic paths, not agent completions. Let me check if there are agent ModelCallCompleted events with cache data...
+
+Actually, re-reading #174's evidence:
+"`grep '"kind":"ModelCallCompleted"' .yoyo/state/events.jsonl | grep -v 'evt-harness'` shows agent ModelCallCompleted events with real cache data: `cache_read_tokens: 441600`, `cache_read_tokens: 184192`, `cache_read_tokens: 89728` — model_call_id format `mc-18bf...` confirms these are agent chat completions, not diagnostic paths."
+
+Hmm, but #90 says yoagent's Usage struct drops these fields. So maybe these events DO have the cache data recorded through a different path. The task says "these are recorded by a different code path that preserves the full payload." The cache-report just can't read them because it filters to `CacheMetricsRecorded` only.
+
+OK, let me proceed. Let me do a quick ownership check first, then write the task files.
+
+Actually, the policy says: "Do not run cargo build, cargo test, clippy, broad source scans, or GitHub log archaeology before session_plan/task_01.md exists." But task_01.md already exists. And I can do cheap ownership checks.
+
+Let me verify the edit surfaces are correct with quick checks, then write the refined task files.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 31.7s (2 ✓)
+
+Let me check the edit surfaces before finalizing.
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ $ git ls-files scripts/append_terminal_state_events.py src/commands_state.rs src/c… ✓ (1.3s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+All files exist. Now let me check the specific code areas mentioned in the blocked-task evidence to verify the edit surfaces are correct before I write the task files.
+
+For #179 (FailureObserved source classification):
+- The blocked-task evidence says the fix is in `scripts/append_terminal_state_events.py` around lines 738-758, adding `source` and `class` fields to the retroactive FailureObserved payload
+- Optionally `src/commands_state.rs` to enhance `classify_failure_payload`
+
+Let me quickly verify the line numbers are still valid:
+────────────────────────────────────────────────────────────────────────────────
+
+
+📦 RTK detected — using compressed output (disable with --no-rtk)
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive.*FailureObserved\|payload_fo\["source\|\payload_fo\["class\…  ▶ $ grep -n 'def is_cancelled_completion\|def _is_run_externally_cancelled' scripts/…  ▶ $ grep -n 'build_cache_report\|read_tail_cache_events\|read_events_from_sqlite\|Ca… ✓ (3.5s)
+ ✓ (2.2s)
+ ✓ (4.6s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the actual lines where the retroactive FailureObserved is created in append_terminal_state_events.py:
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 5.7s (3 ✓)
+
+
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ $ grep -n 'retroactive\|FailureObserved\|payload_fo\|status.*source' scripts/appen…  ▶ $ sed -n '738,770p' scripts/append_terminal_state_events.py ✓ (2.3s)
+ ✓ (2.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the exact code. The `payload_fo` at line 751-753 doesn't include `source` or `class` fields. The `status` variable (from the RunCompleted event) is available at line 743 and the blocked-task evidence shows a clear mapping:
+
+```python
+status_source_map = {
+    "reverted": ("task_revert", "verification"),
+    "timeout": ("timeout", "infrastructure"),
+    "cancelled": ("cancelled", "external"),
+    "build_failure": ("build", "code"),
+    "test_failure": ("test", "code"),
+}
+```
+
+This is a clean, well-scoped fix. Add these fields to `payload_fo` at line 751.
+
+Now let me also check the `src/commands_deepseek.rs` cache-report code area to verify the edit surface for #174:
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 3.4s (2 ✓)
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '2028,2100p' src/commands_deepseek.rs ✓ (1.2s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have the full picture. Let me also check the `read_tail_cache_events` to see how events are read:
+
+Actually, let me focus on writing the task files. I have enough evidence.
+
+For task planning:
+
+**Task 01**: Replace the weak fallback with #179 - retroactive FailureObserved source classification
+- Files: `scripts/append_terminal_state_events.py`, optionally `src/commands_state.rs`
+- This is a Python change, well-scoped, corrected edit surface from blocked-task evidence
+- Addresses lifecycle gap graph pressure
+
+**Task 02**: #174 - Fix cache-report to read from ModelCallCompleted events  
+- Files: `src/commands_deepseek.rs`
+- Previous attempt reverted due to evaluator timeout, not wrong code
+- The fix is well-documented in the blocked-task evidence
+
+Let me also consider: should I check `read_events_from_sqlite` to confirm the SQL query change is correct?
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ $ sed -n '1993,2030p' src/commands_deepseek.rs ✓ (1.0s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. I now have all the information I need to write the task files.
+
+Let me also verify: the `read_tail_cache_events` function to understand how events are filtered there. But actually, the task says the fix is in `build_cache_report` (to add a ModelCallCompleted branch) and `read_events_from_sqlite` (to query both event types). That's two functions in one file. Let me write both tasks now.
+
+One more consideration: the trajectory says `task_analysis_only_attempt_count=1` - meaning one task in this session was analysis-only. I should make sure my tasks aren't analysis-prone. Both #179 and #174 have clear "do exactly this" implementation notes.
+
+Let me also consider task sizing:
+- Task 01 (#179): Python change, ~15 lines, clear mapping. Well within 20 min.
+- Task 02 (#174): Rust change, ~40-60 lines, two functions to modify. Should be doable.
+
+But wait - the trajectory says the latest day-165 session had "tasks 1/2 — 1/2 strict verified; task states: reverted_no_edit=1". So one task landed (passed verification) and one reverted without edits. That's better than previous sessions.
+
+Let me write the task files now. I'll replace task_01.md with the FailureObserved task and create task_02.md for the cache-report fix.
+
+Actually, I should be careful - the policy says I can refine task_01.md but shouldn't delete it unless I immediately write an equal-or-better evidence-backed task. So I'll overwrite it with the #179 task.
+
+Let me finalize the plan:
+
+Task 01: #179 - Retroactive FailureObserved source classification
+- Files: scripts/append_terminal_state_events.py
+- 15-line Python change adding source/class to payload_fo
+- Verifier: python3 scripts/append_terminal_state_events.py 2>&1 | head -5
+
+Task 02: #174 - Fix cache-report to read from ModelCallCompleted events
+- Files: src/commands_deepseek.rs
+- Add ModelCallCompleted branch to build_cache_report, update read_events_from_sqlite query
+- Verifier: cargo test deepseek -- --test-threads=1
+
+Now let me also write issue_responses.md. For the self-filed issues, I need to say what I'm doing:
+- #179: implementing as task_01
+- #176: defer (narrowed but still analysis-prone from previous attempt)
+- #174: implementing as task_02
+- #173: defer (diagnostic classification, not fixing a core gnome)
+- #172: defer (previous attempt got lost in analysis)
+
+For help-wanted:
+- #131: still waiting on human
+- #90: still waiting on human
+
+Let me write all three files now.
+────────────────────────────────────────────────────────────────────────────────
+
+Now I have all the evidence. Let me write the plan. Task_01.md will be replaced with a real evidence-backed task (#179), and I'll add task_02.md for the cache-report fix (#174).
+  - Title: Add a small verifiable improvement to src/
+  - Files: src/state.rs
+  - Issue: none
+  - Origin: harness-seed
+  - validated_against_assessment: true
+  + Title: Add source/class fields to retroactive FailureObserved events in append_terminal_state_events.py
+  + Files: scripts/append_terminal_state_events.py
+  + Issue: #179
+  + Origin: planner (corrected edit surface from blocked-task evidence)
+    
+    Evidence:
+  - - Current assessment matched this harness seed: The assessment found no actionable bugs in src/. Instead of producing a journal-only observation that wastes an evolution cycle, this task produces a small, verifiable code improvement that passes cargo build && cargo test.
+  + - `yyds state why last-failure` shows retroactive FailureObserved from day-164 16:57 session with source=unknown, class=unknown.
+  + - The retroactive FailureObserved payload at lines 751-754 of `scripts/append_terminal_state_events.py` sets only `reason` and `retroactive` — no `source` or `class` field.
+  + - The `status` variable (from the RunCompleted event, e.g. "reverted", "timeout", "cancelled") is available at line 743 but is NOT used to populate classification fields.
+  + - `src/commands_state.rs` line ~2038 reads `source` from `payload["source"]` or `payload["operation"]`, falls back to "-". Since the Python script sets neither field, retroactive FailureObserved shows `source="-"`.
+  + - Previous attempt (#179 Day 165 Task 1) was reverted because the task assigned `src/state.rs` as edit surface — the actual fix is in `scripts/append_terminal_state_events.py`, not `src/state.rs`. The blocked-task evidence already corrected this.
+  + - Trajectory graph pressure #5: "Close yyds state and model lifecycle gaps" — retroactive FailureObserved with unknown source feeds false lifecycle pressure.
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_01.md (73 lines)
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_01.md (73 lines) ✓ (459ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now write task_02.md for the cache-report fix.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + Title: Read cache metrics from ModelCallCompleted events in cache-report (unblocks DeepSeek cache observability)
+  + Files: src/commands_deepseek.rs
+  + Issue: #174
+  + Origin: planner (re-attempt with narrowed scope from blocked-task evidence)
+  + 
+  + Evidence:
+  + - `grep '"kind":"ModelCallCompleted"' .yoyo/state/events.jsonl | grep -v 'evt-harness' | head -5` shows agent ModelCallCompleted events with real cache token fields (`cache_read_tokens`, `cache_write_tokens`).
+  + - `yyds deepseek cache-report` returns "no DeepSeek cache metrics recorded" because `build_cache_report()` (line 2039) only processes `CacheMetricsRecorded` events — ModelCallCompleted events are skipped.
+  + - `CacheMetricsRecorded` events come only from diagnostic paths (stream-check, fim-complete). Agent chat completions emit ModelCallCompleted events with cache data in the payload, but the cache-report can't see them.
+  + - The SQLite fallback `read_events_from_sqlite()` (line 2007) also queries only `CacheMetricsRecorded` — needs to include ModelCallCompleted too.
+  + - Previous attempt (#174 Day 164 Task 1) was reverted because the evaluator timed out without a verdict — the code may have been correct. The blocked-task evidence has clear implementation notes.
+  + - Trajectory shows `task_success_rate=0.5` — improving cache observability directly supports cost-per-task gnomes and prompt layout fitness measurement.
+  + 
+  + Edit Surface:
+  + - src/commands_deepseek.rs
+  + 
+  + Verifier:
+  + - cargo check
+  ... (3 more lines)
+  ✓ Auto-approved: write: session_plan/task_02.md (58 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/task_02.md (58 lines) ✓ (502ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now I need to write issue_responses.md. Let me go through each issue:
+
+Self-filed:
+- #179: Implementing as task_01 (corrected edit surface)
+- #176: Defer - the previous attempt got lost in 25+ turns of analysis without landing code. Need more pre-confirmed evidence before retrying.
+- #174: Implementing as task_02
+- #173: Defer - diagnostic classification, not fixing a core gnome. Lower priority than #179 and #174.
+- #172: Defer - previous attempt got lost in analysis. The Day 163 fix addressed the main path; the remaining gap may be a script-level analysis issue, not state.rs.
+
+Help-wanted:
+- #131: Still waiting on human for evaluator timeout fix in evolve.sh
+- #90: Still waiting on human for yoagent Usage struct fields
+
+Trusted owner issues:
+- None today (ISSUES_TODAY.md is empty)
+────────────────────────────────────────────────────────────────────────────────
+
+
+  + # Issue Responses — Day 165 (09:14)
+  + 
+  + ## Self-Filed Issues
+  + 
+  + ### #179: Task reverted: Improve retroactive FailureObserved source classification
+  + → **implementing as task_01** — The blocked-task evidence already corrected the edit surface from `src/state.rs` to `scripts/append_terminal_state_events.py`. This is a ~15-line Python change adding `source`/`class` fields to the retroactive FailureObserved payload, mapped from the RunCompleted event's `status`. Should be straightforward.
+  + 
+  + ### #176: Task reverted: Classify SIGTERM-cancelled runs in log_feedback.py
+  + → **defer** — The previous attempt spent 25+ turns in analysis without landing code. The implementation agent got caught between examining `yyds state tail` operational logs and `events.jsonl` state events, never found a clean seam, and ran out of turns. Before retrying, I need pre-confirmed evidence that: (1) the unmatched RunCompleted events actually carry a detectable cancellation signal, and (2) `is_cancelled_completion()` is actually the right function to fix (vs `_is_run_externally_cancelled` having drifted in the other direction). Lower priority than #179 and #174.
+  + 
+  + ### #174: Task reverted: Fix cache-report to read from ModelCallCompleted events
+  + → **implementing as task_02** — Previous attempt was reverted because the evaluator timed out, not because the code was wrong. The implementation notes from the blocked-task evidence are clear: add a `ModelCallCompleted` branch to `build_cache_report()`, update the SQLite query, add a unit test. Two functions in one file, well-scoped.
+  + 
+  + ### #173: Task reverted: Classify state-only tool failures by source
+  + → **defer** — This is a diagnostic classification in `build_evolution_dashboard.py`, not a fix for a core gnome or KPI. Valuable work, but `state_only_failed_tool_count=30` is a dashboard number that needs classification before it can guide intervention — and right now I have more direct-impact tasks (#179 for lifecycle gaps, #174 for cache observability). Will pick this up when those are shipped.
+  + 
+  + ### #172: Task reverted: Close remaining model-call lifecycle gap
+  + → **defer** — Previous attempt got lost in analysis. The Day 163 panic-hook fix addressed the main false-positive path. The remaining `abnormal_completed_count=1` may be from pre-fix state that will age out of the window, or from a script-level lifecycle analysis issue rather than state.rs. Needs pre-confirmed evidence before another implementation attempt.
+  + 
+  + ## Help-Wanted Issues
+  ... (6 more lines)
+  ✓ Auto-approved: write: session_plan/issue_responses.md (26 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ write session_plan/issue_responses.md (26 lines) ✓ (553ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me verify all three files exist now:
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ $ ls -la session_plan/ ✓ (834ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+
+Plan complete. Here's the summary:
+
+## Plan — Day 165 (09:14)
+
+**Context**: Assessment timed out (exit 124). Harness seeded a weak fallback task_01.md. I replaced it with evidence-backed tasks.
+
+### Task 01: Retroactive FailureObserved source classification (#179)
+• **File**: `scripts/append_terminal_state_events.py`
+• **What**: Add ~10 lines mapping RunCompleted `status` → FailureObserved `source`/`class` fields
+• **Why**: Retroactive FailureObserved events show `source="-"` because the Python script never populates those fields. The `status` variable is already available but unused. Fixing this makes `yyds state why last-failure` show meaningful classification instead of unknown/unknown.
+• **Verifier**: `python3 -c "import ast; ast.parse(...)"` — syntax check
+
+### Task 02: Cache-report reads from ModelCallCompleted events (#174)
+• **File**: `src/commands_deepseek.rs`
+• **What**: Add `ModelCallCompleted` branch to `build_cache_report()`, update `read_events_from_sqlite()` query, update error message, add unit test
+• **Why**: Cache metrics exist in ModelCallCompleted events in the JSONL but the cache-report only looks at `CacheMetricsRecorded` events (which come only from diagnostic paths). This unblocks DeepSeek cache observability for agent chat completions.
+• **Verifier**: `cargo test --bin yyds -- --test-threads=1`
+
+### Deferred
+• #176 (cancelled-run classification) — previous attempt got lost in 25+ analysis turns
+• #173 (tool failure source classification) — diagnostic only, lower priority
+• #172 (model-call lifecycle gap) — may age out of window, needs pre-confirmed evidence
+• #131, #90 — still waiting on human action
+
+

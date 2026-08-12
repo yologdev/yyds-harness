@@ -1,0 +1,572 @@
+  yoyo (piped mode) — model: deepseek-v4-pro
+  💡 Detected `cargo clippy --all-targets -- -D warnings && cargo test` — enable auto-watch with `auto_watch = true` in .yoyo.toml
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me start by reading the evolve skill and the target source file to understand the current code before making changes.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ▶ read skills/evolve/SKILL.md  ▶ read src/commands_deepseek.rs:1960..2090 ✓ (20ms)
+ ✓ (15ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read a bit more of the code and also understand the event structure to make sure I get the implementation right.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.8s (2 ✓)
+
+Let me read the rest of `build_cache_report` and the test section, and also check the event structure.
+  ╭─ Turn 2 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2089..2289 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me read the rest of the test section and also check what field names the ModelCallCompleted events use.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 3 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2288..2438 ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I have a good understanding of the code. Let me now check what the ModelCallCompleted events look like in the events.jsonl. I need to understand their field structure.
+────────────────────────────────────────────────────────────────────────────────
+
+Let me check the actual event structure for ModelCallCompleted events:
+  ╭─ Turn 4 ─────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"kind":"ModelCallComplet…  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && grep '"event_type":"ModelCallC… ✓ (15ms)
+ ✓ (43ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can see the two different structures:
+
+1. **Agent events** (from yoagent): They use `kind: "ModelCallCompleted"`, not `event_type`. The payload has `cache_read_tokens`, `cache_write_tokens`, `model`, etc.
+
+2. **Harness events** (from evt-harness-*): They use `event_type: "ModelCallCompleted"`. Their payload has `model`, `status`, etc., but NO `cache_read_tokens` or `cache_write_tokens`.
+
+The important insight: the agent events use `kind` not `event_type`. And the agent events have the cache data we want.
+
+Now the `read_tail_cache_events` function reads raw JSONL lines and parses them. So the events coming into `build_cache_report` have their original structure - agent events use `kind` and harness events use `event_type`.
+
+Currently, `build_cache_report` only checks `event_type` for `"CacheMetricsRecorded"`. I need to also handle `kind: "ModelCallCompleted"` events from the agent.
+
+Let me also check: what about the SQLite path? The SQLite stores events in a `state_events` table. Let me check what the schema looks like.
+
+Let me also check how `read_events` (the non-tail version) reads events. It probably reads from the JSONL or SQLite and returns them in a normalized format.
+
+Actually, looking at the code flow more carefully:
+
+1. `read_tail_cache_events` reads raw JSONL lines directly - these preserve the original structure (agent events have `kind`, harness events have `event_type`)
+2. `read_events_from_sqlite` constructs events with `event_type: "CacheMetricsRecorded"` - these are already normalized
+
+So in `build_cache_report`, I need to handle BOTH:
+- `event_type == "CacheMetricsRecorded"` (current, from SQLite or harness)
+- `kind == "ModelCallCompleted"` (from agent events in JSONL)
+
+Wait, but harness events also have `event_type: "ModelCallCompleted"`. Those don't have cache data in the payload. So I should only look at the ones with `cache_read_tokens` or `cache_write_tokens`.
+
+Let me also check if the harness events might also have cache data. Looking at the harness event payload: `error_detail`, `model`, `stage`, `status`, `terminal_reason`. No cache tokens.
+
+So the plan is:
+
+1. In `build_cache_report`: After the current `if event_type != "CacheMetricsRecorded"` guard, add an else-if for ModelCallCompleted events that checks both `event_type` and `kind`. Only process ModelCallCompleted events that have `cache_read_tokens` or `cache_write_tokens` in their payload.
+
+2. In `read_events_from_sqlite`: Add a second query for ModelCallCompleted events or change the query to include both types.
+
+Actually, let me think about this more carefully. The SQLite projection may or may not have agent events in it. Let me check...
+
+Actually, the simpler approach: in the SQLite function, I'll just add a second query for ModelCallCompleted events. 
+
+And for `build_cache_report`, I need to handle the fact that agent events have a nested payload (the payload IS the event data directly) vs harness events where payload is under a `payload` key.
+
+For the agent ModelCallCompleted event:
+```json
+{
+  "kind": "ModelCallCompleted",
+  "payload": {
+    "cache_read_tokens": 988544,
+    "cache_write_tokens": 0,
+    "model": "deepseek-v4-pro",
+    ...
+  }
+}
+```
+
+Wait, looking more carefully at the agent event structure:
+- The `cache_read_tokens` and `cache_write_tokens` are in the `payload` field at the top level.
+- The `payload` also has `model`.
+
+Actually wait, looking at the agent event, the structure is:
+```json
+{
+  "id": "event_...",
+  "kind": "ModelCallCompleted",
+  "payload": {
+    "_yoyo": {...},
+    "cache_read_tokens": 988544,
+    "cache_write_tokens": 0,
+    "model": "deepseek-v4-pro",
+    ...
+  }
+}
+```
+
+So for the agent event, the cache tokens are in `event.payload.cache_read_tokens` and `event.payload.cache_write_tokens`. The `model` is at `event.payload.model`.
+
+For the harness CacheMetricsRecorded event, the structure is:
+```json
+{
+  "event_type": "CacheMetricsRecorded",
+  "payload": {
+    "model": "...",
+    "prompt_cache_hit_tokens": ...,
+    "prompt_cache_miss_tokens": ...
+  }
+}
+```
+
+So the payload access pattern is the same (`event.payload`), just the field names differ:
+- CacheMetricsRecorded: `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens`
+- ModelCallCompleted: `cache_read_tokens`, `cache_write_tokens`
+
+For the event type detection:
+- Harness events: check `event_type` field
+- Agent events: check `kind` field (which can be `"ModelCallCompleted"`)
+
+Let me now write the implementation. I need to:
+
+1. Modify `build_cache_report` to handle ModelCallCompleted events
+2. Modify `read_events_from_sqlite` to also query ModelCallCompleted events
+3. Update the error message
+4. Add a test for ModelCallCompleted events
+
+Let me also check: does `read_events()` normalize the field names? Let me check the `read_events` function.
+
+Actually, I don't need to overthink this. The events come in as-is from JSONL. I just need to check both `event_type` and `kind` fields in `build_cache_report`.
+
+Let me now implement this. The changes needed:
+
+### 1. `build_cache_report()` (line 2034-2079)
+
+Change the filter from:
+```rust
+if event_type != "CacheMetricsRecorded" {
+    continue;
+}
+```
+
+To something like:
+```rust
+// Check both event_type (harness events) and kind (agent events)
+let is_cache_metrics = event_type == "CacheMetricsRecorded";
+let is_model_call = event_type == "ModelCallCompleted" 
+    || event.get("kind").and_then(|v| v.as_str()).unwrap_or("") == "ModelCallCompleted";
+
+if !is_cache_metrics && !is_model_call {
+    continue;
+}
+
+event_count += 1;
+let payload = event.get("payload").unwrap_or(&Value::Null);
+
+if is_cache_metrics {
+    // existing logic for CacheMetricsRecorded
+    let event_hit_tokens = payload.get("prompt_cache_hit_tokens")...;
+    let event_miss_tokens = payload.get("prompt_cache_miss_tokens")...;
+} else {
+    // ModelCallCompleted logic
+    let event_hit_tokens = payload.get("cache_read_tokens")...;
+    let event_miss_tokens = payload.get("cache_write_tokens")...;
+}
+```
+
+### 2. `read_events_from_sqlite()` (line 1996-2026)
+
+Need to also query ModelCallCompleted events. The simplest approach: add a second query.
+
+### 3. Error message (line 2066-2078)
+
+Update to mention both event types.
+
+### 4. Tests (line 2224+)
+
+Add a test with ModelCallCompleted events.
+
+Let me now implement this. I'll start with the build_cache_report changes and tests.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 22.4s (2 ✓)
+
+Now I have a clear picture. There are two flavors of ModelCallCompleted events:
+
+1. **Agent events** use `kind: "ModelCallCompleted"` with `payload.cache_read_tokens` and `payload.cache_write_tokens`
+2. **Harness events** use `event_type: "ModelCallCompleted"` with no cache data in payload
+
+The fix needs to handle the agent-style ModelCallCompleted events in both `build_cache_report` and `read_events_from_sqlite`. Let me also check the `read_events` function used by the main path:
+  ╭─ Turn 5 ─────────────────────────────────────────────────────────────╮
+  ▶ search 'fn read_events(' in src/commands_deepseek.rs ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the `read_events` function to understand how events are read from JSONL.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 6 ─────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:1955..1965 ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+`read_events` calls `crate::state::read_compatibility_events` which reads events from JSONL. Let me check what that returns - it probably returns the raw JSONL lines parsed as JSON, so the agent events would have `kind` and the harness events would have `event_type`.
+
+Now let me implement the changes. I have a clear plan:
+
+1. Modify `build_cache_report` to also process ModelCallCompleted events (from both `event_type` and `kind` fields)
+2. Modify `read_events_from_sqlite` to also query ModelCallCompleted events  
+3. Update the error message
+4. Add tests
+
+Let me now write the code. I'll start with the `build_cache_report` function change.
+────────────────────────────────────────────────────────────────────────────────
+
+Good. Now I have full understanding. Let me implement the changes. I'll start with the `build_cache_report` function — the core change:
+  ╭─ Turn 7 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (9ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me implement. Starting with the `build_cache_report` function.
+────────────────────────────────────────────────────────────────────────────────
+  5 tools completed in 2.6s (5 ✓)
+
+
+  ╭─ Turn 8 ─────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me now edit `build_cache_report` to handle both CacheMetricsRecorded and ModelCallCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  +         let kind = event
+  +             .get("kind")
+  +             .and_then(|v| v.as_str())
+  +             .unwrap_or("");
+  +         let is_cache_metrics = event_type == "CacheMetricsRecorded";
+  +         let is_model_call = event_type == "ModelCallCompleted" || kind == "ModelCallCompleted";
+  +         if !is_cache_metrics && !is_model_call {
+                continue;
+            }
+  -         event_count += 1;
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (21 → 47 lines)
+  ╭─ Turn 9 ─────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (21 → 47 lines)
+                .get("event_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+  -         if event_type != "CacheMetricsRecorded" {
+  +         let kind = event
+  +             .get("kind")
+  +             .and_then(|v| v.as_str())
+  +             .unwrap_or("");
+  +         let is_cache_metrics = event_type == "CacheMetricsRecorded";
+  +         let is_model_call = event_type == "ModelCallCompleted" || kind == "ModelCallCompleted";
+  +         if !is_cache_metrics && !is_model_call {
+                continue;
+            }
+  -         event_count += 1;
+            let payload = event.get("payload").unwrap_or(&Value::Null);
+  -         let event_hit_tokens = payload
+  -             .get("prompt_cache_hit_tokens")
+  -             .and_then(|v| v.as_u64())
+  -             .unwrap_or(0);
+  -         let event_miss_tokens = payload
+  ... (35 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let me update the error message and then the SQLite function.
+────────────────────────────────────────────────────────────────────────────────
+
+Now update the error message:
+        if event_count == 0 {
+            return Err(
+  -             "no DeepSeek cache metrics recorded from agent chat completions\n  \
+  +             "no DeepSeek cache metrics recorded (checked CacheMetricsRecorded and ModelCallCompleted events)\n  \
+                 Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
+                 (cache_read_input_tokens, cache_creation_input_tokens).\n  \
+                 Cache metrics ARE recorded for these diagnostic paths:\n  \
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (14 → 14 lines)
+  ╭─ Turn 10 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (14 → 14 lines)
+        if event_count == 0 {
+            return Err(
+  -             "no DeepSeek cache metrics recorded from agent chat completions\n  \
+  +             "no DeepSeek cache metrics recorded (checked CacheMetricsRecorded and ModelCallCompleted events)\n  \
+                 Reason: yoagent's Usage struct drops DeepSeek cache token fields\n  \
+                 (cache_read_input_tokens, cache_creation_input_tokens).\n  \
+                 Cache metrics ARE recorded for these diagnostic paths:\n  \
+ ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now update the SQLite function. Let me modify `read_events_from_sqlite` to also query ModelCallCompleted events.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 11 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (6ms)
+  ▶ todo ✓ (7ms)
+  ▶ todo ✓ (6ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me update the `read_events_from_sqlite` function. I need to also query ModelCallCompleted events. The simplest approach is to run two queries and merge the results.
+
+Actually, let me check what the SQLite schema looks like for the state_events table to make sure ModelCallCompleted events are there.
+────────────────────────────────────────────────────────────────────────────────
+  3 tools completed in 4.2s (3 ✓)
+
+
+  ╭─ Turn 12 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && sqlite3 .yoyo/state/state.sqli… ✓ (27ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+ModelCallCompleted events are in the SQLite projection. Now let me update `read_events_from_sqlite` to also query ModelCallCompleted events. I'll use a UNION or just two separate queries and merge the results.
+
+Let me modify the SQLite function. The key insight: for ModelCallCompleted events in SQLite, I need to check the payload for `cache_read_tokens` and `cache_write_tokens` — not all ModelCallCompleted events have cache data (the harness wrapper events don't). But the filtering can happen in `build_cache_report` which already handles this with the skip condition I added.
+
+So in the SQLite function, I just need to also fetch ModelCallCompleted events and mark them with the right event_type (preserving their actual event_type so build_cache_report can distinguish them).
+
+Actually, let me re-read the current SQLite function. It hardcodes the event_type in the result. I need to preserve the actual event_type.
+
+Let me update the query to include event_type, and return it in the json! block.
+────────────────────────────────────────────────────────────────────────────────
+
+Good — ModelCallCompleted events are in the SQLite projection. Now update `read_events_from_sqlite`:
+        let mut stmt = conn
+  -         .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+  +         .prepare("SELECT event_type, payload_json FROM state_events WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted') ORDER BY timestamp_ms")
+            .map_err(|e| format!("prepare cache events query: {e}"))?;
+        let rows = stmt
+  -         .query_map([], |row| row.get::<_, String>(0))
+  +         .query_map([], |row| {
+  +             let event_type: String = row.get(0)?;
+  +             let payload_json: String = row.get(1)?;
+  +             Ok((event_type, payload_json))
+  +         })
+            .map_err(|e| format!("query cache events: {e}"))?;
+        let mut events = Vec::new();
+        for row in rows {
+  -         let payload_json = row.map_err(|e| format!("read cache event row: {e}"))?;
+  +         let (event_type, payload_json) =
+  +             row.map_err(|e| format!("read cache event row: {e}"))?;
+            let payload: Value = serde_json::from_str(&payload_json)
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (19 → 27 lines)
+  ╭─ Turn 13 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (19 → 27 lines)
+        let mut stmt = conn
+  -         .prepare("SELECT payload_json FROM state_events WHERE event_type = 'CacheMetricsRecorded' ORDER BY timestamp_ms")
+  +         .prepare("SELECT event_type, payload_json FROM state_events WHERE event_type IN ('CacheMetricsRecorded', 'ModelCallCompleted') ORDER BY timestamp_ms")
+            .map_err(|e| format!("prepare cache events query: {e}"))?;
+        let rows = stmt
+  -         .query_map([], |row| row.get::<_, String>(0))
+  +         .query_map([], |row| {
+  +             let event_type: String = row.get(0)?;
+  +             let payload_json: String = row.get(1)?;
+  +             Ok((event_type, payload_json))
+  +         })
+            .map_err(|e| format!("query cache events: {e}"))?;
+        let mut events = Vec::new();
+        for row in rows {
+  -         let payload_json = row.map_err(|e| format!("read cache event row: {e}"))?;
+  +         let (event_type, payload_json) =
+  +             row.map_err(|e| format!("read cache event row: {e}"))?;
+            let payload: Value = serde_json::from_str(&payload_json)
+                .map_err(|e| format!("parse cache event payload: {e}"))?;
+            events.push(json!({
+  ... (12 more lines)
+ ✓ (8ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me also update the doc comment for `read_events_from_sqlite` to mention both event types.
+────────────────────────────────────────────────────────────────────────────────
+
+Update the doc comment:
+  - /// Reads `CacheMetricsRecorded` events from the `state_events` table and
+  + /// Reads `CacheMetricsRecorded` and `ModelCallCompleted` events from the `state_events` table and
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (1 → 1 lines)
+  ╭─ Turn 14 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (1 → 1 lines)
+  - /// Reads `CacheMetricsRecorded` events from the `state_events` table and
+  + /// Reads `CacheMetricsRecorded` and `ModelCallCompleted` events from the `state_events` table and
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now let me add the unit test. Let me first check what the current test section looks like to find the right spot for a new test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 15 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me find the right place to add the test - right after the existing cache_report tests, before the `route_command_decision` test.
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.2s (2 ✓)
+
+Add a test for ModelCallCompleted aggregation. I'll insert it after the `cache_report_handles_missing_metrics` test:
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 1000,
+  +                     "cache_write_tokens": 500
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::FAST_MODEL,
+  +                     "cache_read_tokens": 200,
+  +                     "cache_write_tokens": 300
+  +                 }
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (1 → 42 lines)
+  ╭─ Turn 16 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (1 → 42 lines)
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 1000,
+  +                     "cache_write_tokens": 500
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::FAST_MODEL,
+  +                     "cache_read_tokens": 200,
+  +                     "cache_write_tokens": 300
+  +                 }
+  +             }),
+  +             // Harness wrapper ModelCallCompleted with no cache data — should be skipped
+  ... (22 more lines)
+ ✗ (18ms)
+    │ old_text matches 3299 locations in src/commands_deepseek.rs. Include more surrounding context to make the match unique.
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need more context. Let me read the area around where I want to insert the test.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 17 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2280..2295 ✓ (5ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Let me read the end of `cache_report_handles_missing_metrics` test to find the right insertion point.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 18 ────────────────────────────────────────────────────────────╮
+  ▶ read src/commands_deepseek.rs:2293..2323 ✓ (9ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Now I can insert between lines 2316 and 2318.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 1000,
+  +                     "cache_write_tokens": 500
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::FAST_MODEL,
+  +                     "cache_read_tokens": 200,
+  ... (3 more lines)
+  ✓ Auto-approved: edit: src/commands_deepseek.rs (4 → 46 lines)
+  ╭─ Turn 19 ────────────────────────────────────────────────────────────╮
+  ▶ edit src/commands_deepseek.rs (4 → 46 lines)
+  +     }
+  + 
+  +     #[test]
+  +     fn cache_report_aggregates_model_call_completed_events() {
+  +         let events = vec![
+  +             json!({
+  +                 "kind": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::DEFAULT_MODEL,
+  +                     "cache_read_tokens": 1000,
+  +                     "cache_write_tokens": 500
+  +                 }
+  +             }),
+  +             json!({
+  +                 "event_type": "ModelCallCompleted",
+  +                 "payload": {
+  +                     "model": crate::deepseek::FAST_MODEL,
+  +                     "cache_read_tokens": 200,
+  +                     "cache_write_tokens": 300
+  +                 }
+  ... (25 more lines)
+ ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good. Now let me verify the changes compile and the tests pass.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 20 ────────────────────────────────────────────────────────────╮
+  ▶ todo ✓ (8ms)
+  ▶ todo ✓ (7ms)
+
+── Thinking ────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────
+  2 tools completed in 2.6s (2 ✓)
+
+
+  ╭─ Turn 21 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt -- --check 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+I need to run `cargo fmt` to fix the formatting.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 22 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo fmt 2>&1 ✓ (1.4s)
+
+── Thinking ────────────────────────────────────────────────────────────────
+Good, now let's run cargo check.
+────────────────────────────────────────────────────────────────────────────────
+
+
+  ╭─ Turn 23 ────────────────────────────────────────────────────────────╮
+  ▶ $ cd /home/runner/work/yyds-harness/yyds-harness && cargo check 2>&1 ✓ (7.1s)
+
+

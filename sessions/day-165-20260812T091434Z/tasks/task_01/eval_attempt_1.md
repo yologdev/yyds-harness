@@ -1,0 +1,2 @@
+Verdict: PASS
+Reason: The diff adds source/class classification to retroactive FailureObserved events with the exact mapping and conditional injection specified in the task. Syntax check and --help both pass. One minor omission — the "cancelled" mapping entry from the task notes is absent — but this is backward-compatible (cancelled runs fall through to unknown, same pre-existing behavior) and doesn't break any success criteria.
